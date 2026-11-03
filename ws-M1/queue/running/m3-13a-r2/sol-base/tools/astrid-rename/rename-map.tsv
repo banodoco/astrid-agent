@@ -1,0 +1,305 @@
+kind	old	new	scope	note
+token	banodoco-workspace-runtime	astrid-runtime	all	section 5 product identity or collision rule
+token	banodoco-workspace-client	astrid-runtime-client	all	section 5 product identity or collision rule
+token	banodoco_workspace_runtime	astrid_runtime	all	section 5 product identity or collision rule
+token	banodoco_workspace_client	astrid_runtime_client	all	section 5 product identity or collision rule
+token	banodoco_local	astrid_runtime	all	section 5 product identity or collision rule
+token	banodoco-local	astrid-runtime	all	section 5 product identity or collision rule
+token	banodoco-runtime	astrid-runtime-protocol	all	section 5 product identity or collision rule
+token	@banodoco/workspace-client	@astrid/runtime-client	all	section 5 product identity or collision rule
+token	Application Support/Banodoco	Application Support/Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco Workspace Runtime	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco workspace runtime	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco local workspace runtime	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco runtime	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco Runtime	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco local	Astrid Runtime	all	section 5 product identity or collision rule
+token	Banodoco Local	Astrid Runtime	all	section 5 product identity or collision rule
+token	reigh-app	astrid-app	all	section 5 product identity or collision rule
+token	peteromallet/reigh	banodoco/astrid-app	all	section 5 product identity or collision rule
+token	github.com/banodoco/Reigh	github.com/banodoco/astrid-app	all	section 5 product identity or collision rule
+token	reigh.local-worker-control/v1	workspace.local-worker-control/v1	all	section 5 product identity or collision rule
+token	reigh-fnv1a64-v1:	astrid-fnv1a64-v1:	all	section 5 product identity or collision rule
+token	@reigh/editor-sdk	@astrid/editor-sdk	all	section 5 product identity or collision rule
+token	ReighExtension	AstridExtension	all	section 5 product identity or collision rule
+token	reigh-product-connector	astrid-product-connector	all	section 5 product identity or collision rule
+token	reigh-browser	astrid-browser	all	Runtime handshake actor; App client.ts:349
+token	reigh-v3	astrid-app-v3	all	section 5 product identity or collision rule
+regex	(?<=github\.com/peteromallet/)Astrid(?:-agent)?	astrid-agent	all	GitHub URL only: current repo and old redirect
+token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	astrid:astrid/core/release_identity.py	live Astrid repository identity; URL uses existing regex
+token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	astrid:tests/test_release_identity.py	release identity expectation; URL uses existing regex
+token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	astrid:tests/test_remote_targets.py	remote target identity expectation; URL uses existing regex
+token	"peteromallet/Astrid"	"peteromallet/astrid-agent"	runtime:runtime_protocol/release_identity.py	Runtime release identity registry; URL uses existing regex
+token	repository: peteromallet/Astrid	repository: peteromallet/astrid-agent	app:.github/workflows/bridge-latency.yml	GitHub checkout repository identity; bare YAML value is outside the existing URL regex
+token	com.reigh.astrid	haus.astrid	all	section 5 extension id, including escaped and stutter forms
+token	com\.reigh\.astrid	haus\.astrid	all	section 5 extension id, including escaped and stutter forms
+token	com\\.reigh\\.astrid	haus\\.astrid	all	section 5 extension id, including escaped and stutter forms
+token	com[.]reigh[.]astrid	haus[.]astrid	all	section 5 extension id, including escaped and stutter forms
+token	com.reigh.	haus.astrid.	all	section 5 extension id, including escaped and stutter forms
+token	com\.reigh\.	haus\.astrid\.	all	section 5 extension id, including escaped and stutter forms
+token	com\\.reigh\\.	haus\\.astrid\\.	all	section 5 extension id, including escaped and stutter forms
+token	com[.]reigh[.]	haus[.]astrid[.]	all	section 5 extension id, including escaped and stutter forms
+regex	("(?:repository|publicProjectionOwner)": ")Astrid(?=")	\1astrid-agent	app:config/contracts/astrid-plan-a-c1.json	repository fields only
+regex	("(?:repository|publicProjectionOwner)": ")Astrid(?=")	\1astrid-agent	app:config/contracts/astrid-plan-a-c2.json	repository fields only
+regex	(?<=')Astrid(?=')	astrid-agent	app:scripts/quality/lib/astrid-contract-schema.mjs	repository enum literal only; preserve product prose
+token	workspace-runtime	astrid-runtime	app:scripts/quality/lib/astrid-contract-schema.mjs	repository enum/key; scoped to gate source
+regex	(?<=')Astrid(?=')	astrid-agent	app:scripts/quality/check-astrid-contract-freeze.mjs	repository key literals only; preserve product prose
+token	workspace-runtime	astrid-runtime	app:scripts/quality/check-astrid-contract-freeze.mjs	repository enum/key; scoped to gate source
+regex	(?<="repository": ")workspace-runtime(?=")	astrid-runtime	app:config/contracts/astrid-plan-a-c1.json	repository field only
+regex	(?<="repository": ")workspace-runtime(?=")	astrid-runtime	app:config/contracts/astrid-plan-a-c2.json	repository field only
+token	Banodoco workspace	banodoco-workspace repo	astrid:astrid/core/timeline/banodoco_schema.py	community repo at lines 6 and 89
+token	BANODOCO_LOCAL_DATA_ROOT	ASTRID_RUNTIME_DATA_ROOT	all	launcher support tree; C-MIGRATE M4
+token	BANODOCO_RUNTIME_ROOT	ASTRID_RUNTIME_ROOT	all	protocol CLI root, distinct from launcher support tree
+token	BANODOCO_LOCAL_OWNER_TOKEN	ASTRID_RUNTIME_LOCAL_OWNER_TOKEN	all	launcher-side owner token, distinct from protocol token
+token	BANODOCO_RUNTIME_OWNER_TOKEN	ASTRID_RUNTIME_OWNER_TOKEN	all	protocol owner token
+token	BANODOCO_LOCAL_RUNTIME_CHECKOUT	ASTRID_RUNTIME_LAUNCHER_CHECKOUT	all	ignored hostile env test, distinct from runtime checkout
+token	BANODOCO_RUNTIME_CHECKOUT	ASTRID_RUNTIME_CHECKOUT	all	Runtime source checkout
+token	BANODOCO_RUNTIME_ENDPOINT	ASTRID_RUNTIME_ENDPOINT	all	same endpoint value as existing ASTRID_RUNTIME_ENDPOINT
+token	BANODOCO_RELEASE_RECEIPT_ROOT	ASTRID_RELEASE_RECEIPT_ROOT	all	same receipt-root value as existing ASTRID_RELEASE_RECEIPT_ROOT
+token	BANODOCO_ASTRID_SOURCE_CHECKOUT	UNTRUSTED_ASTRID_SOURCE_CHECKOUT	all	ignored hostile env name in one test; distinct from ASTRID_SOURCE_CHECKOUT
+token	BANODOCO_TIMELINE_SCHEMA_ROOT	TIMELINE_SCHEMA_SOURCE_ROOT	all	community timeline-schema source root, not Runtime product
+token	BANODOCO_URL	COMMUNITY_SITE_URL	all	Banodoco community site link; URL itself kept
+token	REIGH_APP_CHECKOUT	ASTRID_APP_CHECKOUT	all	avoid APP_APP stutter
+token	ASTRID_REIGH_CHECKOUT	ASTRID_APP_RELEASE_CHECKOUT	all	avoid ASTRID_ASTRID stutter; release verifier temporary App worktree distinct from source checkout
+token	ASTRID_REIGH_CONTEXT_EVIDENCE	ASTRID_APP_CONTEXT_EVIDENCE	all	avoid ASTRID_ASTRID stutter
+token	ASTRID_BANODOCO_AGENT_EXECUTORS	ASTRID_RUNTIME_AGENT_EXECUTORS	all	section 5 env var rule; 17 Oct inventory
+token	ASTRID_BANODOCO_CATALOG_URL	ASTRID_RUNTIME_CATALOG_URL	all	section 5 env var rule; 17 Oct inventory
+token	ASTRID_BANODOCO_DEFAULT_EXECUTORS	ASTRID_RUNTIME_DEFAULT_EXECUTORS	all	section 5 env var rule; 17 Oct inventory
+token	ASTRID_BANODOCO_EXECUTOR_CACHE	ASTRID_RUNTIME_EXECUTOR_CACHE	all	section 5 env var rule; 17 Oct inventory
+token	ASTRID_BANODOCO_MANDATORY_EXECUTORS	ASTRID_RUNTIME_MANDATORY_EXECUTORS	all	section 5 env var rule; 17 Oct inventory
+token	ASTRID_BANODOCO_REFRESH	ASTRID_RUNTIME_REFRESH	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_LOCAL_ENABLE_REAL_REBOOT	ASTRID_RUNTIME_ENABLE_REAL_REBOOT	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_LOCAL_HOME	ASTRID_RUNTIME_HOME	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_LOCAL_LAUNCHER	ASTRID_RUNTIME_LAUNCHER	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_LOCAL_SOURCE_MANIFEST	ASTRID_RUNTIME_SOURCE_MANIFEST	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_	ASTRID_RUNTIME_	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_ADMISSION_TIMEOUT_SECONDS	ASTRID_RUNTIME_ADMISSION_TIMEOUT_SECONDS	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_CREDENTIAL	ASTRID_RUNTIME_CREDENTIAL	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_DISCOVERY	ASTRID_RUNTIME_DISCOVERY	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_FREE_DISK_FLOOR_BYTES	ASTRID_RUNTIME_FREE_DISK_FLOOR_BYTES	all	section 5 env var rule; 17 Oct inventory
+token	BANODOCO_RUNTIME_SPEC_RETENTION_DAYS	ASTRID_RUNTIME_SPEC_RETENTION_DAYS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_	ASTRID_APP_	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ACCEPTANCE_EVIDENCE	ASTRID_APP_ACCEPTANCE_EVIDENCE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ACCEPTANCE_MATRIX	ASTRID_APP_ACCEPTANCE_MATRIX	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_AGENT_CONTEXT_SCHEMA	ASTRID_APP_AGENT_CONTEXT_SCHEMA	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_APPEND_SERVICE_INTERNAL_TOKEN	ASTRID_APP_APPEND_SERVICE_INTERNAL_TOKEN	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_APPEND_SERVICE_URL	ASTRID_APP_APPEND_SERVICE_URL	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_BACKEND	ASTRID_APP_BACKEND	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_BOUNDED_BROKER_SESSION	ASTRID_APP_BOUNDED_BROKER_SESSION	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_BOUNDED_PROCESS_SCOPE	ASTRID_APP_BOUNDED_PROCESS_SCOPE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_CANDIDATE	ASTRID_APP_CANDIDATE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_CAS_ROOT	ASTRID_APP_CAS_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_CUSTOM_NODE_MANIFEST_PATH	ASTRID_APP_CUSTOM_NODE_MANIFEST_PATH	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_CUSTOM_NODE_ROOT	ASTRID_APP_CUSTOM_NODE_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ELEMENT_KINDS	ASTRID_APP_ELEMENT_KINDS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ELEMENT_OPERATIONS	ASTRID_APP_ELEMENT_OPERATIONS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ELEMENT_OPERATION_NAMES	ASTRID_APP_ELEMENT_OPERATION_NAMES	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ELEMENT_PLACEMENTS	ASTRID_APP_ELEMENT_PLACEMENTS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ELEMENT_PUBLICATION_STATES	ASTRID_APP_ELEMENT_PUBLICATION_STATES	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ENGINE_INTERPRETER	ASTRID_APP_ENGINE_INTERPRETER	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ENGINE_LOCK_PATH	ASTRID_APP_ENGINE_LOCK_PATH	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_EXPECTED_GENERATIONS	ASTRID_APP_EXPECTED_GENERATIONS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_EXPECTED_SHOTS	ASTRID_APP_EXPECTED_SHOTS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_EXTENSION_PORTS_ALLOCATED	ASTRID_APP_EXTENSION_PORTS_ALLOCATED	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_GATE_PROFILE	ASTRID_APP_GATE_PROFILE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_HEAD	ASTRID_APP_HEAD	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_INTERPRETER	ASTRID_APP_INTERPRETER	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LIVE_ORIGIN	ASTRID_APP_LIVE_ORIGIN	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOCAL_DEV_COMMAND	ASTRID_APP_LOCAL_DEV_COMMAND	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOCAL_EDITOR_ACTOR	ASTRID_APP_LOCAL_EDITOR_ACTOR	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOCAL_PROJECT	ASTRID_APP_LOCAL_PROJECT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOCAL_PROJECT_MATRIX	ASTRID_APP_LOCAL_PROJECT_MATRIX	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOCAL_TIMELINE	ASTRID_APP_LOCAL_TIMELINE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOOPBACK_AUDIT_LOG	ASTRID_APP_LOOPBACK_AUDIT_LOG	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOOPBACK_ORIGIN	ASTRID_APP_LOOPBACK_ORIGIN	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_LOOPBACK_PORT	ASTRID_APP_LOOPBACK_PORT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_MODEL_MANIFEST_PATH	ASTRID_APP_MODEL_MANIFEST_PATH	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_MODEL_ROOT	ASTRID_APP_MODEL_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_OUTPUT_ROOT	ASTRID_APP_OUTPUT_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_CONNECTOR_STATE	ASTRID_APP_PAIRED_CONNECTOR_STATE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_PRODUCT_ACTOR	ASTRID_APP_PAIRED_PRODUCT_ACTOR	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_REALM_ID	ASTRID_APP_PAIRED_REALM_ID	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_RELAY_ENABLED	ASTRID_APP_PAIRED_RELAY_ENABLED	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_RELAY_LOOPBACK_TEST	ASTRID_APP_PAIRED_RELAY_LOOPBACK_TEST	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PAIRED_RELAY_ORIGIN	ASTRID_APP_PAIRED_RELAY_ORIGIN	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PERSONAL_ACCESS_TOKEN	ASTRID_APP_PERSONAL_ACCESS_TOKEN	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PROCESS_FIXTURE_HEALTH_SEQUENCE	ASTRID_APP_PROCESS_FIXTURE_HEALTH_SEQUENCE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PROCESS_FIXTURE_OPERATION_IDS	ASTRID_APP_PROCESS_FIXTURE_OPERATION_IDS	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PROCESS_FIXTURE_PROCESS_ID	ASTRID_APP_PROCESS_FIXTURE_PROCESS_ID	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_PROCESS_FIXTURE_VERSION_SEMVER	ASTRID_APP_PROCESS_FIXTURE_VERSION_SEMVER	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_REF	ASTRID_APP_REF	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_ROOT	ASTRID_APP_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_RUNTIME_LOCK_PATH	ASTRID_APP_RUNTIME_LOCK_PATH	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_SCRATCH_ROOT	ASTRID_APP_SCRATCH_ROOT	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_TIMELINE_PORTS_ALLOCATED	ASTRID_APP_TIMELINE_PORTS_ALLOCATED	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_VIBECOMFY_ATTENTION_PROFILE	ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_WGP_HOME	ASTRID_APP_WGP_HOME	all	section 5 env var rule; 17 Oct inventory
+token	VITE_REIGH_APPEND_SERVICE_URL	VITE_ASTRID_APP_APPEND_SERVICE_URL	all	section 5 env var rule; 17 Oct inventory
+token	REIGH_SUPABASE_URL	ASTRID_APP_SUPABASE_URL	all	App Supabase connection; Astra decision
+token	REIGH_SUPABASE_SERVICE_ROLE_KEY	ASTRID_APP_SUPABASE_SERVICE_ROLE_KEY	all	App Supabase service role; Astra decision
+token	REIGH_SUPABASE_JWKS_URL	ASTRID_APP_SUPABASE_JWKS_URL	all	App Supabase key set; Astra decision
+token	REIGH_SUPABASE_JWT_AUDIENCE	ASTRID_APP_SUPABASE_JWT_AUDIENCE	all	App Supabase audience; Astra decision
+token	REIGH_RENDER_OUTPUTS_BUCKET	ASTRID_APP_RENDER_OUTPUTS_BUCKET	all	App render output bucket; Astra decision
+token	--reigh-commit	--app-commit	all	collision table: App identity remains distinct from agent
+token	ReighElementKind	AppElementKind	all	collision table: App identity remains distinct from agent
+token	checkReigh	checkApp	all	collision table: App identity remains distinct from agent
+token	startReigh	startApp	all	collision table: App identity remains distinct from agent
+token	finalReigh	finalApp	all	collision table: App identity remains distinct from agent
+token	reigh-on-call	app-on-call	app:scripts/quality/check-extension-ship-evidence.test.mjs	App release owner appears beside distinct astrid-on-call in the same owners array
+token	/tmp/reigh-project	/tmp/astrid-app-project	app:src/tools/video-editor/runtime/processes/reighAcpBridge.test.ts	App bridge fixture path stays distinct from pre-existing astrid-project IDs
+token	reigh.example	astrid-app.example	app:scripts/runtime/service-worker-release-config.test.mjs	App service-worker test origin stays distinct from pre-existing astrid.example schema reference
+token	reigh.example	astrid-app.example	app:src/tools/video-editor/runtime/extensionReleaseControls.test.ts	App extension-release fake origin stays distinct from pre-existing astrid.example schema reference
+token	reighCommit	appCommit	all	collision table: App identity remains distinct from agent
+token	reighHandle	appHandle	all	collision table: App identity remains distinct from agent
+token	reighHead	appHead	all	collision table: App identity remains distinct from agent
+token	reighRef	appRef	all	collision table: App identity remains distinct from agent
+token	reighSnapshot	appSnapshot	all	collision table: App identity remains distinct from agent
+token	reighTreeBytes	appTreeBytes	all	collision table: App identity remains distinct from agent
+token	reigh_root	app_root	all	collision table: App identity remains distinct from agent
+token	reigh.boot_manifest	app.boot_manifest	all	collision table: App identity remains distinct from agent
+token	integrations/reigh	integrations/app	all	collision table: App identity remains distinct from agent
+token	reigh-commit	app-commit	all	collision table: App identity remains distinct from agent
+token	reigh-branch-commit	app-branch-commit	all	collision table: App identity remains distinct from agent
+token	reigh-browser-first.log	astrid-app-browser-first.log	all	collision table: App identity remains distinct from agent
+token	reigh-preview.log	astrid-app-preview.log	all	collision table: App identity remains distinct from agent
+token	reigh-worktree-clean	app-worktree-clean	all	collision table: App identity remains distinct from agent
+token	reigh-astrid-source-	astrid-app-source-	all	section 5b stutter; historical evidence paths may be deleted instead
+token	reigh-astrid-catalog-	astrid-app-catalog-	all	section 5b stutter; historical evidence paths may be deleted instead
+token	reigh-astrid-preview-	astrid-app-preview-	all	section 5b stutter; historical evidence paths may be deleted instead
+token	codex/verifier-astrid-reigh-contract	codex/verifier-astrid-app-contract	all	section 5b stutter; historical evidence paths may be deleted instead
+token	astrid-reigh-gpu-meta-20260902-a1	astrid-app-gpu-meta-20260902-a1	all	section 5b stutter; historical evidence paths may be deleted instead
+path	banodoco_local/	astrid_runtime/	runtime	inventory section 2 path move
+path	banodoco_workspace_client/	astrid_runtime_client/	runtime	inventory section 2 path move
+path	banodoco_workspace_client/	astrid_runtime_client/	astrid	inventory section 2 path move
+path	packages/python/banodoco_workspace_client/	packages/python/astrid_runtime_client/	runtime	inventory section 2 nested Python client path move
+path	src/tools/video-editor/adapters/reigh/	src/tools/video-editor/adapters/app/	app	inventory section 2 path move
+path	useReigh	useAstrid	app	App adapter hook basenames and their relative imports
+path	reigh-extension.json	astrid-extension.json	app	inventory section 2 path move
+path	config/contracts/reigh-extension.schema.json	config/contracts/astrid-extension.schema.json	app	inventory section 2 path move
+path	tests/stage1/test_reigh_authority_absence.py	tests/stage1/test_legacy_authority_absence.py	astrid	inventory section 2 path move
+path	src/shared/components/ReighLoading.tsx	src/shared/components/AstridLoading.tsx	app	inventory section 2 path move
+path	src/tools/video-editor/components/ReighTimelineEditor	src/tools/video-editor/components/AstridTimelineEditor	app	inventory section 2 path move
+path	src/tools/video-editor/components/ReighVideoEditorShell.tsx	src/tools/video-editor/components/AstridVideoEditorShell.tsx	app	inventory section 2 path move
+path	src/tools/video-editor/runtime/processes/reighAcpBridge.test.ts	src/tools/video-editor/runtime/processes/astridAcpBridge.test.ts	app	inventory section 2 path move
+path	src/tools/video-editor/runtime/processes/reighProjectChat.test.ts	src/tools/video-editor/runtime/processes/astridProjectChat.test.ts	app	inventory section 2 path move
+path	src/tools/video-editor/runtime/reighAgentContext	src/tools/video-editor/runtime/astridAgentContext	app	inventory section 2 path move
+path	supabase/functions/_shared/reighAppendService.ts	supabase/functions/_shared/astridAppendService.ts	app	inventory section 2 path move
+path	scripts/reigh-	scripts/astrid-	app	inventory section 2 path move
+path	scripts/release/reigh-release-provenance	scripts/release/astrid-release-provenance	app	inventory section 2 path move
+path	docs/extensions/reigh-acp-local-bridge.md	docs/extensions/astrid-acp-local-bridge.md	app	inventory section 2 path move
+path	docs/video-editor/reigh-branch-census-and-convergence.md	docs/video-editor/astrid-app-branch-census-and-convergence.md	app	inventory section 2 path move
+prose	Reigh	Astrid App	mixed	file also names Astrid; section 5 rule 4
+prose	Reigh	Astrid	all	single-product prose; section 5 rule 4
+prose	REIGH	Astrid App	mixed	uppercase brand in mixed prose
+prose	REIGH	Astrid	all	uppercase brand in single-product prose
+regex	(?<![A-Za-z0-9_])banodoco(?=\.[a-z0-9-]+\.v1\b)	astrid_runtime	astrid	Runtime release-identity hash domain in Astrid sources and tests
+regex	(?<![A-Za-z0-9_])banodoco(?=\.[a-z0-9-]+\.v1\b)	astrid_runtime	runtime	Runtime release-identity hash domain in Runtime sources and tests
+token	BanodocoRuntime/0.1	AstridRuntime/0.1	all	section 5 rule 4a: Runtime product
+token	banodoco-adopt-inspect-	astrid-runtime-adopt-inspect-	all	section 5 rule 4a: Runtime product
+token	banodoco-realm-preflight-	astrid-runtime-realm-preflight-	all	section 5 rule 4a: Runtime product
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/hooks/useRenderState.test.tsx	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	app:src/tools/video-editor/hooks/useRenderState.test.tsx	Live Runtime rendering.render admission path; Astra decision
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/hooks/useRenderState.ts	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	app:src/tools/video-editor/hooks/useRenderState.ts	Live Runtime rendering.render admission path; Astra decision
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/lib/renderRouter.test.tsx	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	app:src/tools/video-editor/lib/renderRouter.test.tsx	Live Runtime rendering.render admission path; Astra decision
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/lib/renderRouter.ts	Live Runtime rendering.render admission path; Astra decision
+token	BanodocoRenderTimelinePayload	AstridRuntimeRenderTimelinePayload	app:src/tools/video-editor/lib/renderRouter.ts	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	app:src/tools/video-editor/lib/renderRouter.ts	Live Runtime rendering.render admission path; Astra decision
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/render/renderPipeline.ts	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	app:src/tools/video-editor/render/renderPipeline.ts	Live Runtime rendering.render admission path; Astra decision
+token	worker-banodoco	worker-astrid-runtime	app:src/tools/video-editor/runtime/routeFitMapper.test.ts	Live Runtime rendering.render admission path; Astra decision
+token	enqueueBanodocoRenderTimeline	enqueueAstridRuntimeRenderTimeline	astrid:docs/development/testing-plan.md	Reference to live App render admission action; Astra decision
+token	banodoco-workspace-runtime-oracle	astrid-runtime-oracle	all	Runtime oracle worktree identity, README.md:11
+prose	Banodoco	Astrid Runtime	app:docs/creative-workspace-runtime-vision.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/01-astrid-beta.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/04-gpu-pack-execution-plan.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/04f-integration-acceptance-lane.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/04g-read-first-execution-brief.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/README.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:docs/local-runtime/vision.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:src/tools/video-editor/lib/renderRouter.ts	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:supabase/migrations/20260504120000_extend_claim_next_task_for_pools.sql	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	app:supabase/migrations/20260524000000_revert_route_backend_gating_in_claim_and_counts.sql	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	astrid:astrid/sdk/autobootstrap.py	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	astrid:docs/getting-started.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	astrid:docs/guides/build-your-first-agentic-ux.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	astrid:docs/guides/cli-journeys.md	inspected Runtime-product prose; section 5 rule 4a
+prose	Banodoco	Astrid Runtime	astrid:examples/agentic_ux/README.md	inspected Runtime-product prose; section 5 rule 4a
+token	Banodoco/orchestrator	Astrid Runtime/orchestrator	app:src/tools/video-editor/lib/renderRouter.ts	Runtime admission comment at line 941
+token	banodoco.dev/workspace/v1/	astrid.haus/workspace/v1/	runtime	Astra decision: Runtime contract URI host; preserve protocol path
+token	banodoco.local/schemas/	astrid.haus/schemas/	runtime	Astra decision: Runtime schema ID host; preserve schema path
+token	x-banodoco-	x-astrid-runtime-	runtime	Astra decision: Runtime extension metadata keys; community package values remain
+token	workspace-runtime	astrid-runtime	runtime:contract/schemas/shot-composition.json	Astra decision: Runtime owner metadata values only
+token	workspace-runtime	astrid-runtime	runtime:tests/test_shot_composition_contract.py	Astra decision: matching Runtime owner assertions
+regex	"reigh"(?=\s*:)	"app"	app:config/releases/extension-ship-quality.json	App release manifest key beside distinct astrid key
+token	reigh	app	app:scripts/release/verify-extension-ship.mjs	App manifest property and local variable beside distinct Astrid release values
+token	RELEASE_REIGH_WORKTREE	RELEASE_ASTRID_APP_WORKTREE	app:scripts/release/verify-extension-ship.mjs	App worktree beside Astrid release checkout
+token	assertReighCheckout	assertAppCheckout	app:scripts/release/verify-extension-ship.mjs	App release checkout validator
+token	createReleaseReighWorktree	createReleaseAppWorktree	app:scripts/release/verify-extension-ship.mjs	App release worktree operation
+token	removeReleaseReighWorktree	removeReleaseAppWorktree	app:scripts/release/verify-extension-ship.mjs	App release worktree operation
+token	releaseReighWorktree	releaseAppWorktree	app:scripts/release/verify-extension-ship.mjs	App release worktree binding
+token	reigh-release-provenance	astrid-release-provenance	all	import basename follows the renamed release-provenance path
+token	manifest.reigh	manifest.app	app:docs/extensions/extension-release-runbook.md	App release tag documented beside manifest.astrid commit pin
+regex	(?<=[\x22\x27])reigh(?=[\x22\x27])	app	app:scripts/quality/check-extension-ship-evidence.mjs	App repository literal beside astrid repository literal
+regex	(?<=[\x22\x27])reigh(?=[\x22\x27])	app	app:scripts/quality/check-extension-ship-evidence.test.mjs	App repository test literal beside astrid
+regex	(?<=[\x22\x27])reigh(?=[\x22\x27])	app	app:scripts/quality/capture-extension-external-evidence.mjs	App repository receipt literal beside astrid
+token	releaseManifest.reigh	releaseManifest.app	app:scripts/quality/check-extension-ship-evidence.mjs	App manifest property beside astrid property
+token	manifest?.reigh	manifest?.app	app:scripts/quality/check-extension-local-rc-preflight.mjs	App release manifest property beside distinct astrid release pin
+token	manifest.reigh	manifest.app	app:scripts/quality/check-extension-local-rc-preflight.test.mjs	App release manifest fixture property beside astrid pin
+token	reigh:	app:	app:scripts/quality/check-extension-local-rc-preflight.test.mjs	App release manifest object key beside distinct astrid key
+token	reigh:	app:	app:scripts/release/reigh-release-provenance.test.mjs	App release manifest object key beside distinct astrid key
+token	"reigh"	"astrid-app"	app:supabase/config.toml	local Supabase project id follows section 5 rule 5
+token	reigh:	app:	astrid:astrid/core/timeline/shot_composition_migration.py	pinned App group provenance stays distinct from native astrid source keys
+token	forbidden_symbols: [Astrid, astrid, REIGH, reigh, pack, thread]	forbidden_symbols: [Astrid, astrid, pack, thread]	runtime:conformance/second-client-core-v1.yaml	deduplicate retired App brand in neutral protocol fixture
+token	Banodoco	Astrid Runtime	runtime:banodoco_local/paths.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	app:scripts/dev-local-workspace-options.mjs	Runtime support folder split across JavaScript path components
+token	Banodoco	Astrid Runtime	astrid:astrid/sdk/storage_root.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:astrid/sdk/upgrade.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:tests/stage1/test_storage_root.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:tests/stage1/test_astrid_upgrade.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:tests/stage1/test_cold_launch_autobootstrap.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:tests/stage1/test_final_cold_launch_matrix_luna.py	Runtime support folder split across Python path components
+token	Banodoco	Astrid Runtime	astrid:tests/test_luna_operational_diagnostics.py	Runtime support folder split across Python path components
+regex	(?<=decides )banodoco(?=\.)	Astrid Runtime	app:src/tools/video-editor/lib/renderRouter.test.tsx	Runtime renderer comment ending in punctuation
+prose	Reigh-compatible	Astrid App-compatible	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-compatible	Astrid-compatible	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-coupled	Astrid App-coupled	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-coupled	Astrid-coupled	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-coupling	Astrid App-coupling	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-coupling	Astrid-coupling	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-domain	Astrid App-domain	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-domain	Astrid-domain	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-first	Astrid App-first	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-first	Astrid-first	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-first/full-stack	Astrid App-first/full-stack	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-first/full-stack	Astrid-first/full-stack	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-flavored	Astrid App-flavored	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-flavored	Astrid-flavored	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-host	Astrid App-host	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-host	Astrid-host	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-internal	Astrid App-internal	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-internal	Astrid-internal	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-local	Astrid App-local	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-local	Astrid-local	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-local/full-stack	Astrid App-local/full-stack	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-local/full-stack	Astrid-local/full-stack	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-native	Astrid App-native	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-native	Astrid-native	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-native.	Astrid App-native.	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-native.	Astrid-native.	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-only	Astrid App-only	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-only	Astrid-only	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-owned	Astrid App-owned	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-owned	Astrid-owned	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-side	Astrid App-side	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-side	Astrid-side	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-specific	Astrid App-specific	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-specific	Astrid-specific	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-browser-only	Astrid App-browser-only	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh-browser-only	Astrid-browser-only	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh.	Astrid App.	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	Reigh.	Astrid.	all	section 5 rule 4 for compound prose in files with or without Astrid
+prose	CLI/Reigh	CLI/Astrid App	mixed	section 5 rule 4 for compound prose in files with or without Astrid
+prose	CLI/Reigh	CLI/Astrid	all	section 5 rule 4 for compound prose in files with or without Astrid
+word	reigh	astrid	all	last resort only after collision, stutter, and prose rows

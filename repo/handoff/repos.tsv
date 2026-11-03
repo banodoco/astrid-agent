@@ -1,0 +1,8 @@
+# name	local_path	upstream_url	branch	base_sha
+# One git checkout per line (tab-separated). export.sh bundles base_sha..branch;
+# import.sh clones upstream_url, fetches the bundle and checks out branch.
+astrid-agent	/home/user/proof/src/astrid-agent	https://github.com/banodoco/astrid-agent.git	proof/integration	670baed9c8f77e7e72c4f1db04fc85282078173a
+astrid-runtime	/home/user/proof/src/astrid-runtime	https://github.com/banodoco/astrid-runtime.git	proof/integration	11443b0b5b34bd5b36725504fb083146192a759d
+runpod-lifecycle	/home/user/proof/src/runpod-lifecycle	https://github.com/banodoco/runpod-lifecycle.git	proof/integration	db79345536985c701b7aff2eb5eec36667aae204
+runpod-python	/home/user/proof/src/runpod-python	https://github.com/runpod/runpod-python.git	proof/integration	07fc6e2b02b6a97a0e94fbdcf53c66949c1a6164
+VibeComfy	/home/user/proof/src/VibeComfy	https://github.com/peteromallet/VibeComfy.git	main	ac0ee1b80991f2414dae27d264af4b5e2890a7a6

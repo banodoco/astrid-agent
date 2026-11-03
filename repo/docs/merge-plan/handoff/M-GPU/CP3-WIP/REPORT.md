@@ -1,0 +1,12 @@
+# CP3-CP2FIX report
+- Verdict: INCOMPLETE; aborted when free disk fell below 1,500 MB (observed 1,336 MB).
+- Head: 4f7d4dc068a8f7af15b4bf6f37976ba1e08727ff, on 6604c9f18da747fb3a19307522420777c4bf86ac; branch preserved in verified cp2fix.bundle.
+- (a) Endpoint fixture uses the supported HTTPS proxy/CA seam with real TLS and bearer authentication; installed-host fixture exposes pinned Runtime through the host's approved site-packages dependency path. Existing request and child observations are retained.
+- (b) Lifecycle consumer and release fixture pins updated to 96360a27a53c4608f780f7b370f747a2aa3c7ca8; existing SDK release pin is 0786b3d51855a66176fea1e7443b92e7ef2d01b5.
+- Both lifecycle modules and the SDK imported from the respective pinned source trees. The requested lifecycle SHA was absent from the specified shared clone, and was resolved from /home/user/astrid/proof-codex/src/runpod-lifecycle instead.
+- Handoff: 26 passed with -m integration; mandated -m 'not integration' selected zero because the whole module is integration-marked.
+- RunPod: 528 passed, 3 failed, 19 integration deselected. Failures: test_https_transport.py::test_https_claim_persists_only_token_file_reference, ::test_https_claim_resume_reuses_original_token_and_rejects_transport_change, ::test_https_claim_preflight_failure_leaves_no_intent_or_token.
+- Selection (c): interrupted during readiness; one failure observed in test_engine_cli.py; no final count. test_engine_release.py excluded as instructed.
+- Selection (d) not run. Parent reruns/classification and fixes for any new failures are outstanding due to disk abort.
+- Product gaps: none established; unclassified failures prevent a conclusion. Logs retained under logs/.
+- No push. Bundle verified against prerequisite 6604c9f18.

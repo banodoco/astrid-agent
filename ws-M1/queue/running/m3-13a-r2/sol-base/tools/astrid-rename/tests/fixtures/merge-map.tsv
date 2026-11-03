@@ -1,0 +1,5 @@
+kind	old	new	scope	note
+token	reighCommit	astridCommit	all	seeded collision case
+token	oldA	mergedToken	all	seeded two-source merge
+token	oldB	mergedToken	all	seeded two-source merge
+word	reigh	astrid	all	seeded stutter case

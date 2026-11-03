@@ -1,0 +1,16 @@
+kind	old	new	scope	note
+token	reighCommit	appCommit	all	collision: astridCommit exists
+token	REIGH_ROOT	ASTRID_APP_ROOT	all	collision: ASTRID_ROOT exists
+path	src/tools/video-editor/adapters/reigh/	src/tools/video-editor/adapters/app/	app	collision rule
+prose	Reigh	Astrid App	mixed	file also names Astrid
+prose	Reigh	Astrid	all	rule 4
+word	reigh	astrid	all	last resort, after every collision row
+regex	url=(reighCommit)	url=regexCommit	all	regex precedence and group replacement
+regex	com\.reigh\.	haus\.astrid\.	all	escaped extension id
+regex	regexWord	regexWins	all	regex before path and token
+path	regexWord	pathWins	all	path before token
+token	regexWord	tokenWins	all	lower precedence
+path	pathWord	pathWins	all	path before token
+token	pathWord	tokenWins	all	lower precedence
+token	scopeWord	globalValue	all	global scope
+token	scopeWord	appValue	app:only/this.txt	narrower file scope
