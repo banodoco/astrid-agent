@@ -352,12 +352,31 @@ def dispatch(operation, payload):
                          **{name: name for name in ("diffusion_models", "text_encoders", "vae", "loras")}}}
         configuration_path = _safe(root, "runtime/extra_model_paths.yaml")
         configuration_bytes = _json(configuration).encode()
+        native_helpers = {}
+        if "{native_launcher}" in recipe.start.argv:
+            # Stable installation-relative launch paths let the verified
+            # release, SDK readiness reader and original supervisor compare
+            # one recipe even when their own package locations differ.
+            for name in ("engine_native_launcher.py", "engine_native_fence.py", "engine_native_policy.json"):
+                native_helpers[_safe(root, ".astrid-engine/native", name)] = (
+                    recipes._ROOT / "core/generation" / name).read_bytes()
         if operation == "models-config":
             _atomic(configuration_path, configuration_bytes)
+            if native_helpers:
+                directory = _safe(root, ".astrid-engine/native")
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                info = directory.stat()
+                if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                    raise UnsafePathError("native helper directory must be private")
+                for path, content in native_helpers.items():
+                    _atomic(path, content)
+                    path.chmod(0o400)
             facts = {"written": True}
         else:
             facts = {"valid": configuration_path.is_file()
-                     and configuration_path.read_bytes() == configuration_bytes}
+                     and configuration_path.read_bytes() == configuration_bytes
+                     and all(path.is_file() and path.read_bytes() == content
+                             for path, content in native_helpers.items())}
     return {"schema": _HELPER_SCHEMA, "operation": operation, "facts": facts}
 
 

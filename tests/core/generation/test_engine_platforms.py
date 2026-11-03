@@ -13,9 +13,9 @@ KEY = "linux-x86_64-cu130"
 ROOT = "/TARGET_ONLY/engine"
 
 
-@pytest.fixture
-def recipe():
-    return engine_recipe.load_recipe("vibecomfy-h3", KEY)
+@pytest.fixture(params=["vibecomfy-h3", "comfyui"])
+def recipe(request):
+    return engine_recipe.load_recipe(request.param, KEY)
 
 
 def test_keys():
@@ -48,7 +48,8 @@ def test_pure_target_paths_and_canonical_launch(recipe):
     values = {"install_root": ROOT, "python": ROOT + "/" + primary.relative_path + "/bin/python",
               "comfy_root": ROOT + "/" + comfy.relative_path, "models_root": ROOT + "/models",
               "models_config": ROOT + "/runtime/extra_model_paths.yaml", "host": "127.0.0.1",
-              "port": str(recipe.start.port)}
+              "port": str(recipe.start.port),
+              "native_launcher": ROOT + "/.astrid-engine/native/engine_native_launcher.py"}
     with patch("os.stat", side_effect=AssertionError("controller stat")), patch("os.open", side_effect=AssertionError("controller open")):
         assert adapter.venv_python(ROOT + "/runtime/venv") == ROOT + "/runtime/venv/bin/python"
         assert adapter.uv_executable(ROOT + "/runtime") == ROOT + "/runtime/bootstrap/bin/uv"

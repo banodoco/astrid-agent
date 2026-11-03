@@ -471,7 +471,8 @@ class _Runner:
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
                 "comfy_root": self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")),
                 "models_root": self.path("models"), "models_config": self.path("runtime/extra_model_paths.yaml"),
-                "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
+                "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port),
+                "native_launcher": self.path(".astrid-engine/native/engine_native_launcher.py")}
 
     def source(self, source, *, readonly=False):
         path = self.path(source.relative_path)

@@ -71,7 +71,7 @@ class FakeAdapter:
                   "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": self.join(root, "models"),
                   "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port),
-                  "native_launcher": str(Path(runner.__file__).with_name("engine_native_launcher.py"))}
+                  "native_launcher": self.join(root, ".astrid-engine/native/engine_native_launcher.py")}
         return CommandRequest(tuple(a.format_map(values) for a in recipe.start.argv),
                               recipe.start.cwd.format_map(values),
                               {k: v.format_map(values) for k, v in recipe.start.env.items()}, deadline)
@@ -1358,6 +1358,24 @@ def test_target_models_config_is_deterministic_and_loopback_launch_is_recipe_bou
     launch = setup[2].start_request(setup[1].recipe, ROOT, deadline=setup[3])
     assert "127.0.0.1" in launch.argv and "0.0.0.0" not in launch.argv
     assert "CUDA_VISIBLE_DEVICES" not in launch.env
+
+
+def test_native_launch_helpers_are_installed_and_readonly_checks_refuse_tamper(tmp_path):
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
+    payload = _helper_payload(tmp_path, recipe)
+    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
+    assert target.dispatch("models-config", payload)["facts"] == {"written": True}
+    names = ("engine_native_launcher.py", "engine_native_fence.py", "engine_native_policy.json")
+    for name in names:
+        path = tmp_path / ".astrid-engine/native" / name
+        assert path.read_bytes() == (recipes._ROOT / "core/generation" / name).read_bytes()
+        assert path.stat().st_mode & 0o777 == 0o400
+    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": True}
+    changed = tmp_path / ".astrid-engine/native/engine_native_fence.py"
+    changed.chmod(0o600)
+    changed.write_bytes(b"changed helper")
+    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
+    assert changed.read_bytes() == b"changed helper"
 
 
 def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_path, capsys):
