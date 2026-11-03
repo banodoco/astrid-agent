@@ -1,0 +1,150 @@
+{
+  "task": "AG2-C07-SHARD-FIX-R1",
+  "status": "incomplete_focused_acceptance_failed",
+  "integration_handoff": "not authorized by acceptance condition; not performed",
+  "repository": "https://github.com/banodoco/astrid-agent",
+  "base": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+  "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+  "parents": {
+    "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd": [
+      "169d4dbc6d044ab37f2a4231c14c1d61d594c352"
+    ],
+    "169d4dbc6d044ab37f2a4231c14c1d61d594c352": [
+      "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61"
+    ]
+  },
+  "base_is_ancestor": true,
+  "remote_refs": {
+    "refs/heads/wip/M-AG2/AG2-C07-SHARD-FIX-R1": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+    "refs/heads/lane/M-AG2/AG2-C07-SHARD-FIX-R1": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd"
+  },
+  "hosted_failure_reference": {
+    "candidate": "lane/M-AG2/AG2-C07-INTEGRATOR-R1",
+    "head": "47d14ec47937ba20d93526b9fca50de69368f791",
+    "run": 41532549033,
+    "job": 125576175457
+  },
+  "scope": {
+    "changed_paths": [
+      "tests/core/execution/test_generic_host_actions_v3.py"
+    ],
+    "diff_stat": "1 file changed, 17 insertions(+), 11 deletions(-)",
+    "diff_check_exit": 0,
+    "working_tree_clean": true,
+    "diff_file": "patch.diff",
+    "diff_sha256": "17d47821dd18b0bead94a778e5f666e4b7bb8f6986f653f3a931bfa63ea4e1a5",
+    "test_file_sha256": "9cc297596373f74a0dda6492ea758c5842df207bfe1b297ca63f71cdc7512289"
+  },
+  "environment": {
+    "python": "3.13.18",
+    "pytest": "9.0.2",
+    "runtime_commit": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "vibecomfy_commit": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+    "source": "task-local venv, task-local checkouts and host shared uv cache; final proof uses editable runtime and VibeComfy installations",
+    "exports": "export PATH=/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/venv/bin:$PATH; export ASTRID_RUNTIME_CHECKOUT=/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/runtime; export ASTRID_VIBECOMFY_CHECKOUT=/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/vibecomfy; export TMPDIR=/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1"
+  },
+  "commands": [
+    {
+      "command": "/home/user/merge/kit/codex/task-clone.sh astrid-agent /home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/agent ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "exit": 0
+    },
+    {
+      "command": "git push origin HEAD:refs/heads/wip/M-AG2/AG2-C07-SHARD-FIX-R1",
+      "head": "169d4dbc6d044ab37f2a4231c14c1d61d594c352",
+      "exit": 0,
+      "sequence": "before any pytest run"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "environment": "default Python without pytest",
+      "inner_exit": 1,
+      "result": "No module named pytest",
+      "log": "pytest.log"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "environment": "task-local venv, non-editable runtime and VibeComfy; first WIP imported before later edits",
+      "head": "169d4dbc6d044ab37f2a4231c14c1d61d594c352",
+      "inner_exit": 1,
+      "result": "37 failed, 231 passed in 320.86s",
+      "log": "pytest-focused.log",
+      "sha256": "2295b3d8b286408f26fddf92ab2b67769abc949767b9339e9b547e67aa99a0fa"
+    },
+    {
+      "command": "git push origin HEAD:refs/heads/wip/M-AG2/AG2-C07-SHARD-FIX-R1",
+      "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "exit": 0,
+      "sequence": "before final focused runs"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "environment": "task-local venv, non-editable runtime and VibeComfy",
+      "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "inner_exit": 1,
+      "result": "16 failed, 252 passed in 300.86s",
+      "log": "pytest-final.log",
+      "sha256": "f7153ad0c4467bd3947919187bd90b555f544a3f222094904b6cdcaa8f2de353"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_factory_rejects_registry_drift tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile",
+      "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "inner_exit": 0,
+      "result": "7 passed in 2.78s",
+      "log": "pytest-factory.log",
+      "sha256": "814402fda0b3f247785de9ef412e0b7072284e7f6fbf141c1bec2ac2d996c7f7"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py::test_installed_host_vibe_imports_use_only_attested_root",
+      "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "environment": "editable runtime and VibeComfy",
+      "inner_exit": 0,
+      "result": "12 passed in 7.86s",
+      "log": "pytest-imports.log",
+      "sha256": "27c74566bb6786b16fdc35a6e240d3d5ea4b85d3ee953ce7b7ac878e630a448e"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "environment": "editable runtime and VibeComfy",
+      "head": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "inner_exit": 1,
+      "result": "14 failed, 254 passed in 273.55s",
+      "log": "pytest-editable.log",
+      "sha256": "aab16fa2acd57e06f457b157823ba87b6c323bcff9db1e3a4f568a07c69abb4d",
+      "no_maxfail_or_x": true
+    },
+    {
+      "command": "git diff --check ab43bad818ef65ca1e929b973a2f61cd9fc4bf61 HEAD",
+      "exit": 0
+    },
+    {
+      "command": "git diff --name-status ab43bad818ef65ca1e929b973a2f61cd9fc4bf61 HEAD",
+      "exit": 0,
+      "result": "M tests/core/execution/test_generic_host_actions_v3.py"
+    },
+    {
+      "command": "git push -u origin lane/M-AG2/AG2-C07-SHARD-FIX-R1",
+      "exit": 0
+    },
+    {
+      "command": "git ls-remote --heads origin wip/M-AG2/AG2-C07-SHARD-FIX-R1 lane/M-AG2/AG2-C07-SHARD-FIX-R1",
+      "exit": 0
+    }
+  ],
+  "execution_note": "All shell and Git commands ran through /home/user/merge/kit/codex/env-safe.sh. Pytest commands ran in agent/ with exports above when task-local venv is specified; output was redirected to the named task-local log and the inner exit was written to the matching .exit file.",
+  "coverage_inventory": {
+    "full_module": "268 cases collected; final run 254 passed, 14 failed, 0 skipped/deselected reported",
+    "direct_factory": "four registry-drift and three invalid-profile cases passed",
+    "shared_fixture": "binding passed factory verification; downstream handoff cases exposed the incompatible owner-hook contract",
+    "other_shards": "not run; separately classified and no hosted-green claim"
+  },
+  "blockers": [
+    "Host-level readiness fixture lacks complete Runtime and engine birth evidence.",
+    "Eight drift cases rely on legacy CheckoutServerAdapter internals while the factory now returns ComfyHostHooks.",
+    "Five handoff cases expect successful attached control or its side effects, while the published hook refuses unverified cancellation/release."
+  ],
+  "limitations": [
+    "Focused acceptance was not achieved; do not integrate this lane on this receipt.",
+    "The active C-07 hosted shards were not rerun and are not claimed green; other shard failures remain separately classified.",
+    "Local proof uses Python 3.13.18 rather than hosted Python 3.11."
+  ]
+}
