@@ -842,6 +842,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
         Returns C1's result; callers that ignore it are unaffected.
         """
+        capture = None
         try:
             from astrid_runtime.bootstrap import down
             from astrid_runtime.paths import RuntimePaths
@@ -878,6 +879,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # CLI entry already preflighted; down takes fresh C1 admission for
             # every stop, including recovery and rollback.
             discovery = read_json(paths.discovery_path)
+            if (self.managed_by != "pinokio" and self.service.system == "darwin"
+                    and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1"):
+                from .mac_stop_capture import MacStopCapture, ObservedBoundary
+
+                capture = MacStopCapture(self.log, paths.discovery_path, discovery)
+                capture.event("pre_admission")
+                boundary = ObservedBoundary(boundary, capture)
             if discovery and (type(discovery.get("pid")) is not int
                               or discovery["pid"] <= 0
                               or not isinstance(discovery.get("process_birth_id"), str)
@@ -902,6 +910,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     # bootout so a refused update never strips KeepAlive from a
                     # Runtime that is still entitled to remain running.
                     self.preflight_stop(data)
+                    if capture is not None:
+                        capture.event("preflight_return")
                     # The retained plist belongs only to the original R0
                     # selection.  A later candidate stop (including rollback
                     # after candidate verification) is its own, freshly
@@ -956,6 +966,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                 data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
                                 expected_identity=launchd_identity,
                                 recovery_snapshot=launchd_snapshot,
+                                **({"observe": capture.bootout_event} if capture is not None else {}),
                             )
                     elif launchd_identity is not None:
                         # An update needs an exact durable R0 definition before
@@ -969,6 +980,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                         self.service.bootout_admitted_launchd(
                             data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
                             expected_identity=launchd_identity, recovery_snapshot=launchd_snapshot,
+                            **({"observe": capture.bootout_event} if capture is not None else {}),
                         )
                         launchd_booted_out = True
                 elif self.service.system == "linux":
@@ -1040,16 +1052,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("The foreground selection changed before signal; refusing to stop it.")
                 self.service.stop_foreground(expected=foreground)
 
+            if capture is not None:
+                capture.event("down_enter")
             result = down(paths, boundary, stop_manager=stop_selected_manager,
                           stop_foreground=(stop_selected_foreground
                                            if restore_selection is None and isinstance(foreground, dict) else None),
                           restore_selection=restore_selection)
+            if capture is not None:
+                capture.event("down_return")
             if (self.managed_by != "pinokio" and self.service.system == "darwin"
                     and (launchd_booted_out or launchd_identity is None)):
                 # This runs after C1's owner stop, so a job present now cannot
                 # be the selected R0 process and is never signaled or booted out.
                 self.service.verify_launchd_absent_after_bootout()
         except Exception as exc:
+            if capture is not None:
+                capture.event("stop_error")
             raise self._stop_failure(exc) from exc
 
         # The Runtime fence has been released and C1 succeeded. Keep failures

@@ -889,7 +889,7 @@ class Service:
 
     def bootout_admitted_launchd(self, data: Path, *, owner_pid: int | None,
                                  owner_birth_id: str | None, expected_identity: dict,
-                                 recovery_snapshot: dict | None = None) -> None:
+                                 recovery_snapshot: dict | None = None, observe=None) -> None:
         """Run bootout only after an immediate, complete repeat of R0 admission."""
         latest = self.admit_launchd_bootout(
             data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
@@ -897,7 +897,16 @@ class Service:
         )
         if latest is None:
             raise ValueError("The validated launchd service disappeared before bootout.")
-        self.run(["launchctl", "bootout", f"gui/{platform.current_user()}/{LABEL}"])
+        if observe is not None:
+            observe("bootout_enter")
+        try:
+            self.run(["launchctl", "bootout", f"gui/{platform.current_user()}/{LABEL}"])
+        except BaseException:
+            if observe is not None:
+                observe("bootout_error")
+            raise
+        if observe is not None:
+            observe("bootout_return")
 
     def verify_launchd_absent_after_bootout(self) -> None:
         """A job that reappears after bootout is never an installer stop target."""
