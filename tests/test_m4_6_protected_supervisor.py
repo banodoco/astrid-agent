@@ -3,7 +3,6 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -12,6 +11,8 @@ from scripts import m4_6_protected_supervisor as supervisor
 from scripts.m4_6_process_observer import (
     ManagerIdentity, NativeServiceObservationTarget, ObservationUnavailable, ProcessSnapshot,
 )
+
+pytestmark = pytest.mark.linux_native
 
 
 def target():
@@ -47,6 +48,12 @@ class SourceFixture:
 
     def report(self):
         return {"authorization": "refused", "source": "unit-test-service-fixture"}
+
+    @property
+    def latest_snapshot(self):
+        return ProcessSnapshot("linux-bounded-proc-systemd-poll",
+            ManagerIdentity("systemd-user", self.target.manager_target, "absent", None, None, None),
+            None, (), ())
 
     def close(self, _reason):
         self.closed = True
@@ -226,6 +233,36 @@ def test_changed_identity_between_os_reads_refuses(monkeypatch):
     monkeypatch.setattr(supervisor, "_read_process", changing)
     with pytest.raises(supervisor.SupervisorRefused, match="changed"):
         supervisor.observe_self()
+
+
+@pytest.mark.parametrize("failure", ["pidfd-close", "observer-close", "child-wait"])
+def test_cleanup_failure_still_retains_final_checkpoint_and_refuses(monkeypatch, collector, failure):
+    if failure == "pidfd-close":
+        original = supervisor._PinnedProcess.close
+        def close(pin):
+            original(pin)
+            if pin.pid != os.getpid():
+                raise OSError("injected pidfd close failure")
+        monkeypatch.setattr(supervisor._PinnedProcess, "close", close)
+    elif failure == "observer-close":
+        def close(_observer, _reason):
+            raise OSError("injected observer close failure")
+        monkeypatch.setattr(SourceFixture, "close", close)
+    else:
+        original = supervisor.subprocess.Popen.wait
+        calls = 0
+        def wait(child, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            result = original(child, *args, **kwargs)
+            if calls == 2:
+                raise OSError("injected cleanup wait failure")
+            return result
+        monkeypatch.setattr(supervisor.subprocess.Popen, "wait", wait)
+    with pytest.raises(supervisor.SupervisorRefused, match="retained"):
+        collector.collect_diagnostic()
+    assert json.loads(collector.report_bytes)["state"] == "refused"
+    assert any(row["kind"] == "final-diagnostic-checkpoint" for row in records(collector))
 
 
 @pytest.mark.parametrize("malformation", ["short-stat", "bad-birth", "missing-uids",

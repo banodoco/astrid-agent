@@ -133,6 +133,7 @@ class _OutputCapture:
         self.child = child
         self.streams = {child.stdout.fileno(): bytearray(), child.stderr.fileno(): bytearray()}
         self.open_fds = set(self.streams)
+        self.complete = False
 
     def _poll(self, deadline: float) -> None:
         remaining = deadline - time.monotonic()
@@ -146,8 +147,9 @@ class _OutputCapture:
             if not chunk:
                 self.open_fds.remove(fd)
             else:
-                self.streams[fd].extend(chunk)
-                if len(self.streams[fd]) > 65536:
+                capacity = 65536 - len(self.streams[fd])
+                self.streams[fd].extend(chunk[:capacity])
+                if len(chunk) > capacity:
                     raise SupervisorRefused("fixed helper output exceeds diagnostic bound")
 
     def ready(self) -> None:
@@ -162,6 +164,7 @@ class _OutputCapture:
         while self.open_fds:
             self._poll(deadline)
         self.child.wait(timeout=max(0.001, deadline - time.monotonic()))
+        self.complete = True
 
     @property
     def stdout(self) -> bytes:
@@ -196,14 +199,16 @@ class DiagnosticCheckpointCollector:
     def _append(self, kind: str, value: object) -> None:
         self._records.append(_encode({"kind": kind, "value": value}))
 
-    def _snapshot(self, kind: str) -> None:
-        snapshot = self._observer.poll()
+    def _retain_snapshot(self, kind: str, snapshot: ProcessSnapshot) -> None:
         if (type(snapshot) is not ProcessSnapshot or
             snapshot.source != "linux-bounded-proc-systemd-poll" or
             snapshot.manager.manager != "systemd-user" or
             snapshot.manager.target != self._target.manager_target):
             raise SupervisorRefused("observer source or target differs")
         self._append(kind, snapshot.record())
+
+    def _snapshot(self, kind: str) -> None:
+        self._retain_snapshot(kind, self._observer.poll())
 
     @property
     def report_bytes(self) -> bytes:
@@ -222,7 +227,7 @@ class DiagnosticCheckpointCollector:
             self._state = "refused"
             try:
                 self._observer.arm_initial_absence()
-                self._append("initial-absence-observer", self._observer.report())
+                self._retain_snapshot("initial-absence-checkpoint", self._observer.latest_snapshot)
                 self._state = "armed"
             except Exception as exc:
                 self._append("arm-failed", {"error": str(exc)})
@@ -243,6 +248,11 @@ class DiagnosticCheckpointCollector:
             pin = None
             output = None
             error = None
+            def failed(kind: str, exc: Exception) -> None:
+                nonlocal error
+                error = error or exc
+                self._state = "refused"
+                self._append(kind, {"error": str(exc)})
             try:
                 if observe_self() != self._collector:
                     raise SupervisorRefused("collector identity differs")
@@ -277,31 +287,40 @@ class DiagnosticCheckpointCollector:
                     raise SupervisorRefused("collector identity changed")
                 self._state = "diagnostic-complete"
             except Exception as exc:
-                error = exc
-                self._state = "refused"
-                self._append("diagnostic-failed", {"error": str(exc)})
+                failed("diagnostic-failed", exc)
             finally:
                 if child is not None:
-                    if child.poll() is None:
-                        child.kill()
-                    child.wait(timeout=5)
+                    try:
+                        if child.poll() is None:
+                            child.kill()
+                        child.wait(timeout=5)
+                    except Exception as exc:
+                        failed("child-cleanup-failed", exc)
                     stdout = output.stdout if output is not None else b""
                     stderr = output.stderr if output is not None else b""
                     self._append("child-reaped", {"outer_exit": child.returncode,
                                  "stdout_hex": stdout.hex(), "stderr_hex": stderr.hex(),
                                  "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
-                                 "stderr_sha256": hashlib.sha256(stderr).hexdigest()})
+                                 "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+                                 "output_complete": output.complete if output is not None else False})
                     for stream in (child.stdin, child.stdout, child.stderr):
-                        stream.close()
+                        try:
+                            stream.close()
+                        except Exception as exc:
+                            failed("pipe-cleanup-failed", exc)
                 if pin is not None:
-                    pin.close()
+                    try:
+                        pin.close()
+                    except Exception as exc:
+                        failed("pidfd-cleanup-failed", exc)
                 try:
                     self._snapshot("final-diagnostic-checkpoint")
                 except Exception as exc:
-                    self._state = "refused"
-                    self._append("final-observation-failed", {"error": str(exc)})
-                    error = error or exc
-                self._observer.close("diagnostic complete; protected settlement unavailable")
+                    failed("final-observation-failed", exc)
+                try:
+                    self._observer.close("diagnostic complete; protected settlement unavailable")
+                except Exception as exc:
+                    failed("observer-close-failed", exc)
             if error is not None:
                 raise SupervisorRefused("diagnostic incomplete; retained records available") from error
         return self.report_bytes
