@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from astrid.packs.iteration.actions.assemble import run as assemble
+from astrid.packs.iteration.api import assemble_iteration
 
 
 def test_generic_card_fallback_payload_and_command_diagnostic(tmp_path: Path) -> None:
@@ -29,7 +29,7 @@ def test_generic_card_fallback_payload_and_command_diagnostic(tmp_path: Path) ->
     (prepare_dir / "iteration.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (prepare_dir / "iteration.quality.json").write_text(json.dumps(quality), encoding="utf-8")
 
-    result = assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "assembled", repo_root=tmp_path)
+    result = assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "assembled", repo_root=tmp_path)
 
     final_manifest = json.loads((tmp_path / "assembled" / "iteration.manifest.json").read_text(encoding="utf-8"))
     decision = final_manifest["assembly"]["renderer_decisions"][0]

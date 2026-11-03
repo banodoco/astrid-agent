@@ -2,6 +2,10 @@ schema_version: 3
 id: video_editing
 name: Astrid Video Editing
 version: 1.0.0
+dependencies:
+  packs:
+    - editorial
+    - iteration
 status: active
 domain: media
 stability: stable
@@ -299,8 +303,6 @@ actions:
       path: actions/cut/probe.py
     - kind: implementation
       path: actions/cut/resume.py
-    - kind: implementation
-      path: actions/cut/timeline_build.py
     - kind: documentation
       path: actions/cut/STAGE.md
     graph:

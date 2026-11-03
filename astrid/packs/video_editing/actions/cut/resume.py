@@ -18,7 +18,7 @@ from astrid.pack_api import AstridError
 from astrid.pack_api import METADATA_VERSION, AssetRegistry, PipelineMetadata, TimelineConfig, canonical_timeline_config, load_metadata, load_registry, load_timeline, materialize_output, save_metadata, save_registry, save_timeline
 from astrid.pack_api import utc_now_seconds
 
-from .timeline_build import _register_cut_outputs
+from astrid.packs.editorial.api.cut_timeline import register_cut_outputs as _register_cut_outputs
 
 
 @dataclass(frozen=True)

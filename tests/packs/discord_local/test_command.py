@@ -17,9 +17,7 @@ from astrid.packs.discord_local.actions.command.run import (
     execute,
     parse_command,
 )
-from astrid.packs.iteration.actions.experiment_prepare.run import (
-    main as prepare_experiment,
-)
+from astrid.packs.iteration.api import prepare_experiment
 
 
 CHANNEL = "https://discord.com/channels/1501633423859650610/1530264299581345822"

@@ -2,6 +2,8 @@ schema_version: 3
 id: editorial
 name: Astrid Editorial
 version: 1.0.0
+dependencies:
+  packs: []
 status: active
 domain: editorial
 stability: stable
@@ -913,6 +915,12 @@ actions:
       path: actions/refine/__init__.py
     - kind: implementation
       path: actions/refine/run.py
+    - kind: implementation
+      path: shared/timeline_build.py
+    - kind: implementation
+      path: api/__init__.py
+    - kind: implementation
+      path: api/cut_timeline.py
     - kind: support
       path: actions/refine/src/__init__.py
     - kind: support

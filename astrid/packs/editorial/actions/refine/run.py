@@ -33,7 +33,7 @@ from astrid.packs.editorial.actions.refine.src.reviewers.visual_quality import (
 )
 from astrid.packs.editorial.shared.hype import enriched_arrangement
 from astrid.packs.editorial.shared.hype.text_match import segments_in_range, token_set_similarity, tokenize
-from astrid.packs.video_editing.actions.cut.run import (
+from astrid.packs.editorial.shared.timeline_build import (
     build_metadata_from_arrangement,
     build_multitrack_timeline,
 )
