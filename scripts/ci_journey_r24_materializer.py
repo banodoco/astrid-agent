@@ -43,6 +43,10 @@ class MaterializerError(RuntimeError):
     pass
 
 
+class DiscoveryAbsent(MaterializerError):
+    """The runtime has not published its discovery file yet."""
+
+
 def _sha(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -63,7 +67,11 @@ def _write(path: Path, value: Any) -> None:
 
 
 def _read(path: Path) -> Any:
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink():
+        raise MaterializerError(f"unsafe symlink where regular file required: {path}")
+    if not path.exists():
+        raise DiscoveryAbsent(f"missing regular file: {path}")
+    if not path.is_file():
         raise MaterializerError(f"missing regular file: {path}")
     return json.loads(path.read_bytes())
 
@@ -360,6 +368,8 @@ def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900
             if (response.status == 200 and health.get("status") == "ok"
                     and health.get("runtime_instance_id") == value.get("runtime_instance_id")):
                 return value
+        except DiscoveryAbsent:
+            pass
         except (OSError, ValueError, KeyError):
             pass
         time.sleep(2)

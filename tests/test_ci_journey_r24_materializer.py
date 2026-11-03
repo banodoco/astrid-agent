@@ -495,6 +495,92 @@ def test_runtime_endpoint_rejects_nonexact_loopback(value):
         "http://127.0.0.1:17340")
 
 
+class _RunningProcess:
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+class _HealthResponse:
+    status = 200
+
+    def __init__(self, value):
+        self._payload = json.dumps(value).encode("ascii")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *unused):
+        return False
+
+    def read(self):
+        return self._payload
+
+
+def test_wait_runtime_polls_until_discovery_appears_and_verifies_health(
+        tmp_path, monkeypatch):
+    discovery = tmp_path / "runtime/discovery.json"
+    value = {"endpoint": "http://127.0.0.1:17340",
+             "runtime_instance_id": "instance-1"}
+    clock = [0]
+    sleeps = []
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == "http://127.0.0.1:17340/v1/health"
+            assert timeout == 3
+            return _HealthResponse({"status": "ok", "runtime_instance_id": "instance-1"})
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+        if not discovery.exists():
+            discovery.parent.mkdir(parents=True)
+            discovery.write_text(json.dumps(value), encoding="ascii")
+
+    monkeypatch.setattr(materializer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(materializer.time, "sleep", sleep)
+    monkeypatch.setattr(materializer.urllib.request, "build_opener", lambda *unused: Opener())
+
+    assert materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5) == value
+    assert sleeps == [2]
+
+
+def test_wait_runtime_times_out_for_persistently_absent_discovery(tmp_path, monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(materializer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(materializer.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    with pytest.raises(materializer.MaterializerError, match="readiness timeout"):
+        materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5)
+    assert clock[0] == 6
+
+
+def test_wait_runtime_rejects_discovery_symlink_without_polling(tmp_path, monkeypatch):
+    discovery = tmp_path / "runtime/discovery.json"
+    discovery.parent.mkdir()
+    target = tmp_path / "foreign-discovery.json"
+    target.write_text("{}", encoding="ascii")
+    discovery.symlink_to(target)
+    monkeypatch.setattr(materializer.time, "sleep", lambda unused: pytest.fail("must not poll"))
+
+    with pytest.raises(materializer.MaterializerError, match="unsafe symlink"):
+        materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5)
+
+
+def test_wait_runtime_rejects_invalid_discovery_identity_without_polling(tmp_path, monkeypatch):
+    discovery = tmp_path / "runtime/discovery.json"
+    discovery.parent.mkdir()
+    discovery.write_text(json.dumps({"endpoint": "https://127.0.0.1:17340",
+                                     "runtime_instance_id": "instance-1"}),
+                         encoding="ascii")
+    monkeypatch.setattr(materializer.time, "sleep", lambda unused: pytest.fail("must not poll"))
+
+    with pytest.raises(materializer.MaterializerError, match="endpoint mismatch"):
+        materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5)
+
+
 def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
     backend = tmp_path / "backend"
     version_root = backend / "versions/v1"
