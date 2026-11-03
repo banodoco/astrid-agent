@@ -304,3 +304,6 @@ jobs:
           path: |
             ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/delayed-discovery.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/pinokiod.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/start.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.log
