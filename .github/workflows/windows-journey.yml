@@ -3,6 +3,10 @@ name: Windows task host journey
 on:
   workflow_dispatch:
     inputs:
+      p19_request:
+        description: Run only the P19 standard-user census venue when set to dbe-p19-standard-v1
+        required: false
+        type: string
       app_ref:
         description: Optional full 40-character banodoco/astrid-app commit SHA; defaults to main
         required: false
@@ -21,6 +25,7 @@ permissions:
 
 jobs:
   windows-journey:
+    if: ${{ inputs.p19_request != 'dbe-p19-standard-v1' }}
     name: Windows task host journey (${{ matrix.installer-shell }})
     runs-on: windows-latest
     timeout-minutes: 120
@@ -125,3 +130,41 @@ jobs:
           name: Windows-task-host-journey-${{ matrix.installer-shell }}
           path: ${{ runner.temp }}/X5-windows-journey/
           if-no-files-found: error
+
+  p19-native:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.p19_request == 'dbe-p19-standard-v1' }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Check out this venue
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: venue
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check out exact source
+        uses: actions/checkout@v4
+        with:
+          ref: dbe29b0e9b0fc91a40baf8f4766154096f07303a
+          persist-credentials: false
+          path: source
+      - name: Execute as local standard user
+        shell: pwsh
+        env:
+          REQUEST_ID: ${{ inputs.p19_request }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/p19-evidence" | Out-Null
+          if ($env:REQUEST_ID -ne 'dbe-p19-standard-v1') { throw 'Unexpected request identifier' }
+          & "$env:GITHUB_WORKSPACE/venue/scripts/p19-native-venue/host.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload raw evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p19-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p19-evidence/
+          if-no-files-found: error
+          retention-days: 30
