@@ -21,6 +21,7 @@ from .core import (
     current,
     pending_transaction,
     read_json,
+    require_offline_update,
     separate_roots,
     write_json,
 )
@@ -144,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
                     recover_app(root, backend)
                     print(RECOVERED_PREVIOUS_VERSION)
                     return 0
+                require_offline_update()
                 # Recovery-only invocations return above; fresh operations preflight
                 # once here before downloads or staging. C1 remains stop authority.
                 if not uv.is_absolute() or not uv.is_file():
@@ -273,6 +275,11 @@ def main(argv: list[str] | None = None) -> int:
                             update_job.sweep_owned_jobs(root, locked=True)
                         print(RECOVERED_PREVIOUS_VERSION)
                     return 0
+                installed = current(root)
+                if installed is not None and not installed.python.is_file():
+                    installed = None
+                if mode in {"install", "update"} and (installed is not None or marker.get("owner") == LABEL):
+                    require_offline_update()
                 if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
                     # Sweep only jobs and artifacts named by Astrid's durable
                     # ownership record. Active and unqueryable objects remain.
@@ -280,9 +287,6 @@ def main(argv: list[str] | None = None) -> int:
                     marker = read_json(root / "install.json")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
-                installed = current(root)
-                if installed is not None and not installed.python.is_file():
-                    installed = None
                 update_job_record: dict | None = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(

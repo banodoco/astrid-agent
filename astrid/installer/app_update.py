@@ -26,6 +26,7 @@ from .core import (
     pending_transaction,
     read_json,
     recover_transaction,
+    require_offline_update,
     separate_roots,
     switch,
     update_required,
@@ -437,6 +438,7 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
         return False
     if owned_by_local_update(pending):
         raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
+    require_offline_update()
     lock = installer_lock_path(backend.service.home, backend.service.system)
     selected, data, _identity = selection(root, backend, allow_transaction=True)
     if absolute(pending["data_root"]) != data:

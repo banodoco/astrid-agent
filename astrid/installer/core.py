@@ -42,6 +42,16 @@ class BackupSpaceError(RuntimeError):
     """The update cannot fit its workspace backup on the program disk."""
 
 
+def require_offline_update() -> None:
+    """Refuse until the custody-based update transaction is implemented.
+
+    The existing Runtime upgrade API cannot be called under installer-held
+    realm locks, and the old restore can replace a possibly serving realm.
+    This is an interim guard, not a Runtime capability probe.
+    """
+    raise ValueError("Safe offline update is unavailable; the existing installation and update evidence were retained.")
+
+
 def linked(path: Path) -> bool:
     if path.is_symlink():
         return True
@@ -264,6 +274,7 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
                         stop, switch_old, activate_old, save,
                         restore_workspace: bool = True) -> None:
     """Apply the shared stop, optional restore, selection and ready rollback."""
+    require_offline_update()
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
     realm = transaction["realm"]
@@ -301,6 +312,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     transaction = read_json(absolute(root / "update-transaction.json"))
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
+    require_offline_update()
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
@@ -432,6 +444,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
+        require_offline_update()
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {
@@ -615,6 +628,7 @@ class Installer:
         if not old and has_workspace and not reinstall:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
+            require_offline_update()
             self.say("Installing Astrid.")
             same_schema = False
             prepared_candidate: Version | None = None
