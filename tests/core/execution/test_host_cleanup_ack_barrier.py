@@ -13,7 +13,7 @@ import pytest
 from astrid.core.execution import generic_host as host
 
 
-@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin native audit-token lifecycle')
+@pytest.mark.darwin_native
 def test_native_exec_changes_token_without_changing_process_lifetime():
     """A controlled exec reproduces the stale token; imports are a separate phase.
 

@@ -9577,86 +9577,98 @@ class GenericPackHost:
                 "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
             },
         )
-        review_session = record.id == "editorial.human_review" and child_bridge is not None
-        review_nonce = secrets_module.token_hex(32) if review_session else None
-        if review_nonce is not None:
-            # This is launch-scoped observation authority, never process cleanup
-            # authority. Keep it out of diagnostics emitted from child output.
-            env[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
-            secrets[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
-        # Pack runtime modules reserve their direct module entry points for
-        # the canonical runner.  GenericPackHost is that runner's process
-        # boundary, so mark the child invocation just as executor_runner does.
-        # An external pack's ``python -m`` command executes directly in this
-        # host path (command manifests do not go through the registry runner).
-        # Carry the pinned pack root and parent explicitly so a command can
-        # import its own ``executors`` package without falling back to an
-        # unrelated same-named checkout in ambient site-packages. The parent
-        # remains available for packs whose source package uses the checkout
-        # directory name as its import root.
-        from astrid.core.rendering.verified_source import PreparedTimelineInputs
-
-        PreparedTimelineInputs.handoff_source(prepared_inputs, env)
-        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
-            env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
-        cwd = _confined_cwd(
-            binding.cwd,
-            attempt=attempt,
-            source_root=record.source_root,
-            values=values,
-        )
-        broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
-        inherited_fds: tuple[int, ...] = ()
-        if child_bridge is not None:
-            # Bootstrap in the action interpreter before pack code. Private
-            # launch arguments contain a descriptor and command, no authority.
-            if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
-                raise HostError("delegating commands require the admitted Python interpreter")
-            arguments = argv[1:]
-            flags = []
-            utf8_flag = False
-            while arguments:
-                if arguments[0] in {"-u", "-B"}:
-                    flags.append(arguments[0])
-                    arguments = arguments[1:]
-                elif arguments[:2] == ["-X", "utf8"]:
-                    flags.extend(arguments[:2])
-                    arguments = arguments[2:]
-                    utf8_flag = True
-                else:
-                    break
-            if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
-                    or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
-                raise HostError("unsupported delegating Python command flags")
-            inherited_fds = (child_bridge.inherited_fd(),)
-            if not utf8_flag:
-                flags = ["-X", "utf8", *flags]
-            argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
-                    "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
-        source_channel = _runtime_external_sources.descriptor(record) if _runtime_external_sources is not None else None
-        if source_channel is not None:
-            if Path(argv[0]).resolve() != Path(sys.executable).resolve():
-                source_channel.close()
-                raise HostError("captured external commands require the admitted Python interpreter")
-            inherited_fds += (source_channel.fileno(),)
-            if child_bridge is None:
-                argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
-                        "--captured-command", json.dumps(argv[1:])]
-            worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
-            argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
-            # External code is loaded from the descriptor, never PYTHONPATH.
-            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+        source_channel = None
         remotion_lease = None
-        if record.id == "rendering.timeline_visualize":
-            if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
-                raise HostError("renderer command requires the admitted Python interpreter")
-            remotion_lease = self._renderer_task_lease(env, attempt)
-        import_receipt = None
-        if record.id in {"h3_av.transform", "vibecomfy.validate"}:
-            from ._child_import_receipt import ChildImportReceipt
+        try:
+            review_session = record.id == "editorial.human_review" and child_bridge is not None
+            review_nonce = secrets_module.token_hex(32) if review_session else None
+            if review_nonce is not None:
+                # This is launch-scoped observation authority, never process cleanup
+                # authority. Keep it out of diagnostics emitted from child output.
+                env[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
+                secrets[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
+            # Pack runtime modules reserve their direct module entry points for
+            # the canonical runner.  GenericPackHost is that runner's process
+            # boundary, so mark the child invocation just as executor_runner does.
+            # An external pack's ``python -m`` command executes directly in this
+            # host path (command manifests do not go through the registry runner).
+            # Carry the pinned pack root and parent explicitly so a command can
+            # import its own ``executors`` package without falling back to an
+            # unrelated same-named checkout in ambient site-packages. The parent
+            # remains available for packs whose source package uses the checkout
+            # directory name as its import root.
+            from astrid.core.rendering.verified_source import PreparedTimelineInputs
 
-            import_receipt = ChildImportReceipt(self, record.id, import_binding)
-            inherited_fds += import_receipt.prepare(env)
+            PreparedTimelineInputs.handoff_source(prepared_inputs, env)
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+            cwd = _confined_cwd(
+                binding.cwd,
+                attempt=attempt,
+                source_root=record.source_root,
+                values=values,
+            )
+            broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
+            inherited_fds: tuple[int, ...] = ()
+            if child_bridge is not None:
+                # Bootstrap in the action interpreter before pack code. Private
+                # launch arguments contain a descriptor and command, no authority.
+                if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("delegating commands require the admitted Python interpreter")
+                arguments = argv[1:]
+                flags = []
+                utf8_flag = False
+                while arguments:
+                    if arguments[0] in {"-u", "-B"}:
+                        flags.append(arguments[0])
+                        arguments = arguments[1:]
+                    elif arguments[:2] == ["-X", "utf8"]:
+                        flags.extend(arguments[:2])
+                        arguments = arguments[2:]
+                        utf8_flag = True
+                    else:
+                        break
+                if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
+                        or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
+                    raise HostError("unsupported delegating Python command flags")
+                inherited_fds = (child_bridge.inherited_fd(),)
+                if not utf8_flag:
+                    flags = ["-X", "utf8", *flags]
+                argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
+                        "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+            source_channel = _runtime_external_sources.descriptor(record) if _runtime_external_sources is not None else None
+            if source_channel is not None:
+                if Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("captured external commands require the admitted Python interpreter")
+                inherited_fds += (source_channel.fileno(),)
+                if child_bridge is None:
+                    argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
+                            "--captured-command", json.dumps(argv[1:])]
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+                # External code is loaded from the descriptor, never PYTHONPATH.
+                env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+            remotion_lease = None
+            if record.id == "rendering.timeline_visualize":
+                if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("renderer command requires the admitted Python interpreter")
+                remotion_lease = self._renderer_task_lease(env, attempt)
+            import_receipt = None
+            if record.id in {"h3_av.transform", "vibecomfy.validate"}:
+                from ._child_import_receipt import ChildImportReceipt
+
+                import_receipt = ChildImportReceipt(self, record.id, import_binding)
+                inherited_fds += import_receipt.prepare(env)
+        except BaseException:
+            try:
+                if source_channel is not None:
+                    source_channel.close()
+                if remotion_lease is not None:
+                    remotion_lease.close()
+            finally:
+                env.clear()
+                secrets.clear()
+            raise
         try:
             if remotion_lease is not None:
                 inherited_fds += (remotion_lease.inherited_fd(),)
@@ -9939,56 +9951,69 @@ class GenericPackHost:
         env = dict(child_env or build_child_subprocess_env(
             explicit_env={ASTRID_INTERNAL_INVOCATION: "1"},
         ))
-        env[ASTRID_INTERNAL_INVOCATION] = "1"
-        # The attempt directory is the child cwd; the host worker itself uses
-        # this checkout, while external source-pack imports use only the
-        # explicitly admitted import parents validated against source roots.
-        package_parent = str(Path(__file__).resolve().parents[3])
-        import_roots: list[str] = []
-        if isinstance(admission, Mapping):
-            raw_import_roots = admission.get("python_path_roots")
-            if isinstance(raw_import_roots, (list, tuple)):
-                source_roots = tuple(
-                    Path(str(value)).expanduser().resolve()
-                    for value in admission.get("source_roots", ())
-                    if value
-                )
-                for raw_root in raw_import_roots:
-                    import_root = Path(str(raw_root)).expanduser().resolve()
-                    if not import_root.is_dir() or (
-                        source_roots
-                        and not any(import_root.is_relative_to(source_root) for source_root in source_roots)
-                    ):
-                        raise HostError("admitted Python import root is outside the source fence")
-                    import_roots.append(str(import_root))
-        # Preserve the host-created sitecustomize hook when replacing the
-        # worker import path; arbitrary child PYTHONPATH is still excluded.
-        network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
-            env["PYTHONPATH"] = os.pathsep.join(
-                dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
-            )
-            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
-        secret_values = {
-            key: value for key, value in env.items()
-            if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
-        }
-        broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
-        argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
-        inherited_fds: tuple[int, ...] = ()
+        secret_values = {}
         source_channel = None
-        if _runtime_external_sources is not None:
-            record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
-                      else self.capabilities.get(capability_id))
-            if record is None:
-                raise HostError("external execution requires a discovered definition")
-            if definition != record.definition.to_dict():
-                raise HostError("external execution definition differs from discovery")
-            source_channel = _runtime_external_sources.descriptor(record, capability_kind=capability_kind)
-            if source_channel is not None:
-                inherited_fds = (source_channel.fileno(),)
-                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
-                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+        try:
+            env[ASTRID_INTERNAL_INVOCATION] = "1"
+            # The attempt directory is the child cwd; the host worker itself uses
+            # this checkout, while external source-pack imports use only the
+            # explicitly admitted import parents validated against source roots.
+            package_parent = str(Path(__file__).resolve().parents[3])
+            import_roots: list[str] = []
+            if isinstance(admission, Mapping):
+                raw_import_roots = admission.get("python_path_roots")
+                if isinstance(raw_import_roots, (list, tuple)):
+                    source_roots = tuple(
+                        Path(str(value)).expanduser().resolve()
+                        for value in admission.get("source_roots", ())
+                        if value
+                    )
+                    for raw_root in raw_import_roots:
+                        import_root = Path(str(raw_root)).expanduser().resolve()
+                        if not import_root.is_dir() or (
+                            source_roots
+                            and not any(import_root.is_relative_to(source_root) for source_root in source_roots)
+                        ):
+                            raise HostError("admitted Python import root is outside the source fence")
+                        import_roots.append(str(import_root))
+            # Preserve the host-created sitecustomize hook when replacing the
+            # worker import path; arbitrary child PYTHONPATH is still excluded.
+            network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+                env["PYTHONPATH"] = os.pathsep.join(
+                    dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
+                )
+                env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+            secret_values = {
+                key: value for key, value in env.items()
+                if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
+            }
+            broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
+            argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
+            inherited_fds: tuple[int, ...] = ()
+            source_channel = None
+            if _runtime_external_sources is not None:
+                record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
+                          else self.capabilities.get(capability_id))
+                if record is None:
+                    raise HostError("external execution requires a discovered definition")
+                if definition != record.definition.to_dict():
+                    raise HostError("external execution definition differs from discovery")
+                source_channel = _runtime_external_sources.descriptor(record, capability_kind=capability_kind)
+                if source_channel is not None:
+                    inherited_fds = (source_channel.fileno(),)
+                    worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                    argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+        except BaseException:
+            try:
+                if source_channel is not None:
+                    source_channel.close()
+            finally:
+                env.clear()
+                secret_values.clear()
+                request_path.unlink(missing_ok=True)
+                result_path.unlink(missing_ok=True)
+            raise
         try:
             if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
                 remotion_lease = self._renderer_task_lease(env, attempt_path)
@@ -10540,17 +10565,14 @@ class GenericPackHost:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
                 if terminal.get("recorded"):
                     return terminal.get("completion")
-            if operation in (self.client.settle, self.client.fail):
-                # Freeze the call once: reconciliation must never rerun the
-                # producer or rebuild outputs from a changing spool.
-                if isinstance(self.client, RuntimeProtocolClient):
-                    kwargs["request_path"] = terminal["root"] / (
-                        "settle-request.json" if operation == self.client.settle else "fail-request.json")
-                terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
-                # A deadline guard must distinguish a call still blocked in
-                # transport from a lost acknowledgement. Only the former is
-                # safe to supersede with the fenced timeout failure.
-                terminal["completion_state"] = "in_flight"
+                if operation in (self.client.settle, self.client.fail):
+                    # Publish the frozen call under the same lock as the guard:
+                    # an in-flight request may already have committed.
+                    if isinstance(self.client, RuntimeProtocolClient):
+                        kwargs["request_path"] = terminal["root"] / (
+                            "settle-request.json" if operation == self.client.settle else "fail-request.json")
+                    terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
+                    terminal["completion_state"] = "in_flight"
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
             except BaseException:
@@ -10791,6 +10813,12 @@ class GenericPackHost:
             with completion_lock:
                 if terminal.get("recorded") or terminal.get("forced"):
                     return
+                if terminal.get("publication_pending"):
+                    # A blocked transport can have committed even before it
+                    # returns. Reconcile the frozen request; never race it
+                    # with an incompatible terminal mutation.
+                    terminal["reconcile_cancel"] = True
+                    return
                 error = AstridError("execution deadline exceeded" if code == "timeout" else
                                     "execution lease lost" if code == "lease_lost" else "execution cancelled", code=code)
                 terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
@@ -10825,8 +10853,7 @@ class GenericPackHost:
             next_poll = time.monotonic() + _LEASE_POLL_SECONDS
             while not stop.wait(0.05):
                 if lifetime.expired():
-                    if (terminal.get("publication_pending")
-                            and terminal.get("completion_state") != "in_flight"):
+                    if terminal.get("publication_pending"):
                         terminal["reconcile_cancel"] = True
                     else:
                         force_abort("timeout")

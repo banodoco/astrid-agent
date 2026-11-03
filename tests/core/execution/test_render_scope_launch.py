@@ -38,6 +38,38 @@ def test_capability_launch_failure_clears_secret_environment_and_request(tmp_pat
     assert not (attempt / ".astrid-capability-result.json").exists()
 
 
+def test_command_prelaunch_renderer_failure_closes_source_and_clears_secrets(tmp_path, monkeypatch):
+    _write_manifest(tmp_path / "render", capability_id="rendering.timeline_visualize")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    record = host.discover()[0]
+    attempt = tmp_path / "attempt"
+    output = attempt / "outputs"
+    output.mkdir(parents=True)
+    env, secrets = {"PROVIDER_TOKEN": "private"}, {"PROVIDER_TOKEN": "private"}
+
+    class Source:
+        closed = 0
+
+        def fileno(self):
+            return 123
+
+        def close(self):
+            self.closed += 1
+
+    source = Source()
+    class ExternalSources:
+        def descriptor(self, _record):
+            return source
+
+    monkeypatch.setattr(host, "_child_environment", lambda *_a, **_k: (env, secrets))
+    monkeypatch.setattr(generic_host, "_runtime_external_sources", ExternalSources())
+    monkeypatch.setattr(host, "_renderer_task_lease", lambda *_a: (_ for _ in ()).throw(OSError("renderer unavailable")))
+    with pytest.raises(OSError, match="renderer unavailable"):
+        host._run_command_definition(record, {}, output, attempt)
+    assert source.closed == 1
+    assert env == {} and secrets == {}
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 @pytest.mark.parametrize("entrypoint", ["command", "capability"])
 def test_render_command_keeps_inherited_group_and_observes_until_cleanup(tmp_path, monkeypatch, cancelled, entrypoint):

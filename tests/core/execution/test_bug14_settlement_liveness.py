@@ -11,6 +11,7 @@ import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,11 +47,8 @@ def settlement_case(host_case, tmp_path, monkeypatch):
     project = service.create_project({"slug": "bug14", "name": "BUG14"})
     source = (FIXTURES / "bug14/qwen_image_2_1_turbo.py").read_bytes()
     assert hashlib.sha256(source).hexdigest() == "a47e24e6da4dfb7a41413e563fa90dd4e2d45a49a423ee132e5c00cbc27371b9"
-    # Deliberately collide with the test output's name while retaining the
-    # incompatible source media type. The pinned Runtime rejects the output
-    # metadata, exercising the exact-owner failure path.
     service.ingest(project["id"], source, media_type="text/x-python",
-                   original_name="evidence-source-source.json", idempotency_key="source")
+                   original_name="qwen_image_2_1_turbo.py", idempotency_key="source")
 
     pack = case.host.capabilities["test.echo"].manifest_path
     definition = json.loads(pack.read_text())
@@ -210,6 +208,27 @@ def _assert_resolved(case, state):
 
 def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case):
     case = settlement_case
+    with pytest.raises(RuntimeError, match="output metadata does not match existing object"):
+        _run(case)
+    _assert_resolved(case, "failed")
+    assert len(case.writes) == len(case.failures) == 1
+    attempt_id, body, key = case.failures[0]
+    assert attempt_id == case.attempt["attempt_id"]
+    assert key == f"fail-{attempt_id}-{case.attempt['fence']}"
+    assert {k: body[k] for k in ("lease_id", "fence", "runtime_epoch")} == {
+        k: case.attempt[k] for k in ("lease_id", "fence", "runtime_epoch")}
+    assert "outputs" not in body and "result" not in body
+    assert body["error"]["code"] == "publication_rejected"
+    assert "output metadata does not match existing object" in body["error"]["message"]
+    assert case.root.exists() and (case.root / "outputs/manifest.json").exists()
+    assert case.host.last_cleanup_receipt["intended_disposition"] == "retained"
+    request = json.loads((case.root / "settle-request.json").read_text())
+    assert request == {"operation": "settle_attempt", "identifier": case.writes[0][0],
+                       "idempotency_key": case.writes[0][2], "body": case.writes[0][1]}
+
+
+def test_conflicting_uploaded_metadata_fails_before_publication(settlement_case):
+    case = settlement_case
     # The worker-facing Runtime protocol normally settles inline. Force the
     # equivalent bound upload path so the host can inspect the immutable CAS
     # metadata Runtime returned before it publishes an output reference.
@@ -249,6 +268,43 @@ def test_lost_ack_reads_success_without_duplicate_submission(settlement_case):
     _assert_resolved(case, "completed")
     assert len(case.writes) == 1 and not case.failures and not case.cancels
     assert len(case.service.managed_outputs(case.task_id)) == 2
+
+
+def test_deadline_does_not_race_committed_settlement_with_failure(settlement_case):
+    case = settlement_case
+    case.mode = "normal"
+    case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.5)
+    committed, release = threading.Event(), threading.Event()
+    original = case.host.client.generated.settle_attempt
+    outcomes = []
+
+    def delayed_ack(*args, **kwargs):
+        result = original(*args, **kwargs)
+        committed.set()
+        assert release.wait(5)
+        return result
+
+    case.host.client.generated.settle_attempt = delayed_ack
+
+    def run():
+        try:
+            outcomes.append(_run(case))
+        except BaseException as exc:
+            outcomes.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert committed.wait(4)
+        time.sleep(0.7)
+        assert case.service.task(case.task_id)["task"]["status"] == "completed"
+        assert not case.failures and not case.cancels
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert outcomes and not isinstance(outcomes[0], BaseException)
+    assert len(case.writes) == 1 and not case.failures and not case.cancels
 
 
 def test_inflight_heartbeat_rejection_cannot_abort_committed_lost_ack(settlement_case):
