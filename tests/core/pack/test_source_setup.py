@@ -35,7 +35,10 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
-def _fixture_repo(root: Path, *, schema_version: int = 2, pack_id: str = "demo") -> str:
+def _fixture_repo(
+    root: Path, *, schema_version: int = 2, pack_id: str = "demo",
+    pack_dependencies: tuple[str, ...] = (),
+) -> str:
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "fixture@example.test")
@@ -43,9 +46,18 @@ def _fixture_repo(root: Path, *, schema_version: int = 2, pack_id: str = "demo")
     pack = root
     executor = pack / "executors" / "echo"
     executor.mkdir(parents=True)
-    (pack / "pack.yaml").write_text(
+    manifest = (
         f"schema_version: {schema_version}\nid: {pack_id}\nname: Demo Pack\nversion: 1.0.0\n"
-        "capabilities: [testing]\n",
+        "capabilities: [testing]\n"
+    )
+    if schema_version == 3:
+        manifest += "pack_api: '1.0'\n"
+        if pack_dependencies:
+            manifest += "dependencies:\n  packs:\n" + "".join(
+                f"    - {dependency}\n" for dependency in pack_dependencies
+            )
+    (pack / "pack.yaml").write_text(
+        manifest,
         encoding="utf-8",
     )
     (executor / "executor.yaml").write_text(
@@ -232,6 +244,75 @@ def test_missing_managed_pack_is_isolated_from_source_inventory(
     assert "available" in discovered_ids
     assert "missing" not in discovered_ids
     assert "rendering" in discovered_ids
+
+
+@pytest.mark.parametrize("deleted_root_kind", ["managed", "collection"])
+def test_deleted_dependency_quarantines_only_dependents_and_invalidates_cached_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, deleted_root_kind: str
+) -> None:
+    missing_repo = tmp_path / "missing-repository"
+    missing_revision = _fixture_repo(missing_repo, pack_id="missing", schema_version=3)
+    dependent_repo = tmp_path / "dependent-repository"
+    dependent_revision = _fixture_repo(
+        dependent_repo, pack_id="dependent", schema_version=3,
+        pack_dependencies=("missing",),
+    )
+    state_path = tmp_path / "state" / "pack-sources.json"
+    data_root = tmp_path / "data"
+    collection = tmp_path / "collection"
+    collection.mkdir()
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(state_path))
+
+    if deleted_root_kind == "managed":
+        provision((
+            SourceDeclaration.from_mapping({
+                "pack_id": "missing", "repository": str(missing_repo), "revision": missing_revision,
+            }),
+            SourceDeclaration.from_mapping({
+                "pack_id": "dependent", "repository": str(dependent_repo),
+                "revision": dependent_revision,
+            }),
+        ), state_path=state_path, data_root=data_root)
+        inventory = active_source_inventory(state_path=state_path)
+        missing_root = next(source.pack_root for source in inventory.sources if source.pack_id == "missing")
+        dependent_root = next(source.pack_root for source in inventory.sources if source.pack_id == "dependent")
+        roots = (collection,)
+    else:
+        provision((SourceDeclaration.from_mapping({
+            "pack_id": "dependent", "repository": str(dependent_repo),
+            "revision": dependent_revision,
+        }),), state_path=state_path, data_root=data_root)
+        inventory = active_source_inventory(state_path=state_path)
+        dependent_root = next(source.pack_root for source in inventory.sources if source.pack_id == "dependent")
+        # Put a regular collection-root copy of the missing pack beside the dependent.
+        collection_missing = collection / "missing"
+        shutil.copytree(missing_repo, collection_missing, ignore=shutil.ignore_patterns(".git"))
+        roots = (collection,)
+        missing_root = collection_missing
+
+    from astrid.core.pack.discovery import pack_discovery_scope
+    from astrid.core.pack.loader import pack_quarantine_report
+
+    extra_roots = (str(collection),) if collection.exists() else ()
+    with pack_discovery_scope():
+        before = discover_pack_metadata(extra_pack_roots=extra_roots)
+        before_ids = {item.id for item in before}
+        assert "dependent" in before_ids
+        assert "missing" in before_ids
+        shutil.rmtree(missing_root)
+        after = discover_pack_metadata(extra_pack_roots=extra_roots)
+
+    after_ids = {item.id for item in after}
+    assert "dependent" not in after_ids
+    assert "missing" not in after_ids
+    assert "rendering" in after_ids
+    reports = pack_quarantine_report(roots=(*inventory.roots, *map(Path, extra_roots)))
+    dependent_report = next(item for item in reports if item["pack_id"] == "dependent")
+    assert dependent_report["state"] == "quarantined"
+    assert "missing" in dependent_report["error"]
+    assert "install the missing pack" in dependent_report["error"].lower()
+    assert "dependencies.packs" in dependent_report["error"]
+    assert dependent_report["fix"]
 
 
 def test_managed_source_requires_strict_v2_manifest(tmp_path: Path) -> None:

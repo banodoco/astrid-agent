@@ -301,6 +301,17 @@ def _isolate_incompatible_packs(
             )
             if not result["ok"]:
                 reason = f"{result['reason']} {result['fix']}"
+                if result["code"] == "missing_dep":
+                    missing = sorted(
+                        dependency for dependency in result["dependencies"]
+                        if dependency not in selected
+                    )
+                    if missing:
+                        names = ", ".join(repr(dependency) for dependency in missing)
+                        reason = (
+                            f"Declared pack dependency {names} is unavailable. "
+                            f"Install the missing pack {names} or correct dependencies.packs."
+                        )
                 rejected[pack.id] = QuarantinedPack(
                     pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                     error=" ".join(reason.split()),
