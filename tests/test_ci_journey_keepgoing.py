@@ -137,3 +137,20 @@ def test_keepgoing_log_retention_preserves_error_path_and_bounded_tail(tmp_path,
     journey.retain_named_evidence(evidence, "before-cleanup")
     artifact = evidence.parent.parent / "evidence-upload" / row["retained_evidence"]
     assert artifact.read_text() == "specific underlying installer error"
+
+
+def test_failed_downstream_verification_after_bypass_is_suspect(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'verify')
+    def fail_both(mode, *args, **kwargs):
+        if mode in ('observe', 'update'):
+            raise RuntimeError(mode + ' failed')
+    monkeypatch.setattr(journey, 'verify', fail_both)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release0-verify']['failure_class'] == 'real'
+    assert rows['release1-verify-update']['failure_class'] == 'suspect:release0-verify'
+    assert any(item['source'] == 'forced-by:release0-verify' for item in rows['release1-verify-update']['preconditions'])
+    text = (evidence / 'keepgoing-report.md').read_text()
+    assert 'REAL failures: release0-verify' in text
+    assert 'SUSPECT failures: release1-verify-update (suspect:release0-verify)' in text
+    assert '-.->' in text

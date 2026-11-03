@@ -29,11 +29,36 @@ def write(evidence, report):
     evidence.mkdir(parents=True, exist_ok=True)
     journey.write_json(evidence / "keepgoing-report.json", report)
     # A diagnostic receipt must never look like an eligible successful row.
-    journey.write_json(evidence / "journey-result.json", {**report, "receipt_kind": "diagnostic-only", "status": "fail"})
-    lines = ["NON-PROOF: keep-going diagnostic", "", "| stage | result | forced-continuation-used | first error |", "| --- | --- | --- | --- |"]
+    result_path = evidence / "journey-result.json"
+    previous = journey.read_json(result_path) if result_path.is_file() else {}
+    journey.write_json(result_path, {**previous, **report, "receipt_kind": "diagnostic-only", "status": "fail"})
+    real = [r for r in report["stages"] if r.get("failure_class") == "real"]
+    suspect = [r for r in report["stages"] if str(r.get("failure_class", "")).startswith("suspect:")]
+    lines = ["NON-PROOF: keep-going diagnostic", "", "REAL failures: " + (", ".join(r["stage"] for r in real) or "none"),
+             "SUSPECT failures: " + (", ".join(r["stage"] + " (" + r["failure_class"] + ")" for r in suspect) or "none"),
+             "", "| stage | result | forced-continuation-used | first error |", "| --- | --- | --- | --- |"]
     for row in report["stages"]:
         error = (row.get("first_error") or "").replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {row['stage']} | {row['result']} | {row['forced_continuation_used']} | {error} |")
+    lines.extend(["", "| stage | needs | source | result | class |", "| --- | --- | --- | --- | --- |"])
+    for row in report["stages"]:
+        needs = row.get("preconditions", [])
+        names = ", ".join(item["name"] for item in needs) or "none"
+        sources = ", ".join(item["source"] for item in needs) or "none"
+        lines.append(f"| {row['stage']} | {names} | {sources} | {row['result']} | {row.get('failure_class', '-')} |")
+    lines.extend(["", "```mermaid", "graph TD"])
+    for index, row in enumerate(report["stages"]):
+        lines.append(f'  s{index}["{row["stage"]}"]')
+        if row["result"] == "fail":
+            lines.append(f"  style s{index} fill:#f99")
+    indexes = {row["stage"]: index for index, row in enumerate(report["stages"])}
+    for index, row in enumerate(report["stages"]):
+        for item in row.get("preconditions", []):
+            producer = item.get("producer")
+            if producer in indexes:
+                edge = "-.->" if item["source"].startswith("forced-by:") else "-->"
+                lines.append(f"  s{indexes[producer]} {edge} s{index}")
+    lines.append("```")
     (evidence / "keepgoing-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -41,18 +66,33 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     report = initial(evidence, args)
     state = {}
     project = "tst-m4-3b-release0"
-    def stage(name, dependencies, action, path):
+    producers = {"fixture": "admission", "app": "admission", "bootstrap0": "release0-bootstrap",
+                 "started0": "release0-start", "old": "release0-selection", "keys": "release0-seed",
+                 "task0": "release0-task", "before": "release0-snapshot", "health0": "release0-owner",
+                 "updated": "release1-update", "started1": "release1-start", "version": "release1-selection",
+                 "after": "release1-snapshot", "verified0": "release0-verify"}
+    def stage(name, dependencies, action, path, forced_dependencies=()):
         missing = [item for item in dependencies if item not in state]
         row = {"stage": name, "result": "not-run", "forced_continuation_used": False,
-               "first_error": None, "evidence_path": str(path)}
+               "first_error": None, "evidence_path": str(path),
+               "preconditions": [{"name": key, "producer": producers[key],
+                                  "source": "genuine" if key in state else "unavailable"}
+                                 for key in dependencies], "postconditions": []}
+        for key, producer in forced_dependencies:
+            row["preconditions"].append({"name": key, "producer": producer,
+                                         "source": "genuine" if key in state else "forced-by:" + producer})
         if missing:
             row.update(result="not-run", first_error="Unsafe or unavailable prerequisites: " + ", ".join(missing))
         else:
             try:
                 action()
                 row["result"] = "pass"
+                row["postconditions"] = [key for key, producer in producers.items() if producer == name and key in state]
             except Exception as exc:
                 row.update(result="fail", first_error=f"{type(exc).__name__}: {exc}")
+                forced = sorted({item["source"].split(":", 1)[1] for item in row["preconditions"]
+                                 if item["source"].startswith("forced-by:")})
+                row["failure_class"] = "suspect:" + ",".join(forced) if forced else "real"
                 # Continue to independent checks only; never force a service or delete a lock marker.
                 if "verify" in name:
                     row["forced_continuation_used"] = True
@@ -129,6 +169,9 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
         state.update(version=version, version_path=path)
+    def verify0():
+        journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
+        state["verified0"] = True
     def verify_update():
         journey.verify("update", state["version_path"], data, evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
     def verify_install():
@@ -146,7 +189,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release0-bootstrap", ["fixture"], bootstrap0, evidence / "release0" / "release0-bootstrap.log")
     stage("release0-start", ["bootstrap0"], start0, evidence / "release0")
     stage("release0-selection", ["started0"], select0, evidence / "release0")
-    stage("release0-verify", ["old"], lambda: journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed"), evidence / "release0-api-seed" / "verify-observe.log")
+    stage("release0-verify", ["old"], verify0, evidence / "release0-api-seed" / "verify-observe.log")
     stage("release0-seed", ["old"], seed, evidence / "release0-api-seed")
     stage("release0-task", ["old", "keys"], task0, evidence / "release0-api-seed" / "release0-task")
     stage("release0-snapshot", ["old", "task0"], snap0, evidence / "release0-api-seed")
@@ -154,7 +197,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-update", ["old", "health0", "app"], update, evidence / "release1" / "update-bootstrap.log")
     stage("release1-start", ["updated"], start1, evidence / "release1")
     stage("release1-selection", ["started1", "health0"], select1, evidence / "release1")
-    stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log")
+    stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log", forced_dependencies=(("verified0", "release0-verify"),))
     stage("release1-verify-install", ["version"], verify_install, evidence / "verify-install.log")
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
