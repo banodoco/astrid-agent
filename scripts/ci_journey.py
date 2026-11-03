@@ -751,6 +751,16 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
+        readiness = re.compile(
+            r"runtime-service-service-readiness-[012]-"
+            r"(?:first-failed-poll|first-service-exit|last-failed-poll)\.json\.log"
+        )
+        diagnostic["pack_host_readiness"] = [
+            {"path": path.relative_to(run_root).as_posix(),
+             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in sorted(destination.glob("runtime-service-service-readiness-*.json.log"))
+            if readiness.fullmatch(path.name) and path.is_file() and not path.is_symlink()
+        ]
         for key, name in (("install_log", "install.log"),
                           ("service_manager", f"manager-state-{phase}.json")):
             path = destination / name
