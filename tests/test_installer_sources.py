@@ -607,7 +607,7 @@ def test_vibecomfy_download_uses_the_pinned_fork(tmp_path, monkeypatch):
     destination = tmp_path / "v"
     tools.source("vibecomfy", VIBECOMFY_ENGINE_REVISION, destination)
     assert requests == [
-        f"https://github.com/peteromallet/VibeComfy/archive/{VIBECOMFY_ENGINE_REVISION}.tar.gz"
+        f"https://github.com/banodoco/VibeComfy/archive/{VIBECOMFY_ENGINE_REVISION}.tar.gz"
     ]
     assert (destination / "vibecomfy/__init__.py").is_file()
 
