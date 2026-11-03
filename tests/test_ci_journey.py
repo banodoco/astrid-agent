@@ -591,6 +591,8 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     manifest.write_text("{}", encoding="utf-8")
     root, data = tmp_path / "run" / "program", tmp_path / "run" / "data"
     calls = []
+    monkeypatch.setenv("PSModulePath", "hosted-pwsh-modules")
+    monkeypatch.setenv("JOURNEY_KEEP_ENV", "preserved")
     monkeypatch.setattr(journey.sys, "platform", system)
     monkeypatch.setattr(journey, "run", lambda argv, log, **kwargs: calls.append(
         ([str(part) for part in argv], kwargs)))
@@ -600,6 +602,8 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     assert argv[argv.index("--data-root") + 1] == str(data)
     assert argv[argv.index("--manifest") + 1] == str(manifest)
     assert "--update" in argv
+    assert kwargs["env"]["JOURNEY_KEEP_ENV"] == "preserved"
+    assert ("PSModulePath" in kwargs["env"]) == (system != "win32")
 
 
 @pytest.mark.posix_native
