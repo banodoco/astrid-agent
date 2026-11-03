@@ -1,0 +1,67 @@
+name: M46 selected install Docker diagnostic
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  selected-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Check out exact action-run head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+      - name: Capture runner identity and obtain pinned sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/m46-evidence"
+          { printf 'run=%s attempt=%s job=%s sha=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" "$GITHUB_SHA"; uname -a; env | grep -E '^(ImageOS|ImageVersion|RUNNER_(NAME|OS|ARCH))=' | sort; } > "$RUNNER_TEMP/m46-identity.txt"
+          clone_at() {
+            git clone --quiet --no-checkout "$1" "$2"
+            git -C "$2" checkout --quiet --detach "$3"
+          }
+          clone_at https://github.com/banodoco/astrid-app "$RUNNER_TEMP/app" 79f7e5397c044c4c97dc7e97b20ad96f787e5247
+          clone_at https://github.com/banodoco/astrid-agent "$RUNNER_TEMP/agent" ab43bad818ef65ca1e929b973a2f61cd9fc4bf61
+          clone_at https://github.com/banodoco/astrid-runtime "$RUNNER_TEMP/runtime" 2776ba973b6c8f3555b5629b0840d9691a98d3c2
+          clone_at https://github.com/banodoco/astrid-pinokio "$RUNNER_TEMP/pinokio" f8605a3877ac76c0d7f65e4b013bc112b8c96992
+          clone_at https://github.com/pinokiocomputer/pinokiod "$RUNNER_TEMP/pinokiod" add4a674ad1ba95bb62ec427fce519fe5bf0e9bf
+          clone_at https://github.com/pinokiocomputer/pterm "$RUNNER_TEMP/pterm" 5be43718701c448b43daf0ce51d8935f170065bb
+      - name: Run selected install diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, secrets
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          request = {'schema':'astrid.m46.selected-install-docker-request.v2', 'runner_head':os.environ['GITHUB_SHA'],
+                     'request_id':secrets.token_hex(16), 'action':'install', 'mode':'backend',
+                     'checkouts':{k:str(temp / v) for k,v in {'app':'app','agent':'agent','runtime':'runtime','pinokio':'pinokio'}.items()} | {'runner':os.environ['GITHUB_WORKSPACE']},
+                     'engine_checkout':str(temp/'pinokiod'), 'pterm_checkout':str(temp/'pterm'), 'output_directory':str(temp/'m46-evidence')}
+          (temp/'m46-request.json').write_text(json.dumps(request, indent=2, sort_keys=True)+'\n')
+          PY
+          set +e
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/m46_selected_install_docker.py "$RUNNER_TEMP/m46-request.json" > "$RUNNER_TEMP/m46-wrapper.log" 2>&1
+          code=$?
+          printf '%s\n' "$code" > "$RUNNER_TEMP/m46-wrapper-exit.txt"
+          cat "$RUNNER_TEMP/m46-wrapper.log"
+          exit "$code"
+      - name: Retain bounded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m46-selected-install-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/m46-identity.txt
+            ${{ runner.temp }}/m46-request.json
+            ${{ runner.temp }}/m46-wrapper.log
+            ${{ runner.temp }}/m46-wrapper-exit.txt
+            ${{ runner.temp }}/m46-evidence/
+          if-no-files-found: warn
+          retention-days: 30
