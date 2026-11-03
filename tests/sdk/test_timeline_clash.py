@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.timeline._doc_patch import Closure
+from astrid.sdk.timeline._commit_wording import conflict_guidance
 from astrid.sdk.timeline.clash import _history, _receipt_sites, explain
 from astrid.sdk.timeline.commit import bundle_from_document
 from tests.sdk.test_timeline_commit_provider import DetachedRealm
@@ -101,6 +102,37 @@ def test_packet_names_touching_receipt():
     assert 'astrid-0123456789abcdef' not in packet['summary']
     assert 'pc_saved' in packet['summary']
     assert packet['next'] == "tl.retry('pc_saved')"
+
+
+def test_packet_reads_current_value_from_verified_head_when_conflict_omits_theirs():
+    realm = DetachedRealm()
+    base = copy.deepcopy(realm.head)
+    realm.call([realm.move('parent/clip:clip-a', 6.006)])
+    conflict = {'kind': 'value_conflict', 'ref': 'parent/clip:clip-a', 'path': ['at'],
+                'base': {'state': 'present', 'value': 1}, 'ours': {'state': 'present', 'value': 4}}
+
+    packet = explain(PacketSession(realm), _pending(base, realm.head, conflict))
+
+    assert packet['conflicts'] == [conflict]
+    assert packet['current_values'] == [{'state': 'present', 'value': 6.006}]
+
+
+def test_packet_and_guidance_prefer_verified_head_over_stale_conflict_theirs():
+    realm = DetachedRealm()
+    base = copy.deepcopy(realm.head)
+    realm.call([realm.move('parent/clip:clip-a', 6.006)])
+    conflict = {'kind': 'value_conflict', 'ref': 'parent/clip:clip-a', 'path': ['at'],
+                'base': {'state': 'present', 'value': 1},
+                'theirs': {'state': 'present', 'value': 1},
+                'ours': {'state': 'present', 'value': 4}}
+
+    packet = explain(PacketSession(realm), _pending(base, realm.head, conflict))
+    guidance = conflict_guidance(packet['conflicts'], packet['receipts'], packet['current_values'])
+
+    assert packet['conflicts'] == [conflict]
+    assert packet['current_values'] == [{'state': 'present', 'value': 6.006}]
+    assert '6.006' in guidance
+    assert '1' not in guidance
 
 
 def test_packet_without_history_still_has_summary():

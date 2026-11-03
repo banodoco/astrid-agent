@@ -122,10 +122,14 @@ def test_case2_stale_literal_list_conflict_is_not_rerun(editing_case, tmp_path, 
     assert exc.failure["details"]["status"] == "conflict"
     assert exc.headline == "The timeline changed since this list was made; nothing was committed"
     assert exc.detail == exc.failure["message"]
-    assert exc.fix == (
+    assert exc.fix.startswith(
         f'Someone else changed this timeline after your edit was made, so "Apply reviewed list" '
         f'was not committed. Your edit is saved as {exc.pending_id}; nothing is lost. '
         f'Retry it with tl.retry("{exc.pending_id}").')
+    assert "current value" in exc.fix
+    assert "preserve" in exc.fix.lower()
+    assert "re-derive only compatible work" in exc.fix.lower()
+    assert "user's current value" not in exc.fix
     assert exc.outcome == "not_applied"
     saved = json.loads((tmp_path / "stale.json").read_bytes())
     assert not saved.get("rejected")
