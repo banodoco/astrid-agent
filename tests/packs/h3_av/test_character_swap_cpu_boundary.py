@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import venv
 
 import pytest
 from tests.lanes import unavailable
@@ -23,11 +24,30 @@ def _field(value, name: str, default=None):
     return getattr(value, name, default)
 
 
+@pytest.fixture(scope="module")
+def installed_guard_python(tmp_path_factory):
+    """Install the candidate and pinned Runtime together for the real origin probe."""
+    root = Path(__file__).resolve().parents[3]
+    work = tmp_path_factory.mktemp("installed-guard")
+    # Build from a disposable copy so pip cannot write build metadata in the checkout.
+    source = work / "agent"
+    shutil.copytree(root, source, ignore=shutil.ignore_patterns(
+        ".git", ".venv", ".pytest_cache", "__pycache__", "*.egg-info", "build", "dist",
+        "vibecomfy-checkout", "astrid-runtime",
+    ))
+    environment = work / "venv"
+    venv.EnvBuilder(with_pip=True).create(environment)
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check",
+                    "--no-input", str(source)], check=True)
+    subprocess.run([str(python), str(source / "scripts/ci_install_runtime.py")], check=True)
+    return python
+
+
 @pytest.mark.parametrize("fault", ["success", "missing_revision", "missing_content",
                                   "revision_drift", "content_drift", "checkout_drift",
                                   "profile_hash_drift"])
-def test_cpu_host_readiness_identity_reaches_real_installed_guard(tmp_path, fault):
-    import sys
+def test_cpu_host_readiness_identity_reaches_real_installed_guard(tmp_path, fault, installed_guard_python):
     from tests.helpers import h3_cpu_runtime as helper
 
     checkout = tmp_path / "controlled-vibe"
@@ -61,16 +81,22 @@ def test_cpu_host_readiness_identity_reaches_real_installed_guard(tmp_path, faul
     ))
     prior = {key: os.environ.get(key) for key in identity_keys}
     script = r'''
-import json,os,sys
+import json,os,sys,sysconfig
 from pathlib import Path
-import astrid
 from astrid.core.execution.generic_host import _install_host_vibecomfy_import_root, _host_product_import_origins, HostError
-from astrid.sdk.host_bootstrap import _host_render_environment
+from astrid.sdk.host_bootstrap import _host_render_environment, _installed_execution_origins, PackHostBootstrapError
 keys=json.loads(sys.argv[1]);checkout=Path(sys.argv[2]);before=_host_product_import_origins();oldpath=sys.path[:]
-import astrid_runtime_client
-# The installed product tree is what holds astrid and its client: site-packages in a wheel install, the checkout
-# when the venv lives inside it, and their common ancestor when astrid is an editable install (CI).
-product=Path(os.path.commonpath([Path(astrid.__file__).resolve().parent,Path(astrid_runtime_client.__file__).resolve().parent]))
+product=Path(sysconfig.get_path("purelib")).resolve()
+origins=_installed_execution_origins(product,sys.executable)
+assert set(origins)=={"host","child","action","client","sdk","runtime_protocol","runtime_protocol.platform","astrid_runtime"}
+assert all(Path(path).resolve().is_relative_to(product) for path in origins.values())
+print(json.dumps({'purelib':str(product),'guarded_origins':origins}),file=sys.stderr)
+try:
+    _installed_execution_origins(Path(sys.argv[3]),sys.executable)
+except PackHostBootstrapError:
+    pass
+else:
+    raise AssertionError("mixed checkout/installed product root was accepted")
 environment=_host_render_environment(product)
 assert {key:environment.get(key) for key in keys} == {key:os.environ.get(key) for key in keys}
 os.environ.clear();os.environ.update(environment)
@@ -88,12 +114,14 @@ except HostError:
               "ASTRID_VIBECOMFY_CANDIDATE_REVISION", "ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST")
     with helper._temporary_environment(values, remove=remove):
         environment = dict(os.environ)
-        environment.update(ASTRID_HOST_EXECUTION_PROFILE="installed", ASTRID_PACK_HOST_PYTHON=sys.executable)
+        environment.update(ASTRID_HOST_EXECUTION_PROFILE="installed", ASTRID_PACK_HOST_PYTHON=str(installed_guard_python))
         environment.pop("PYTHONPATH", None)
-        result = subprocess.run([sys.executable, "-I", "-c", script, json.dumps(identity_keys), str(checkout)],
+        result = subprocess.run([str(installed_guard_python), "-I", "-c", script, json.dumps(identity_keys), str(checkout),
+                                 str(Path(__file__).resolve().parents[3])],
                                 env=environment, text=True, capture_output=True, timeout=20)
     assert {key: os.environ.get(key) for key in identity_keys} == prior
     assert result.returncode == 0, result.stderr
+    print(result.stderr, end="")
     observed = json.loads(result.stdout)
     assert observed["accepted"] is (fault == "success")
 
