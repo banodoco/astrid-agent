@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="19.123" timestamp="2026-11-03T01:51:21.972259+00:00" hostname="runnervm48cm3"><testcase classname="tests.integrations.test_pinned_element_render_proof" name="test_pinned_element_render_proof_on_standin" time="18.178"><error message="failed on setup with &quot;assert None is not None&quot;">tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fba6309da60&gt;
+
+    @pytest.fixture
+    def remotion_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -&gt; Path:
+        from tests.helpers.remotion_runtime import remotion_install_problems
+    
+        problems = remotion_install_problems()
+        if problems:
+            pytest.fail("real pinned-element render prerequisites unavailable: " + "; ".join(problems), pytrace=False)
+        node = os.environ.get("ASTRID_NODE_EXECUTABLE") or shutil.which("node")
+        if not node:
+            pytest.fail("real pinned-element render requires the provisioned Node executable", pytrace=False)
+        monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", str(Path(node).expanduser().resolve(strict=True)))
+&gt;       _workspace, remotion, timeline_path, assets_path = _prepare_remotion_fixture(tmp_path, monkeypatch)
+                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integrations/test_pinned_element_render_proof.py:236: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fba6309da60&gt;
+
+    def _prepare_remotion_fixture(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -&gt; tuple[Path, Path, Path, Path]:
+        """Prepare the theme proof's temporary media fixture around the provisioned runtime."""
+    
+        for name in list(os.environ):
+            if name.startswith(("DYLD_", "LD_")) or name in _REMOTION_UNSUPPORTED_OVERRIDES:
+                monkeypatch.delenv(name, raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        source_root = workspace / "astrid"
+        source_root.mkdir()
+        pack_root = source_root / "packs"
+        pack_root.symlink_to(ROOT / "astrid" / "packs", target_is_directory=True)
+        monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(REMOTION.resolve()))
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(pack_root.resolve()))
+        env = dict(os.environ)
+        launch = _prepare_render_validation(
+            ROOT,
+            env,
+            tmp_path / "support",
+            sys.executable,
+            (pack_root,),
+        )
+&gt;       assert launch is not None
+E       assert None is not None
+
+tests/integrations/test_generic_host_remotion_render.py:208: AssertionError</error></testcase></testsuite></testsuites>
