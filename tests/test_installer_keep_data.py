@@ -10,7 +10,11 @@ import pytest
 from astrid.installer import cli, keep_data
 from astrid.installer.backend import Backend
 from astrid.installer.core import read_json, write_json
-from astrid.installer.descriptor import InstallationDescriptor, KeepDataRemovalPlan
+from astrid.installer.descriptor import (
+    InstallationDescriptor,
+    InstallationDescriptorError,
+    KeepDataRemovalPlan,
+)
 from astrid.installer.service import LABEL
 
 
@@ -91,6 +95,10 @@ def _install_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_public_keep_data_uninstall_accepts_no_caller_targets():
     assert tuple(inspect.signature(keep_data.uninstall_current_user_keep_data).parameters) == ()
+    with pytest.raises(TypeError):
+        keep_data.uninstall_current_user_keep_data(  # type: ignore[call-arg]
+            root="caller-selected-root", delete_data=True
+        )
 
 
 def test_keep_data_uninstall_binds_only_descriptor_roots(monkeypatch, tmp_path):
@@ -107,6 +115,35 @@ def test_keep_data_uninstall_binds_only_descriptor_roots(monkeypatch, tmp_path):
     assert result == keep_data.KeepDataUninstallResult(
         exit_code=7, requested=True, keep_data=True, program_root=str(root), data_root=str(data)
     )
+
+
+def test_keep_data_uninstall_propagates_descriptor_refusal_before_cli(monkeypatch):
+    refusal = InstallationDescriptorError("selection is not login-managed")
+    calls: list[list[str]] = []
+
+    def describe():
+        raise refusal
+
+    monkeypatch.setattr(keep_data, "describe_current_user_installation", describe)
+    monkeypatch.setattr(keep_data.cli, "main", lambda argv: calls.append(argv) or 0)
+
+    with pytest.raises(InstallationDescriptorError, match="not login-managed"):
+        keep_data.uninstall_current_user_keep_data()
+
+    assert calls == []
+
+
+def test_keep_data_result_does_not_claim_native_observations(monkeypatch, tmp_path):
+    root, data = tmp_path / "program", tmp_path / "data"
+    monkeypatch.setattr(keep_data, "describe_current_user_installation", lambda: _descriptor(root, data))
+    monkeypatch.setattr(keep_data.cli, "main", lambda _argv: 0)
+
+    result = keep_data.uninstall_current_user_keep_data()
+
+    assert set(result.__dataclass_fields__) == {
+        "exit_code", "requested", "keep_data", "program_root", "data_root"
+    }
+    assert result.exit_code == 0
 
 
 def test_keep_data_uninstall_refuses_rebound_login_selection(tmp_path, monkeypatch):
