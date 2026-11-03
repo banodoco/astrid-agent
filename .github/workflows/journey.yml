@@ -134,6 +134,16 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      row:
+        description: Run one direct journey row or all three direct rows
+        required: false
+        default: direct
+        type: choice
+        options:
+          - direct-linux
+          - direct-macos
+          - direct-windows
+          - direct
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
@@ -163,6 +173,7 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      wait_timeout: ${{ steps.config.outputs.wait_timeout }}
     steps:
       - name: Check out reviewed Agent matrix contracts
         uses: actions/checkout@v4
@@ -244,6 +255,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          JOURNEY_ROW: ${{ inputs.row || '' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -289,6 +301,12 @@ jobs:
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
+          journey_row = os.environ["JOURNEY_ROW"].strip()
+          valid_rows = {"", "direct-linux", "direct-macos", "direct-windows", "direct"}
+          if journey_row not in valid_rows:
+              raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
+          if journey_row:
+              direct_only = True
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
@@ -342,6 +360,13 @@ jobs:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
+          if journey_row and journey_row != "direct":
+              matrix = [row for row in matrix if row["job_id"] == journey_row]
+          if journey_row and not matrix:
+              raise SystemExit("row selection produced no direct journey rows")
+          wait_timeout = "180" if journey_row in {
+              "direct-linux", "direct-macos", "direct-windows"
+          } else "900"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
@@ -357,7 +382,8 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
-                                  ("matrix", {"include": matrix})):
+                                  ("matrix", {"include": matrix}),
+                                  ("wait_timeout", wait_timeout)):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
@@ -642,6 +668,7 @@ jobs:
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"

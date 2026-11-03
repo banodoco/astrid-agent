@@ -886,6 +886,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
                M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
                M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
+    env["JOURNEY_ROW"] = ""
 
     def config(direct_only, **overrides):
         output.write_text("", encoding="utf-8")
@@ -920,6 +921,15 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
+
+    selected = matrix("false", JOURNEY_ROW="direct-windows")
+    assert [row["job_id"] for row in selected] == ["direct-windows"]
+    values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert values["wait_timeout"] == "180"
+    all_direct = matrix("false", JOURNEY_ROW="direct")
+    assert {row["job_id"] for row in all_direct} == {"direct-linux", "direct-macos", "direct-windows"}
+    values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert values["wait_timeout"] == "900"
 
     backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
     assert {row["job_id"] for row in backend_rows} == {
