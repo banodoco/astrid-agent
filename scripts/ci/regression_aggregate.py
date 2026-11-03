@@ -119,8 +119,13 @@ def _atomic_json(path: str | Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
-def _validate_features(path: str | Path, predicate_path: str | Path, predicate_sha256: str, tuple_value: dict[str, object]) -> list[str]:
-    """Run optional reviewed feature predicates only after input provenance passed."""
+def _validate_features(path: str | Path, predicate_path: str | Path, predicate_sha256: str,
+                       tuple_value: dict[str, object], snapshots=None) -> list[str]:
+    """Check selected byte snapshots; caller must first authenticate their provenance.
+
+    This helper does not authenticate the index or source. No production path
+    may call it until the missing source-to-index bridge has been established.
+    """
     if predicate_sha256 != QUAL_PREDICATE_SHA256:
         return ["unapproved QUAL predicate SHA-256"]
     if _sha256(predicate_path) != predicate_sha256:
@@ -128,8 +133,13 @@ def _validate_features(path: str | Path, predicate_path: str | Path, predicate_s
     features = ledger.read_json(path)
     if not isinstance(features, list) or not features:
         return ["required feature bindings are missing or malformed"]
+    if not isinstance(snapshots, dict):
+        return ["authenticated feature snapshots are unavailable"]
     try:
-        spec = importlib.util.spec_from_file_location("c06_qual_predicates", predicate_path)
+        import local_regression_green as local
+        # The approved file was published in the scripts package; its relative
+        # imports must resolve there, not under an invented top-level name.
+        spec = importlib.util.spec_from_file_location("scripts.journey_predicates", predicate_path)
         if spec is None or spec.loader is None:
             raise ValueError("predicate module is unavailable")
         module = importlib.util.module_from_spec(spec)
@@ -142,16 +152,33 @@ def _validate_features(path: str | Path, predicate_path: str | Path, predicate_s
             if not isinstance(feature, dict):
                 raise ValueError("feature is not an object")
             scenario, slot_id, candidate, files = (feature.get(name) for name in ("scenario", "slot_id", "candidate", "files"))
-            if not all(isinstance(value, str) and value for value in (scenario, slot_id, candidate)) or not isinstance(files, list):
+            if not all(isinstance(value, str) and value for value in (scenario, slot_id)):
                 raise ValueError("invalid feature binding")
-            if scenario == "m4_6":
-                generated = tuple_value.get("generated")
-                if not isinstance(generated, dict) or candidate != generated.get("manifest_sha256"):
-                    raise ValueError("m4_6 candidate is not derived from frozen tuple manifest_sha256")
+            repos = tuple_value["repos"]
+            expected = {name: repos[name]["sha"] for name in ("runtime", "agent", "app", "pinokio")}
+            if isinstance(candidate, dict) and "manifest_sha256" in candidate:
+                manifest = tuple_value["generated"]["manifest_sha256"]
+                if not isinstance(manifest, str) or len(manifest) != 64 or any(c not in "0123456789abcdef" for c in manifest):
+                    raise ValueError("invalid frozen manifest SHA-256")
+                expected["manifest_sha256"] = manifest
+            if candidate != expected or (scenario == "m4_6" and "manifest_sha256" not in expected):
+                raise ValueError("feature candidate tuple mismatch")
+            if type(feature.get("attempt")) is not int or feature["attempt"] <= 0:
+                raise ValueError("invalid feature attempt")
+            if not isinstance(files, list) or not files or len(set(map(local.safe_path, files))) != len(files):
+                raise ValueError("missing or duplicate feature files")
+            key = tuple(feature[name] for name in ("repo", "lane", "platform", "scenario", "slot_id", "attempt"))
+            selected = snapshots[key]
+            entries = []
+            for name in files:
+                digest, raw = selected[name]
+                if not isinstance(raw, bytes) or hashlib.sha256(raw).hexdigest() != digest:
+                    raise ValueError("feature snapshot SHA-256 mismatch")
+                entries.append({"path": name, "sha256": digest, "json": local.strict_json(raw)})
             predicate = getattr(module, "check_" + scenario, None)
             if not callable(predicate):
                 raise ValueError("missing predicate: " + scenario)
-            result = predicate({"slot_id": slot_id, "candidate": candidate, "files": files})
+            result = predicate({"slot_id": slot_id, "candidate": candidate, "files": entries})
             if not (isinstance(result, tuple) and len(result) == 2 and type(result[0]) is bool and
                     isinstance(result[1], list) and all(isinstance(item, str) for item in result[1])):
                 raise ValueError("malformed predicate result")
@@ -182,10 +209,8 @@ def _metadata(args: argparse.Namespace) -> dict[str, Any]:
 def evaluate_sealed(sealed_input: object, evaluator=None) -> dict[str, object]:
     """Aggregate a coordinator-sealed result set exactly once.
 
-    The finalizer invokes this function unconditionally.  A deployment may
-    inject its reviewed P-04/QUAL evaluator as ``evaluator``; without that
-    authority aggregation remains explicitly red.  No producer command or
-    source-selection input exists at this boundary.
+    The finalizer invokes this function unconditionally. The legacy callback
+    parameter is ignored: this payload lacks authenticated evaluator inputs.
     """
     if not isinstance(sealed_input, dict):
         return {"result": "fail", "reasons": ["aggregate sealed input is malformed"]}
@@ -206,16 +231,10 @@ def evaluate_sealed(sealed_input: object, evaluator=None) -> dict[str, object]:
             errors.append("producer %s: %s" % (result["producer_id"], outcome))
     if errors:
         return {"result": "fail", "reasons": errors}
-    if evaluator is None:
-        return {"result": "fail", "reasons": ["reviewed aggregate evaluator is unavailable"]}
-    outcome = evaluator(sealed_input)
-    if not (isinstance(outcome, dict) and set(outcome) == {"result", "reasons"} and
-            outcome["result"] in ("pass", "fail") and isinstance(outcome["reasons"], list) and
-            all(isinstance(item, str) and item for item in outcome["reasons"])):
-        return {"result": "fail", "reasons": ["reviewed aggregate evaluator returned malformed outcome"]}
-    if outcome["result"] == "pass" and outcome["reasons"]:
-        return {"result": "fail", "reasons": ["passing aggregate outcome contains reasons"]}
-    return outcome
+    # The coordinator payload has no authenticated index, feature bytes,
+    # ledger or freshness bindings. A callback cannot supply that authority.
+    return {"result": "fail", "reasons": ["reviewed aggregate evaluator is unavailable: authenticated source, index and feature bindings are missing"]}
+
 
 
 def _reviewed_requirements(inventory_path: str | Path, features_path: str | Path, identity: str) -> None:
@@ -296,12 +315,8 @@ def evaluate(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     p04_errors, retirement = ledger.evaluate(args.tuple, args.inventory, args.ledger, args.evidence_root,
                                               args.freshness, args.tuple_schema, args.ledger_schema)
     errors.extend(p04_errors)
-    try:
-        errors.extend(_validate_features(args.features, args.predicate_path, args.predicate_sha256, tup))
-    except (OSError, ValueError, TypeError) as exc:
-        errors.append(f"feature validation failed: {type(exc).__name__}: {exc}")
-    # No authenticated bridge currently binds this CLI index to the coordinator's
-    # source receipts and the bytes passed to predicates. Never credit it as proof.
+    # Do not interpret feature files until their source, index and bytes are
+    # authenticated together. A digest supplied with an index is not authority.
     errors.append("sealed artifact index is not authenticated to reviewed sources and feature bytes")
     return errors, retirement
 

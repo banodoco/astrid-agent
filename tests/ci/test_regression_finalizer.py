@@ -35,8 +35,8 @@ class FinalizerBoundaryTests(unittest.TestCase):
             self.assertNotIn("producer_command", received)
             return {"result": "pass", "reasons": []}
         status = finalizer.run(sealed, self.root / "invocation", evaluator)
-        self.assertEqual(status["result"], "pass")
-        self.assertEqual(calls, [sealed])
+        self.assertEqual(status["result"], "fail")
+        self.assertEqual(calls, [])
         self.assertTrue((self.root / "invocation/started.json").is_file())
 
     def test_default_or_malformed_evaluator_is_unconditionally_red(self):
@@ -47,7 +47,7 @@ class FinalizerBoundaryTests(unittest.TestCase):
         malformed = self.sealed()
         status = finalizer.run(malformed, self.root / "malformed", lambda _: {"wrong": True})
         self.assertEqual(status["result"], "fail")
-        self.assertIn("malformed", status["reasons"][0])
+        self.assertIn("unavailable", status["reasons"][0])
 
     def test_start_marker_prevents_replay_and_complete_status_is_bound(self):
         sealed = self.sealed()

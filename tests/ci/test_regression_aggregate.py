@@ -20,11 +20,11 @@ class AggregateTests(unittest.TestCase):
     def sealed(outcome="completed"):
         return {"producer_results": [{"producer_id": "producer-1", "outcome": outcome, "result": {}}]}
 
-    def test_aggregate_calls_reviewed_evaluator_once_only_after_completed_results(self):
+    def test_aggregate_rejects_callback_without_authenticated_inputs(self):
         calls = []
         result = aggregate.evaluate_sealed(self.sealed(), lambda value: calls.append(value) or {"result": "pass", "reasons": []})
-        self.assertEqual(result, {"result": "pass", "reasons": []})
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["result"], "fail")
+        self.assertEqual(calls, [])
 
     def test_aggregate_is_unconditional_and_fail_closed_for_missing_or_unavailable_authority(self):
         calls = []
@@ -103,6 +103,38 @@ class AggregateTests(unittest.TestCase):
             review["tuple_digest"] = "c" * 64
             write("review.json", review)
             self.assertIn("wrong tuple", run())
+
+    def test_pinned_predicate_receives_frozen_candidate_and_checked_snapshots(self):
+        import hashlib
+        repos = {name: {"sha": char * 40} for name, char in zip(
+            ("runtime", "agent", "app", "pinokio"), "abcd")}
+        tup = {"repos": repos, "generated": {"manifest_sha256": "e" * 64}}
+        candidate = {name: value["sha"] for name, value in repos.items()}
+        candidate["manifest_sha256"] = "e" * 64
+        feature = {"repo": "agent", "lane": "synthetic", "platform": "linux", "scenario": "m4_6",
+                   "slot_id": "synthetic", "attempt": 1, "candidate": candidate, "files": ["receipt.json"]}
+        path = self.root / "features.json"
+        path.write_text(json.dumps([feature]))
+        key = ("agent", "synthetic", "linux", "m4_6", "synthetic", 1)
+        raw = b"{}"
+        snapshots = {key: {"receipt.json": (hashlib.sha256(raw).hexdigest(), raw)}}
+        predicate = ROOT / "scripts/ci/journey_predicates.py"
+        def check():
+            return aggregate._validate_features(path, predicate, aggregate.QUAL_PREDICATE_SHA256, tup, snapshots)
+        errors = check()
+        self.assertTrue(any("independent section 5" in item for item in errors), errors)
+        self.assertFalse(any("import failed" in item or "candidate:" in item or "files[0]" in item for item in errors), errors)
+        feature["candidate"] = dict(candidate, agent="f" * 40)
+        path.write_text(json.dumps([feature]))
+        self.assertIn("candidate tuple mismatch", check()[0])
+        feature["candidate"] = candidate
+        path.write_text(json.dumps([feature]))
+        snapshots[key]["receipt.json"] = ("0" * 64, raw)
+        self.assertIn("snapshot SHA-256 mismatch", check()[0])
+        snapshots[key]["receipt.json"] = (hashlib.sha256(b'{"x":1,"x":2}').hexdigest(), b'{"x":1,"x":2}')
+        self.assertIn("duplicate JSON key", check()[0])
+        snapshots[key] = {}
+        self.assertIn("receipt.json", check()[0])
 
     def test_unapproved_qual_bytes_are_red(self):
         predicate = self.root / "predicate.py"

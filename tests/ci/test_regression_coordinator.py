@@ -157,11 +157,11 @@ class DeploymentAdapterTests(CoordinatorFixture):
 
         value = self.adapter.finalise("ready", evaluator=evaluator)
         self.assertEqual(value["state"], coordinator.VERDICT_READY)
-        self.assertEqual(value["verdict"]["result"], "pass")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(value["verdict"]["result"], "fail")
+        self.assertEqual(len(calls), 0)
         with self.assertRaisesRegex(coordinator.CoordinatorError, "not ready"):
             self.adapter.finalise("ready", evaluator=evaluator)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 0)
 
     def test_recovery_after_started_marker_maps_dead_worker_to_failure_without_rerun(self):
         self.ready_batch("dead")

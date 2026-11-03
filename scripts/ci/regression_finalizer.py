@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate one sealed C-06 result set without starting or replaying producers.
 
-The finalizer's only executable work is trusted evaluation supplied by its
-caller as an in-process function.  It intentionally has no command-plan or
+The finalizer only evaluates a sealed coordinator invocation.  It intentionally has no command-plan or
 child-process interface: producer execution belongs to the dispatcher, before the
 batch is sealed.
 """
@@ -143,9 +142,8 @@ def status_for(sealed, result, reasons):
 def run(sealed_input, invocation_directory, evaluator=None, status_path=None):
     """Run one finalizer body and atomically write its tuple-bound status.
 
-    ``evaluator`` receives only the sealed structure.  It cannot receive a
-    producer command plan, broker credentials, or a Checks token.  The
-    aggregate is invoked unconditionally; absent reviewed authority is red.
+    The legacy ``evaluator`` argument cannot authorize a pass. The aggregate
+    is invoked unconditionally and refuses missing authenticated bindings.
     """
     try:
         sealed = validate_sealed_input(sealed_input)

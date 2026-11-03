@@ -93,6 +93,13 @@ def _safe_member(name: str) -> str:
     return name
 
 
+def _verify_workflow_revision(binding: dict[str, object], run: dict[str, object]) -> None:
+    # The run API head SHA and workflow path do not authenticate the executed
+    # workflow revision (in particular for pull requests and reusable workflows).
+    # No accepted independent revision attestation is available at this seam.
+    raise ValueError("hosted workflow revision has no independently authenticated binding")
+
+
 def download(source: object, tuple_repos: object, destination: str | Path, fetch=get) -> dict[str, object]:
     """Download one pre-bound artifact into a new private directory.
 
@@ -111,6 +118,7 @@ def download(source: object, tuple_repos: object, destination: str | Path, fetch
             run.get("status") == "completed" and run.get("conclusion") == "success" and
             run.get("path") == binding["workflow_path"] and run.get("repository", {}).get("html_url") == tuple_repos[repo]["url"],
             "wrong or unsuccessful hosted run")
+    _verify_workflow_revision(binding, run)
     all_jobs = jobs.get("jobs")
     require(jobs.get("total_count") == 1 and isinstance(all_jobs, list) and len(all_jobs) == 1, "hosted run is not one reviewed job")
     job = all_jobs[0]

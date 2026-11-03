@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -43,12 +44,16 @@ class TrustedHostedDownloadTests(unittest.TestCase):
         }
         return responses[path]
 
-    def test_authenticated_download_binds_all_source_identities(self):
-        receipt = hosted.download(self.source, self.repos, self.root / "artifact", self.fetch)
-        self.assertEqual(receipt["run"]["head_sha"], self.sha)
-        self.assertEqual({entry["path"] for entry in receipt["files"]}, {"manifest.json", "junit.xml"})
+    def test_unbound_or_altered_workflow_revision_is_rejected(self):
+        for revision in ("b" * 40, "c" * 40, self.sha):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "workflow revision.*authenticated"):
+                hosted.download(dict(self.source, workflow_revision=revision), self.repos, self.root / revision, self.fetch)
+            self.assertFalse((self.root / revision).exists())
 
-    def test_attempt_one_artifact_cannot_be_credited_to_attempt_two(self):
+    # These downstream archive tests patch the unavailable attestation guard
+    # only to exercise rejection logic; they are not provenance proofs.
+    @mock.patch.object(hosted, "_verify_workflow_revision")
+    def test_attempt_one_artifact_cannot_be_credited_to_attempt_two(self, _guard):
         source = dict(self.source, run_attempt=2)
         def rerun(path, binary=False):
             if "/attempts/2/jobs" in path:
@@ -63,7 +68,8 @@ class TrustedHostedDownloadTests(unittest.TestCase):
             hosted.download(source, self.repos, self.root / "old-attempt", rerun)
         self.assertFalse((self.root / "old-attempt").exists())
 
-    def test_missing_or_wrong_artifact_window_is_rejected(self):
+    @mock.patch.object(hosted, "_verify_workflow_revision")
+    def test_missing_or_wrong_artifact_window_is_rejected(self, _guard):
         for timestamp in (None, "2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z"):
             def wrong_time(path, binary=False):
                 value = self.fetch(path, binary)
@@ -73,7 +79,8 @@ class TrustedHostedDownloadTests(unittest.TestCase):
             with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
                 hosted.download(self.source, self.repos, self.root / "wrong-time", wrong_time)
 
-    def test_wrong_tuple_digest_wrong_run_and_archive_digest_are_rejected(self):
+    @mock.patch.object(hosted, "_verify_workflow_revision")
+    def test_wrong_tuple_digest_wrong_run_and_archive_digest_are_rejected(self, _guard):
         wrong = dict(self.source, head_sha="f" * 40)
         with self.assertRaisesRegex(ValueError, "tuple-bound"):
             hosted.download(wrong, self.repos, self.root / "wrong-tuple", self.fetch)
@@ -89,7 +96,8 @@ class TrustedHostedDownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "digest"):
             hosted.download(self.source, self.repos, self.root / "wrong-archive", bad_archive)
 
-    def test_unsafe_and_duplicate_archive_members_are_rejected(self):
+    @mock.patch.object(hosted, "_verify_workflow_revision")
+    def test_unsafe_and_duplicate_archive_members_are_rejected(self, _guard):
         self.archive = self.zip_bytes({"manifest.json": b"{}", "junit.xml": b"<testsuite/>", "../escape": b"x"})
         with self.assertRaisesRegex(ValueError, "unsafe"):
             hosted.download(self.source, self.repos, self.root / "unsafe", self.fetch)
