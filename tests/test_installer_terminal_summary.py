@@ -11,6 +11,7 @@ from runtime_protocol import platform
 from astrid.installer import cli
 from astrid.installer.backend import Backend
 from astrid.installer.choices import RECOMMENDED_CHOICES
+from astrid.installer.service import install_selection
 
 
 def test_prompt_accepts_recommended_setup_with_enter_and_y():
@@ -114,6 +115,28 @@ def test_fresh_cli_decline_returns_before_setup_effects(tmp_path, monkeypatch, c
     assert not (tmp_path / "selection.json").exists()
 
 
+def test_fresh_unattended_cli_prints_plan_and_stops_before_install_writes(tmp_path, monkeypatch, capsys):
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setattr(platform, "data_root", lambda: data)
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+
+    result = cli.main(["--root", str(root), "--data-root", str(data), "--command", "off"])
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "Astrid install plan" in output
+    assert "autostart: on" in output
+    assert "command: off" in output
+    assert "interactive consent is required" in output
+    assert "Absolute Astrid CLI path" not in output
+    assert not (root / "install.json").exists()
+    assert not install_selection(tmp_path, cli.sys.platform).exists()
+
+
 def test_summary_reports_apply_outcomes_and_way_back(capsys):
     choices = {**RECOMMENDED_CHOICES, "autostart": False}
     cli._print_run_summary(choices, mode="install", outcomes={
@@ -155,6 +178,38 @@ def test_summary_reports_command_off_effects_and_keeps_way_back(capsys):
     output = capsys.readouterr().out
     assert "Command/PATH: off; Astrid's command shim removed, Astrid's PATH entry removed." in output
     assert "Way back:" in output and "--command off" in output
+
+
+def test_summary_explains_all_off_choices_and_recovery_paths(tmp_path, capsys):
+    choices = {name: False for name in RECOMMENDED_CHOICES}
+    install_root = tmp_path / "Astrid"
+    install_root.mkdir()
+    (install_root / "run-astrid").touch()
+    cli._print_run_summary(choices, mode="update", install_root=install_root)
+    output = capsys.readouterr().out
+
+    assert "Startup recovery:" in output and "Astrid will not start at sign-in" in output
+    assert "--autostart off with --autostart on" in output
+    assert "Command recovery:" in output and "--command off with --command on" in output
+    assert "Absolute Astrid CLI path while the command is off: " + str(tmp_path / "Astrid" / "run-astrid") in output
+    assert "Skills recovery:" in output and "--skills on" in output
+    assert "Skill copies recovery:" in output and "--skill-copies on" in output
+    assert "rerun the install line to repair or restart" in output
+    assert "add --update to update" in output and "--uninstall" in output
+    assert "--delete-data" in output
+    assert ("Way back: curl -fsSL https://astrid.haus/install | sh -s -- --yes --update "
+            "--autostart off --command off --skills off --skill-copies off") in output
+
+
+def test_summary_uses_absolute_windows_cli_path_when_command_is_off(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    install_root = tmp_path / "Astrid"
+    install_root.mkdir()
+    (install_root / "run-astrid.cmd").touch()
+    cli._print_run_summary({**RECOMMENDED_CHOICES, "command": False}, mode="install",
+                           install_root=install_root)
+    output = capsys.readouterr().out
+    assert "Absolute Astrid CLI path while the command is off: " + str(tmp_path / "Astrid" / "run-astrid.cmd") in output
 
 
 def test_summary_reports_added_and_absent_windows_path_truthfully(capsys):

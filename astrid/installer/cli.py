@@ -98,7 +98,7 @@ def _way_back_command(choices: dict[str, bool] | None, *, mode: str) -> str:
 
 
 def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
-                       result_note=None):
+                       result_note=None, install_root: Path | None = None):
     def safe(value):
         return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
 
@@ -165,6 +165,20 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
                 print(f"  Failure: {type(failure).__name__}: {safe(safe_context)}")
             else:
                 print(f"  Failure: {type(failure).__name__}")
+    selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+    if not selected["autostart"]:
+        print("  Startup recovery: Astrid will not start at sign-in. To start it later, rerun the install line; to enable sign-in startup, replace --autostart off with --autostart on in the Way back line.")
+    if not selected["command"]:
+        print("  Command recovery: the astrid command shim is off. To restore it, replace --command off with --command on in the Way back line.")
+        if install_root is not None:
+            launcher = install_root / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+            if launcher.is_file():
+                print(f"  Absolute Astrid CLI path while the command is off: {safe(launcher)}")
+    if not selected["skills"]:
+        print("  Skills recovery: to enable Astrid skills later, rerun the install line with --skills on (replace this flag in the Way back line).")
+    if not selected["skill_copies"]:
+        print("  Skill copies recovery: to enable skill copies later, rerun the install line with --skill-copies on (replace this flag in the Way back line).")
+    print("  Maintenance: rerun the install line to repair or restart; add --update to update, or --uninstall to remove Astrid. Uninstall keeps the workspace unless --delete-data is added.")
     print("  Way back: " + _way_back_command(choices, mode=mode))
 
 
@@ -233,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             else "doctor" if args.doctor is not None else "install")
     summary_choices = None
     summary_installer = None
+    summary_root = None
     declined = False
     if args.apply and mode != "update-recovery":
         parser().error("--apply is only valid with --update-recovery.")
@@ -277,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         platform.private_directory(log.parent)
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
+        summary_root = root
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
@@ -439,7 +455,8 @@ def main(argv: list[str] | None = None) -> int:
                     prompt_values, declined = _prompt_choices()
                     if declined:
                         summary_choices = dict(RECOMMENDED_CHOICES)
-                        _print_run_summary(summary_choices, mode=mode, declined=True)
+                        _print_run_summary(summary_choices, mode=mode, declined=True,
+                                           install_root=summary_root)
                         return 0
                 matching_selection = (
                     recorded.get("owner") == LABEL
@@ -469,7 +486,8 @@ def main(argv: list[str] | None = None) -> int:
                     summary_choices = resolved_choices
                     _print_run_summary(
                         summary_choices, mode=mode,
-                        result_note="setup not started; interactive consent is required.")
+                        result_note="setup not started; interactive consent is required.",
+                        install_root=summary_root)
                     return 2
                 if resolved_choices is not None:
                     backend.service.choices = resolved_choices
@@ -565,7 +583,8 @@ def main(argv: list[str] | None = None) -> int:
                     platform.unlock_file(lock.fileno())
         if mode in {"install", "update"}:
             _print_run_summary(summary_choices, mode=mode,
-                               outcomes=getattr(summary_installer, "outcomes", None))
+                               outcomes=getattr(summary_installer, "outcomes", None),
+                               install_root=summary_root)
         return 0
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         with contextlib.suppress(OSError):
@@ -583,5 +602,5 @@ def main(argv: list[str] | None = None) -> int:
         if mode in {"install", "update"}:
             _print_run_summary(summary_choices, mode=mode,
                                    outcomes=getattr(summary_installer, "outcomes", None),
-                               failure=failure)
+                               failure=failure, install_root=summary_root)
         return 1
