@@ -352,7 +352,9 @@ def _wait_engine(process: subprocess.Popen[bytes], timeout: int = 240) -> None:
     raise MaterializerError("pinokiod readiness timeout")
 
 
-def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900) -> dict[str, Any]:
+def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900, *,
+                  on_discovery_absent: Any = None,
+                  trace: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     discovery = data / "runtime/discovery.json"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -367,13 +369,62 @@ def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900
                 health = json.load(response)
             if (response.status == 200 and health.get("status") == "ok"
                     and health.get("runtime_instance_id") == value.get("runtime_instance_id")):
+                if trace is not None:
+                    trace.append({"observation": "healthy_matching_identity",
+                                  "runtime_instance_id": value.get("runtime_instance_id")})
                 return value
         except DiscoveryAbsent:
-            pass
+            if trace is not None:
+                trace.append({"observation": "discovery_absent"})
+            if on_discovery_absent is not None:
+                callback, on_discovery_absent = on_discovery_absent, None
+                callback()
         except (OSError, ValueError, KeyError):
             pass
         time.sleep(2)
     raise MaterializerError("installed Runtime readiness timeout")
+
+
+def _delay_genuine_discovery(data: Path, evidence: Path, delay_seconds: float,
+                             timeout: int = 120) -> tuple[Any, dict[str, Any]]:
+    """Withhold one engine-published discovery record until the waiter observes absence."""
+    discovery = data / "runtime/discovery.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if discovery.is_symlink():
+            raise MaterializerError("unsafe symlink where regular file required: "
+                                    f"{discovery}")
+        if discovery.is_file():
+            break
+        time.sleep(1)
+    else:
+        raise MaterializerError("Runtime did not publish discovery for delayed-publication stimulus")
+
+    held = evidence / "discovery-held.json"
+    if held.exists() or held.is_symlink():
+        raise MaterializerError("fresh held-discovery path required")
+    source_sha256 = _sha(discovery)
+    os.replace(discovery, held)
+    trace: dict[str, Any] = {
+        "schema": "astrid.r24.delayed-discovery-stimulus.v1",
+        "source": "genuine Pinokio-installed Runtime discovery.json",
+        "source_sha256": source_sha256,
+        "delay_seconds": delay_seconds,
+        "observations": [{"observation": "withheld", "sha256": source_sha256}],
+    }
+
+    def publish() -> None:
+        if discovery.exists() or discovery.is_symlink():
+            raise MaterializerError("Runtime republished discovery during controlled absence")
+        if held.is_symlink() or not held.is_file() or _sha(held) != source_sha256:
+            raise MaterializerError("held discovery record changed during controlled absence")
+        time.sleep(delay_seconds)
+        os.replace(held, discovery)
+        if _sha(discovery) != source_sha256:
+            raise MaterializerError("republished discovery differs from genuine record")
+        trace["observations"].append({"observation": "published", "sha256": source_sha256})
+
+    return publish, trace
 
 
 def _proc_start_ticks(pid: int) -> str:
@@ -721,6 +772,17 @@ def execute(args: argparse.Namespace) -> int:
                    ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
                     "GITHUB_JOB", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA", "GITHUB_SHA")},
     }
+    if getattr(args, "delay_discovery_publication_seconds", 0):
+        identity = subprocess.run(["id", "-a"], capture_output=True, text=True,
+                                  check=False, timeout=10)
+        if identity.returncode != 0:
+            raise MaterializerError("host identity capture failed")
+        receipt["execution_identity"] = {
+            "uid": os.getuid(), "euid": os.geteuid(), "groups": os.getgroups(),
+            "id_a": identity.stdout.strip(),
+        }
+        if os.geteuid() == 0:
+            raise MaterializerError("delayed-discovery proof requires a non-root executor")
     _write(receipt_path, receipt)
     daemon = None
     start = None
@@ -831,7 +893,29 @@ def execute(args: argparse.Namespace) -> int:
             label="start-installed-runtime", cwd=home, env=engine_env,
         )
         _write(receipt_path, receipt)
-        discovery = _wait_runtime(data, start)
+        discovery_trace: list[dict[str, Any]] = []
+        publish_discovery = None
+        stimulus = None
+        delay_seconds = getattr(args, "delay_discovery_publication_seconds", 0)
+        if delay_seconds:
+            publish_discovery, stimulus = _delay_genuine_discovery(
+                data, evidence, delay_seconds,
+            )
+        discovery = _wait_runtime(
+            data, start, on_discovery_absent=publish_discovery,
+            trace=discovery_trace,
+        )
+        if stimulus is not None:
+            stimulus["observations"].extend(discovery_trace)
+            _write(evidence / "delayed-discovery.json", stimulus)
+            receipt["delayed_discovery"] = {
+                "path": str(evidence / "delayed-discovery.json"),
+                "sha256": _sha(evidence / "delayed-discovery.json"),
+                "source_sha256": stimulus["source_sha256"],
+                "delay_seconds": delay_seconds,
+                "observations": [row["observation"] for row in stimulus["observations"]],
+            }
+            _write(receipt_path, receipt)
         installed_env = _installed_env(version, data)
 
         receipt["stage"] = "authenticate-and-start-worker"
@@ -997,6 +1081,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--mode", choices=("r24-only", "backend"), default="r24-only")
     value.add_argument("--mode-producer", type=Path)
     value.add_argument("--mode-producer-ref")
+    value.add_argument("--delay-discovery-publication-seconds", type=float, default=0)
     value.add_argument("--confirmation", required=True)
     return value
 
@@ -1008,6 +1093,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "backend" and (not isinstance(args.mode_producer_ref, str)
                                     or not HEX40.fullmatch(args.mode_producer_ref)):
         raise MaterializerError("full mode producer commit SHA required")
+    if (not 0 <= args.delay_discovery_publication_seconds <= 30
+            or not float(args.delay_discovery_publication_seconds).is_integer()):
+        raise MaterializerError("discovery publication delay must be a whole number from 0 to 30")
     return execute(args)
 
 

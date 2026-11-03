@@ -543,8 +543,57 @@ def test_wait_runtime_polls_until_discovery_appears_and_verifies_health(
     monkeypatch.setattr(materializer.time, "sleep", sleep)
     monkeypatch.setattr(materializer.urllib.request, "build_opener", lambda *unused: Opener())
 
-    assert materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5) == value
+    trace = []
+    assert materializer._wait_runtime(tmp_path, _RunningProcess(), timeout=5,
+                                      trace=trace) == value
     assert sleeps == [2]
+    assert trace == [{"observation": "discovery_absent"},
+                     {"observation": "healthy_matching_identity",
+                      "runtime_instance_id": "instance-1"}]
+
+
+def test_delayed_publication_stimulus_withholds_and_republishes_engine_record(
+        tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    evidence = tmp_path / "evidence"
+    discovery = data / "runtime/discovery.json"
+    discovery.parent.mkdir(parents=True)
+    evidence.mkdir()
+    payload = json.dumps({"endpoint": "http://127.0.0.1:17340",
+                          "runtime_instance_id": "engine-instance"}).encode("ascii")
+    discovery.write_bytes(payload)
+    clock = [0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == "http://127.0.0.1:17340/v1/health"
+            return _HealthResponse({"status": "ok",
+                                    "runtime_instance_id": "engine-instance"})
+
+    monkeypatch.setattr(materializer.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(materializer.time, "sleep", sleep)
+    monkeypatch.setattr(materializer.urllib.request, "build_opener", lambda *unused: Opener())
+    publish, stimulus = materializer._delay_genuine_discovery(data, evidence, 4)
+    assert not discovery.exists()
+    wait_trace = []
+    result = materializer._wait_runtime(
+        data, _RunningProcess(), timeout=10,
+        on_discovery_absent=publish, trace=wait_trace,
+    )
+    assert result["runtime_instance_id"] == "engine-instance"
+    assert discovery.read_bytes() == payload
+    assert [row["observation"] for row in wait_trace] == [
+        "discovery_absent", "healthy_matching_identity",
+    ]
+    assert clock[0] == 6  # four-second withholding plus one normal two-second poll interval
+    assert stimulus["source_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert stimulus["observations"] == [
+        {"observation": "withheld", "sha256": hashlib.sha256(payload).hexdigest()},
+        {"observation": "published", "sha256": hashlib.sha256(payload).hexdigest()},
+    ]
 
 
 def test_wait_runtime_times_out_for_persistently_absent_discovery(tmp_path, monkeypatch):
