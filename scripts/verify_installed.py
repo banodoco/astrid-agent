@@ -150,6 +150,49 @@ def env_port(version):
     return str(version.get('env', {}).get('ASTRID_RUNTIME_DOOR_PORT', '17340'))
 
 
+def local_health(discovery_path, discovery):
+    """Bind the local editor's raw health to the selected Runtime owner."""
+    original = Path(discovery_path).read_bytes()
+    if json.loads(original) != discovery:
+        raise ValueError('Runtime discovery changed before local health observation')
+    endpoint = discovery.get('endpoint')
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        valid = (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost')
+                 and parsed.port is not None and 1 <= parsed.port <= 65535
+                 and parsed.username is None and parsed.password is None
+                 and parsed.path in ('', '/') and not parsed.query and not parsed.fragment)
+    except (ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid:
+        raise ValueError('selected Runtime endpoint is not an HTTP loopback origin')
+    instance, realm = discovery.get('runtime_instance_id'), discovery.get('active_realm')
+    identity = discovery.get('identity')
+    if (not isinstance(instance, str) or not instance.strip() or not isinstance(realm, str) or not realm.strip()
+            or not isinstance(identity, dict) or not identity):
+        raise ValueError('selected Runtime discovery lacks instance, realm, or identity')
+    editor = 'http://127.0.0.1:5180'
+    config_url = editor + '/runtime-config/v1/workspace.json'
+    config = request(config_url)
+    if (not isinstance(config, dict) or config.get('schemaVersion') != 1
+            or config.get('endpoint') != endpoint.rstrip('/')
+            or config.get('runtimeInstanceId') != instance or config.get('realmId') != realm
+            or not isinstance(config.get('actorId'), str) or not config['actorId'].strip()):
+        raise ValueError('local editor binding does not match selected Runtime discovery')
+    headers = {'X-Astrid-Owner-Identity': '1'}
+    health = request(editor + '/api/runtime/v1/health', headers)
+    owner = request(endpoint.rstrip('/') + '/v1/health', headers)
+    fields = ('status', 'protocol', 'schema_digest', 'runtime_instance_id', 'identity', 'services')
+    if (not isinstance(health, dict) or not isinstance(owner, dict)
+            or any(key not in health or key not in owner or health[key] != owner[key] for key in fields)
+            or health['runtime_instance_id'] != instance or health['identity'] != identity
+            or not isinstance(health['services'], list)):
+        raise ValueError('local editor health does not match selected Runtime owner')
+    if request(config_url) != config or Path(discovery_path).read_bytes() != original:
+        raise ValueError('local editor binding or Runtime discovery changed during observation')
+    return health
+
+
 def installed_runtime_contract(python, root, env, data_root):
     probe = (
         "import importlib.util,json,sys; "
@@ -407,7 +450,7 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                           'problems': problems}
 
 
-def observe(version_path, data_root):
+def observe(version_path, data_root, *, health_source='hosted'):
     observations = {}
     details = {}
     def check(name, fn):
@@ -428,8 +471,14 @@ def observe(version_path, data_root):
         return installed_python(path, root, bootstrap_root, pin)
     profile = read(version['profile'])
     declaration = read(profile['service_declaration'])
-    discovery = read(Path(data_root) / 'runtime' / 'discovery.json')
-    health = request('http://127.0.0.1:' + env_port(version) + '/api/runtime/v1/health', {'Origin': 'https://astrid.haus'})
+    discovery_path = Path(data_root) / 'runtime' / 'discovery.json'
+    discovery = read(discovery_path)
+    if health_source == 'local-editor':
+        health = local_health(discovery_path, discovery)
+    elif health_source == 'hosted':
+        health = request('http://127.0.0.1:' + env_port(version) + '/api/runtime/v1/health', {'Origin': 'https://astrid.haus'})
+    else:
+        raise ValueError('unknown health source')
     env = {k: v for k, v in os.environ.items() if k not in ('PYTHONPATH', 'PYTHONHOME')}
     env.update(version.get('env', {}))
     runtime_contract_error = None
@@ -544,10 +593,11 @@ def main():
     parser.add_argument('--version', required=True)
     parser.add_argument('--data-root', required=True)
     parser.add_argument('--before')
+    parser.add_argument('--health-source', choices=('hosted', 'local-editor'), default='hosted')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     try:
-        receipt = evaluate(observe(args.version, args.data_root), args.mode, read(args.before) if args.before else None)
+        receipt = evaluate(observe(args.version, args.data_root, health_source=args.health_source), args.mode, read(args.before) if args.before else None)
     except Exception as exc:
         receipt = {'schema_version': 1, 'mode': args.mode, 'passed': False, 'failures': ['verifier'], 'error': f'{type(exc).__name__}: {exc}'}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,115 @@ from scripts.verify_installed import bridge_observation, evaluate
 from tests.lanes import unavailable
 
 
+def _local_health_fixture(tmp_path):
+    discovery = {'endpoint': 'http://127.0.0.1:31415', 'runtime_instance_id': 'instance-1',
+                 'active_realm': 'realm-1', 'identity': {'release': 1, 'managed_by': 'pinokio'}}
+    path = tmp_path / 'discovery.json'
+    path.write_text(json.dumps(discovery))
+    config = {'schemaVersion': 1, 'endpoint': discovery['endpoint'], 'actorId': 'astrid-app',
+              'realmId': 'realm-1', 'runtimeInstanceId': 'instance-1'}
+    health = {'status': 'ok', 'protocol': 'workspace.v1', 'schema_digest': 'sha256:example',
+              'runtime_instance_id': 'instance-1', 'identity': discovery['identity'].copy(),
+              'services': [{'name': 'chat', 'state': 'running'}]}
+    return path, discovery, config, health
+
+
+def test_local_editor_health_binds_selected_discovery_and_raw_owner(tmp_path, monkeypatch):
+    from scripts import verify_installed as verifier
+    path, discovery, config, health = _local_health_fixture(tmp_path)
+    calls = []
+    def fake_request(url, headers=None):
+        calls.append((url, headers))
+        if url.endswith('/runtime-config/v1/workspace.json'):
+            return config
+        return health.copy()
+    monkeypatch.setattr(verifier, 'request', fake_request)
+    assert verifier.local_health(path, discovery) == health
+    assert [url for url, _ in calls] == [
+        'http://127.0.0.1:5180/runtime-config/v1/workspace.json',
+        'http://127.0.0.1:5180/api/runtime/v1/health',
+        'http://127.0.0.1:31415/v1/health',
+        'http://127.0.0.1:5180/runtime-config/v1/workspace.json',
+    ]
+    assert calls[1][1] == calls[2][1] == {'X-Astrid-Owner-Identity': '1'}
+
+
+@pytest.mark.parametrize('mutation', [
+    'foreign-endpoint', 'foreign-instance', 'foreign-realm', 'missing-actor',
+    'foreign-owner-identity', 'foreign-owner-instance', 'foreign-owner-services',
+    'missing-owner-digest', 'foreign-editor-identity', 'changed-config', 'changed-discovery', 'unsafe-endpoint',
+])
+def test_local_editor_health_fails_closed(tmp_path, monkeypatch, mutation):
+    from scripts import verify_installed as verifier
+    path, discovery, config, health = _local_health_fixture(tmp_path)
+    owner = {**health, 'identity': health['identity'].copy(), 'services': list(health['services'])}
+    if mutation == 'foreign-endpoint': config['endpoint'] = 'http://127.0.0.1:9'
+    if mutation == 'foreign-instance': config['runtimeInstanceId'] = 'foreign'
+    if mutation == 'foreign-realm': config['realmId'] = 'foreign'
+    if mutation == 'missing-actor': config['actorId'] = ''
+    if mutation == 'foreign-owner-identity': owner['identity']['managed_by'] = None
+    if mutation == 'foreign-owner-instance': owner['runtime_instance_id'] = 'foreign'
+    if mutation == 'foreign-owner-services': owner['services'] = []
+    if mutation == 'missing-owner-digest': owner.pop('schema_digest')
+    if mutation == 'foreign-editor-identity': health['identity'] = {'release': 2, 'managed_by': 'pinokio'}
+    if mutation == 'unsafe-endpoint':
+        discovery['endpoint'] = 'http://127.0.0.1:31415@evil.example:80'
+        path.write_text(json.dumps(discovery))
+    config_reads = 0
+    def fake_request(url, headers=None):
+        nonlocal config_reads
+        if url.endswith('/runtime-config/v1/workspace.json'):
+            config_reads += 1
+            return {**config, 'realmId': 'changed'} if mutation == 'changed-config' and config_reads == 2 else config.copy()
+        if url.startswith('http://127.0.0.1:5180'):
+            return health
+        if mutation == 'changed-discovery': path.write_text(json.dumps({**discovery, 'pid': 7}))
+        return owner
+    monkeypatch.setattr(verifier, 'request', fake_request)
+    with pytest.raises(ValueError):
+        verifier.local_health(path, discovery)
+
+
+@pytest.mark.parametrize('source', ['hosted', 'local-editor'])
+def test_observe_keeps_service_and_capability_failures_for_each_health_source(tmp_path, monkeypatch, source):
+    from scripts import verify_installed as verifier
+    root = tmp_path / 'version'
+    root.mkdir()
+    data = tmp_path / 'data'
+    runtime = data / 'runtime'
+    runtime.mkdir(parents=True)
+    def write(path, value):
+        path.write_text(json.dumps(value))
+    write(root / 'manifest.json', {'tools': {'python': {'version': '3.13.0'}}})
+    declaration = root / 'services.json'
+    write(declaration, {'services': [{'name': 'chat', 'argv': [str(root / 'python')]}]})
+    profile = root / 'profile.json'
+    write(profile, {'service_declaration': str(declaration)})
+    matrix = root / 'matrix.json'
+    write(matrix, {'capabilities': [{'id': 'required', 'disposition': 'required'}]})
+    version = root / 'version.json'
+    write(version, {'root': str(root), 'python': str(root / 'python'), 'profile': str(profile),
+                    'env': {'ASTRID_CAPABILITY_MATRIX_PATH': str(matrix)}})
+    write(runtime / 'discovery.json', {'runtime_instance_id': 'instance'})
+    write(runtime / 'generic-host.ready.json', {'status': 'ready', 'runtime_instance_id': 'instance',
+          'registration': {'capabilities': [{'id': 'required', 'ready': False}]},
+          'unready_capabilities': ['required']})
+    write(runtime / 'chat.json', {})
+    health = {'runtime_instance_id': 'instance', 'services': [{'name': 'chat', 'state': 'stopped'}]}
+    routes = []
+    monkeypatch.setattr(verifier, 'request', lambda url, *_: routes.append(url) or health)
+    monkeypatch.setattr(verifier, 'local_health', lambda *_: routes.append('local') or health)
+    monkeypatch.setattr(verifier, 'installed_runtime_contract', lambda *_: {})
+    monkeypatch.setattr(verifier, 'legacy_identity_observation', lambda *_: (False, {'problem': 'identity'}))
+    monkeypatch.setattr(verifier, 'bridge_observation', lambda *_: (True, {}))
+    result = verifier.observe(version, data, health_source=source)
+    assert routes == (['local'] if source == 'local-editor' else ['http://127.0.0.1:17340/api/runtime/v1/health'])
+    assert result['observations']['runtime.identity'] is False
+    assert result['observations']['service.chat'] is False
+    assert result['observations']['origin.imports'] is False
+    assert result['observations']['capabilities.required'] is False
+
+
 def test_update_only_fails_regressions_and_reports_preexisting():
     before = {'observations': {'old': False, 'healthy': True}}
     result = evaluate({'observations': {'old': False, 'healthy': False}}, 'update', before)
