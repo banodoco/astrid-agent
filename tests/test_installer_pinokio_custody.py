@@ -195,6 +195,36 @@ def test_stopped_custody_yields_none_when_foreground_owns_lifetime_lock(tmp_path
         platform.unlock_file(owner.fileno())
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="M-PIN failure is the Linux per-user lifetime lock")
+def test_stopped_custody_and_runtime_upgrade_share_the_same_lifetime_lock(tmp_path, monkeypatch):
+    """Pin down the nested-lock refusal until Runtime exposes same-operation custody."""
+    from astrid_runtime.operator_upgrade import OperatorUpgradeError, _installer_mutex
+    from astrid_runtime.paths import RuntimePaths, _install_record_path
+    from astrid_runtime.update import _installer_lock_path
+    from astrid.installer.service import pinokio_lock_paths
+    from astrid.installer.custody import stopped_custody
+
+    root, _data, home, backend, _versions = _fixture(tmp_path)
+    xdg = home / "xdg-data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    selection = _install_record_path(home)
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text("{}\n", encoding="utf-8")
+    runtime_lock = _installer_lock_path(selection)
+    custody_paths = pinokio_lock_paths(home, "linux")
+    assert runtime_lock == xdg / "astrid-install.lock"
+    assert runtime_lock in custody_paths
+
+    # This reproduces the hosted failure: the Runtime sees the retained
+    # operation's own lock as an independent owner. Do not weaken the refusal;
+    # the follow-up Runtime interface must distinguish authorized custody.
+    with stopped_custody(root, backend) as custody:
+        assert custody is not None
+        with pytest.raises(OperatorUpgradeError, match="another installer owns the installation lifetime lock"):
+            with _installer_mutex(RuntimePaths.current(home=home)):
+                pytest.fail("nested Runtime upgrade unexpectedly entered without a custody API")
+
+
 def test_broker_death_closes_attached_runtime_connection(tmp_path):
     from astrid.installer.custody import attach
 
