@@ -1,0 +1,185 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.7.0 -- /home/runner/work/_temp/t04-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/work/astrid-agent/astrid-agent/agent
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.3, timeout-2.4.0, split-0.11.0, cov-7.1.0
+timeout: 600.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 1 item
+
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin FAILED [100%]
+
+=================================== FAILURES ===================================
+_________________ test_pinned_element_render_proof_on_standin __________________
+
+configured = <tests.core.test_project_packs.FakeDocuments object at 0x7f9a59146ff0>
+remotion_project = PosixPath('/home/runner/work/astrid-agent/astrid-agent/agent/remotion')
+preview_runtime = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/app/node_modules'), PosixPath('/home/runner/work/_temp/node-v20.19.4-linux-x64/bin/node'))
+tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+
+    def test_pinned_element_render_proof_on_standin(
+        configured,
+        remotion_project: Path,
+        preview_runtime: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        node_modules, node = preview_runtime
+        runtime, refs, sources = _make_admitted_standin(configured)
+        snapshot = resolve_managed_render_snapshot(
+            project_ref="demo",
+            timeline_ref="main",
+            client=runtime,
+        )
+        validate_managed_render_snapshot(snapshot)
+        assert len(selections(snapshot.config)) == 2
+        assert {row["reference"]["revision"] for row in selections(snapshot.config)} == {
+            refs[0]["revision"], refs[1]["revision"]
+        }
+        clip_rows = snapshot.config["clips"]
+        assert runtime.standin_before_placement["clipType"] == "am-discord"
+        assert "elementRef" not in runtime.standin_before_placement
+        assert clip_rows[0]["id"] == "occ-standin:c02-02-am-discord"
+        assert clip_rows[0]["clipType"] == "reveal"
+        assert clip_rows[0]["elementRef"] == refs[0]
+        assert clip_rows[1]["elementRef"] == refs[1]
+    
+        timeline_path, assets_path, authority = managed_timeline.materialize_managed_render_snapshot(
+            tmp_path / "managed", snapshot
+        )
+        export_frames = run.capture_remotion_frames(
+            timeline_path,
+            assets_path,
+            tmp_path / "export-frames",
+            list(SAMPLES.values()),
+            project_dir=remotion_project,
+            frame_resolution=(1920, 1080),
+        )
+        assert all(path.is_file() and path.stat().st_size > 0 for path in export_frames.values())
+    
+        preview_root = tmp_path / "vite-preview"
+        _write_preview_app(preview_root, sources, node_modules)
+>       preview_frames = _capture_vite_preview(
+            preview_root, tmp_path / "preview-frames", list(SAMPLES.values()),
+            node_modules=node_modules, node=node,
+        )
+
+tests/integrations/test_pinned_element_render_proof.py:428: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview')
+output = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/preview-frames')
+frames = [5, 15, 25]
+
+    def _capture_vite_preview(
+        root: Path, output: Path, frames: list[int], *, node_modules: Path, node: Path
+    ) -> dict[int, Path]:
+        vite = node_modules / ".bin/vite"
+        if not vite.is_file():
+            pytest.fail(f"local Vite executable is unavailable: {vite}", pytrace=False)
+        port = _free_port()
+        server = subprocess.Popen(
+            [str(vite), "--host", "127.0.0.1", "--port", str(port)],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
+                    break
+                except (OSError, urllib.error.URLError):
+                    if server.poll() is not None:
+                        output_text = server.stdout.read() if server.stdout else ""
+                        raise AssertionError(f"Vite exited before serving preview: {output_text}")
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("Vite preview did not become ready within 30 seconds")
+            capture = root / "capture.mjs"
+            capture.write_text(
+                "import {chromium} from 'playwright';\n"
+                "const [base, frames, out] = process.argv.slice(2);\n"
+                "const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});\n"
+                "const page=await browser.newPage({viewport:{width:1920,height:1080},deviceScaleFactor:1});\n"
+                "page.on('pageerror', error=>console.error(`pageerror: ${error.stack||error}`));\n"
+                "page.on('console', message=>{if(message.type()==='error')console.error(`console: ${message.text()}`);});\n"
+                "for(const frame of JSON.parse(frames)){await page.goto(`${base}/?frame=${frame}`,{waitUntil:'networkidle'});await page.waitForSelector('body[data-ready=\\\"1\\\"]');await page.screenshot({path:`${out}/frame-${frame}.png`});}\n"
+                "await browser.close();\n",
+                encoding="utf-8",
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(
+                [str(node), str(capture), f"http://127.0.0.1:{port}", json.dumps(frames), str(output)],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+>               raise AssertionError(f"Vite/Playwright capture failed:\n{result.stdout}\n{result.stderr}")
+E               AssertionError: Vite/Playwright capture failed:
+E               
+E               node:internal/modules/run_main:123
+E                   triggerUncaughtException(
+E                   ^
+E               
+E               browserType.launch: Executable doesn't exist at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/home/.cache/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell
+E               ╔════════════════════════════════════════════════════════════╗
+E               ║ Looks like Playwright was just installed or updated.       ║
+E               ║ Please run the following command to download new browsers: ║
+E               ║                                                            ║
+E               ║     npx playwright install                                 ║
+E               ║                                                            ║
+E               ║ <3 Playwright Team                                         ║
+E               ╚════════════════════════════════════════════════════════════╝
+E                   at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview/capture.mjs:3:30 {
+E                 name: 'Error'
+E               }
+E               
+E               Node.js v20.19.4
+
+tests/integrations/test_pinned_element_render_proof.py:356: AssertionError
+---------------------------- Captured stderr setup -----------------------------
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 5418}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 5004}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3067}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "registry_settle", "outcome": "completed", "process_id": 5580, "elapsed_ms": 17261}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 4705}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 68}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 344}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3324}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3840}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 346}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3862}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3792}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "launch_transaction", "outcome": "completed", "process_id": 5580, "elapsed_ms": 39216}
+----------------------------- Captured stderr call -----------------------------
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5580, "elapsed_ms": 3610}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5580, "elapsed_ms": 70}
+- generated xml file: /home/runner/work/astrid-agent/astrid-agent/out/t3/results.xml -
+=========================== short test summary info ============================
+FAILED tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin - AssertionError: Vite/Playwright capture failed:
+
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+browserType.launch: Executable doesn't exist at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/home/.cache/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell
+╔════════════════════════════════════════════════════════════╗
+║ Looks like Playwright was just installed or updated.       ║
+║ Please run the following command to download new browsers: ║
+║                                                            ║
+║     npx playwright install                                 ║
+║                                                            ║
+║ <3 Playwright Team                                         ║
+╚════════════════════════════════════════════════════════════╝
+    at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview/capture.mjs:3:30 {
+  name: 'Error'
+}
+
+Node.js v20.19.4
+========================= 1 failed in 78.90s (0:01:18) =========================

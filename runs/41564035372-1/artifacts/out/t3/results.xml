@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="78.886" timestamp="2026-11-03T02:25:50.164670+00:00" hostname="runnervm48cm3"><testcase classname="tests.integrations.test_pinned_element_render_proof" name="test_pinned_element_render_proof_on_standin" time="77.621"><failure message="AssertionError: Vite/Playwright capture failed:&#10;&#10;node:internal/modules/run_main:123&#10;    triggerUncaughtException(&#10;    ^&#10;&#10;browserType.launch: Executable doesn't exist at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/home/.cache/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell&#10;╔════════════════════════════════════════════════════════════╗&#10;║ Looks like Playwright was just installed or updated.       ║&#10;║ Please run the following command to download new browsers: ║&#10;║                                                            ║&#10;║     npx playwright install                                 ║&#10;║                                                            ║&#10;║ &lt;3 Playwright Team                                         ║&#10;╚════════════════════════════════════════════════════════════╝&#10;    at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview/capture.mjs:3:30 {&#10;  name: 'Error'&#10;}&#10;&#10;Node.js v20.19.4">configured = &lt;tests.core.test_project_packs.FakeDocuments object at 0x7f9a59146ff0&gt;
+remotion_project = PosixPath('/home/runner/work/astrid-agent/astrid-agent/agent/remotion')
+preview_runtime = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/app/node_modules'), PosixPath('/home/runner/work/_temp/node-v20.19.4-linux-x64/bin/node'))
+tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+
+    def test_pinned_element_render_proof_on_standin(
+        configured,
+        remotion_project: Path,
+        preview_runtime: tuple[Path, Path],
+        tmp_path: Path,
+    ) -&gt; None:
+        node_modules, node = preview_runtime
+        runtime, refs, sources = _make_admitted_standin(configured)
+        snapshot = resolve_managed_render_snapshot(
+            project_ref="demo",
+            timeline_ref="main",
+            client=runtime,
+        )
+        validate_managed_render_snapshot(snapshot)
+        assert len(selections(snapshot.config)) == 2
+        assert {row["reference"]["revision"] for row in selections(snapshot.config)} == {
+            refs[0]["revision"], refs[1]["revision"]
+        }
+        clip_rows = snapshot.config["clips"]
+        assert runtime.standin_before_placement["clipType"] == "am-discord"
+        assert "elementRef" not in runtime.standin_before_placement
+        assert clip_rows[0]["id"] == "occ-standin:c02-02-am-discord"
+        assert clip_rows[0]["clipType"] == "reveal"
+        assert clip_rows[0]["elementRef"] == refs[0]
+        assert clip_rows[1]["elementRef"] == refs[1]
+    
+        timeline_path, assets_path, authority = managed_timeline.materialize_managed_render_snapshot(
+            tmp_path / "managed", snapshot
+        )
+        export_frames = run.capture_remotion_frames(
+            timeline_path,
+            assets_path,
+            tmp_path / "export-frames",
+            list(SAMPLES.values()),
+            project_dir=remotion_project,
+            frame_resolution=(1920, 1080),
+        )
+        assert all(path.is_file() and path.stat().st_size &gt; 0 for path in export_frames.values())
+    
+        preview_root = tmp_path / "vite-preview"
+        _write_preview_app(preview_root, sources, node_modules)
+&gt;       preview_frames = _capture_vite_preview(
+            preview_root, tmp_path / "preview-frames", list(SAMPLES.values()),
+            node_modules=node_modules, node=node,
+        )
+
+tests/integrations/test_pinned_element_render_proof.py:428: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview')
+output = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/preview-frames')
+frames = [5, 15, 25]
+
+    def _capture_vite_preview(
+        root: Path, output: Path, frames: list[int], *, node_modules: Path, node: Path
+    ) -&gt; dict[int, Path]:
+        vite = node_modules / ".bin/vite"
+        if not vite.is_file():
+            pytest.fail(f"local Vite executable is unavailable: {vite}", pytrace=False)
+        port = _free_port()
+        server = subprocess.Popen(
+            [str(vite), "--host", "127.0.0.1", "--port", str(port)],
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() &lt; deadline:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
+                    break
+                except (OSError, urllib.error.URLError):
+                    if server.poll() is not None:
+                        output_text = server.stdout.read() if server.stdout else ""
+                        raise AssertionError(f"Vite exited before serving preview: {output_text}")
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("Vite preview did not become ready within 30 seconds")
+            capture = root / "capture.mjs"
+            capture.write_text(
+                "import {chromium} from 'playwright';\n"
+                "const [base, frames, out] = process.argv.slice(2);\n"
+                "const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});\n"
+                "const page=await browser.newPage({viewport:{width:1920,height:1080},deviceScaleFactor:1});\n"
+                "page.on('pageerror', error=&gt;console.error(`pageerror: ${error.stack||error}`));\n"
+                "page.on('console', message=&gt;{if(message.type()==='error')console.error(`console: ${message.text()}`);});\n"
+                "for(const frame of JSON.parse(frames)){await page.goto(`${base}/?frame=${frame}`,{waitUntil:'networkidle'});await page.waitForSelector('body[data-ready=\\\"1\\\"]');await page.screenshot({path:`${out}/frame-${frame}.png`});}\n"
+                "await browser.close();\n",
+                encoding="utf-8",
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(
+                [str(node), str(capture), f"http://127.0.0.1:{port}", json.dumps(frames), str(output)],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+&gt;               raise AssertionError(f"Vite/Playwright capture failed:\n{result.stdout}\n{result.stderr}")
+E               AssertionError: Vite/Playwright capture failed:
+E               
+E               node:internal/modules/run_main:123
+E                   triggerUncaughtException(
+E                   ^
+E               
+E               browserType.launch: Executable doesn't exist at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/home/.cache/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell
+E               ╔════════════════════════════════════════════════════════════╗
+E               ║ Looks like Playwright was just installed or updated.       ║
+E               ║ Please run the following command to download new browsers: ║
+E               ║                                                            ║
+E               ║     npx playwright install                                 ║
+E               ║                                                            ║
+E               ║ &lt;3 Playwright Team                                         ║
+E               ╚════════════════════════════════════════════════════════════╝
+E                   at /home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0/vite-preview/capture.mjs:3:30 {
+E                 name: 'Error'
+E               }
+E               
+E               Node.js v20.19.4
+
+tests/integrations/test_pinned_element_render_proof.py:356: AssertionError</failure></testcase></testsuite></testsuites>
