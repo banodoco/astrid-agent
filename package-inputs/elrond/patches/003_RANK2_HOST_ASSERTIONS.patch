@@ -1,0 +1,29 @@
+From 5a96dc1c3e1a55081c004f8bd710c85b668def18 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 18:14:46 +0000
+Subject: [PATCH] Separate local cancellation from Runtime failure [skip ci]
+
+---
+ astrid/core/execution/generic_host.py | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/astrid/core/execution/generic_host.py b/astrid/core/execution/generic_host.py
+index ababa5d..e4239d3 100644
+--- a/astrid/core/execution/generic_host.py
++++ b/astrid/core/execution/generic_host.py
+@@ -9727,9 +9727,12 @@ class GenericPackHost:
+                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
+                 abort.set()
+             try:
+-                if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
+-                    completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
+-                                    fence=exact_fence, lease_id=lease_token)
++                if code == "cancelled":
++                    # Local containment is not a Runtime failure acknowledgement.
++                    # Match handle_guard_abort when cancellation is unavailable.
++                    if callable(getattr(self.client, "cancel", None)):
++                        completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
++                                        fence=exact_fence, lease_id=lease_token)
+                 else:
+                     ensure_failure(error)
+             except BaseException as reporting_error:

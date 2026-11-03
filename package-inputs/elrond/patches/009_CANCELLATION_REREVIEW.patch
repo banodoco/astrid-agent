@@ -1,0 +1,169 @@
+From aff7686d0f6e6314dd5531600d173bbd265e437e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 19:07:56 +0000
+Subject: [PATCH] Preserve admission failure receipts after cancellation [skip
+ ci]
+
+---
+ astrid/core/execution/generic_host.py         |  11 ++
+ .../execution/test_cancellation_rereview.py   | 126 ++++++++++++++++++
+ 2 files changed, 137 insertions(+)
+ create mode 100644 tests/core/execution/test_cancellation_rereview.py
+
+diff --git a/astrid/core/execution/generic_host.py b/astrid/core/execution/generic_host.py
+index c801b88..a8a65bb 100644
+--- a/astrid/core/execution/generic_host.py
++++ b/astrid/core/execution/generic_host.py
+@@ -9918,6 +9918,17 @@ class GenericPackHost:
+                     ensure_failure(terminal["error"])
+             except BaseException as reporting_error:
+                 terminal["reporting_error"] = reporting_error
++            with completion_lock:
++                if (terminal.get("forced") == "cancelled" and terminal.get("status") == "cancelled"
++                        and not isinstance(exc, HostCancelled)):
++                    # Admission precedes the execution finalizer. Keep its
++                    # failure even if the observer already published cancel.
++                    error = terminal["error"]
++                    if isinstance(error, AstridError) and error.code == "cancelled":
++                        error = exc
++                    terminal.update(status="failed", error=error, receipt_final=False)
++                    if terminal.get("root") is not None:
++                        self._write_task_result(terminal)
+             if isinstance(exc, SystemExit):
+                 raise HostError("executor exited without completing its task") from exc
+             raise
+diff --git a/tests/core/execution/test_cancellation_rereview.py b/tests/core/execution/test_cancellation_rereview.py
+new file mode 100644
+index 0000000..6bd04da
+--- /dev/null
++++ b/tests/core/execution/test_cancellation_rereview.py
+@@ -0,0 +1,126 @@
++"""Review cancellation evidence across the complete attempt boundary."""
++import time
++from dataclasses import replace
++
++import pytest
++
++from astrid.core.execution.generic_host import AstridError, HostError
++from tests.core.execution.test_cancellation_ordering import real_runtime
++from tests.core.execution.test_fail_closed_g28 import case, receipt
++from tests.test_generic_host_result_json import host_case
++
++
++@pytest.mark.timeout(15)
++@pytest.mark.parametrize("typed, expire", [(False, False), (True, False), (False, True)],
++                         ids=["io", "typed", "deadline"])
++def test_admission_failure_after_published_cancellation_keeps_failure(case, real_runtime, monkeypatch, typed, expire):
++    service, attempt = real_runtime
++    if expire:
++        case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=1.0)
++    preflight = case.host.preflight
++    message = "preflight failed after cancellation acknowledgement"
++    error = (AstridError(message, code="admission_failed", field="capability", fix="Repair the capability preflight")
++             if typed else OSError(message))
++    generated = case.runtime.cancel.__self__.generated
++    fail_attempt = generated.fail_attempt
++    failures = []
++
++    def track_failure(*args, **kwargs):
++        failures.append((args, kwargs))
++        return fail_attempt(*args, **kwargs)
++
++    monkeypatch.setattr(generated, "fail_attempt", track_failure)
++
++    def fail_after_cancel(capability_id):
++        preflight(capability_id)
++        case.host._shutdown.set()
++        expires = time.monotonic() + 3
++        while not (case.root / "result.json").exists() and time.monotonic() < expires:
++            time.sleep(0.01)
++        assert receipt(case)["status"] == "cancelled"
++        if expire:
++            while time.monotonic() < started + 1.1:
++                time.sleep(0.01)
++        raise error
++
++    monkeypatch.setattr(case.host, "preflight", fail_after_cancel)
++    started = time.monotonic()
++    with pytest.raises(HostError, match=message):
++        case.host.run_task(case.task, lease_token=attempt["lease_id"])
++    assert service.task(case.task["task"]["id"])["task"]["status"] == "cancelled"
++    assert receipt(case)["status"] == ("timeout" if expire else "failed")
++    assert receipt(case)["error"]["message"] == ("execution deadline exceeded" if expire else message)
++    assert receipt(case)["error"]["code"] == ("timeout" if expire else "admission_failed" if typed else "executor_failed")
++    if typed:
++        assert receipt(case)["error"]["field"] == "capability"
++        assert receipt(case)["error"]["fix"] == "Repair the capability preflight"
++    assert not failures  # Cancellation owns the remote transition.
++    assert not case.runtime.settlements
++    assert not case.host._active_processes
++
++
++@pytest.mark.timeout(15)
++def test_late_cancel_error_on_real_child_path_cannot_return_clean_cancellation(tmp_path, monkeypatch):
++    import json
++    import threading
++
++    from astrid_runtime_client.generated import ApiError
++    from astrid.core.execution import generic_host, task_scope
++    from tests.core.execution.test_generic_host_actions_v3 import pack, task_for
++
++    entered = tmp_path / "entered"
++    _, host, runtime, _, _ = pack(tmp_path, code=(
++        "from pathlib import Path\nimport time\n"
++        f"def run(value):\n    Path({str(entered)!r}).write_text('entered')\n"
++        "    time.sleep(30)\n    return value\n"))
++    host.attempt_root = tmp_path / "attempt"
++    host.register()
++    admitted = task_for(runtime)
++    owned, calls = [], []
++    track = host._track_process
++    error = ApiError(0, "transport_timeout", "cancel failed after publication")
++    published = threading.Event()
++
++    def track_original(process):
++        owned.append(process)
++        track(process)
++
++    def current_task(task_id):
++        pump = threading.current_thread().name.startswith("astrid-heartbeat-")
++        return {"state": "cancel_requested" if entered.exists() and pump else "running"}
++
++    def cancel(task_id, **kwargs):
++        pump = threading.current_thread().name.startswith("astrid-heartbeat-")
++        calls.append((pump, kwargs))
++        if pump:
++            result_path = host.attempt_root / "result.json"
++            expires = time.monotonic() + 3
++            while not result_path.exists() and time.monotonic() < expires:
++                time.sleep(0.01)
++            assert json.loads(result_path.read_text())["status"] == "cancelled"
++            published.set()
++            raise error
++        return {"state": "cancelled"}
++
++    monkeypatch.setattr(host, "_track_process", track_original)
++    monkeypatch.setattr(runtime, "task", current_task)
++    monkeypatch.setattr(runtime, "cancel", cancel, raising=False)
++    monkeypatch.setattr(generic_host, "_LEASE_POLL_SECONDS", 0.05)
++    try:
++        with pytest.raises(ApiError, match="cancel failed after publication"):
++            host.run_task(admitted, lease_token="lease")
++        assert published.is_set()
++        assert len(calls) == 2 and {pump for pump, _ in calls} == {False, True}
++        assert all(binding == {"attempt_id": "python-attempt", "fence": 1, "lease_id": "lease"}
++                   for _, binding in calls)
++        assert len(owned) == 1 and owned[0].returncode is not None
++        assert task_scope.stop(owned[0], 0.1).status == "settled"
++        assert not host._active_processes and not host._unresolved_task_scopes
++        assert not runtime.failures and not runtime.settlements and not runtime.uploaded_objects
++        result = json.loads((host.attempt_root / "result.json").read_text())
++        assert result["status"] == "failed"
++        assert result["error"]["code"] == "transport_timeout"
++        assert "cancel failed after publication" in result["error"]["message"]
++    finally:
++        for process in owned:
++            generic_host._terminate_process_group(process)
+-- 
+2.43.0
+
