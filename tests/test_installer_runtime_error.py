@@ -100,12 +100,13 @@ def test_late_upgrade_safe_false_does_not_terminalize_initial_stop(tmp_path, mon
     from astrid.installer.core import is_lifecycle_refusal
     assert is_lifecycle_refusal(raised.value)
     names = [call[0] for call in backend.calls]
-    assert names[:4] == ['stage', 'validate_candidate', 'stop', 'backup']
-    assert names.count('stop') == 2
-    assert 'restore' in names
+    assert names[:3] == ['stage', 'validate_candidate', 'stop']
+    assert names.count('stop') == 1
+    assert 'restore' not in names
     assert current(root) == old
     journal = read_json(root / 'update-transaction.json')
-    assert journal['step'] == 'rolled_back'
+    assert journal['step'] == 'upgrading'
+    assert journal['runtime_upgrade_started'] is True
     assert journal.get('outcome') != 'stop_refused'
 
 
