@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 import shutil
@@ -34,6 +35,310 @@ def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(t
     assert selected.read_bytes() == original
     assert manifest["runtime"]["schema_digest"] == "digest"
     assert not (tmp_path / "evidence").exists()
+
+
+def test_authentic_r0_capture_path_chain_and_sanitizer_preserve_structure(tmp_path):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    target = run_root / "program" / "service-env.json"
+    target.parent.mkdir()
+    target.write_text('TOKEN=do-not-publish\nPATH=/run-owned/path\n', encoding="utf-8")
+    link = run_root / "selected-env"
+    link.symlink_to(target.relative_to(run_root))
+
+    chain = journey.capture_path_chain(link, run_root)
+    assert chain["status"] == "observed"
+    assert chain["chain"][0] == {
+        "path": "$RUN_ROOT/selected-env", "kind": "symlink", "target": "program/service-env.json",
+    }
+    assert chain["chain"][-1] == {"path": "$RUN_ROOT/program/service-env.json", "kind": "file"}
+    assert journey._sanitize_capture_value({"access_token": "do-not-publish", "path": "Bearer local"}) == {
+        "access_token": "<redacted>", "path": "Bearer <redacted>",
+    }
+    copied = journey._capture_regular_file(target, run_root / "captured-service-env.txt", run_root)
+    assert copied["status"] == "captured"
+    assert "do-not-publish" not in (run_root / "captured-service-env.txt").read_text(encoding="utf-8")
+
+
+def test_authentic_r0_capture_caps_all_regular_artifacts_after_sanitization(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    source_bytes = b"TOKEN=do-not-publish\n"
+    sources = (
+        root / "install.json",
+        run_root / "astrid-install.json",
+        run_root / "home" / ".local" / "share" / "astrid-install.json",
+        run_root / "home" / ".config" / "systemd" / "user" / "astrid.service",
+    )
+    for source in sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(source_bytes)
+    calls = []
+
+    def expanding_redactor(text):
+        calls.append(text)
+        return text.replace("do-not-publish", "<redacted>") + ("x" * journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES)
+
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey.windows, "_redact_pack_host_text", expanding_redactor)
+    monkeypatch.setattr(journey, "_capture_manager_state_sanitized", lambda *unused: {"status": "observed"})
+
+    observation = journey.capture_authentic_r0_observation(
+        run_root / "capture-upload", phase="post-seed", run_root=run_root,
+        root=root, data=data, version=None)
+
+    artifacts = [
+        run_root / "capture-upload" / "post-seed" / "program_install_record.json",
+        run_root / "capture-upload" / "post-seed" / "run_selection_owner.json",
+        run_root / "capture-upload" / "post-seed" / "home_selection_owner.json",
+        run_root / "capture-upload" / "post-seed" / "service-definition.txt",
+    ]
+    assert calls == [source_bytes.decode("utf-8")] * len(artifacts)
+    assert all(artifact.stat().st_size == journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES for artifact in artifacts)
+    assert all(b"do-not-publish" not in artifact.read_bytes() for artifact in artifacts)
+    assert all(entry["captured_bytes"] == journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+               and entry["truncated"] is True
+               for entry in [*observation["fields"]["installer_owner_records"].values(),
+                             observation["fields"]["service_definition"]])
+
+
+def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monkeypatch):
+    calls = []
+    monkeypatch.setattr(journey, "_authentic_r0_capture_main", lambda argv: calls.append(argv) or 0)
+
+    assert journey.main(["--shared-executor", "authentic-r0-capture", "--fixture", "fixture"]) == 0
+    assert calls == [["--fixture", "fixture"]]
+
+
+def test_authentic_r0_capture_manager_state_records_native_service_pid(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    unit = run_root / "home" / ".config" / "systemd" / "user" / "astrid.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\n", encoding="utf-8")
+    data = run_root / "data"
+
+    class Completed:
+        returncode = 0
+        stdout = "LoadState=loaded\nMainPID=4242\n"
+        stderr = ""
+
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey.subprocess, "run", lambda *unused, **kwargs: Completed())
+    observed = journey._capture_manager_state_sanitized(tmp_path / "manager.json", run_root, run_root / "program", data)
+
+    assert observed["status"] == "observed"
+    assert observed["service_pid"] == 4242
+
+
+def test_authentic_r0_capture_accepts_a_bounded_post_seed_windows_snapshot(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    (data / "logs").mkdir(parents=True)
+    (data / "runtime").mkdir()
+    (data / "logs" / "service-pack-host.log").write_text("token=do-not-publish\n", encoding="utf-8")
+    monkeypatch.setattr(journey.windows, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+
+    journey.windows.capture_pack_host_readiness_diagnostics("post-seed-state", {
+        "status": "ok", "runtime_instance_id": "instance", "services": [{"name": "pack-host", "state": "starting"}],
+    })
+
+    manifest = journey.read_json(tmp_path / "evidence" / "pack-host-readiness-post-seed-state.json")
+    assert manifest["observation"] == "post-seed-state"
+    assert "do-not-publish" not in (tmp_path / "evidence" / "pack-host-readiness-post-seed-state-service-pack-host.log").read_text(encoding="utf-8")
+
+
+def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"
+    run_root.mkdir()
+    root.mkdir()
+    data.mkdir()
+    version_root = root / "versions" / "r0"
+    version_root.mkdir(parents=True)
+    version = {"root": str(version_root), "python": sys.executable, "env": {}}
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, shell="sh",
+        release0_fixture=tmp_path / "fixture", release0_agent_checkout=tmp_path / "agent",
+        release0_runtime_checkout=tmp_path / "runtime",
+    )
+    calls = []
+    fixture_receipt = {"sources": {"agent": "a" * 40, "runtime": "b" * 40}}
+    monkeypatch.setattr(journey, "run_scope", lambda *unused, **kwargs: (run_root, root, data, evidence))
+    monkeypatch.setattr(journey, "runner_identity", lambda: {"runner_image": "local", "runner_provenance": {}})
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "_capture_release0_sources", lambda *unused: {"agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}})
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda unused: (
+        tmp_path / "fixture", tmp_path / "release0-manifest.json", fixture_receipt))
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *unused: calls.append("release0-bootstrap"))
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *unused: calls.append("release0-start"))
+    monkeypatch.setattr(journey, "wait_ready", lambda *unused: None)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (version_root / "version.json", data, version))
+    monkeypatch.setattr(jumps, "installed_release", lambda unused: 0)
+    monkeypatch.setattr(journey, "read_json", lambda path: {"release": 0, "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}})
+    monkeypatch.setattr(journey, "selected_tuple", lambda *unused: {"agent": "a" * 40, "runtime": "b" * 40})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_authentic_r0_observation", lambda output, **kwargs: {"phase": kwargs["phase"]})
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: calls.append("release0-seed") or {})
+    monkeypatch.setattr(journey, "installed_cli", lambda *unused, **kwargs: calls.append("uninstall") or "")
+    monkeypatch.setattr(journey, "runtime_processes", lambda unused: [])
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["status"] == "captured"
+    assert result["qualification"]["eligible"] is False
+    assert result["r1_update_invoked"] is False
+    assert calls == ["release0-bootstrap", "release0-start", "release0-seed", "uninstall"]
+    assert (run_root / "capture-upload" / "capture-receipt.json").is_file()
+
+
+def _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw: bytes | None,
+                                         install_raw: bytes | None = None):
+    run_root = tmp_path / "run"
+    root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, shell="sh",
+        release0_fixture=tmp_path / "fixture", release0_agent_checkout=tmp_path / "agent",
+        release0_runtime_checkout=tmp_path / "runtime",
+    )
+    fixture_receipt = {"sources": {"agent": "a" * 40, "runtime": "b" * 40}}
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "run_scope", lambda *unused, **kwargs: (run_root, root, data, evidence))
+    monkeypatch.setattr(journey, "runner_identity", lambda: {"runner_image": "local", "runner_provenance": {}})
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "_capture_release0_sources", lambda *unused: {
+        "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40},
+    })
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda unused: (
+        tmp_path / "fixture", tmp_path / "release0-manifest.json", fixture_receipt))
+    monkeypatch.setattr(journey, "capture_authentic_r0_observation",
+                        lambda output, **kwargs: {"phase": kwargs["phase"]})
+    monkeypatch.setattr(journey, "runtime_processes", lambda unused: [])
+
+    def failed_bootstrap(*unused):
+        root.mkdir()
+        data.mkdir()
+        source = evidence / "release0" / "release0-bootstrap.log"
+        if raw is not None:
+            source.parent.mkdir(parents=True)
+            source.write_bytes(raw)
+        install_log = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
+        if install_raw is not None:
+            install_log.parent.mkdir(parents=True)
+            install_log.write_bytes(install_raw)
+        raise RuntimeError("release0-bootstrap.log: exit 1")
+
+    monkeypatch.setattr(jumps, "bootstrap_release0", failed_bootstrap)
+    return args, run_root, root, data
+
+
+def test_authentic_r0_failed_bootstrap_retains_redacted_bounded_log_before_cleanup(tmp_path, monkeypatch):
+    raw = (b"prelude\n" + b"x" * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 29) +
+           b"\nTOKEN=do-not-publish\nBearer secret-token-value\nfirst underlying bootstrap error\n")
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    entry = result["failure_diagnostics"]["release0_bootstrap"]
+    artifact = run_root / entry["path"]
+    assert result["status"] == "failed"
+    assert result["evidence_class"] == "capture-only"
+    assert result["qualification"]["eligible"] is False
+    assert result["r1_update_invoked"] is False
+    assert entry["status"] == "captured"
+    assert entry["path"] == "capture-upload/failure/release0-bootstrap.log"
+    assert entry["raw_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert entry["artifact_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert entry["bytes"] == len(raw)
+    assert entry["captured_bytes"] == artifact.stat().st_size <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert entry["truncated"] is True
+    retained = artifact.read_text(encoding="utf-8")
+    assert "first underlying bootstrap error" in retained
+    assert "do-not-publish" not in retained and "secret-token-value" not in retained
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert artifact.is_file()
+    receipt = journey.read_json(run_root / "capture-upload" / "capture-receipt.json")
+    assert receipt["artifacts"]["failure/release0-bootstrap.log"] == entry["artifact_sha256"]
+
+
+def test_authentic_r0_failed_bootstrap_records_missing_log(tmp_path, monkeypatch):
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, None)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["status"] == "failed"
+    assert result["failure_diagnostics"]["release0_bootstrap"] == {
+        "status": "missing",
+        "source_path": "$RUN_ROOT/evidence/release0/release0-bootstrap.log",
+        "chain": [{
+            "path": "$RUN_ROOT/evidence/release0/release0-bootstrap.log",
+            "kind": "absent",
+        }],
+        "path": None,
+        "raw_sha256": None,
+        "artifact_sha256": None,
+        "bytes": None,
+        "captured_bytes": None,
+        "truncated": False,
+        "limit_bytes": journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+    }
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert not (run_root / "capture-upload" / "failure" / "release0-bootstrap.log").exists()
+
+
+def test_authentic_r0_failed_bootstrap_retains_actual_install_log_before_cleanup(tmp_path, monkeypatch):
+    install_raw = (b"prelude\n" + b"x" * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 29) +
+                   b"\nTOKEN=do-not-publish\nBearer secret-token-value\nfirst underlying installer error\n")
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(
+        tmp_path, monkeypatch, b"release0 bootstrap failed\n", install_raw)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    entry = result["failure_diagnostics"]["install_log"]
+    artifact = run_root / entry["path"]
+    assert entry["status"] == "captured"
+    assert entry["source_path"] == "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log"
+    assert entry["path"] == "capture-upload/failure/install.log"
+    assert entry["raw_sha256"] == hashlib.sha256(install_raw).hexdigest()
+    assert entry["artifact_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert entry["bytes"] == len(install_raw)
+    assert entry["captured_bytes"] == artifact.stat().st_size <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert entry["truncated"] is True
+    retained = artifact.read_text(encoding="utf-8")
+    assert "first underlying installer error" in retained
+    assert "do-not-publish" not in retained and "secret-token-value" not in retained
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert artifact.is_file()
+    receipt = journey.read_json(run_root / "capture-upload" / "capture-receipt.json")
+    assert receipt["artifacts"]["failure/install.log"] == entry["artifact_sha256"]
+
+
+def test_authentic_r0_failed_bootstrap_reports_missing_actual_install_log(tmp_path, monkeypatch):
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(
+        tmp_path, monkeypatch, b"release0 bootstrap failed\n")
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["failure_diagnostics"]["install_log"] == {
+        "status": "missing",
+        "source_path": "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log",
+        "chain": [{
+            "path": "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log",
+            "kind": "absent",
+        }],
+        "path": None,
+        "raw_sha256": None,
+        "artifact_sha256": None,
+        "bytes": None,
+        "captured_bytes": None,
+        "truncated": False,
+        "limit_bytes": journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+    }
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert not (run_root / "capture-upload" / "failure" / "install.log").exists()
 
 
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
@@ -80,6 +385,65 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
     with pytest.raises(RuntimeError, match="Installed agent source differs"):
         journey.selected_tuple({"agent": {"sha": "expected"}, "runtime": {"sha": "right"}},
                                {"root": str(installed)})
+
+
+def _direct_candidate_vibecomfy(tmp_path, installed_vibecomfy):
+    """Build the candidate checkout and installed record consumed by a direct row."""
+    agent = tmp_path / "candidate-agent"
+    pin_path = agent / "astrid" / "packs" / "vibecomfy" / "pins.json"
+    pin_path.parent.mkdir(parents=True)
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "a" * 40}}}),
+                        encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(agent)], check=True)
+    subprocess.run(["git", "-C", str(agent), "add", "astrid/packs/vibecomfy/pins.json"], check=True)
+    subprocess.run(["git", "-C", str(agent), "-c", "user.name=journey-test",
+                    "-c", "user.email=journey-test@example.invalid", "commit", "-qm", "pin"], check=True)
+    candidate_agent_sha = subprocess.check_output(
+        ["git", "-C", str(agent), "rev-parse", "HEAD"], text=True).strip()
+    # The derivation must read the candidate SHA's committed pin, never a mutable checkout file.
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "b" * 40}}}),
+                        encoding="utf-8")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    manifest = {
+        "release": 1,
+        "agent": {"sha": candidate_agent_sha},
+        "runtime": {"sha": "r" * 40},
+    }
+    installed_manifest = dict(manifest)
+    if installed_vibecomfy is not None:
+        installed_manifest["vibecomfy"] = installed_vibecomfy
+    (installed / "manifest.json").write_text(json.dumps(installed_manifest), encoding="utf-8")
+    version = {"root": str(installed), "identity": {"release": 1, "managed_by": None}}
+    return manifest, version, {"agent": "old-agent", "runtime": "old-runtime"}, agent
+
+
+def test_direct_candidate_vibecomfy_identity_matches_committed_candidate_pin(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "a" * 40})
+    selected = jumps.selected_candidate(
+        manifest, version, before, candidate_agent_checkout=agent)
+    assert selected["vibecomfy"] == "a" * 40
+
+
+def test_direct_candidate_vibecomfy_identity_mismatch_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "b" * 40})
+    with pytest.raises(RuntimeError, match="differs from the candidate Agent pin"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_absence_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(tmp_path, None)
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_unknown_value_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "unknown"})
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
 
 
 def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
@@ -655,6 +1019,101 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
     assert journey.runtime_processes(data) == [101, 102]
 
 
+def _windows_census_owner(pid, parent_pid, command):
+    """Build the bounded record emitted by the Windows census for a matcher hit."""
+    return {
+        "ProcessId": pid,
+        "ParentProcessId": parent_pid,
+        "CreationDate": "2026-11-02T18:51:58.6815710Z",
+        "NativeIdentity": f"windows-creation:{pid}",
+        "ExecutablePath": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if "powershell.exe" in command else r"C:\Astrid\python.exe",
+        "Matcher": "runtime_protocol-start",
+        "CommandLength": len(command),
+        "CommandSha256": hashlib.sha256(command.encode()).hexdigest(),
+        "SanitizedCommandLine": "-m runtime_protocol start",
+    }
+
+
+def test_tst_b1_windows_runtime_owner_census_is_empty_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+
+    def powershell(code, name, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert name == "runtime-owner-processes.json"
+        return "[]"
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == []
+
+
+def test_tst_b1_windows_runtime_owner_census_keeps_genuine_runtime_protocol_start(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    command = r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start --support-root C:\data\runtime"
+    row = _windows_census_owner(8661, 7200, command)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps([row])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_excludes_its_own_powershell_probe(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    probe_command = (
+        "powershell.exe -NoProfile -NonInteractive -Command "
+        "$ErrorActionPreference='Stop'; "
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+        + journey.WINDOWS_RUNTIME_OWNER_CENSUS
+    )
+    runtime_child_command = (
+        r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start "
+        r"--support-root C:\data\runtime"
+    )
+    # The pre-fix census matched both: its own literal-bearing PowerShell
+    # command and a genuine Runtime child.  The source guard must remove only
+    # the former from the records it serializes.
+    candidates = [
+        (8660, 7200, probe_command),
+        (8661, 8660, runtime_child_command),
+    ]
+    assert all(journey._runtime_owner_command(command) for _pid, _parent, command in candidates)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert "Where-Object { $_.ProcessId -ne $PID }" in code
+        return json.dumps([
+            _windows_census_owner(pid, parent_pid, command)
+            for pid, parent_pid, command in candidates
+            if pid != 8660
+        ])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_errors_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "healthy", lambda _data: {"pid": 8661})
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        raise RuntimeError("CIM enumeration unavailable")
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    evidence = tmp_path / "evidence"
+    with pytest.raises(RuntimeError, match="CIM enumeration unavailable"):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    assert snapshot["assertion"]["asserted_owner_pids"] == {
+        "status": "unavailable", "reason": "owner census failed: RuntimeError",
+    }
+
+
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         tmp_path, monkeypatch, platform):
@@ -680,6 +1139,338 @@ def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
     monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
     with pytest.raises(RuntimeError, match=r"found \[4123, 4124\]"):
         journey.assert_one_runtime(tmp_path)
+
+
+def test_tst_b1_windows_duplicate_owner_error_retains_bounded_identity_evidence(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owner = (r"C:\Astrid\pythonw.exe -X utf8 -I -c "
+             "os.environ.update({'API_TOKEN':'must-not-be-retained'}); "
+             "from astrid_runtime.cli import main; main(['run', '--profile', 'astrid'])")
+    selected = {
+        "ProcessId": 3032, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:21.973746+00:00",
+        "NativeIdentity": "windows-creation:134381135019737465",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    duplicate = {
+        "ProcessId": 2972, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:18.000000+00:00",
+        "NativeIdentity": "windows-creation:134381135010000000",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    rows = [selected]
+
+    def powershell(code, *unused, **kwargs):
+        assert "GetProcessTimes" in code
+        assert "SanitizedCommandLine" in code
+        assert "CommandSha256" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {
+        "pid": 3032,
+        "process_birth_id": "windows-creation:134381135019737465",
+        "runtime_instance_id": "instance-3032",
+        "active_realm": "realm-3032",
+        "coordinator_epoch": "epoch-3032",
+    })
+    evidence = tmp_path / "evidence" / "release0"
+    # The unchanged strict assertion passes and creates no diagnostic until it
+    # actually observes the duplicate failure.
+    journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert not (evidence / "runtime-owner-assertion.json").exists()
+    rows.insert(0, duplicate)
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    message = str(failure.value)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in message
+    assert '"matcher":"astrid_runtime-cli-run"' in message
+    assert '"parent_pid":1920' in message
+    assert '"creation_date":"2026-11-02T17:18:21.973746+00:00"' in message
+    assert hashlib.sha256(owner.encode()).hexdigest() in message
+    assert owner not in message
+    assert "must-not-be-retained" not in message
+
+    snapshot_path = evidence / "runtime-owner-assertion.json"
+    snapshot_bytes = snapshot_path.read_bytes()
+    snapshot = journey.read_json(snapshot_path)
+    assert snapshot["capture"]["timing"] == "captured before the assertion raises"
+    assert snapshot["capture"]["atomicity"]["status"] == "not-established"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [2972, 3032]
+    assert snapshot["assertion"]["selected_pid_bound_to_asserted_owner"] == {
+        "status": "observed", "record_index": 1,
+    }
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "observed", "value": "windows-creation:134381135019737465",
+    }
+    owners = {row["pid"]["value"]: row for row in snapshot["asserted_owners"]}
+    assert set(owners) == {2972, 3032}
+    selected_snapshot = owners[3032]
+    assert selected_snapshot["command_line"] == {
+        "status": "observed", "value": "-c <astrid_runtime.cli main(['run', ...])>",
+    }
+    assert selected_snapshot["command_sha256"]["value"] == hashlib.sha256(owner.encode()).hexdigest()
+    assert selected_snapshot["executable_path"] == {
+        "status": "observed", "value": r"C:\Astrid\pythonw.exe",
+    }
+    assert selected_snapshot["creation_time"]["value"] == "2026-11-02T17:18:21.973746+00:00"
+    assert selected_snapshot["native_identity"]["value"] == "windows-creation:134381135019737465"
+    assert selected_snapshot["parent_child_relation"] == {
+        "status": "observed", "parent_is_asserted_owner": False,
+        "asserted_children": [], "shared_parent_with": [2972],
+    }
+    assert "must-not-be-retained" not in snapshot_path.read_text()
+
+    # A later census may observe different rows, but cannot replace the first
+    # failure-time record or its staged copies.
+    rows[:] = [selected, {**duplicate, "ExecutablePath": r"C:\Other\pythonw.exe"}]
+    with pytest.raises(RuntimeError):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    journey.retain_named_evidence(evidence, "after-cleanup")
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "before-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "after-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+
+
+def test_tst_b1_windows_owner_failure_snapshot_marks_missing_fields_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    rows = [
+        {"ProcessId": 2972, "ParentProcessId": 1920,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+        {"ProcessId": 3032, "ParentProcessId": None,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+    ]
+
+    def powershell(code, *unused, **kwargs):
+        assert "NativeIdentity" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 3032})
+    evidence = tmp_path / "evidence" / "release0"
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in str(failure.value)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    selected = next(row for row in snapshot["asserted_owners"] if row["pid"]["value"] == 3032)
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "unavailable", "reason": "discovery process_birth_id was unavailable",
+    }
+    assert selected["command_sha256"] == {
+        "status": "unavailable", "reason": "command-line digest was unavailable",
+    }
+    assert selected["executable_path"] == {
+        "status": "unavailable", "reason": "Win32_Process.ExecutablePath was unavailable",
+    }
+    assert selected["creation_time"] == {
+        "status": "unavailable", "reason": "Win32_Process.CreationDate was unavailable",
+    }
+    assert selected["native_identity"] == {
+        "status": "unavailable", "reason": "GetProcessTimes creation identity was unavailable",
+    }
+    assert selected["parent_child_relation"] == {
+        "status": "unavailable", "parent_is_asserted_owner": None,
+        "asserted_children": [], "shared_parent_with": [],
+        "reason": "parent PID was unavailable",
+    }
+
+
+_ARTIFACT_VENV = (r"D:\a\_temp\astrid-r1-direct-windows\program\versions\3204bb00-"
+                  r"6d53a190-f042d729\py\Scripts\pythonw.exe")
+_ARTIFACT_BASE = (r"D:\a\_temp\astrid-r1-direct-windows\localappdata\Astrid Installer" "\\"
+                  r"bootstrap\python\cpython-3.11.13-windows-x86_64-none\pythonw.exe")
+_ARTIFACT_TAIL_SHA256 = "00d7b317229dfb6c2e46d4f0a0a903af124a578f2997ccfd1c84596b36f7389e"
+
+
+def _artifact_shaped_windows_owners(*, child_identity="windows-creation:134381205278019339",
+                                    child_parent=6976, child_image=_ARTIFACT_BASE,
+                                    action_image=_ARTIFACT_VENV,
+                                    parent_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_arguments_match=True,
+                                    action_tail=_ARTIFACT_TAIL_SHA256,
+                                    parent_created="2026-11-02T19:15:27.791539+00:00",
+                                    child_created="2026-11-02T19:15:27.801933+00:00",
+                                    extra=()):
+    """The retained 41507782325 process topology, without secret command text."""
+    parent = {
+        "pid": 6976,
+        "parent_pid": 1880,
+        "creation_date": parent_created,
+        "native_identity": "windows-creation:134381205277915396",
+        "executable_path": _ARTIFACT_VENV,
+        "command_tail_sha256": parent_tail,
+        "command_tail_argument_count": 4,
+        "registered_arguments_match": True,
+    }
+    child = {
+        "pid": 5224,
+        "parent_pid": child_parent,
+        "creation_date": child_created,
+        "native_identity": child_identity,
+        "executable_path": child_image,
+        "command_tail_sha256": child_tail,
+        "command_tail_argument_count": 4,
+        "registered_arguments_match": child_arguments_match,
+    }
+    task_action = {
+        "status": "observed",
+        "task_path": "\\",
+        "executable_path": action_image,
+        "arguments_sha256": action_tail,
+        "argument_count": 4,
+    }
+    details = [parent, child, *extra]
+    return journey._RuntimeOwnerPids([row["pid"] for row in details], details, task_action)
+
+
+def _artifact_shaped_discovery():
+    return {
+        "pid": 5224,
+        "process_birth_id": "windows-creation:134381205278019339",
+        "runtime_instance_id": "eac11355544e43cb87aa37c391715b25",
+        "active_realm": "d924bbae-6693-4db1-9b57-cfc8651ed7b9",
+        "coordinator_epoch": "eac11355544e43cb87aa37c391715b25",
+    }
+
+
+def test_tst_b1_windows_artifact_shaped_venv_redirector_is_one_logical_owner(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    monkeypatch.setattr(journey, "healthy", lambda _data: _artifact_shaped_discovery())
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable", lambda _path: _ARTIFACT_BASE)
+
+    journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-logical-owner-assertion"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [6976, 5224]
+    assert snapshot["assertion"]["logical_owner_pids"] == [5224]
+    assert snapshot["assertion"]["logical_owner_normalization"]["status"] == "collapsed"
+    assert snapshot["assertion"]["logical_owner_normalization"]["selected_native_identity"] == (
+        "windows-creation:134381205278019339")
+    assert snapshot["assertion"]["logical_owner_normalization"]["task_action"] == {
+        "executable_path": _ARTIFACT_VENV,
+        "arguments_sha256": _ARTIFACT_TAIL_SHA256,
+        "argument_count": 4,
+    }
+
+
+def test_tst_b1_windows_census_retains_raw_pair_and_redacted_task_action(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    observation = {
+        "owners": [{
+            "ProcessId": row["pid"], "ParentProcessId": row["parent_pid"],
+            "CreationDate": row["creation_date"], "NativeIdentity": row["native_identity"],
+            "ExecutablePath": row["executable_path"], "Matcher": "astrid_runtime-cli-run",
+            "CommandLength": 3710, "CommandSha256": "a" * 64,
+            "CommandTailSha256": row["command_tail_sha256"],
+            "CommandTailArgumentCount": row["command_tail_argument_count"],
+            "RegisteredArgumentsMatch": row["registered_arguments_match"],
+            "SanitizedCommandLine": "-c <astrid_runtime.cli main(['run', ...])>",
+        } for row in owners.details],
+        "task_action": owners.task_action,
+    }
+
+    def powershell(code, *unused, **_kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps(observation)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    retained = journey.runtime_processes(tmp_path)
+    assert list(retained) == [6976, 5224]
+    assert retained.task_action == owners.task_action
+    assert [row["parent_pid"] for row in retained.details] == [1880, 6976]
+    assert all(row["registered_arguments_match"] for row in retained.details)
+
+
+@pytest.mark.parametrize("case", [
+    "wrong-base-image", "changed-argv", "unreadable-pyvenv-cfg", "missing-selected-identity",
+    "missing-discovery-identity", "unrelated-parent", "creation-order", "third-owner",
+    "genuine-second-interpreter",
+])
+def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner(
+        tmp_path, monkeypatch, case):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    kwargs = {}
+    if case == "wrong-base-image":
+        kwargs["child_image"] = r"D:\foreign\pythonw.exe"
+    elif case == "changed-argv":
+        kwargs["child_tail"] = "f" * 64
+        kwargs["child_arguments_match"] = False
+    elif case == "missing-selected-identity":
+        kwargs["child_identity"] = None
+    elif case == "creation-order":
+        kwargs["parent_created"] = "2026-11-02T19:15:27.901933+00:00"
+    elif case == "unrelated-parent":
+        kwargs["child_parent"] = 1880
+    elif case == "third-owner":
+        kwargs["extra"] = ({
+            "pid": 7111, "parent_pid": 6976,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019400",
+            "executable_path": _ARTIFACT_VENV,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
+        },)
+    elif case == "genuine-second-interpreter":
+        kwargs["extra"] = ({
+            "pid": 8111, "parent_pid": 1880,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019401",
+            "executable_path": _ARTIFACT_BASE,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
+        },)
+    owners = _artifact_shaped_windows_owners(**kwargs)
+    discovery = _artifact_shaped_discovery()
+    if case == "missing-discovery-identity":
+        discovery.pop("process_birth_id")
+    monkeypatch.setattr(journey, "healthy", lambda _data: discovery)
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable",
+                        lambda _path: None if case == "unreadable-pyvenv-cfg" else _ARTIFACT_BASE)
+
+    with pytest.raises(RuntimeError, match=r"Expected exactly the selected Runtime owner 5224"):
+        journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-cardinality-failure"
+    assert snapshot["assertion"]["asserted_owner_pids"] == list(owners)
+    assert "logical_owner_pids" not in snapshot["assertion"]
+
+
+def test_tst_b1_windows_venv_cfg_requires_one_readable_absolute_home(monkeypatch):
+    class Config:
+        def __init__(self, text):
+            self.text = text
+        def is_symlink(self):
+            return False
+        def is_file(self):
+            return True
+        def read_text(self, **_kwargs):
+            return self.text
+
+    config = Config("home = D:\\base\\cpython-3.11.13\n"
+                    "include-system-site-packages = false\n")
+    monkeypatch.setattr(journey, "Path", lambda _path: config)
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) == r"D:\base\cpython-3.11.13\pythonw.exe"
+    config.text = "home = D:\\one\nhome = D:\\two\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
+    config.text = "home = relative\\python\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
 
 
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
@@ -768,6 +1559,10 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
                               leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
     raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
     monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
@@ -816,6 +1611,167 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
         assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
                          "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
         assert (run_root / entry["path"]).read_bytes() == raw
+        diagnostic = json.loads((staged / phase / "windows-bootstrap-environment.log").read_text())
+        assert diagnostic == {"bootstrap": "release0-bootstrap.log", "PSEdition": "Core",
+                              "PSModulePath": r"C:\Program Files\PowerShell\7\Modules"}
+
+
+def test_linux_update_bootstrap_failure_stages_nested_log_through_cleanup(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    raw = b"first real update-bootstrap error\n"
+    source = evidence / "release1" / "update-bootstrap.log"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(raw)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+        "error": "RuntimeError: update-bootstrap.log: exit 1",
+    })
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    shutil.rmtree(source.parent)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+
+    identity = hashlib.sha256(b"release1/update-bootstrap.log").hexdigest()
+    name = f"runtime-service-service-bootstrap-{identity}.log"
+    staged = run_root / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "journey-result.json")
+        bootstrap = receipt["failure_diagnostics"][phase]["bootstrap"]
+        path = staged / phase / name
+        assert path.read_bytes() == raw
+        assert bootstrap["status"] == "captured"
+        assert bootstrap["paths"] == [path.relative_to(run_root).as_posix()]
+    assert receipt["failure_diagnostics"]["before-cleanup"]["bootstrap"]["source_paths"] == [
+        "release1/update-bootstrap.log"]
+    assert receipt["failure_diagnostics"]["after-cleanup"]["bootstrap"]["source_paths"] == []
+
+
+@pytest.mark.parametrize("platform,legacy", [("win32", True), ("win32", False), ("linux", True)])
+def test_bootstrap_module_path_is_scoped_to_windows_legacy_launch(tmp_path, monkeypatch, platform, legacy):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    inherited = {"pSmOdUlEpAtH": r"C:\Users\test\Documents\PowerShell\Modules;C:\PowerShell\7\Modules",
+                 "PROGRAMFILES": r"C:\Program Files", "SYSTEMROOT": r"C:\Windows",
+                 "JOURNEY_LAUNCHER_PSEDITION": "Core", "KEEP": "value"}
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    log = tmp_path / "release1" / "update-bootstrap.log"
+    journey.run(["powershell.exe", "-File", "install.ps1"], log, env=inherited, legacy_bootstrap=legacy)
+    child = calls[0][1]
+    diagnostic = tmp_path / "windows-bootstrap-environment.log"
+    if platform == "win32" and legacy:
+        assert child["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                         r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+        assert "pSmOdUlEpAtH" not in child and child["KEEP"] == "value"
+        assert json.loads(diagnostic.read_text()) == {"bootstrap": "update-bootstrap.log",
+                                                     "PSModulePath": inherited["pSmOdUlEpAtH"],
+                                                     "PSEdition": "Core"}
+    else:
+        assert child == inherited
+        assert not diagnostic.exists()
+    assert inherited["pSmOdUlEpAtH"].endswith(r"C:\PowerShell\7\Modules")
+
+
+def test_release0_and_release1_bootstraps_use_normalized_windows_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", "inherited-pwsh-path")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]["PSModulePath"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    evidence = tmp_path / "evidence"
+    jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest", "powershell.exe",
+                             evidence / "release0", tmp_path / "program", tmp_path / "data")
+    journey.bootstrap(tmp_path / "app", tmp_path / "manifest", "powershell.exe", "update",
+                      evidence / "release1", tmp_path / "program", tmp_path / "data", True)
+    assert [Path(argv[6]).as_posix() for argv, _ in calls] == [
+        (tmp_path / "fixture" / "served" / "install.ps1").as_posix(),
+        (tmp_path / "app" / "public" / "install.ps1").as_posix()]
+    assert all(path == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                        r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules") for _, path in calls)
+    records = [json.loads(line) for line in (evidence / "windows-bootstrap-environment.log").read_text().splitlines()]
+    assert [record["bootstrap"] for record in records] == ["release0-bootstrap.log", "update-bootstrap.log"]
+    assert all(record["PSModulePath"] == "inherited-pwsh-path" and record["PSEdition"] == "Core"
+               for record in records)
+
+
+def test_direct_release0_to_release1_lifecycle_sanitizes_both_windows_children(tmp_path, monkeypatch):
+    """Keep R0 and R1 sanitation bound to the real direct lifecycle ordering."""
+    app = tmp_path / "app"
+    app.mkdir()
+    evidence, root, data = (tmp_path / name for name in ("evidence", "program", "data"))
+    r0_manifest, candidate_path = tmp_path / "r0.json", tmp_path / "candidate.json"
+    journey.write_json(r0_manifest, {"release": 0})
+    journey.write_json(candidate_path, {"manifest_sha256": "digest", "artifacts": {}})
+    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    args = SimpleNamespace(job_id="direct-windows", mode="direct", leg="release0-to-release1",
+                           shell="powershell.exe", app_checkout=app, candidate=candidate_path)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", "inherited-pwsh-path")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
+    children, owners = [], []
+
+    def process(argv, **kwargs):
+        children.append((argv, kwargs["env"].copy()))
+        # Exercise the R1 failure boundary after a successfully sanitized R0 child.
+        return SimpleNamespace(returncode=0 if len(children) == 1 else 37)
+
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path / "fixture", r0_manifest, {}))
+    monkeypatch.setattr(journey, "selected_manifest", lambda *a, **kw: (candidate_path, manifest))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *a: manifest)
+    monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *a: None)
+    monkeypatch.setattr(journey, "installation", lambda *a: (tmp_path / "old", data, {"release": 0}))
+    monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
+    monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a: {})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *a: owners.append("checked"))
+    monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **kw: None)
+    monkeypatch.setattr(journey, "verify", lambda *a, **kw: None)
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *a: {})
+    monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
+    monkeypatch.setattr(journey, "healthy", lambda *a: {"pid": 123})
+    monkeypatch.setattr(journey, "process_birth", lambda *a: "birth")
+
+    with pytest.raises(RuntimeError, match=r"update-bootstrap.log: exit 37"):
+        jumps.execute_release0_to_release1(args, root, data, evidence, SimpleNamespace(pid=1), "birth")
+
+    assert owners == ["checked"]
+    assert [Path(argv[6]).as_posix() for argv, _ in children] == [
+        (tmp_path / "fixture/served/install.ps1").as_posix(), (app / "public/install.ps1").as_posix()]
+    assert all(env["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                       r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+               for _, env in children)
+    records = [json.loads(line) for line in (evidence / "windows-bootstrap-environment.log").read_text().splitlines()]
+    assert records == [{"bootstrap": name, "PSModulePath": "inherited-pwsh-path", "PSEdition": "Core"}
+                       for name in ("release0-bootstrap.log", "update-bootstrap.log")]
+
+
+def test_windows_bootstrap_edition_and_diagnostic_are_wired_to_workflow():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    lifecycle = workflow.split("      - name: Run the matrix-owned lifecycle driver\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "$env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition" in lifecycle
+    assert lifecycle.index("$env:JOURNEY_LAUNCHER_PSEDITION") < lifecycle.index("python -u agent/scripts/ci_journey.py")
+    boundary = workflow.split("      - name: Validate the named lifecycle evidence artifact boundary\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "'windows-bootstrap-environment.log'" in boundary
+    assert "windows-bootstrap-environment.log" in journey.JOURNEY_EVIDENCE_NAMES
 
 
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
@@ -1196,6 +2152,64 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
 
 
+def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    release0 = evidence / "release0"
+    release0.mkdir(parents=True)
+    snapshot = b'{"capture":"release0-write-once"}\n'
+    (release0 / journey.OWNER_ASSERTION_SNAPSHOT).write_bytes(snapshot)
+    (release0 / "unapproved-nested.json").write_text("must not stage", encoding="utf-8")
+    # A top-level file could be produced by later diagnostics. The nested R0
+    # snapshot remains the artifact-boundary source for this release leg.
+    (evidence / journey.OWNER_ASSERTION_SNAPSHOT).write_text("later diagnostic", encoding="utf-8")
+    (evidence / "unapproved-top-level.json").write_text("must not stage", encoding="utf-8")
+
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert (staged / journey.OWNER_ASSERTION_SNAPSHOT).read_bytes() == snapshot
+    assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
+
+
+def test_windows_pack_host_readiness_capture_is_retained_and_receipted(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {"status": "fail", "scenario": "fresh-install"})
+    journey.write_json(evidence / "pack-host-readiness-first-failed-poll.json", {
+        "schema_version": 1, "observation": "first-failed-poll", "health": {"status": "ok"},
+    })
+    (evidence / "pack-host-readiness-first-failed-poll-service-pack-host.log").write_text(
+        "first service error\n", encoding="utf-8",
+    )
+    (evidence / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log").is_file()
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
+        "first service error\n"
+    )
+    assert not (staged / "unrelated-secret.txt").exists()
+    receipt = journey.read_json(staged / "journey-result.json")
+    assert receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"] == [
+        {
+            "observation": "first-failed-poll", "status": "captured",
+            "path": "evidence-upload/before-cleanup/runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log",
+            "source_path": "pack-host-readiness-first-failed-poll.json",
+            "retention_origin": "current-source",
+            "capture_status": "observed",
+            "capture": {"schema_version": 1, "observation": "first-failed-poll", "health": {"status": "ok"}},
+        },
+        {"observation": "first-service-exit", "status": "unavailable", "path": None},
+        {"observation": "definitive-failure", "status": "unavailable", "path": None},
+    ]
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps
@@ -1210,7 +2224,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     journey.write_json(candidate_path, candidate)
     manifest = {"release": 1, "agent": {}, "runtime": {}}
     args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
-                           app_checkout=app, candidate=candidate_path)
+                           app_checkout=app, candidate=candidate_path,
+                           candidate_agent_checkout=tmp_path / "candidate-agent")
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
 
@@ -1218,7 +2233,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def one_runtime(_data, _evidence=None):
         assert state["running"] and not state["local"]
 
     def manager_action(operation):
@@ -1267,8 +2282,11 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         calls.append("task")
         return "settled"
 
-    def bootstrap(*_args):
+    bootstrap_calls = []
+
+    def bootstrap(*bootstrap_args, **bootstrap_kwargs):
         assert state["running"] and state["content"] is not None
+        bootstrap_calls.append((bootstrap_args, bootstrap_kwargs))
         state.update(release=1, pid=state["pid"] + 1)
 
     monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
@@ -1283,7 +2301,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                                                              {"release": state["release"]}))
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
-    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
+    monkeypatch.setattr(jumps, "selected_candidate",
+                        lambda *_args, **_kwargs: {"agent": "new", "runtime": "new"})
     monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
     monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
     monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
@@ -1307,6 +2326,10 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert bootstrap_calls == [(
+        (app, candidate_path, "sh", "update", evidence / "release1", root, data),
+        {"legacy_bootstrap": True},
+    )]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
                      "stop", "snapshot", "start", "task"]
     assert state["running"] and not state["local"]
@@ -1330,3 +2353,360 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_mac_stop_capture_reaches_bootstrap_child_only_when_opted_in(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    (app / "public").mkdir(parents=True)
+    # Use a shell wrapper that launches an isolated Python child like the App bootstrap.
+    (app / "public" / "install").write_text(
+        f"{sys.executable} -I -c 'import os; print(os.getenv(\"ASTRID_INSTALLER_MAC_STOP_CAPTURE\", \"absent\"))'\n")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE", "1")
+    journey.bootstrap(app, app / "manifest", "sh", "update", tmp_path / "evidence", tmp_path / "root", tmp_path / "data")
+    assert (tmp_path / "evidence" / "update-bootstrap.log").read_text().strip() == "1"
+    monkeypatch.delenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE")
+    journey.bootstrap(app, app / "manifest", "sh", "update", tmp_path / "evidence", tmp_path / "root", tmp_path / "data")
+    assert (tmp_path / "evidence" / "update-bootstrap.log").read_text().strip() == "absent"
+
+
+def test_mac_stop_capture_retains_only_valid_bounded_records(tmp_path):
+    run_root = tmp_path / "run"
+    source = run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / "install.log"
+    source.parent.mkdir(parents=True)
+    record = {"format": "astrid-mac-stop-capture/v1", "capture": "a" * 32, "seq": 1,
+              "stage": "pre_admission", "wall_ns": 1, "monotonic_ns": 2,
+              "discovery": "same", "process": "unobserved"}
+    invalid = dict(record, token="secret-value")
+    source.write_bytes(b"x" * (1024 * 1024) + b"\nnormal secret-value\n" +
+                       json.dumps(invalid).encode() + b"\n" + json.dumps(record).encode() + b"\n")
+    dest = run_root / "evidence-upload" / "before-cleanup"
+    result = journey.capture_mac_stop_records(run_root, dest)
+    assert result["status"] == "captured" and result["truncated"] and result["records"] == 1
+    retained = (run_root / result["path"]).read_bytes()
+    assert json.loads(retained) == record and b"secret-value" not in retained
+    assert result["sha256"] == hashlib.sha256(retained).hexdigest()
+    source.unlink()
+    source.symlink_to(tmp_path / "secret")
+    assert journey.capture_mac_stop_records(run_root, dest)["status"] == "unavailable"
+
+
+def test_mac_stop_capture_workflow_scopes_opt_in_and_artifact():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    assert workflow.count("      mac_stop_capture:") == 2
+    assert "matrix.job_id == 'direct-macos' && inputs.mac_stop_capture && '1' || '0'" in workflow
+    assert "'mac-stop-capture.jsonl'" in workflow
+
+
+def test_mac_stop_snapshot_retains_capture_before_cleanup_without_raw_install_log(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    source = run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / "install.log"
+    source.parent.mkdir(parents=True)
+    record = {"format": "astrid-mac-stop-capture/v1", "capture": "b" * 32,
+              "seq": 1, "stage": "bootout_enter", "wall_ns": 1, "monotonic_ns": 2}
+    source.write_text("ordinary private installer log\n" + json.dumps(record) + "\n")
+    journey.write_json(evidence / "journey-result.json", {"status": "fail"})
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE", "1")
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    source.unlink()
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+    receipt = journey.read_json(evidence / "journey-result.json")
+    before = receipt["failure_diagnostics"]["before-cleanup"]["mac_stop_capture"]
+    after = receipt["failure_diagnostics"]["after-cleanup"]["mac_stop_capture"]
+    assert before["status"] == "captured" and after["status"] == "unavailable"
+    assert json.loads((run_root / before["path"]).read_text()) == record
+    assert not list((run_root / "evidence-upload").rglob("install.log"))
+    staged = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
+    assert staged["failure_diagnostics"]["before-cleanup"]["mac_stop_capture"] == before
+
+
+def test_linux_lock_capture_workflow_scopes_opt_in():
+    workflow = (journey.ROOT / '.github' / 'workflows' / 'journey.yml').read_text()
+    assert workflow.count('      linux_lock_capture:') == 2
+    assert "matrix.job_id == 'direct-linux' && inputs.linux_lock_capture && '1' || '0'" in workflow
+    assert not journey.credential_name('ASTRID_LINUX_LOCK_CAPTURE')
+
+
+def test_linux_lock_capture_reaches_bootstrap_subprocess(tmp_path, monkeypatch):
+    app, manifest = app_checkout(tmp_path)
+    (app / 'public' / 'install').write_text('#!/bin/sh\nprintf "%s" "$ASTRID_LINUX_LOCK_CAPTURE"\n')
+    evidence = tmp_path / 'evidence'
+    evidence.mkdir()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_LOCK_CAPTURE', '1')
+    with journey.without_provider_credentials():
+        journey.bootstrap(app, manifest, 'sh', 'update', evidence, tmp_path / 'root', tmp_path / 'data')
+    assert (evidence / 'update-bootstrap.log').read_text() == '1'
+
+
+def test_linux_lock_snapshot_retains_sanitized_bounded_log_and_refuses_symlink(tmp_path, monkeypatch):
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    source.write_text('x' * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 50) +
+                      '\nTOKEN=do-not-publish\ninstaller-lock-parent {"schema":"installer-lock-parent-v1"}\n')
+    journey.write_json(evidence / 'journey-result.json', {'status': 'fail'})
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_LOCK_CAPTURE', '1')
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    record = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['before-cleanup']['linux_lock_install_log']
+    retained = run_root / 'evidence-upload' / 'before-cleanup' / 'install.log'
+    data = retained.read_bytes()
+    assert record['status'] == 'captured' and record['truncated']
+    assert len(data) <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert b'do-not-publish' not in data and b'installer-lock-parent' in data
+    assert record['sha256'] == hashlib.sha256(data).hexdigest()
+    assert not (evidence / 'install.log').exists()
+    source.unlink()
+    source.symlink_to(tmp_path / 'secret')
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'after-cleanup')
+    after = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['after-cleanup']['linux_lock_install_log']
+    assert after['status'] == 'unavailable'
+    assert retained.read_bytes() == data
+
+
+def test_linux_identity_capture_workflow_scopes_opt_in():
+    workflow = (journey.ROOT / '.github' / 'workflows' / 'journey.yml').read_text()
+    assert workflow.count('      linux_identity_capture:') == 2
+    assert "matrix.job_id == 'direct-linux' && inputs.linux_identity_capture && '1' || '0'" in workflow
+    assert not journey.credential_name('ASTRID_LINUX_IDENTITY_CAPTURE')
+
+
+def test_linux_identity_capture_reaches_isolated_bootstrap_child(tmp_path, monkeypatch):
+    app, manifest = app_checkout(tmp_path)
+    # Like the App bootstrap, run isolated Python and use execv to inherit its environment.
+    (app / 'public' / 'install').write_text(
+        f'''#!/bin/sh
+{sys.executable} -I -c 'import os,sys; os.execv(sys.executable, [sys.executable, "-I", "-c", "import os; print(os.getenv(\\"ASTRID_LINUX_IDENTITY_CAPTURE\\", \\"absent\\"))"])'
+''')
+    evidence = tmp_path / 'evidence'
+    evidence.mkdir()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    for value in ('1', '0'):
+        monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', value)
+        with journey.without_provider_credentials():
+            journey.bootstrap(app, manifest, 'sh', 'update', evidence, tmp_path / 'root', tmp_path / 'data')
+        assert (evidence / 'update-bootstrap.log').read_text().strip() == value
+
+
+def test_linux_identity_snapshot_retains_sanitized_record_and_failure(tmp_path, monkeypatch):
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    line = 'installer-linux-identity {"schema":"installer-linux-identity-v1","match":false,"bridge":"missing"}'
+    source.write_text('x' * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 50) +
+                      '\nTOKEN=do-not-publish\n' + line + '\n')
+    original = {'status': 'fail', 'checks': {'release': 'not-run'}, 'installed_tuple': None}
+    journey.write_json(evidence / 'journey-result.json', original)
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    monkeypatch.delenv('ASTRID_LINUX_LOCK_CAPTURE', raising=False)
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    result = journey.read_json(evidence / 'journey-result.json')
+    assert all(result[key] == value for key, value in original.items())
+    record = result['failure_diagnostics']['before-cleanup']['linux_identity_install_log']
+    retained = run_root / 'evidence-upload' / 'before-cleanup' / 'install.log'
+    data = retained.read_bytes()
+    assert record['status'] == 'captured' and record['truncated']
+    assert len(data) <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert line.encode() in data and b'do-not-publish' not in data
+    assert record['raw_sha256'] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert record['sha256'] == hashlib.sha256(data).hexdigest()
+    assert not (evidence / 'install.log').exists()
+    source.unlink()
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'after-cleanup')
+    after = journey.read_json(evidence / 'journey-result.json')
+    assert after['failure_diagnostics']['after-cleanup']['linux_identity_install_log']['status'] != 'captured'
+    assert all(after[key] == value for key, value in original.items())
+    assert retained.read_bytes() == data
+
+
+def test_linux_identity_capture_scope_and_symlink_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    monkeypatch.delenv('ASTRID_LINUX_LOCK_CAPTURE', raising=False)
+    monkeypatch.setattr(journey.sys, 'platform', 'darwin')
+    assert not journey.linux_installer_capture_enabled()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '0')
+    assert not journey.linux_installer_capture_enabled()
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    source.symlink_to(tmp_path / 'secret')
+    journey.write_json(evidence / 'journey-result.json', {'status': 'fail'})
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    record = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['before-cleanup']['linux_identity_install_log']
+    assert record == {'status': 'unavailable', 'reason': 'symlink'}
+    assert not (run_root / 'evidence-upload' / 'before-cleanup' / 'install.log').exists()
+
+
+def test_windows_isolation_preserves_native_runtime_log_root_for_diagnostics(tmp_path, monkeypatch):
+    native_local = tmp_path / "login-local"
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(native_local))
+    monkeypatch.delenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, raising=False)
+
+    with journey.isolated_environment(run_root, root, data):
+        assert os.environ["LOCALAPPDATA"] == str(run_root / "localappdata")
+        assert os.environ[journey.NATIVE_RUNTIME_LOG_DIR_ENV] == str(
+            native_local / "Astrid Runtime" / "logs"
+        )
+
+    assert os.environ["LOCALAPPDATA"] == str(native_local)
+    assert journey.NATIVE_RUNTIME_LOG_DIR_ENV not in os.environ
+
+
+def test_windows_release0_task_failure_retains_nested_pack_host_readiness_diagnostics(tmp_path, monkeypatch):
+    """Exercise the nested Release-0 task path where the hosted row stopped."""
+    from scripts import journey_version_jumps as jumps
+
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+    })
+    data = run_root / "data"
+    (data / "logs").mkdir(parents=True)
+    (data / "logs" / "service-pack-host.log").write_text(
+        "api_key=not-for-receipt\nlaunch failed\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+    monkeypatch.setattr(journey.windows, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 23,
+            "restart_count": 4, "reason": "launch_failed",
+        }],
+    })
+    monkeypatch.setattr(journey.windows, "wait_for", lambda _label, probe, **_kwargs: probe())
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+
+    nested = evidence / "release0-api-seed" / "release0-task"
+    with pytest.raises(RuntimeError, match="pack-host reached terminal failed state"):
+        jumps.task_after_update({}, nested, "tst-m4-3b-release0")
+    assert (nested / "pack-host-readiness-first-failed-poll.json").is_file()
+    (nested / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log").is_file()
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
+        "api_key=<redacted>\nlaunch failed\n")
+    assert not (staged / "unrelated-secret.txt").exists()
+    receipt = journey.read_json(staged / "journey-result.json")
+    captured = receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"]
+    assert [(row["observation"], row["status"], row["capture_status"]) for row in captured] == [
+        ("first-failed-poll", "captured", "observed"),
+        ("first-service-exit", "captured", "observed"),
+        ("definitive-failure", "captured", "observed"),
+    ]
+    first = captured[0]
+    assert first["path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log")
+    assert first["source_path"] == (
+        "release0-api-seed/release0-task/pack-host-readiness-first-failed-poll.json"
+    )
+    assert first["capture"]["health"]["pack_host"]["last_exit"] == 23
+    assert first["capture"]["logs"][0]["retained_evidence_path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log")
+
+
+@pytest.mark.parametrize("relative_root", [
+    "release0-api-seed/release0-task", "release1-working-task",
+])
+def test_windows_nested_readiness_survives_source_cleanup(tmp_path, monkeypatch, relative_root):
+    """Use real capture and staging, including the scheduler's separate log root."""
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    nested = evidence / relative_root
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+    })
+    native_local = tmp_path / "native-local"
+    native_logs = native_local / "Astrid Runtime" / "logs"
+    native_logs.mkdir(parents=True)
+    (native_logs / "service-pack-host.log").write_text("child first error\ntoken=private\n")
+    (native_logs / "runtime.log").write_text("supervisor first error\n")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(native_local))
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+    monkeypatch.setattr(journey.windows, "EVIDENCE", nested)
+    monkeypatch.setattr(journey.windows, "version", lambda: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(journey.windows, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 1,
+            "reason": "exited", "restart_count": 2,
+        }],
+    })
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *_: None)
+    with journey.isolated_environment(run_root, root, data):
+        with pytest.raises(RuntimeError, match="terminal failed state"):
+            journey.windows.host_ready()
+        (nested / "unrelated-secret.json").write_text("not allowlisted")
+        journey.snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+        shutil.rmtree(nested)
+        shutil.rmtree(native_logs)
+        journey.snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+
+    receipt = journey.read_json(evidence / "journey-result.json")
+    for phase in ("before-cleanup", "after-cleanup"):
+        captures = receipt["failure_diagnostics"][phase]["pack_host_readiness"]
+        assert len(captures) == 3
+        for capture in captures:
+            assert capture["status"] == "captured"
+            assert capture["source_path"] == (
+                f"{relative_root}/pack-host-readiness-{capture['observation']}.json")
+            assert capture["retention_origin"] == (
+                "current-source" if phase == "before-cleanup" else "before-cleanup")
+            assert capture["capture"]["predicates"]["accepted"] is False
+            assert capture["capture"]["log_roots"]["child_and_supervisor"] == {
+                "path": str(native_logs), "selection": "native-runtime-logs",
+            }
+            logs = {row["source"]: row for row in capture["capture"]["logs"]}
+            for name, text in (("service-pack-host.log", "child first error\ntoken=<redacted>\n"),
+                               ("runtime.log", "supervisor first error\n")):
+                row = logs[name]
+                assert row["search_root"] == "native-runtime-logs"
+                assert row["retention_status"] == "captured"
+                assert (run_root / row["retained_evidence_path"]).read_text() == text
+        staged = run_root / "evidence-upload" / phase
+        assert not any("secret" in p.name for p in staged.iterdir())
+        assert all(p.name == "journey-result.json" or
+                   p.name.startswith("runtime-service-service-") and p.name.endswith(".log")
+                   for p in staged.iterdir())
+
+
+def test_windows_readiness_retention_does_not_follow_nested_symlink(tmp_path):
+    evidence = tmp_path / "run/evidence/release0-to-release1"
+    evidence.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "release0-task").mkdir()
+    (outside / "release0-task/pack-host-readiness-definitive-failure.json").write_text("secret")
+    (evidence / "release0-api-seed").symlink_to(outside, target_is_directory=True)
+    assert journey.retain_named_evidence(evidence, "before-cleanup") == {}
+    staged = tmp_path / "run/evidence-upload/before-cleanup"
+    assert list(staged.iterdir()) == []

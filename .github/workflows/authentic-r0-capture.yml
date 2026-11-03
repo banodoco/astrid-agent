@@ -1,0 +1,241 @@
+name: Authentic post-R0 capture (no R1 update)
+
+# This workflow is intentionally manual and capture-only.  It installs the
+# frozen R0 public bytes in a fresh runner-temp root, seeds R0, records bounded
+# non-secret observations, then removes only that run-owned installation.
+on:
+  workflow_dispatch:
+    inputs:
+      capture_os:
+        description: Exactly one new discriminating post-R0 capture target
+        required: true
+        type: choice
+        options: [linux, macos, windows]
+
+permissions:
+  contents: read
+
+jobs:
+  capture-linux:
+    if: inputs.capture_os == 'linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
+          path: release0-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          path: release0-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Establish isolated systemd user-manager path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run_root="$RUNNER_TEMP/authentic-r0-capture-linux"
+          config="$run_root/home/.config"
+          data="$run_root/home/.local/share"
+          uid=$(id -u)
+          runtime="/run/user/$uid"
+          export XDG_RUNTIME_DIR="$runtime"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus"
+          test ! -e "$run_root"
+          sudo loginctl enable-linger "$uid"
+          sudo systemctl start "user@$uid.service"
+          for attempt in {1..20}; do
+            if [[ -S "$runtime/bus" ]] && systemctl --user show-environment >/dev/null; then break; fi
+            sleep 1
+          done
+          test -S "$runtime/bus"
+          dropin="/run/systemd/system/user@$uid.service.d"
+          sudo mkdir -p "$dropin"
+          printf '[Service]\nEnvironment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s" "SYSTEMD_UNIT_PATH=%s:"\n' \
+            "$config" "$data" "$config/systemd/user" | sudo tee "$dropin/90-authentic-r0-capture.conf" >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl restart "user@$uid.service"
+          for attempt in {1..20}; do
+            if systemctl --user show-environment >/dev/null; then break; fi
+            sleep 1
+          done
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$runtime" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Capture frozen R0 only
+        shell: bash
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: ubuntu-24.04
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-linux"
+          python -u driver/scripts/ci_journey.py --shared-executor authentic-r0-capture \
+            --run-root "$root" --root "$root/program" --data-root "$root/data" --shell sh \
+            --fixture "$GITHUB_WORKSPACE/driver/tests/fixtures/release0" \
+            --release0-agent-checkout "$GITHUB_WORKSPACE/release0-agent" \
+            --release0-runtime-checkout "$GITHUB_WORKSPACE/release0-runtime"
+      - name: Record immutable capture inputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-linux/capture-upload"
+          mkdir -p "$root"
+          {
+            echo "driver_agent=$(git -C driver rev-parse HEAD)"
+            echo "release0_agent=$(git -C release0-agent rev-parse HEAD)"
+            echo "release0_runtime=$(git -C release0-runtime rev-parse HEAD)"
+            echo "workflow_sha=${{ github.workflow_sha }}"
+            echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+          } > "$root/workflow-identity.txt"
+          sha256sum "$root"/* > "$root/SHA256SUMS" 2>/dev/null || true
+      - name: Retain capture-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentic-r0-capture-linux
+          path: ${{ runner.temp }}/authentic-r0-capture-linux/capture-upload
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 0
+
+  capture-macos:
+    if: inputs.capture_os == 'macos'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
+          path: release0-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          path: release0-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Capture frozen R0 only
+        shell: bash
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: macos-15
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-macos"
+          python -u driver/scripts/ci_journey.py --shared-executor authentic-r0-capture \
+            --run-root "$root" --root "$root/program" --data-root "$root/data" --shell sh \
+            --fixture "$GITHUB_WORKSPACE/driver/tests/fixtures/release0" \
+            --release0-agent-checkout "$GITHUB_WORKSPACE/release0-agent" \
+            --release0-runtime-checkout "$GITHUB_WORKSPACE/release0-runtime"
+      - name: Record immutable capture inputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-macos/capture-upload"
+          mkdir -p "$root"
+          {
+            echo "driver_agent=$(git -C driver rev-parse HEAD)"
+            echo "release0_agent=$(git -C release0-agent rev-parse HEAD)"
+            echo "release0_runtime=$(git -C release0-runtime rev-parse HEAD)"
+            echo "workflow_sha=${{ github.workflow_sha }}"
+            echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+          } > "$root/workflow-identity.txt"
+          shasum -a 256 "$root"/* > "$root/SHA256SUMS" 2>/dev/null || true
+      - name: Retain capture-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentic-r0-capture-macos
+          path: ${{ runner.temp }}/authentic-r0-capture-macos/capture-upload
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 0
+
+  capture-windows:
+    if: inputs.capture_os == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.workflow_sha }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
+          path: release0-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          path: release0-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Capture frozen R0 only
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: windows-2022
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition
+          $root = Join-Path $env:RUNNER_TEMP 'authentic-r0-capture-windows'
+          python -u driver/scripts/ci_journey.py --shared-executor authentic-r0-capture `
+            --run-root $root --root (Join-Path $root program) --data-root (Join-Path $root data) --shell powershell.exe `
+            --fixture "$pwd/driver/tests/fixtures/release0" `
+            --release0-agent-checkout "$pwd/release0-agent" `
+            --release0-runtime-checkout "$pwd/release0-runtime"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record immutable capture inputs
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'authentic-r0-capture-windows/capture-upload'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          @(
+            "driver_agent=$(git -C driver rev-parse HEAD)",
+            "release0_agent=$(git -C release0-agent rev-parse HEAD)",
+            "release0_runtime=$(git -C release0-runtime rev-parse HEAD)",
+            "workflow_sha=${{ github.workflow_sha }}",
+            "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+          ) | Set-Content -LiteralPath (Join-Path $root 'workflow-identity.txt') -Encoding utf8
+          Get-ChildItem -LiteralPath $root -File | Get-FileHash -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -LiteralPath (Join-Path $root 'SHA256SUMS') -Encoding utf8
+      - name: Retain capture-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentic-r0-capture-windows
+          path: ${{ runner.temp }}/authentic-r0-capture-windows/capture-upload
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 0
