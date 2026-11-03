@@ -140,6 +140,22 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
         monkeypatch.setattr(case.runtime, "fail", fail)
     entered, release = threading.Event(), threading.Event()
     returned = []
+    terminal = {}
+    cancels = []
+    if stage == "settlement":
+        run_impl = case.host._run_task_impl
+        original_cancel = case.runtime.cancel
+
+        def capture_terminal(*args, **kwargs):
+            terminal.update(owner=kwargs["_terminal"])
+            return run_impl(*args, **kwargs)
+
+        def cancel(*args, **kwargs):
+            cancels.append((args, kwargs))
+            return original_cancel(*args, **kwargs)
+
+        monkeypatch.setattr(case.host, "_run_task_impl", capture_terminal)
+        monkeypatch.setattr(case.runtime, "cancel", cancel)
     if stage in {"preflight", "contract_preflight", "claim_deadline"}:
         owner, name = case.host, "preflight"
     elif stage == "contract":
@@ -187,7 +203,12 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
             time.sleep(0.7)
             assert case.task["task"]["status"] == "running"
             assert worker.is_alive()
-            assert not case.runtime.settlements and not case.runtime.failures
+            assert terminal["owner"]["publication_pending"]
+            assert terminal["owner"]["completion_state"] == "in_flight"
+            assert terminal["owner"].get("reconcile_cancel")
+            assert not terminal["owner"].get("recorded")
+            assert not case.runtime.settlements and not case.runtime.failures and not cancels
+            assert not (case.root / "result.json").exists()
         else:
             expiry = time.monotonic() + 2
             while not (case.root / "result.json").exists() and time.monotonic() < expiry:
@@ -204,7 +225,7 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
     if stage == "settlement":
         assert case.task["task"]["status"] == "completed"
         assert receipt(case)["status"] == "succeeded"
-        assert len(case.runtime.settlements) == 1 and not case.runtime.failures
+        assert len(case.runtime.settlements) == 1 and not case.runtime.failures and not cancels
         assert len(returned) == 1 and not isinstance(returned[0], BaseException)
         return
     assert_failed(case, started, code="timeout")
