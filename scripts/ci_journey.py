@@ -24,7 +24,7 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 if __package__:
@@ -836,8 +836,10 @@ def _windows_job_drain_log(path: Path) -> dict:
             "redacted": encoded != content, "content": encoded.decode("utf-8", errors="replace")}
 
 
-def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Path) -> dict:
+def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Path, *, phase: str = "unavailable") -> dict:
     """Capture bounded R0 Job-drain facts without reading credentials or mutating state."""
+    started_utc = datetime.now(timezone.utc).isoformat()
+    started_monotonic_ns = time.monotonic_ns()
     support = data / "runtime"
     registration_path = support / "generic-host.json"
     receipt_path = support / "pack-host-job-cleanup.json"
@@ -952,6 +954,16 @@ def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Pat
         "schema_version": 1,
         "kind": "windows-runtime-job-drain-diagnostic",
         "capture_scope": "read-only bounded redacted diagnostic",
+        "correlation": {
+            "phase": phase if phase in ("before-cleanup", "after-cleanup") else "unavailable",
+            "task": {"path": "\\", "name": "Astrid Runtime"},
+            "run_id": os.environ.get("GITHUB_RUN_ID") if re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")) else None,
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT") if re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ATTEMPT", "")) else None,
+            "job": os.environ.get("GITHUB_JOB") if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", os.environ.get("GITHUB_JOB", "")) else None,
+            "started_utc": started_utc, "finished_utc": datetime.now(timezone.utc).isoformat(),
+            "started_monotonic_ns": started_monotonic_ns, "finished_monotonic_ns": time.monotonic_ns(),
+            "meaning": "sequential failure capture; identities are separate samples",
+        },
         "stale_host_registration": registration,
         "current_runtime": current_runtime,
         "cleanup_receipt": receipt,
@@ -1095,7 +1107,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         job_drain_capture = None
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             try:
-                job_drain_capture = capture_windows_job_drain_evidence(evidence, run_root, data)
+                job_drain_capture = capture_windows_job_drain_evidence(evidence, run_root, data, phase=phase)
             except Exception as exc:
                 job_drain_capture = {"capture_error": type(exc).__name__}
         capture_runtime_service_logs(evidence, run_root, phase)

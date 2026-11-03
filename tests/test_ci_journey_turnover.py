@@ -239,3 +239,15 @@ def test_native_file_acl_success_uses_read_only_flags_and_frees_descriptor(tmp_p
     assert result["status"] == "observed" and result["winerror"] == 0
     assert [name for name, _ in calls] == ["get", "free"]
     assert calls[0][1][:3] == (str(path), 1, 7)
+
+
+
+def test_late_capture_correlates_phase_and_workflow(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    monkeypatch.setenv("GITHUB_JOB", "windows")
+    capture = journey.capture_windows_job_drain_evidence(tmp_path / "evidence", tmp_path, tmp_path / "data", phase="before-cleanup")
+    context = capture["correlation"]
+    assert (context["phase"], context["run_id"], context["run_attempt"], context["job"]) == ("before-cleanup", "123", "2", "windows")
+    assert context["task"] == {"path": "\\", "name": "Astrid Runtime"}
+    assert context["finished_monotonic_ns"] >= context["started_monotonic_ns"]
