@@ -1,0 +1,3 @@
+host-shaped binding: binding source_digest does not match verified evidence
+corrected source only: runtime_epoch is not verifiable on the attached path
+corrected source and epoch: None
