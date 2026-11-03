@@ -1,0 +1,318 @@
+{
+  "authority": false,
+  "boot_id_sha256": "24124b1508f060e074933fa4a869867df629b90e751a075754c87103b2063c0d",
+  "cases": {
+    "changed_endpoints": {
+      "error_type": "AssertionError",
+      "exit": 1
+    },
+    "empty_stopped": {
+      "error_type": "ValueError",
+      "exit": 1
+    },
+    "failed_second_endpoint": {
+      "error_type": "AssertionError",
+      "exit": 1
+    },
+    "glob_stopped": {
+      "error_type": "ValueError",
+      "exit": 1
+    },
+    "invalid_dbus_controls": {
+      "error_type": "AssertionError",
+      "exit": 1
+    },
+    "manager_unavailable": {
+      "detail": {
+        "authority": false,
+        "environment_files": "unknown",
+        "refusal": "ValueError",
+        "sample_stability": "unknown"
+      },
+      "exit": 0
+    },
+    "multiple_duplicate_stopped": {
+      "error_type": "ValueError",
+      "exit": 1
+    },
+    "optional_created": {
+      "error_type": "ValueError",
+      "exit": 1
+    },
+    "running": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true,
+          true,
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_guard": "ValueError",
+        "stopped_observation": false,
+        "typed_count": 3
+      },
+      "exit": 0
+    },
+    "single_optional_stopped": {
+      "error_type": "ValueError",
+      "exit": 1
+    },
+    "unknown_snapshot": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "unknown",
+        "sample_stability": "unknown"
+      },
+      "exit": 0
+    }
+  },
+  "controls": {
+    "wrong_interface": {
+      "exit": 1,
+      "stderr_sha256": "cb9b5e723913008fd2afa1abaa3f6e9c49c28efb37dba8a5bbf2242ef5253534",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wrong_object": {
+      "exit": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd"
+    },
+    "wrong_property": {
+      "exit": 1,
+      "stderr_sha256": "3c2bba55dee1dc95fbbd9b6f7cc1d620b25466fa9af36bc7c3805c7ae0b4740d",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "end_ns": 1793684654661399748,
+  "euid": 1002,
+  "exit": 1,
+  "manager_bus_status": {
+    "exit": 1,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "pid_namespace_inode": 4026531836,
+  "schema": "systemd-typed-observation-v1",
+  "start_ns": 1793684653116094702,
+  "uid": 1002,
+  "wire": [
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b68ccbd82b410ad0ea4fced6a3d77e2a0de118a8bf06866e8d4ce6aada9710b2",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    }
+  ]
+}
