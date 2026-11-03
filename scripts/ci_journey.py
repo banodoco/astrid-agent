@@ -1608,6 +1608,12 @@ def execute(args: argparse.Namespace) -> dict:
                             write_json(result_path, recorded)
                         if "result" in locals():
                             result["final_cleanup"] = "retained-for-next-leg"
+                    if keep_going and "result" in locals() and result.get("final_cleanup") == "pass":
+                        result["stages"].append({"stage": "final-cleanup", "result": "pass",
+                                                 "forced_continuation_used": False, "first_error": None,
+                                                 "evidence_path": str(evidence / "final-uninstall.log"),
+                                                 "preconditions": [], "postconditions": []})
+                        keepgoing.write(evidence, result)
                     snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
                 return result
     except Exception as exc:
