@@ -642,16 +642,23 @@ class Service:
             retained = Version.load(read_json(folder / "version.json"))
             if retained.root != absolute(folder):
                 raise ValueError("The retained service version is outside this installation.")
-            # The release-0 installer kept this sidecar beside the selected
-            # version, rather than at the program root.  Admit only its exact
-            # generated command so later register() replaces it with the
-            # current service definition and current admission gate.
-            release0 = _release0_service_command(
-                retained, data, windows=windows, log=self.log,
-                env_file=retained.root / "service-env.json",
-            )
-            if action == encode(release0):
-                return True
+            # Release-0 POSIX registrations used either the selected-version
+            # sidecar or the program-root sidecar. Admit only their exact
+            # generated commands so register() replaces them with the current
+            # service definition and admission gate.
+            release0_env_files = [retained.root / "service-env.json"]
+            if not windows:
+                # Some authentic release-0 POSIX registrations resolved this
+                # sidecar from the program root; others kept it beside the
+                # selected version. Keep both forms exact-action admissions.
+                release0_env_files.append(self.root / "service-env.json")
+            for release0_env_file in release0_env_files:
+                release0 = _release0_service_command(
+                    retained, data, windows=windows, log=self.log,
+                    env_file=release0_env_file,
+                )
+                if action == encode(release0):
+                    return True
             for env_file in (None, self.env_file):
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file)
                 # This is the exact historical wrapper suffix, obtained from

@@ -116,6 +116,25 @@ def test_release0_posix_service_is_adopted_and_freshly_registered(tmp_path, monk
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])
+def test_release0_posix_program_root_sidecar_is_adopted(tmp_path, monkeypatch, system):
+    manager, version, data, _legacy, legacy_settings = _posix_service(
+        tmp_path, monkeypatch, system,
+    )
+    definition = manager.path.read_bytes().replace(
+        str(version.root / "service-env.json").encode(),
+        str(manager.root / "service-env.json").encode(),
+    )
+    manager.path.write_bytes(definition)
+    (version.root / "service-env.json").unlink()
+    (manager.root / "service-env.json").write_bytes(legacy_settings)
+
+    manager.publish_launch_admission(version, data)
+
+    assert manager.path.read_bytes() != definition
+    assert manager.env_file.read_bytes() == legacy_settings
+
+
+@pytest.mark.parametrize("system", ["darwin", "linux"])
 def test_tampered_release0_posix_service_refuses_before_mutation(tmp_path, monkeypatch, system):
     manager, version, data, _legacy, legacy_settings = _posix_service(tmp_path, monkeypatch, system)
     tampered = manager.path.read_bytes().replace(str(version.python).encode(), b"/foreign-python", 1)
