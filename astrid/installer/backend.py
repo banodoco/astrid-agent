@@ -99,9 +99,12 @@ def _runtime_json(output: str) -> dict:
 
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
-                 process_control: str | None = None, managed_by: str | None = None):
+                 process_control: str | None = None, managed_by: str | None = None,
+                 service_turnover_observer=None):
         self.root, self.log, self.uv, self.say = root, log, uv, say
         self.managed_by = managed_by
+        self._service_turnover_observer = (
+            say if service_turnover_observer is None else service_turnover_observer)
         # None keeps the workspace's current setting (strict on a new one).
         self.process_control = process_control
         if process_control:
@@ -113,6 +116,18 @@ class Backend:
         # retired. Keep that receipt local to this controller so an initial
         # unvalidated service definition still requires an ownership check.
         self._foreground_stop_retired = False
+
+    def _observe_windows_service_turnover(self, boundary: str) -> None:
+        """Emit one fixed, non-sensitive Windows lifecycle boundary token."""
+        if self.service.system != "win32" or boundary not in {
+                "before-stop", "owner-absent", "after-start-request"}:
+            return
+        try:
+            self._service_turnover_observer(boundary)
+        except Exception:  # noqa: BLE001 - diagnostics must not affect lifecycle authority
+            # Diagnostics are downstream of lifecycle authority and cannot
+            # change a stop, refusal, or start result.
+            pass
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
@@ -666,6 +681,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if self.managed_by != "pinokio":
                 launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
+                # Runtime's fenced down() calls this only after retiring its
+                # owner publications and before touching the service manager.
+                self._observe_windows_service_turnover("owner-absent")
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
                                        or current_record.get("program_root") != str(self.root)
@@ -704,6 +722,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("The foreground selection changed before signal; refusing to stop it.")
                 self.service.stop_foreground(expected=foreground)
 
+            self._observe_windows_service_turnover("before-stop")
             result = down(paths, boundary, stop_manager=stop_selected_manager,
                           stop_foreground=(stop_selected_foreground
                                            if restore_selection is None and isinstance(foreground, dict) else None),
@@ -1129,7 +1148,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
             raise RuntimeError("Start Astrid in Pinokio.")
-        if not self.service.start():
+        try:
+            started = self.service.start()
+        finally:
+            # Record the completed/attempted manager request before any
+            # foreground fallback, including when the request raises.
+            self._observe_windows_service_turnover("after-start-request")
+        if not started:
             self.service.start_foreground(version, data)
 
     def restart_required(self) -> bool:
