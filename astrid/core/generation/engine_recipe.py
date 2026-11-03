@@ -89,11 +89,12 @@ def _resolve_ref(raw: Any, where: str) -> DataRef:
     return DataRef(_relative(obj["path"], where + ".path"), _digest(obj["sha256"], where + ".sha256"))
 
 
-def _read_ref(ref: DataRef) -> tuple[Path, bytes]:
-    path = _ROOT / ref.path
+def _read_ref(ref: DataRef, *, root: Path | None = None) -> tuple[Path, bytes]:
+    root = _ROOT if root is None else root
+    path = root / ref.path
     try:
         resolved = path.resolve(strict=True)
-        if not resolved.is_relative_to(_ROOT.resolve()) or path.is_symlink() or not resolved.is_file():
+        if not resolved.is_relative_to(root.resolve()) or path.is_symlink() or not resolved.is_file():
             raise UnsafePathError(f"packaged data path escapes Astrid: {ref.path}")
         payload = resolved.read_bytes()
     except OSError as exc:
@@ -104,7 +105,7 @@ def _read_ref(ref: DataRef) -> tuple[Path, bytes]:
 
 
 def _parse_pins(raw: Any) -> dict[str, SourcePin]:
-    obj = _object(raw, {"schema", "sources"}, where="pins")
+    obj = _object(raw, {"schema", "sources"}, {"imports"}, where="pins")
     if obj["schema"] != "astrid.engine-pins.v1" or not isinstance(obj["sources"], dict):
         raise RecipeValidationError("pins schema must be astrid.engine-pins.v1 with a source map")
     result = {}
@@ -120,16 +121,55 @@ def _parse_pins(raw: Any) -> dict[str, SourcePin]:
     return result
 
 
-def load_pin_set(ref: DataRef) -> Mapping[str, SourcePin]:
-    """Load a hash-verified packaged pin set for compatibility adapters."""
-    if not isinstance(ref, DataRef):
-        raise RecipeValidationError("load_pin_set requires a DataRef")
-    _, payload = _read_ref(ref)
+def _pin_documents(ref: DataRef, ancestors=(), *, root=None):
+    if ref.path in ancestors:
+        raise RecipeValidationError("cyclic pin imports")
+    _, payload = _read_ref(ref, root=root)
     try:
-        parsed = _parse_pins(json.loads(payload))
+        raw = json.loads(payload)
     except json.JSONDecodeError as exc:
         raise RecipeValidationError("pins are invalid JSON") from exc
-    return MappingProxyType(parsed)
+    pins = _parse_pins(raw)
+    documents = {ref.path: ref}
+    for item in _array(raw.get("imports", []), "pins.imports"):
+        item = _object(item, {"ref", "bindings"}, where="pins.imports[]")
+        imported_ref = _resolve_ref(item["ref"], "pins.imports.ref")
+        imported, children = _pin_documents(imported_ref, (*ancestors, ref.path), root=root)
+        for path, child in children.items():
+            if path in documents and documents[path] != child:
+                raise IntegrityError("conflicting pin import digests")
+            documents[path] = child
+        bindings = item["bindings"]
+        if not isinstance(bindings, dict) or not bindings:
+            raise RecipeValidationError("pin import bindings must be a nonempty map")
+        for alias, source in bindings.items():
+            _string(alias, "pin import alias")
+            _string(source, "pin import source")
+            if alias in pins or source not in imported:
+                raise RecipeValidationError("duplicate or unknown imported pin")
+            pins[alias] = imported[source]
+    return pins, documents
+
+
+def pin_data_refs(ref: DataRef, *, root: Path | None = None) -> tuple[DataRef, ...]:
+    """The finite, transitively hash-verified pin closure (no ambient discovery)."""
+    return tuple(_pin_documents(ref, root=root)[1].values())
+
+
+def load_pin_set(ref: DataRef) -> Mapping[str, SourcePin]:
+    """Load a hash-verified pin set, including explicitly bound shared pins."""
+    if not isinstance(ref, DataRef):
+        raise RecipeValidationError("load_pin_set requires a DataRef")
+    return MappingProxyType(_pin_documents(ref)[0])
+
+
+def recipe_data_refs(recipe: EngineRecipe) -> tuple[DataRef, ...]:
+    entry = next(e for e in load_recipe_index().entries
+                 if (e.engine, e.platform) == (recipe.engine, recipe.platform))
+    refs = [entry.recipe, *pin_data_refs(recipe.pins), recipe.models_lock]
+    refs += [env.requirements.packaged_lock for env in recipe.environments
+             if env.requirements.packaged_lock is not None]
+    return tuple(refs)
 
 
 def _placeholder_check(values: list[str], where: str) -> None:
@@ -157,9 +197,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
     if platform not in _PLATFORMS: raise RecipeValidationError("recipe.platform is unsupported")
     if engine != index_engine or platform != index_platform: raise RecipeValidationError("recipe identity differs from index entry")
     pins_ref = _resolve_ref(top["pins"], "recipe.pins")
-    _, pins_raw = _read_ref(pins_ref)
-    try: pins = _parse_pins(json.loads(pins_raw))
-    except json.JSONDecodeError as exc: raise RecipeValidationError("pins are invalid JSON") from exc
+    pins = load_pin_set(pins_ref)
     bindings = _array(top["source_bindings"], "recipe.source_bindings")
     sources, names, source_paths = [], set(), set()
     for i, binding_raw in enumerate(bindings):

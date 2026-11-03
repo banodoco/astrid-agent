@@ -42,15 +42,17 @@ def unzip(bundle):
     return lzma.decompress(base64.b64decode(bundle.env['ASTRID_ENGINE_SOURCE']))
 
 
-def test_console_dry_run_and_help_are_isolated_and_exact():
-    b = bootstrap.build_cli_bootstrap(ARGV)
+@pytest.mark.parametrize('engine', ['vibecomfy-h3', 'comfyui'])
+def test_console_dry_run_and_help_are_isolated_and_exact(engine):
+    argv = (*ARGV[:2], engine, *ARGV[3:])
+    b = bootstrap.build_cli_bootstrap(argv)
     loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
     result = run(b, loader=loader)
     assert result.returncode == 0, result.stderr
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
     assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *ARGV],
+    local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *argv],
                            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
     assert local.returncode == 0 and result.stdout == local.stdout
     help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
@@ -63,7 +65,7 @@ def test_exact_bytes_determinism_and_identity():
     b = bootstrap.build_cli_bootstrap(ARGV)
     assert a == b
     with zipfile.ZipFile(io.BytesIO(unzip(a))) as z:
-        for name in bootstrap._FILES:
+        for name in bootstrap.closure_files(ARGV):
             content = Path(name).read_bytes()
             assert z.read(name) == content
             assert a.files[name] == hashlib.sha256(content).hexdigest()
@@ -73,7 +75,7 @@ def test_exact_bytes_determinism_and_identity():
 def test_change_and_missing_source(monkeypatch, tmp_path):
     # Redirect only the explicit closure reads to a disposable tree.
     root = Path(bootstrap.__file__).resolve().parents[3]
-    for name in bootstrap._FILES:
+    for name in bootstrap.closure_files(ARGV):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((root / name).read_bytes())
@@ -88,7 +90,11 @@ def test_change_and_missing_source(monkeypatch, tmp_path):
         path = tmp_path / name
         original = path.read_bytes()
         path.write_bytes(original + b' ')
-        assert bootstrap.build_cli_bootstrap(ARGV).source_sha256 != initial.source_sha256
+        if name.endswith('pins.json'):
+            with pytest.raises(IntegrityError, match='digest mismatch'):
+                bootstrap.build_cli_bootstrap(ARGV)
+        else:
+            assert bootstrap.build_cli_bootstrap(ARGV).source_sha256 != initial.source_sha256
         path.write_bytes(original)
     (tmp_path / bootstrap._FILES[0]).unlink()
     with pytest.raises(IntegrityError):
@@ -226,7 +232,7 @@ def test_stale_or_missing_local_metadata_refused(monkeypatch, tmp_path):
     import shutil
 
     root = Path(bootstrap.__file__).resolve().parents[3]
-    for name in bootstrap._FILES:
+    for name in bootstrap.closure_files(ARGV):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / name, target)

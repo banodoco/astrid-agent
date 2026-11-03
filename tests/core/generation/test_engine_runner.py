@@ -2421,3 +2421,158 @@ def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(se
     assert not list(tmp_path.rglob('*.cache-*'))
     assert not [event for event in context.events if event[0] == 'service:start']
     assert context.events[-1][0] == 'release' and not context.held
+
+
+# Immutable pre-relocation production evidence, captured at frozen base 4b5bd6c.
+_PRE_RELOCATION_COMFYUI = {'.astrid-engine/install.json': '{"completed_at":"2026-11-03T00:00:00+00:00","engine":"comfyui","error_code":null,"failed_step_id":null,"health":{"checked_at":"2026-11-03T00:00:00+00:00","object_info_sha256":"e53f66ef3776715ffee8fc5bb989bb0f2444915adeccd25da703b89e387a80eb","required_nodes_present":true,"status":"healthy"},"models":[{"action":"downloaded","bytes":7256787829,"model":"qwen_image_2.1_turbo_int8_convrot","path":"@ROOT@/models/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors","resumed_from_bytes":0,"sha256":"8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c","verified":true},{"action":"downloaded","bytes":9350798360,"model":"qwen3vl_8b_int8_convrot","path":"@ROOT@/models/text_encoders/qwen3vl_8b_int8_convrot.safetensors","resumed_from_bytes":0,"sha256":"8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f","verified":true},{"action":"downloaded","bytes":675509688,"model":"qwen_image_2.1_vae_bf16","path":"@ROOT@/models/vae/qwen_image_2.1_vae_bf16.safetensors","resumed_from_bytes":0,"sha256":"bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9","verified":true}],"models_lock_sha256":"15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093","placement":"local","platform":"linux-x86_64-cu130","qualified":false,"receipt_id":"frozen-pre-relocation-comfyui","recipe_sha256":"1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f","requirements_locks":{"comfy":"75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"},"root":"@ROOT@","schema":"astrid.engine-install.v1","source_commits":{"comfyui":"423cbd20511becb1f16122ab518e92e58bfa03d9","vibecomfy":"b2123edfbe7b950848b5c98d575fd9554302fc73"},"started_at":"2026-11-03T00:00:00+00:00","status":"installed","steps":[{"action":"executed","facts":{"commit":"423cbd20511becb1f16122ab518e92e58bfa03d9"},"id":"source:comfyui","kind":"source","validation":"passed"},{"action":"executed","facts":{"commit":"b2123edfbe7b950848b5c98d575fd9554302fc73"},"id":"source:vibecomfy","kind":"source","validation":"passed"},{"action":"executed","facts":{"requirements_lock_sha256":"75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"},"id":"environment:comfy","kind":"environment","validation":"passed"},{"action":"executed","facts":{"bytes":7256787829,"sha256":"8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c"},"id":"model:qwen_image_2.1_turbo_int8_convrot","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":9350798360,"sha256":"8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f"},"id":"model:qwen3vl_8b_int8_convrot","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":675509688,"sha256":"bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"},"id":"model:qwen_image_2.1_vae_bf16","kind":"model","validation":"passed"},{"action":"executed","facts":{"launch_sha256":"47f5dbf323796524966d505a2490024adee72465587d18cfe976df8d17ae8905","owner_id":"owner-incarnation-1"},"id":"start","kind":"start","validation":"passed"},{"action":"executed","facts":{"object_info_sha256":"e53f66ef3776715ffee8fc5bb989bb0f2444915adeccd25da703b89e387a80eb","required_nodes_present":true},"id":"health","kind":"health","validation":"passed"}]}', '.astrid-engine/environments/comfy/receipt.json': '{"environment":"comfy","helper_sha256":"4ad4c78ba46a9a533ec3eae55f3e35048979f6f7e13b17124efbe7c86b6e529c","recipe_sha256":"1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f","requirements_lock_sha256":"75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7","validated":true}', '.astrid-engine/environments/comfy/lock.json': '{"environment":"comfy","helper_sha256":"4ad4c78ba46a9a533ec3eae55f3e35048979f6f7e13b17124efbe7c86b6e529c","recipe_sha256":"1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f","requirements_lock_sha256":"75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7","schema":"astrid.requirements-lock.v1"}', 'runtime/extra_model_paths.yaml': '{"astrid_engine":{"base_path":"@ROOT@/models","diffusion_models":"diffusion_models","loras":"loras","text_encoders":"text_encoders","vae":"vae"}}', '.astrid-engine/environments/comfy/install-receipt-torch.json': '{"name":"torch","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"858f0cbcc78d726fea9499eb3464faa98392fa093845a3262209bd226b7844d6","url":"https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"2.10.0+cu130"}', '.astrid-engine/environments/comfy/install-receipt-torchaudio.json': '{"name":"torchaudio","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"ed573e7319ba9a6e137b4895eddf4c9fcd424bb4e10a629267d64b55acc57fbb","url":"https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"2.10.0+cu130"}', '.astrid-engine/environments/comfy/install-receipt-torchvision.json': '{"name":"torchvision","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"c2f5e38f0cd57a2796e4503c0f13365deba01dbc167ef820f0beec7ca96f5f2e","url":"https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"0.25.0+cu130"}'}
+
+class _ComfyuiReceiptContext(FakeContext):
+    """Fake process/network edges; real finite target and persisted receipt reads."""
+    def __init__(self, root):
+        super().__init__()
+        self.recipe = recipes.load_recipe("comfyui", PLATFORM)
+        self.root = str(root)
+        self.files = {}
+        self.health_objects = {node: {} for node in self.recipe.health.required_nodes}
+        self.deadline = time.monotonic() + 120
+
+    def ensure_dir(self, path, *, deadline):
+        super().ensure_dir(path, deadline=deadline)
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+    def file_fact(self, path, *, hash_bytes, deadline):
+        if Path(path).is_file():
+            self.record("hash" if hash_bytes else "fact", path, deadline=deadline)
+            data = Path(path).read_bytes()
+            return FileFact(True, True, False, len(data), hashlib.sha256(data).hexdigest() if hash_bytes else None)
+        return super().file_fact(path, hash_bytes=hash_bytes, deadline=deadline)
+
+    def read_json(self, path, *, deadline):
+        if Path(path).is_file():
+            self.record("read", path, deadline=deadline)
+            return json.loads(Path(path).read_bytes())
+        return super().read_json(path, deadline=deadline)
+
+    def write_json_atomic(self, path, value, *, deadline):
+        super().write_json_atomic(path, value, deadline=deadline)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(runner._json(value))
+
+    def run(self, request):
+        if "engine_runner_target" in " ".join(request.argv):
+            self.record("run", request.cwd, deadline=request.deadline)
+            operation, payload = request.argv[-2], json.loads(request.argv[-1])
+            self.events.append(("target:" + operation, payload, request.deadline))
+            return self.result(runner._json(target.dispatch(operation, payload)))
+        if request.argv[0].endswith("/bin/python") and "-c" in request.argv:
+            self.record("run", request.cwd, deadline=request.deadline)
+            # The installed environment probe is a process edge. Its finite
+            # target inputs and wheel receipts are still checked by production.
+            return self.result(runner._json({"valid": True, "record_sha256": {
+                w.name: "c" * 64 for w in self.recipe.environments[0].final_wheels}}))
+        return super().run(request)
+
+
+def test_pre_relocation_comfyui_receipt_survives_status_without_rewrite(tmp_path, monkeypatch):
+    """Frozen 4b5bd6c production receipts; only target process/network edges fake.
+
+    Retained-reader composition pattern:
+    test_engine_release.py::test_retained_release_binds_plain_comfyui_and_selected_client.
+    The constants below were emitted by that base's real install runner and
+    finite target helper, with a fixed clock/receipt ID. Only the root token
+    is substituted. They are never regenerated from the candidate reader.
+    """
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+    import importlib.abc
+
+    class NoPacks(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.startswith("astrid.packs."):
+                raise AssertionError("optional pack import: " + fullname)
+    monkeypatch.setattr(sys, "meta_path", [NoPacks(), *sys.meta_path])
+    root = tmp_path / "legacy-engine"
+    context = _ComfyuiReceiptContext(root)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
+    assert recipe.health.required_nodes == ("UNETLoader", "VAELoader")
+    for name, raw in _PRE_RELOCATION_COMFYUI.items():
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw.replace("@ROOT@", str(root)).encode())
+    directory = root / ".astrid-engine/environments/comfy"
+    lock_path = directory / "requirements.lock"
+    lock_bytes = (recipes._ROOT / recipe.environments[0].requirements.packaged_lock.path).read_bytes()
+    assert hashlib.sha256(lock_bytes).hexdigest() == "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
+    lock_path.write_bytes(lock_bytes)
+    old = json.loads((root / runner._RECEIPT).read_bytes())
+    assert old["recipe_sha256"] == "1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f"
+    assert json.loads((directory / "receipt.json").read_bytes())["helper_sha256"] == "4ad4c78ba46a9a533ec3eae55f3e35048979f6f7e13b17124efbe7c86b6e529c"
+    for source in recipe.sources:
+        path = str(root / source.relative_path)
+        context.sources[path] = {"origin": source.pin.repository,
+                                 "head": old["source_commits"][source.name], "dirty": ""}
+    for model in old["models"]:
+        context.files[model["path"]] = FileFact(True, True, False, model["bytes"], model["sha256"])
+    context.server = "owner-incarnation-1"
+    context.environments["comfy"] = True
+
+    def snapshot():
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    original = snapshot()
+    original_hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in original.items()}
+    def read_status():
+        return runner.engine_status("comfyui", platform=PLATFORM, placement="local", root=str(root),
+                                    context=context, deadline=context.deadline)
+    for _ in range(2):
+        report = read_status()
+        assert report.status == "installed", report
+        for field in ("receipt_id", "recipe_sha256", "models_lock_sha256", "requirements_locks", "source_commits"):
+            assert getattr(report, field) == old[field]
+        assert [(m.model, m.path, m.bytes, m.sha256) for m in report.models] == [
+            (m["model"], m["path"], m["bytes"], m["sha256"]) for m in old["models"]]
+    endpoint = local_engine_endpoint("comfyui", root=str(root), context=context, deadline_seconds=60).endpoint
+    assert endpoint.attestation.install_receipt_sha256 == original_hashes[runner._RECEIPT]
+    assert snapshot() == original
+    assert not [e for e in context.events if e[0] in {
+        "write", "mkdir", "download", "acquire", "service:start", "target:lock-inputs",
+        "target:commit-lock", "target:install-locks", "target:models-config"}]
+
+    # Every damaged persisted identity and the live helper still refuses. Each
+    # check uses the same real status -> target -> environment/lock readers.
+    for name, field in [("receipt.json", "recipe_sha256"), ("receipt.json", "helper_sha256"),
+                        ("lock.json", "recipe_sha256"), ("lock.json", "helper_sha256"),
+                        ("lock.json", "requirements_lock_sha256")]:
+        path = directory / name
+        value = json.loads(path.read_bytes()); value[field] = "0" * 64
+        path.write_text(json.dumps(value))
+        refused = read_status()
+        assert refused.status == "failed"
+        assert refused.error_code in {"integrity_failed", "engine_reinstall_required"}
+        path.write_bytes(original[path.relative_to(root).as_posix()])
+    lock_path.write_bytes(lock_bytes + b"\n")
+    assert read_status().status == "failed"
+    lock_path.write_bytes(lock_bytes)
+    source = context.sources[str(root / recipe.sources[0].relative_path)]
+    source["head"] = "0" * 40
+    assert read_status().status == "failed"
+    source["head"] = old["source_commits"][recipe.sources[0].name]
+    # Tampering with package pins fails their original digest check, and a
+    # different exact helper closure cannot use the relocation exception.
+    manifest = runner.helper_manifest(recipe)
+    package = tmp_path / "package"
+    for name in manifest:
+        destination = package / name; destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((recipes._ROOT / name).read_bytes())
+    with monkeypatch.context() as patched:
+        patched.setattr(recipes, "_ROOT", package)
+        patched.setattr(recipes, "_INDEX_PATH", package / "packs/engine-index.json")
+        pin_path = package / recipe.pins.path
+        pins = pin_path.read_bytes(); pin_path.write_bytes(pins + b" ")
+        with pytest.raises(IntegrityError, match="digest mismatch"):
+            read_status()
+        pin_path.write_bytes(pins)
+        helper = package / "core/generation/model_downloader.py"
+        helper.write_bytes(helper.read_bytes() + b"\n")
+        with pytest.raises(IntegrityError, match="receipt identity"):
+            read_status()
+    assert snapshot() == original
+    assert {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshot().items()} == original_hashes

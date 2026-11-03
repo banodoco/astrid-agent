@@ -1,0 +1,31 @@
+{
+  "schema": "astrid.engine-relocation.v1",
+  "base": "4b5bd6ca046a08626f8c42a450fe14c7297fb4bf",
+  "recipe_sha256": "35869680480fa12167afa58381ece2be6e7a1ce1fe457487692dc39bda6ba9e0",
+  "legacy_recipe_sha256": "1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f",
+  "legacy_helper_sha256": "4ad4c78ba46a9a533ec3eae55f3e35048979f6f7e13b17124efbe7c86b6e529c",
+  "files": {
+    "__init__.py": "f5fc47afc0afbd81507fecbb41a6d7405f14596bf09400c287bf1e4624fed578",
+    "core/__init__.py": "7c11488da5b1d99a10a79a25dc82255890c544e9d455428711dca33a43ac2ded",
+    "core/execution/__init__.py": "142fbb3f8f7b1a6887ab87e40bb9fb5bac6aef477fcb1551e522a5b852870393",
+    "core/execution/custody_broker.py": "f05e03f92cc0445d5e35d9ed3e34fa6deac5c009793a9a8f54712b9d226227f5",
+    "core/execution/platform_helpers.py": "df1402ba8aaeaac9e18287d37fd1dca7cb352258807d26e36474e2c37e9f6891",
+    "core/execution/process_group.py": "0f1154c8a8e31589cd1e1b91732263a5e36f19fe511075359f37cb70f581c73f",
+    "core/generation/__init__.py": "1a5b28e6b54974ebe151a017d0217ec5c9992eef7a32a6a93757818b2b919983",
+    "core/generation/_engine_target_files.py": "70f56d825a96531f85d6d6648db1fd219399e5facde087fc2bd3db11dcd05480",
+    "core/generation/engine_contracts.py": "888df247fdc1c10cf0a377dd848314b42644e9f522353908c918d5e0a834df4e",
+    "core/generation/engine_custody.py": "5c2396a6247f9dfc33817f7ba951195b366350b4ecc97b6357a12ea4203a32c1",
+    "core/generation/engine_execution.py": "6c6ee02cf782328cfb44dd98e25e5041225d62bbc1f06c9d6250bf0ba5f724c2",
+    "core/generation/engine_platforms.py": "7c73a0aae695473c31d3211527d03ebb8db3dcd654113cb467ea1edc717e96e5",
+    "core/generation/engine_recipe.py": "0ad0c7672910f20cf0d16d54a411c416beb31020a32de087fb3e3dd249d9be15",
+    "core/generation/engine_runner.py": "67c353b0b96ba125d618e7841e50231fcc79de59c80c3a82d0df79023809e0d3",
+    "core/generation/engine_runner_target.py": "45b0d1d61daa2a199169b60c3de3bb2580924d9d1b57308abb449324fab5f24a",
+    "core/generation/engines/comfyui/models.lock.json": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093",
+    "core/generation/engines/comfyui/pins.json": "e2de89cf3586bb96e49be3324fffd74b693468b4f9a36736f2630286dba518f4",
+    "core/generation/engines/comfyui/recipe.linux-cu130.json": "f560180fb12e0e363a8102b8e20dd816e3ef9f645b75bc56c66012e098acc43e",
+    "core/generation/engines/comfyui/requirements.linux-cu130.lock": "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7",
+    "core/generation/model_downloader.py": "a76c9b9ecc6d0514f67d2e3bc2e1876b64540e9fda704f8be8bcf823b150f0c6",
+    "packs/engine-index.json": "ee57231b44996a4b8913300406b5ec6c9fa658ad75ec8f0616688816392f1dd5",
+    "version.py": "519a923f47fe83741bd31d844124ac37572a698cf0f9197b1146dae30a93f607"
+  }
+}

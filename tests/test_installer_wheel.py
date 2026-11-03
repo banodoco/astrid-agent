@@ -19,13 +19,13 @@ GENERATION_GUIDE_RESOURCES = (
 
 def _engine_resources():
     from astrid.core.generation.engine_recipe import load_recipe, load_recipe_index
-    from astrid.core.generation.engine_runner import _A2_PATHS, _CODE_PATHS
+    from astrid.core.generation.engine_runner import _A2_PATHS, _CODE_PATHS, helper_manifest
 
     resources = {'packs/engine-index.json', *_CODE_PATHS, *_A2_PATHS}
     locks = set()
     for entry in load_recipe_index().entries:
         recipe = load_recipe(entry.engine, entry.platform)
-        resources.update(ref.path for ref in (entry.recipe, recipe.pins, recipe.models_lock))
+        resources.update(helper_manifest(recipe))
         for environment in recipe.environments:
             lock = environment.requirements.packaged_lock
             if lock is not None:

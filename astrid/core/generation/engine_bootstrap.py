@@ -32,12 +32,7 @@ _FILES = (
     'astrid/core/generation/engine_local_endpoint.py',
     'astrid/core/generation/engine_runner_target.py', 'astrid/core/generation/model_downloader.py',
     'astrid/packs/engine-index.json',
-    'astrid/packs/runpod/recipe.linux-cu130.json', 'astrid/packs/runpod/pins.json',
-    'astrid/packs/runpod/models.lock.json',
-    'astrid/packs/vibecomfy/recipe.windows-cu130.json', 'astrid/packs/vibecomfy/pins.json',
-    'astrid/packs/vibecomfy/models.lock.json',
-    'astrid/packs/wan2gp/recipe.windows-cu128.json', 'astrid/packs/wan2gp/pins.json',
-    'astrid/packs/wan2gp/models.lock.json',
+
 )
 
 
@@ -82,12 +77,44 @@ def _validate_argv(argv):
         i += 2
 
 
+def closure_files(argv: tuple[str, ...], *, root: Path | None = None) -> tuple[str, ...]:
+    """Planning closure derived from the selected hash-indexed recipe, no pack list."""
+    from . import engine_recipe as recipes
+    from .engine_runner import _RELOCATION_PATH
+
+    root = Path(__file__).resolve().parents[3] if root is None else root
+    names = set(_FILES)
+    if len(argv) < 4 or argv[:2] != ('engines', 'install') or argv[2].startswith('-'):
+        return tuple(sorted(names))
+    platform = (argv[argv.index('--platform') + 1] if '--platform' in argv
+                else 'linux-x86_64-cu130')
+    package = root / 'astrid'
+    index = recipes._json(package / 'packs/engine-index.json')
+    entries = [e for e in index['entries'] if (e['engine'], e['platform']) == (argv[2], platform)]
+    if len(entries) != 1:
+        raise RecipeValidationError('no unique selected bootstrap recipe')
+    ref = recipes._resolve_ref(entries[0]['recipe'], 'bootstrap.recipe')
+    _, data = recipes._read_ref(ref, root=package)
+    recipe = json.loads(data)
+    refs = [ref, recipes._resolve_ref(recipe['models_lock'], 'bootstrap.models_lock')]
+    refs.extend(recipes.pin_data_refs(
+        recipes._resolve_ref(recipe['pins'], 'bootstrap.pins'), root=package))
+    refs.extend(recipes._resolve_ref(e['requirements']['packaged_lock'], 'bootstrap.requirements')
+                for e in recipe['environments'] if e['requirements']['packaged_lock'] is not None)
+    for data_ref in refs:
+        recipes._read_ref(data_ref, root=package)
+        names.add('astrid/' + data_ref.path)
+    if recipe['engine'] == 'comfyui':
+        names.add('astrid/' + _RELOCATION_PATH)
+    return tuple(sorted(names))
+
+
 def build_cli_bootstrap(argv: tuple[str, ...]) -> CliBootstrap:
     _validate_argv(argv)
     root = Path(__file__).resolve().parents[3]
     try:
         data = {}
-        for name in _FILES:
+        for name in closure_files(argv, root=root):
             path = root / name
             if any(part.is_symlink() for part in (path, *path.parents) if part != root.parent):
                 raise IntegrityError('symlink in bootstrap closure')

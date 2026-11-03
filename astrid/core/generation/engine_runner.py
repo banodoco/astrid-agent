@@ -54,6 +54,7 @@ from .engine_contracts import (
 )
 
 _HELPER_SCHEMA = "astrid.engine-runner-helper.v1"
+_RELOCATION_PATH = "core/generation/engines/comfyui/relocation.json"
 _SERVICE_SCHEMA = "astrid.engine-service.v1"
 _RECEIPT = ".astrid-engine/install.json"
 __all__ = ["plan_install", "install_engine", "engine_status"]
@@ -270,16 +271,54 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / relative
         if path.is_file():
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
-    entry = next(e for e in recipes.load_recipe_index().entries
-                 if (e.engine, e.platform) == (recipe.engine, recipe.platform))
-    refs = [entry.recipe, recipe.pins, recipe.models_lock]
-    refs += [e.requirements.packaged_lock for e in recipe.environments
-             if e.requirements.packaged_lock is not None]
+    index_path = recipes._INDEX_PATH.relative_to(root).as_posix()
+    result[index_path] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
+    refs = recipes.recipe_data_refs(recipe)
+    if recipe.engine == "comfyui":
+        path = root / _RELOCATION_PATH
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+            raise IntegrityError("unsafe relocation evidence")
+        result[_RELOCATION_PATH] = hashlib.sha256(path.read_bytes()).hexdigest()
     for ref in refs:
         _, payload = recipes._read_ref(ref)
         result[ref.path] = hashlib.sha256(payload).hexdigest()
     return dict(sorted(result.items()))
+
+
+def _relocated_identity(recipe, recipe_sha256, helper_sha256=None):
+    """Admit only the reviewed frozen-base relocation, never a generic old helper.
+
+    The packaged record binds both recipe identities and every exact current
+    helper/data byte except the record itself. It is itself in the live helper
+    manifest. Later code/data changes invalidate this exception until reviewed.
+    This applies to persisted install evidence only, never service custody or
+    the live controller/target protocol.
+    """
+    if recipe.engine != "comfyui":
+        return False
+    record = recipes._json(recipes._ROOT / _RELOCATION_PATH)
+    if (not isinstance(record, dict) or set(record) != {
+            "schema", "base", "recipe_sha256", "legacy_recipe_sha256",
+            "legacy_helper_sha256", "files"}
+            or record["schema"] != "astrid.engine-relocation.v1"
+            or record["base"] != "4b5bd6ca046a08626f8c42a450fe14c7297fb4bf"
+            or record["legacy_recipe_sha256"] != recipe_sha256
+            or record["recipe_sha256"] != recipes.recipe_digest(recipe)
+            or helper_sha256 is not None and record["legacy_helper_sha256"] != helper_sha256):
+        return False
+    manifest = dict(helper_manifest(recipe))
+    manifest.pop(_RELOCATION_PATH)
+    return record["files"] == manifest
+
+
+def _receipt_recipe_matches(recipe, digest):
+    return digest == recipes.recipe_digest(recipe) or _relocated_identity(recipe, digest)
+
+
+def _install_identity_matches(recipe, recipe_sha256, helper_sha256):
+    current = _sha(helper_manifest(recipe))
+    return ((recipe_sha256 == recipes.recipe_digest(recipe) and helper_sha256 == current)
+            or _relocated_identity(recipe, recipe_sha256, helper_sha256))
 
 
 
@@ -531,13 +570,14 @@ class _Runner:
         identity = {"recipe_sha256": self.plan.recipe_sha256, "helper_sha256": self.helper_sha256,
                     "environment": name}
         if state is not None and (not isinstance(state, Mapping)
-                or state.get("recipe_sha256") != identity["recipe_sha256"]
+                or not _receipt_recipe_matches(self.recipe, state.get("recipe_sha256"))
                 or state.get("environment") != name
                 or not isinstance(state.get("helper_sha256"), str)
                 or not _DIGEST.fullmatch(state["helper_sha256"])
                 or not lock.sha256 or lock.sha256 != state.get("requirements_lock_sha256")):
             raise IntegrityError("environment receipt or persisted lock identity differs", step_id=self.step_id)
-        if state is not None and state["helper_sha256"] != self.helper_sha256:
+        if state is not None and not _install_identity_matches(
+                self.recipe, state["recipe_sha256"], state["helper_sha256"]):
             raise EngineReinstallRequired.for_install(engine=self.plan.engine, platform=self.plan.platform,
                 root=self.plan.root, environment=name, step_id=self.step_id)
         # Interrupted installs can have a lock identity before a receipt. This
@@ -552,9 +592,10 @@ class _Runner:
                         "recipe_sha256": self.plan.recipe_sha256,
                         "requirements_lock_sha256": candidate.sha256}
             if (isinstance(meta, Mapping) and set(meta) == set(expected) | {"helper_sha256"}
-                    and all(meta[k] == v for k, v in expected.items())
+                    and all(meta[k] == v for k, v in expected.items() if k != "recipe_sha256")
+                    and _receipt_recipe_matches(self.recipe, meta["recipe_sha256"])
                     and isinstance(meta["helper_sha256"], str) and _DIGEST.fullmatch(meta["helper_sha256"])
-                    and meta["helper_sha256"] != self.helper_sha256
+                    and not _install_identity_matches(self.recipe, meta["recipe_sha256"], meta["helper_sha256"])
                     and (environment.requirements.mode != "packaged"
                          or candidate.sha256 == environment.requirements.packaged_lock.sha256)):
                 raise EngineReinstallRequired.for_install(engine=self.plan.engine, platform=self.plan.platform,
@@ -870,7 +911,8 @@ def _parse_receipt(raw, plan):
     recipe = recipes.load_recipe(plan.engine, plan.platform)
     models_lock = recipes.load_model_lock(recipe.models_lock)
     for key in ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256"):
-        if value[key] != getattr(plan, key):
+        if (not _receipt_recipe_matches(recipe, value[key]) if key == "recipe_sha256"
+                else value[key] != getattr(plan, key)):
             raise IntegrityError("install receipt identity differs")
     if (value["schema"] != "astrid.engine-install.v1" or value["qualified"] is not False
             or value["status"] not in ("installing", "installed", "failed")

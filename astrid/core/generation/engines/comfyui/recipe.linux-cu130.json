@@ -3,8 +3,8 @@
   "engine": "comfyui",
   "platform": "linux-x86_64-cu130",
   "pins": {
-    "path": "packs/runpod/pins.json",
-    "sha256": "a34bd015480e4c255fba889cd281bb6951f277cfc0e6f5426c18646c76f4c3e7"
+    "path": "core/generation/engines/comfyui/pins.json",
+    "sha256": "e2de89cf3586bb96e49be3324fffd74b693468b4f9a36736f2630286dba518f4"
   },
   "source_bindings": [
     {
@@ -27,7 +27,7 @@
       "requirements": {
         "mode": "packaged",
         "packaged_lock": {
-          "path": "packs/comfyui/requirements.linux-cu130.lock",
+          "path": "core/generation/engines/comfyui/requirements.linux-cu130.lock",
           "sha256": "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
         },
         "input_paths": [],
@@ -60,7 +60,7 @@
   ],
   "primary_environment": "comfy",
   "models_lock": {
-    "path": "packs/comfyui/models.lock.json",
+    "path": "core/generation/engines/comfyui/models.lock.json",
     "sha256": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093"
   },
   "start": {

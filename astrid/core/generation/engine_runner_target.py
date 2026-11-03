@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import engine_recipe as recipes
 from .engine_contracts import EngineError, EngineReinstallRequired, IntegrityError, RecipeValidationError, UnsafePathError
-from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
+from .engine_runner import _install_identity_matches, _receipt_recipe_matches, _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
                "install-locks", "environment-spec", "models-config", "models-config-check"}
@@ -122,16 +122,20 @@ def _validate_lock_identity(recipe, helper_digest, environment, lock, meta, root
     _entries(lock.read_text(encoding="utf-8"))
     expected = _lock_identity(recipe, helper_digest, environment, lock)
     actual = json.loads(meta.read_text()) if meta.is_file() else None
-    if (isinstance(actual, dict) and set(actual) == set(expected)
-            and all(actual[key] == expected[key] for key in expected if key != "helper_sha256")
-            and isinstance(actual["helper_sha256"], str)
-            and re.fullmatch(r"[0-9a-f]{64}", actual["helper_sha256"])
-            and actual["helper_sha256"] != helper_digest
-            and (environment.requirements.mode != "packaged"
-                 or _hash(lock) == environment.requirements.packaged_lock.sha256)):
-        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
-            root=str(root), environment=environment.name, step_id="environment:" + environment.name)
-    if actual != expected:
+    shape_matches = (isinstance(actual, dict) and set(actual) == set(expected)
+                     and all(actual[key] == expected[key] for key in expected
+                             if key not in {"recipe_sha256", "helper_sha256"})
+                     and _receipt_recipe_matches(recipe, actual["recipe_sha256"])
+                     and isinstance(actual["helper_sha256"], str)
+                     and re.fullmatch(r"[0-9a-f]{64}", actual["helper_sha256"]))
+    if shape_matches and not _install_identity_matches(
+            recipe, actual["recipe_sha256"], actual["helper_sha256"]):
+        if (environment.requirements.mode != "packaged"
+                or _hash(lock) == environment.requirements.packaged_lock.sha256):
+            raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
+                root=str(root), environment=environment.name, step_id="environment:" + environment.name)
+        shape_matches = False
+    if not shape_matches:
         raise IntegrityError("persisted requirements lock has no matching input identity")
     if environment.requirements.mode == "packaged" and _hash(lock) != environment.requirements.packaged_lock.sha256:
         raise IntegrityError("target requirements lock differs from packaged lock")
