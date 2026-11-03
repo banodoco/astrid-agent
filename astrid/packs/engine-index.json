@@ -6,7 +6,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/comfyui/recipe.linux-cu130.json",
-        "sha256": "eb5ec058018ac2f3abbd1722b134cdbc91ff922c4939aa988bfc6d3a2679b60b"
+        "sha256": "622d4bb7b116684c1afd327915a348bc863bf60e688ce1f3d037346e42bbd1f3"
       }
     },
     {

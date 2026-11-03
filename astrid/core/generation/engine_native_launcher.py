@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import socket
 import sys
+import tempfile
 import types
 
 
@@ -42,7 +43,27 @@ def instrument(source, filename):
 def main():
     if sys.platform != "linux" or os.getuid() == 0 or os.geteuid() == 0:
         raise ValueError("native fence requires an ordinary Linux UID")
+    if not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode):
+        raise ValueError("native fence requires isolated Python without site hooks")
     here = Path(__file__).resolve().parent
+    installation = here.parent.parent
+    venv = installation / "runtime/venv"
+    if Path(sys.executable).parent.parent != venv or Path.cwd().resolve() != installation / "runtime/ComfyUI":
+        raise ValueError("native launcher is outside its recipe installation")
+    if sys.version_info[:3] != (3, 12, 10):
+        raise ValueError("native interpreter differs from recipe")
+    # -I excludes inherited PYTHONPATH and user-site; -S excludes executable
+    # .pth/sitecustomize hooks. Restore only the recipe's fixed venv prefix and
+    # site directory (3.12 initializes venv prefixes in site.py). No .pth runs.
+    sys.prefix = sys.exec_prefix = str(venv)
+    site = venv / "lib/python3.12/site-packages"
+    if not site.is_dir() or site.resolve() != site:
+        raise ValueError("native dependency directory differs from recipe")
+    sys.path.append(str(site))
+    # Source hashes must describe executed Python, rather than a pre-existing
+    # .pyc with a forged timestamp. A fresh private prefix is never populated;
+    # -B prevents writes and all later imports ignore ambient bytecode caches.
+    sys.pycache_prefix = tempfile.mkdtemp(prefix=".bytecode-", dir=here)
     # Import only the adjacent byte-bound Agent adapter, not an ambient module.
     spec = importlib.util.spec_from_file_location("_astrid_native_fence", here / "engine_native_fence.py")
     adapter = importlib.util.module_from_spec(spec)
@@ -58,14 +79,9 @@ def main():
     # external, Windows/macOS and interactive launch modes keep refusing bind.
     if enrollment["mode"] != "comfyui-linux-cu130-v1" or enrollment["policy"] != hashlib.sha256(policy_bytes).hexdigest():
         raise ValueError("unknown native policy")
-    if sys.version_info[:3] != (3, 12, 10):
-        raise ValueError("native interpreter differs from recipe")
-    import aiohttp
-    if aiohttp.__version__ != "3.14.5":
-        raise ValueError("native dispatch dependency changed")
     source_files = {}
     for source_root, files in ((root, policy["comfy_python"]),
-                               (Path(aiohttp.__file__).parent, policy["aiohttp_python"])):
+                               (site / "aiohttp", policy["aiohttp_python"])):
         for relative, expected in files.items():
             path = source_root / relative
             if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
@@ -75,6 +91,9 @@ def main():
                   if ".git" not in p.parts}
         if actual != set(files):
             raise ValueError("native source closure has extra or missing Python files")
+    import aiohttp
+    if (aiohttp.__version__ != "3.14.5" or Path(aiohttp.__file__).resolve() != site / "aiohttp/__init__.py"):
+        raise ValueError("native dispatch dependency changed")
     for relative, expected in enrollment["adapter"].items():
         if relative not in {"engine_native_launcher.py", "engine_native_fence.py", "engine_native_policy.json"}:
             raise ValueError("unknown native helper")

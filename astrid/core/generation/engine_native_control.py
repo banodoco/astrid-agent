@@ -17,7 +17,6 @@ class NativeController:
     def __init__(self, owner):
         here = Path(__file__).resolve().parent
         self.owner = owner
-        self.channel, self.child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         self.sequence = 0
         self.engine = None
         self.routes = None
@@ -28,6 +27,14 @@ class NativeController:
             "adapter": {name: hashlib.sha256((here / name).read_bytes()).hexdigest()
                         for name in ("engine_native_launcher.py", "engine_native_fence.py", "engine_native_policy.json")},
             "policy": hashlib.sha256((here / "engine_native_policy.json").read_bytes()).hexdigest()}
+        directory = Path(owner.root, ".astrid-engine/native")
+        for name, expected in self.enrollment["adapter"].items():
+            path = directory / name
+            info = path.stat()
+            if (path.resolve() != path or info.st_uid != os.getuid() or info.st_mode & 0o077
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
+                raise EndpointOwnershipError("installed native helper differs before launch")
+        self.channel, self.child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 
     def child_environment(self):
         return {"ASTRID_NATIVE_CONTROL": canonical({"fd": self.child.fileno(), "enrollment": self.enrollment}).decode()}

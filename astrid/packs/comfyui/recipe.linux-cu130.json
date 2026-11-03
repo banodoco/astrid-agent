@@ -66,6 +66,9 @@
   "start": {
     "argv": [
       "{python}",
+      "-I",
+      "-S",
+      "-B",
       "{native_launcher}",
       "--listen",
       "127.0.0.1",

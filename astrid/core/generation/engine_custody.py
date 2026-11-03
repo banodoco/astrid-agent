@@ -816,7 +816,8 @@ class _Supervisor:
             source = self.source_identity(deadline, channel)
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
             if (self.recipe.engine == "comfyui" and self.recipe.platform == "linux-x86_64-cu130"
-                    and request.argv[1] == self.root + "/.astrid-engine/native/engine_native_launcher.py"):
+                    and request.argv[1:5] == ("-I", "-S", "-B",
+                        self.root + "/.astrid-engine/native/engine_native_launcher.py")):
                 from .engine_native_control import NativeController
                 self.native_control = NativeController(self)
             try:

@@ -1371,11 +1371,21 @@ def test_native_launch_helpers_are_installed_and_readonly_checks_refuse_tamper(t
         assert path.read_bytes() == (recipes._ROOT / "core/generation" / name).read_bytes()
         assert path.stat().st_mode & 0o777 == 0o400
     assert target.dispatch("models-config-check", payload)["facts"] == {"valid": True}
+    from astrid.core.generation.engine_native_control import NativeController
+    from types import SimpleNamespace
+    controller_owner = SimpleNamespace(root=str(tmp_path), identity={"component_diagnostic": True}, launch={})
+    control = NativeController(controller_owner)
+    try:
+        assert control.child.fileno() >= 0 and control.channel.fileno() >= 0
+    finally:
+        control.close()
     changed = tmp_path / ".astrid-engine/native/engine_native_fence.py"
     changed.chmod(0o600)
     changed.write_bytes(b"changed helper")
     assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
     assert changed.read_bytes() == b"changed helper"
+    with pytest.raises(EndpointOwnershipError):
+        NativeController(controller_owner)
 
 
 def test_helper_error_envelope_preserves_stable_error_without_raw_exception(tmp_path, capsys):
