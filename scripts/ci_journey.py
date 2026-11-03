@@ -1157,6 +1157,13 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
     if (log.name == "seed.json" and len(parts) >= 4 and
             Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
         return run_seed(parts, log, env=env, timeout=timeout)
+    if ntpath.basename(parts[0]).casefold() in {"powershell.exe", "pwsh.exe"}:
+        # The workflow invokes this driver from pwsh, whose PSModulePath points
+        # at PowerShell 7 modules.  Do not pass that path into Windows
+        # PowerShell 5.1; an absent value makes the child rebuild its native
+        # module path before the genuine installer runs.
+        env = {key: value for key, value in (os.environ if env is None else env).items()
+               if key.casefold() != "psmodulepath"}
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
