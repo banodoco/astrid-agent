@@ -313,7 +313,7 @@ def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, m
         cleanup = case.host.last_cleanup_receipt
         assert cleanup["intended_disposition"] == ("caller_owned" if caller_owned else "retained")
         assert case.root.exists()
-        assert receipt(case)["publication"]["status"] == "not_settled"
+        assert not (case.root / "result.json").exists()
     finally:
         release.set()
         owner.join(timeout=3)

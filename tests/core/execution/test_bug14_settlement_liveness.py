@@ -342,6 +342,7 @@ def test_outage_has_active_owner_and_renewal_until_exact_replay_resolves(settlem
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
     assert owner.is_alive() and case.root.exists()
+    assert not (case.root / "result.json").exists()
     assert case.host._handoff_active_attempts == 1
     assert json.loads(case.host.busy_path.read_text())["active"] == 1
     case.renewed.clear()
@@ -365,6 +366,7 @@ def test_lost_ack_with_delayed_readback_retains_owner_without_duplicate_outputs(
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
     assert owner.is_alive() and case.host._handoff_active_attempts == 1
     assert case.root.exists() and not case.failures
+    assert not (case.root / "result.json").exists()
     case.release.set()
     owner.join(timeout=3)
     _assert_resolved(case, "completed")

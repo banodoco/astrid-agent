@@ -10374,7 +10374,8 @@ class GenericPackHost:
         """
         from astrid.sdk.results import InvocationResult
 
-        if terminal.get("receipt_final"):
+        if (terminal.get("receipt_final")
+                or (terminal.get("publication_pending") and not terminal.get("recorded"))):
             return
         terminal["write_attempted"] = True
         minimal = _minimal or terminal.get("minimal", False)
@@ -10514,6 +10515,7 @@ class GenericPackHost:
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
             if (terminal.get("receipt_final") or terminal.get("forced") != forced_at_start
+                    or (terminal.get("publication_pending") and not terminal.get("recorded"))
                     or (terminal.get("forced") and not minimal)):
                 return
             root.mkdir(parents=True, exist_ok=True)
