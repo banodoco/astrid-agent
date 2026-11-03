@@ -14,6 +14,7 @@ import platform
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -53,6 +54,91 @@ from .results import DiscoveryResult, InvocationResult, _json_safe, _json_safe_m
 _MAX_GENERATION_METADATA_BYTES = 16 * 1024
 _MAX_GENERATION_METADATA_DEPTH = 8
 _INTERNAL_DISPATCH_TOKEN = object()
+
+
+class _RetainedPreparedOwner:
+    """One host-owned monitor for one exact task and binding, including follow."""
+    def __init__(self, monitor, owner=None, execution_request=None, endpoint_checkout=None):
+        self.monitor, self.owner = monitor, owner
+        self.execution_request = execution_request
+        self.endpoint_checkout = endpoint_checkout
+        self.identity = None
+        self.locator = None
+        self.retained = False
+        self.activated = False
+        self.retired = False
+        self._lock = threading.RLock()
+
+    def __call__(self, task):
+        with self._lock:
+            try:
+                self._tick(task)
+            except Exception as exc:
+                error = exc if isinstance(exc, AstridSDKError) else CapabilityInvocationError(_redact_message(str(exc)))
+                error.task_id = task.get('task_id')
+                if error is exc:
+                    raise
+                raise error from exc
+
+    def _tick(self, task):
+        identity = tuple(task.get(key) for key in ('task_id', 'run_id', 'capability_id'))
+        if any(not isinstance(value, str) or not value for value in identity):
+            raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
+        if self.locator is not None and self.locator != identity:
+            raise CapabilityInvocationError('prepared owner observed a foreign task/run/capability')
+        if self.execution_request is not None:
+            if task.get('execution_request') != self.execution_request:
+                raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
+            binding = task.get('execution_binding')
+            if binding is None and str(task.get('state') or '').casefold() in {'queued', 'pending', 'admitted'}:
+                return  # The retained host will observe the same task's first binding.
+            if (not isinstance(binding, Mapping)
+                    or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
+                raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
+            identity += (json.dumps(binding, sort_keys=True),)
+        # H3's parent runs on the default target. Its pack monitor verifies
+        # the delegated run child's exact binding once that child appears.
+        if self.identity is not None and self.identity != identity:
+            raise CapabilityInvocationError('prepared owner task or execution binding changed')
+        self.identity = identity
+        if self.execution_request is not None:
+            terminal = str(task.get('state') or task.get('status') or '').casefold() in {
+                'succeeded', 'completed', 'failed', 'cancelled', 'canceled'}
+            if (terminal and self.retired) or (not terminal and self.activated):
+                return
+            self.monitor(task)
+            if terminal:
+                self.retired = True
+            else:
+                self.activated = True
+            return
+        self.monitor(task)
+
+
+def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
+                          owner=None, execution_request=None, endpoint_checkout=None):
+    """F07 host seam: retain the owner on the authenticated client, not a CLI stack."""
+    if client is None or recovery_path is None:
+        raise CapabilityValidationError('prepared generation requires an owner client and recovery_path')
+    owners = getattr(client, '_generation_prepared_owners', None)
+    if owners is None:
+        owners = {}
+        client._generation_prepared_owners = owners
+    key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
+    if key not in owners:
+        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request, endpoint_checkout)
+    elif (owners[key].monitor is not monitor or owners[key].owner is not owner
+          or owners[key].execution_request != execution_request
+          or owners[key].endpoint_checkout is not endpoint_checkout):
+        raise CapabilityValidationError('prepared recovery path already belongs to another owner')
+    return owners[key]
+
+
+def _prepared_owner_for(client, recovery_path, capability_id):
+    if recovery_path is None:
+        return None
+    return getattr(client, '_generation_prepared_owners', {}).get(
+        (str(Path(recovery_path).expanduser().absolute()), capability_id))
 
 
 def _validate_generation_metadata(value: Any) -> dict[str, Any]:
@@ -776,6 +862,8 @@ def _validate_timeline_visualize_inputs(
     except ValueError as exc:
         raise CapabilityValidationError(str(exc)) from exc
     context = prepare_filmstrip(values, project=project, client=_client)
+    if values.get("mode") == "scene_only":
+        context = {**context, "mode": "scene_only"}
     from copy import deepcopy
     # These snapshots are host-prepared immutable closures. Carry resource
     # identity in derived metadata; never rewrite their authored config.
@@ -1023,10 +1111,17 @@ def _admitted_timeline_element_resources(config: Mapping[str, Any], *, registry=
     if packs is None:
         packs = [row.pack for row in discover_pack_metadata(project_root=Path(REPO_ROOT))]
     bound = {}
+    from astrid.core.rendering.project_elements import selection_key, selections
+
+    project_selections = {selection_key(row["reference"]) for row in selections(config)}
     for clip in candidates:
         ref = clip.get("elementRef")
         explicit = isinstance(ref, Mapping)
         ref = ref if explicit else {"kind": "effects", "id": clip.get("clipType")}
+        if explicit and all(key in ref for key in ("packId", "kind", "id", "revision")) and selection_key(ref) in project_selections:
+            # Project source is staged by the Remotion renderer. It does not
+            # nominate checkout-local native motion modules for review tools.
+            continue
         clip_id, element_id, kind = clip.get("id"), ref.get("id"), ref.get("kind")
         if not all(isinstance(value, str) and value for value in (clip_id, element_id, kind)):
             raise CapabilityValidationError("element resource binding requires exact clip/element/kind identities")
@@ -1194,6 +1289,7 @@ def _render_reuse_toolchain_digest() -> str | None:
             "pack_source": source_checkout_digest(root),
             "core_source": source_checkout_closure_digest(root),
             "remotion": {part: _source_digest(remotion / part) for part in remotion_parts},
+            "validated_runtime": os.environ.get("ASTRID_REMOTION_VALIDATION_SHA256"),
             "external_tools": {
                 name: _source_digest(Path(path).resolve()) if path else None
                 for name, path in binaries.items()
@@ -1327,6 +1423,19 @@ def _prepare_managed_render_inputs(
             snapshot = candidate_preview_snapshot(
                 authoring_preview, snapshot=snapshot, client=_client
             )
+        # `resolve_managed_render_snapshot` returned this graph only after
+        # reading and validating the exact typed parent -> shot -> internal
+        # revision closure. Preserve that producer proof across the ordinary
+        # managed-render snapshot boundary. Unpublished candidate exports are
+        # not certified by this saved-revision path.
+        host_transition_contract = (
+            "runtime-parent-closure/v1"
+            if authoring_preview is None
+            and isinstance(snapshot.composition_graph, Mapping)
+            and isinstance(snapshot.expansion, Mapping)
+            and snapshot.expansion.get("canonical") is True
+            else None
+        )
         child_records: list[dict[str, Any]] = []
         review_shots: list[dict[str, Any]] = []
         review_phrases: list[dict[str, Any]] = []
@@ -1464,6 +1573,11 @@ def _prepare_managed_render_inputs(
                 "expanded_config_hash": _expanded_config_hash(expanded_config),
             },
         )
+        if authoring_preview is not None:
+            from astrid.core.rendering.project_elements import resolve_project_elements
+
+            config = resolve_project_elements(snapshot.config, project=snapshot.project_id, client=_client)
+            snapshot = replace(snapshot, config=config, config_hash=_expanded_config_hash(config))
         validate_managed_render_snapshot(snapshot)
     except ManagedRenderValidationError as exc:
         raise CapabilityValidationError(str(exc), details=exc.details) from exc
@@ -1528,15 +1642,20 @@ def _prepare_managed_render_inputs(
         "element_resources": _admitted_timeline_element_resources(snapshot.config),
     }
     authority = snapshot.authority()
+    timeline_snapshot = {
+        "config": dict(snapshot.config),
+        "registry": dict(snapshot.registry),
+    }
+    if host_transition_contract == "runtime-parent-closure/v1":
+        timeline_snapshot["metadata"] = {
+            "host_transition_contract": host_transition_contract,
+        }
     values.update(
         {
             # The generic host materializes this immutable snapshot below the
             # assigned attempt.  The SDK never writes a project-side render
             # snapshot or hands a project-root locator to a renderer.
-            "timeline_snapshot": {
-                "config": dict(snapshot.config),
-                "registry": dict(snapshot.registry),
-            },
+            "timeline_snapshot": timeline_snapshot,
             "timeline_authority": authority,
         }
     )
@@ -2740,7 +2859,7 @@ def _kernel_invoke(
     # renders source previews.
     if (str(capability.id) == "rendering.timeline_visualize"
             and isinstance(idempotency_context, Mapping)
-            and idempotency_context.get("mode") in {"filmstrip", "input_only", "composed_capture"}):
+            and idempotency_context.get("mode") in {"filmstrip", "input_only", "composed_capture", "scene_only"}):
         authority_snapshot = (
             idempotency_context.get("filmstrip_snapshot")
             or idempotency_context.get("input_snapshot")
@@ -2869,13 +2988,29 @@ def _kernel_invoke(
     # Admission has already used the projected documents to derive media and
     # storage bounds. Persist each exact projection once in Runtime CAS and
     # send only its digest/revision identity in the task request.
-    spec_inputs = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
-    snapshot_context = spec.get("authority_context") if isinstance(spec.get("authority_context"), dict) else {}
+    spec_inputs: dict[str, Any] = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
+    snapshot_context: dict[str, Any] = spec.get("authority_context") if isinstance(spec.get("authority_context"), dict) else {}
     has_inline_snapshot = isinstance(spec_inputs.get("timeline_snapshot"), Mapping) or any(
         isinstance(snapshot_context.get(key), Mapping)
         for key in ("filmstrip_snapshot", "input_snapshot", "capture_snapshot")
     )
-    if str(capability.id) in {"rendering.render", "rendering.timeline_visualize"} and has_inline_snapshot:
+    # Capture admission must validate the candidate and every duplicate before
+    # Runtime publishes anything. Leave its inline snapshot for that publisher.
+    capture_snapshot = snapshot_context.get("capture_snapshot")
+    capture_authority = capture_snapshot.get("metadata", {}).get("capture_authority", {}) if isinstance(capture_snapshot, Mapping) else {}
+    # A working copy whose candidate was not forwarded cannot be certified: it
+    # is sent as explicit CAS-only data, never as a revision or working copy.
+    candidate_forwarded = isinstance(spec_inputs.get("authoring_preview"), Mapping)
+
+    def uncertified(snapshot: Any) -> bool:
+        metadata = snapshot.get("metadata") if isinstance(snapshot, Mapping) else None
+        return (isinstance(metadata, Mapping) and isinstance(metadata.get("working_copy"), Mapping)
+                and not candidate_forwarded)
+
+    runtime_capture = (str(capability.id) == "rendering.timeline_visualize"
+                       and bool(capture_authority.get("parent_revision_id"))
+                       and not uncertified(capture_snapshot))
+    if str(capability.id) in {"rendering.render", "rendering.timeline_visualize"} and has_inline_snapshot and not runtime_capture:
         remote = getattr(_client, "_remote", _client)
         transport = getattr(remote, "_transport", remote)
         ingest = getattr(transport, "ingest_project_object", None)
@@ -2893,6 +3028,9 @@ def _kernel_invoke(
                 raise CapabilityInvocationError("Runtime snapshot object digest differs from prepared snapshot")
             if digest not in input_manifest:
                 input_manifest.append(digest)
+            if uncertified(snapshot):
+                return {"digest": digest, "project_id": provenance.get("project_id"),
+                        "timeline_id": provenance.get("timeline_id"), "source_kind": "cas"}
             revision_id = provenance.get("revision_id")
             metadata = snapshot.get("metadata") if isinstance(snapshot.get("metadata"), Mapping) else {}
             working_copy = metadata.get("working_copy") if isinstance(metadata.get("working_copy"), Mapping) else None
@@ -3359,6 +3497,43 @@ def _wait_for_kernel_task(
                 },
             }, False, attempt_id
 
+        # Runtime preserves unresolved attempt custody after lease expiry.
+        # Such a task will not become terminal merely by polling it longer.
+        # Use the same task read; never redispatch an accepted external job.
+        lease_expiry = task.get("lease_expires_at")
+        expired = False
+        if state in {"running", "provider_state_unknown"} and attempt_id and isinstance(lease_expiry, str):
+            try:
+                parsed_expiry = datetime.fromisoformat(lease_expiry.replace("Z", "+00:00"))
+                expired = parsed_expiry.tzinfo is not None and parsed_expiry <= datetime.now(timezone.utc)
+            except ValueError:
+                pass
+        if expired:
+            recovery_command = f"astrid tasks cancel {task_id}"
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": attempt_id,
+                "state": "reconciliation_required",
+                "task": task,
+                "error": {
+                    "code": "task_reconciliation_required",
+                    "message": (
+                        f"task {task_id}, attempt {attempt_id}: lease expired with unresolved custody; "
+                        f"reconciliation required. Recover with: {recovery_command}"
+                    ),
+                    "details": {
+                        "task_id": task_id,
+                        "attempt_id": attempt_id,
+                        "state": state,
+                        "lease_expires_at": lease_expiry,
+                        "recovery_command": recovery_command,
+                    },
+                },
+            }, False, attempt_id
+
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return {
@@ -3414,8 +3589,24 @@ def _observe_task_invocation(
     locator's already-read task. When a legacy locator has no saved DTO, a
     non-waiting observation performs one authorized task read. Waiting always
     uses the same Runtime polling and result construction as fresh invocation.
-    This helper reads task/output state only; it never dispatches or settles.
+    A retained prepared owner may activate/retire its exact binding while
+    observing. This helper never admits, retries or settles a Runtime task.
     """
+    retained = getattr(client, '_generation_task_owners', None)
+    if retained is None and owner_tick is not None:
+        retained = {}
+        client._generation_task_owners = retained
+    if owner_tick is not None and initial_ok:
+        if isinstance(owner_tick, _RetainedPreparedOwner):
+            locator = (task_id, run_id, capability_id)
+            if owner_tick.locator is not None and owner_tick.locator != locator:
+                raise CapabilityInvocationError('prepared owner cannot be rebound to another task')
+            owner_tick.locator = locator
+        previous = retained.setdefault(task_id, owner_tick)
+        if previous is not owner_tick:
+            raise CapabilityInvocationError('prepared task already has a different retained owner')
+    elif retained is not None:
+        owner_tick = retained.get(task_id)
     raw_result = dict(initial_raw_result) if isinstance(initial_raw_result, Mapping) else None
     ok = bool(initial_ok)
     if raw_result is None and isinstance(initial_task, Mapping):
@@ -3504,6 +3695,22 @@ def _observe_task_invocation(
             raw_result = {**dict(raw_result), "replayed": dict(replay_info)}
 
     raw_result = dict(raw_result)
+    if not wait and ok and owner_tick is not None:
+        task = raw_result.get('task')
+        if not isinstance(task, Mapping):
+            observed = client.tasks.show(task_id)
+            task = getattr(observed, 'data', observed if isinstance(observed, Mapping) else None)
+        if not isinstance(task, Mapping) or task.get('task_id') != task_id or task.get('run_id') != run_id:
+            raise CapabilityInvocationError('prepared admission omitted its exact task readback')
+        if isinstance(owner_tick, _RetainedPreparedOwner) and not owner_tick.retained:
+            retain = getattr(owner_tick.owner, 'retain', None)
+            if not callable(retain):
+                retain = getattr(client, 'retain_generation_owner', None)
+            if not callable(retain):
+                raise CapabilityInvocationError('prepared no-wait requires the retained host owner dispatcher')
+            retain(task, owner_tick)
+            owner_tick.retained = True
+        owner_tick(task)
     if not wait:
         observed_task = raw_result.get("task")
         if isinstance(observed_task, Mapping):
@@ -3833,7 +4040,8 @@ def _invoke_bridge_child(
     from astrid.core.foundation.hash import executor_definition_digest
     from ._child_bridge import (
         _BridgeRejected, _BridgeReplyTimeout, _BridgeTimeout, _ChildOutputBinding,
-        _child_request, _valid_id, _validate_output_page, _validate_publication_readback,
+        _child_request, _child_status_error, _valid_id, _validate_output_page,
+        _validate_publication_readback,
     )
 
     digest = executor_definition_digest(registries[0].get(capability.id))
@@ -3864,9 +4072,8 @@ def _invoke_bridge_child(
 
         def validate_status(observed: Any) -> None:
             nonlocal protocol_error
-            if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
-                bridge.close()
-                protocol_error = CapabilityInvocationError("child bridge status returned a foreign task resource")
+            protocol_error = _child_status_error(observed, task_id=task_id, run_id=run_id, close=bridge.close)
+            if protocol_error is not None:
                 raise protocol_error
 
         def status(observed_id: str) -> Any:
@@ -4128,7 +4335,7 @@ def invoke(
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
     if resume and recovery_path is None and capability_id != "h3_av.transform":
         raise CapabilityValidationError("resume requires recovery_path")
-    owner_tick = None
+    owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
     if capability_id == "h3_av.transform" and not child_mode:
         public_inputs = dict(inputs or {})
         for name in ("resume", "dry_run"):
@@ -4142,10 +4349,18 @@ def invoke(
         if resume and recovery_path is None:
             raise CapabilityValidationError("resume requires recovery_path")
         if public_inputs.get("prepared_worker") is not None and not dry_run:
-            if not wait or recovery_path is None:
-                raise CapabilityValidationError("prepared H3 requires wait=True and a parent recovery receipt")
-            from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
-            owner_tick = PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"])
+            if recovery_path is None:
+                raise CapabilityValidationError("prepared H3 requires a parent recovery receipt")
+            owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
+            if owner_tick is None:
+                from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
+                owner_tick = retain_prepared_owner(client, recovery_path=recovery_path,
+                    capability_id=capability_id,
+                    monitor=PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"]))
+    if owner_tick is not None and not wait and not dry_run:
+        if (not callable(getattr(getattr(owner_tick, 'owner', None), 'retain', None))
+                and not callable(getattr(client, 'retain_generation_owner', None))):
+            raise CapabilityPreconditionError('prepared no-wait requires the retained host owner dispatcher')
     if recovery_path is not None and _recovery is None:
         if dry_run:
             raise CapabilityValidationError("recovery is unavailable for dry-run previews")
@@ -4248,6 +4463,13 @@ def invoke(
                         key: item for key, item in value.items()
                         if key in {"digest", "object_id", "filename"}
                     }
+    if capability.id in {"rendering.render", "rendering.timeline_visualize"}:
+        from astrid.core.rendering.verified_source import reject_source_keys
+
+        try:
+            reject_source_keys(request_inputs)
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
     if capability.id == "rendering.render":
         # Apply caller/mode checks before delegated child dispatch as well as
         # top-level preflight. Child file custody still belongs to the bridge.
@@ -4457,6 +4679,13 @@ def invoke(
     # a project tree or materialize a render snapshot.
     if not dry_run:
         if capability.id == "rendering.timeline_visualize":
+            inputs = dict(inputs or {})
+            preview = inputs.get("authoring_preview")
+            if preview is not None:
+                if not isinstance(preview, Mapping):
+                    raise CapabilityValidationError("authoring_preview must be a frozen candidate artifact")
+                # Keep the authored task data identical to what preflight projects.
+                inputs["authoring_preview"] = _json_safe_mapping(preview)
             invocation_authority_context = _validate_timeline_visualize_inputs(
                 inputs,
                 project=project,
@@ -4475,7 +4704,7 @@ def invoke(
                         "transcript input is host-owned; config.app.transcript supplies the CAS object"
                     )
                 inputs["transcript.json"] = transcript_input
-            if invocation_authority_context.get("mode") in {"filmstrip", "input_only", "composed_capture"}:
+            if invocation_authority_context.get("mode") in {"filmstrip", "input_only", "composed_capture", "scene_only"}:
                 # Only preflight may turn a successful project-owned render
                 # into a file input. Public paths were rejected above.
                 inputs = dict(inputs or {})
@@ -4500,11 +4729,16 @@ def invoke(
                 # and the admission receipt. Store the authority and the
                 # snapshot's timeline and registry as managed objects instead;
                 # the host materializes them as the executor's input files.
-                stored = _store_visualize_objects(
+                # Runtime must see a canonical capture before publishing it;
+                # objectifying authority first hides its binding from admission.
+                capture_authority = authority_snapshot.get("metadata", {}).get("capture_authority", {})
+                canonical_capture = (isinstance(invocation_authority_context.get("capture_snapshot"), Mapping)
+                                     and bool(capture_authority.get("parent_revision_id")))
+                stored = None if canonical_capture else _store_visualize_objects(
                     _client, project, authority_json, authority_snapshot,
                 )
                 if stored is None:
-                    inputs["filmstrip_authority"] = authority_json  # a client without import_bytes
+                    inputs["filmstrip_authority"] = authority_json  # admission publishes snapshot refs
                 else:
                     inputs.update(stored)
                     invocation_authority_context = {

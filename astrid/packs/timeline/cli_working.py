@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
-import re
 import shlex
 import sys
 from collections.abc import Mapping
@@ -18,8 +18,169 @@ from typing import Any
 
 from astrid.core.cli.domain_output import print_result
 from astrid.packs.timeline.cli_common import (
-    VerbError, clips_changed, draft_name, guard, need_project, working_banner, working_copy, working_copy_view,
+    VerbError,
+    clips_changed,
+    draft_name,
+    guard,
+    need_project,
+    working_banner,
+    working_copy,
+    working_copy_view,
 )
+from astrid.sdk.timeline._pending import migrate
+
+
+def _valid_replay_flight(state: Mapping[str, Any], scope: Mapping[str, str], outbox) -> bool:
+    """Check that discard can retain a complete, exact retry without editing its flight."""
+    from astrid.sdk.timeline._common import TimelineEditError
+
+    flight = state.get("flight")
+    if not isinstance(flight, Mapping):
+        return False
+    try:
+        key, raw_body = flight["key"], flight["body"]
+        body = json.loads(raw_body)
+        if not isinstance(key, str) or not key or not isinstance(raw_body, str) or not isinstance(body, dict):
+            return False
+        if json.dumps(body, separators=(",", ":"), allow_nan=False) != raw_body:
+            return False
+        from astrid.sdk.timeline.sync import TimelineSession, _flight_kind
+
+        kind = _flight_kind(flight)
+        if kind == "assembly-admission":
+            target = body["spec"]["runtime_dependencies"]["publication"]["admitted_target"]
+            return (
+                body["project"] == scope["project_id"]
+                and target["project_id"] == scope["project_id"]
+                and target["timeline_id"] == scope["timeline_id"]
+                and target["base_revision_id"] == state["base"]["revision_id"]
+                and target["base_publication_id"] == state["base"]["publication_id"]
+            )
+        session = TimelineSession(
+            None, outbox,
+            {"realm_id": scope["realm_id"], "actor_id": scope["actor_id"]},
+            scope["project_id"], scope["timeline_id"],
+        )
+        session._flight_body(state, flight, None, body.get("dry_run", False))
+        return True
+    except (KeyError, TypeError, ValueError, TimelineEditError):
+        return False
+
+
+def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: str):
+    """Return this authenticated session's persisted outbox, without creating one."""
+    client = getattr(parsed, "client", None)
+    try:
+        transport = client._remote._transport
+        handshake = transport._last_handshake or {}
+        identity = {"realm_id": handshake.get("realm_id"), "actor_id": handshake.get("actor_id")}
+        if not all(isinstance(value, str) and value for value in identity.values()):
+            return None, None, None
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+        from astrid.sdk.timeline.outbox import Outbox, request_bytes
+
+        scope = {**identity, "project_id": project_id, "timeline_id": timeline_id}
+        name = hashlib.sha256(request_bytes(scope)).hexdigest() + ".json"
+        path = resolve_runtime_data_root() / "timeline-outbox" / name
+        if not path.is_file():
+            return None, None, scope
+        outbox = Outbox(path)
+        try:
+            with outbox.locked():
+                state = outbox.read()
+        except (OSError, ValueError, TypeError):
+            return outbox, {"status": "invalid"}, scope
+        if not isinstance(state, dict) or state.get("scope") != scope:
+            return outbox, {"status": "invalid"}, scope
+        pending, rejected = state.get("pending"), state.get("rejected")
+        if not isinstance(pending, list) or (rejected is not None and (
+            not isinstance(rejected, Mapping) or not isinstance(rejected.get("commands"), list)
+        )):
+            return outbox, {"status": "invalid"}, scope
+        pending_changes = state.get("pending_changes", {})
+        if not isinstance(pending_changes, Mapping):
+            return outbox, {"status": "invalid"}, scope
+        flight = state.get("flight")
+        if flight is not None:
+            if not _valid_replay_flight(state, scope, outbox):
+                return outbox, {"status": "invalid"}, scope
+            count = flight.get("count") if isinstance(flight, Mapping) else None
+            status = {
+                "status": "in_flight",
+                "outcome": "unknown",
+                "key": flight.get("key") if isinstance(flight, Mapping) else None,
+                "command_count": count,
+            }
+        elif pending:
+            status = {"status": "pending", "command_count": len(pending)}
+        elif rejected:
+            failure = rejected.get("failure") if isinstance(rejected, Mapping) else None
+            details = failure.get("details") if isinstance(failure, Mapping) else None
+            known_conflict = isinstance(details, Mapping) and details.get("status") == "conflict"
+            status = {"status": "conflict" if known_conflict else "rejected",
+                      "command_count": len(rejected["commands"]),
+                      **({"outcome": "not_applied", "failure": copy.deepcopy(failure)}
+                         if known_conflict else {})}
+        else:
+            status = {"status": "clear"}
+        status["pending_changes"] = sum(
+            isinstance(record, Mapping) and record.get("state") == "pending"
+            for record in pending_changes.values()
+        )
+        if rejected and status["status"] != "rejected":
+            status["rejected_command_count"] = len(rejected["commands"])
+        return outbox, status, scope
+    except (AttributeError, OSError, ValueError, TypeError):
+        return None, None, None
+
+
+def _discard_recoverable_outbox(outbox, expected_scope, *, return_kept_count=False):
+    """Clear recoverable intent while retaining an unknown request's exact retry data."""
+    if outbox is None:
+        return "unavailable"
+    with outbox.locked():
+        try:
+            state = outbox.read()
+        except (OSError, ValueError, TypeError):
+            return "invalid"
+        if not isinstance(state, dict) or state.get("scope") != expected_scope:
+            return "invalid"
+        migrated = migrate(state)
+        pending_changes = state.get("pending_changes", {})
+        if not isinstance(pending_changes, Mapping):
+            return "invalid"
+        kept_count = len(pending_changes)
+        flight = state.get("flight")
+        pending = state.get("pending")
+        if not isinstance(pending, list):
+            return "invalid"
+        if flight is not None:
+            if not _valid_replay_flight(state, expected_scope, outbox):
+                return "invalid"
+            kind = flight.get("kind") if isinstance(flight, Mapping) else None
+            # Assembly admission has no command prefix; its immutable body and key live in flight.
+            if kind == "assembly-admission":
+                state["pending"] = []
+            else:
+                state["pending"] = pending[:flight["count"]]
+            # Keep current-flight metadata and prior acknowledged keys; only rejected
+            # work and the unsent suffix are safe to discard.
+            changed = migrated or bool(state.get("rejected")) or len(state["pending"]) != len(pending)
+            # A conflict was migrated above. Refused/invalid rejections retain
+            # their historical discard behavior.
+            if state.get("rejected"):
+                state.pop("rejected", None)
+            if changed:
+                outbox.write(state)
+            return ("in_flight", kept_count) if return_kept_count else "in_flight"
+        changed = bool(pending or state.get("rejected") or state.get("conflict") or migrated)
+        state["pending"] = []
+        for key in ("conflict", "commit_options", "evaluation", "rationale", "media_input", "rejected"):
+            state.pop(key, None)
+        if changed:
+            outbox.write(state)
+        result = "cleared" if changed else "clear"
+        return (result, kept_count) if return_kept_count else result
 
 
 def _cmd_lint(parsed: argparse.Namespace) -> int:
@@ -150,7 +311,9 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
 
     for finding in sorted(timeline_findings, key=lambda f: rank.get(f.severity, 3)):
         emit(finding)
-    from astrid.packs.rendering.actions.timeline_visualize.layers.base import checks as registered_checks
+    from astrid.packs.rendering.actions.timeline_visualize.layers.base import (
+        checks as registered_checks,
+    )
 
     ran = sorted(name for name in registered_checks() if name not in set((rules or {}).get("disable") or ())
                  and "frames" not in registered_checks()[name].needs)
@@ -441,14 +604,55 @@ def _print_line(tl: Any, parsed: argparse.Namespace) -> int:
 
 @guard(1)
 def _cmd_discard(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline import store
+
+    project_id, timeline_id, _head = store.resolve_ids(
+        need_project(parsed), parsed.ref, client=parsed.client
+    )
+    outbox, session_status, scope = _connected_outbox(parsed, project_id, timeline_id)
+    # A scope mismatch is not recoverable local intent: do not let discard
+    # mutate an outbox that belongs to another realm, actor, project, or
+    # timeline.  The status path reports it as invalid instead.
+    try:
+        discard_result = (
+            "invalid"
+            if session_status and session_status.get("status") == "invalid"
+            else _discard_recoverable_outbox(outbox, scope, return_kept_count=True)
+        )
+    except OSError as exc:
+        raise VerbError(f"connected-session discard could not be confirmed: {exc}; check status before retrying") from exc
+    discard_state, kept_count = discard_result if isinstance(discard_result, tuple) else (discard_result, 0)
+    retained_flight = discard_state == "in_flight"
+    kept_count_known = discard_state not in {"invalid", "unavailable"}
+    invalid_outbox = discard_state == "invalid" or bool(
+        session_status and session_status.get("status") == "invalid"
+    )
+    cleared_session = discard_state == "cleared"
     tl, _ = working_copy(parsed, create=False)
     name = draft_name(parsed)
     if tl is None:
-        print(f"no working copy \"{name}\" to discard · next: timelines checkout {parsed.ref} --project {parsed.project}")
+        print(f"no working copy \"{name}\" to discard")
+        if cleared_session:
+            print("discarded recoverable connected-session commands")
+        if retained_flight:
+            print("connected-session request retained for exact retry: its commit outcome is unknown; discard did not undo it")
+        elif invalid_outbox:
+            print("connected-session outbox could not be verified and was left untouched")
+        if kept_count_known:
+            print(f"kept {kept_count} pending change(s)")
+        print(f"next: timelines checkout {parsed.ref} --project {parsed.project}")
         return 0
     dropped = len(tl.edits().get("changes") or [])
     tl.discard()
     print(f'discarded working copy "{name}" of {parsed.ref} ({clips_changed(dropped)}, dropped)')
+    if cleared_session:
+        print("discarded recoverable connected-session commands")
+    if retained_flight:
+        print("connected-session request retained for exact retry: its commit outcome is unknown; discard did not undo it")
+    elif invalid_outbox:
+        print("connected-session outbox could not be verified and was left untouched")
+    if kept_count_known:
+        print(f"kept {kept_count} pending change(s)")
     print(f"next: timelines checkout {parsed.ref} --project {parsed.project}")
     return 0
 
@@ -523,7 +727,10 @@ def _configure_restructure(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_discard(subparser: argparse.ArgumentParser) -> None:
-    subparser.description = "Drop a working copy (its unpublished edits) without publishing."
+    subparser.description = (
+        "Drop the working copy and recoverable unsent session intent. A request with an unknown commit outcome "
+        "is retained; discard does not undo a possibly accepted commit."
+    )
     _timeline_args(subparser, project_required=False)
     subparser.set_defaults(handler=_cmd_discard)
 

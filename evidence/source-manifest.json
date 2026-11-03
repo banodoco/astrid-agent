@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "task": "U2/D135",
+  "repo": "agent",
+  "candidate_base": "a30e74e901a28b39c28facba3deb00d76f186e23",
+  "candidate_base_tree": "ece8e0887e48e45cb1fce85b1256c49a0f6126c0",
+  "merge_head": "886a3183bd4a4a44f0a2c08fabec4e8edcbf7b55",
+  "merge_head_tree": "f53cc8426ccef8760021ef6207303bce7b80e777",
+  "merge_base": "92443771676ef2bbb547d0a103d708fa8bec4c63",
+  "changed_file_count_from_candidate_base": 96,
+  "frozen_source_note": "The first20 and B-1936 packets use frozen ours 547e10456250c1b5bcf63b44a50c90ff0563ce1e, not the actual candidate base. They were used only as bounded source dispositions; actual conflicts and final source were checked against a30e and merge head.",
+  "resolved_paths": {
+    "astrid/chat/astrid-local-agents.test.ts": "53a14d2debc4c45618e2d40fdd6f42659bc51b6cee274a2c2a7fb4bfb63461e3",
+    "astrid/chat/service.mjs": "525e6dff9d4f2084c1167e6c3355e3bcea6a730ee876f99aea04d7d127206019",
+    "astrid/installer/backend.py": "3892c447dc111cd0b41b06d38483b0cffc5cf2ae63ab519cad7388fc145029c0",
+    "docs/install/OMP-LANDING.md": "ec58b4e1a22ca71e1c5acd28c7e823ab948e0fe6b7a24874e96895688f699061",
+    "tests/test_installer_omp_source.py": "1d925f6a343b8a85144967948fb4c80443c74b3c32510bc00645e734b31de4de",
+    "tests/test_installer_platforms.py": "77517d7eec667958ae2409146ac4d3bf472a0878a5965504fe8fac0961126e10"
+  },
+  "generated": {
+    "source": "astrid/chat/service.ts",
+    "source_sha256": "e6ca2f298d2785fac2d850fddd34f81c827c1c640f461bb63316fa3ee5ba4899",
+    "artifact": "astrid/chat/service.mjs",
+    "artifact_sha256": "525e6dff9d4f2084c1167e6c3355e3bcea6a730ee876f99aea04d7d127206019",
+    "command": "NODE_PATH=/home/user/work/runtimes/agent-remotion-current/node_modules bun run build:chat",
+    "freshness_command": "NODE_PATH=/home/user/work/runtimes/agent-remotion-current/node_modules bun run check:chat-bundle",
+    "result": "PASS"
+  }
+}

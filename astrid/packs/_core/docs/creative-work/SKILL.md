@@ -29,7 +29,8 @@ bytes and execution unverified. Cloud rows report key presence only. The
 `z-image-turbo` inventory alias follows the `z-image` registry declaration.
 
 By default, publish edits and point the user to the editor link (see the
-rendering skill); render only when the user asks. When the user asks for a video
+rendering skill); render only when the user asks, but look at composed frames
+of your edits as often as helps. When the user asks for a video
 preview for feedback on reference frames, storyboards, timing, or an ongoing
 edit, use the rendering skill's review mode.
 The user needs visible shot names and timecodes to identify what to change.
@@ -59,10 +60,11 @@ keeping the low-resolution badge readable.
 | Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | [editorial](../../../editorial/docs/SKILL.md) | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |
 | Trim or repair media, or search/download GIFs | [media](../../../media/docs/SKILL.md) | `media.clip_extract`, `media.speech_repair_lavasr`, `media.gif_search` |
 | Assemble a production video, talk, thumbnail, logo grid, or image animation | [video editing](../../../video_editing/docs/SKILL.md) | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
-| Author, inspect, edit, preview, or render a runtime timeline | [timeline editing](../../../rendering/docs/SKILL.md) | `timelines show`/`timelines visualize` inspect the pinned composition; `rendering.render` creates Remotion or other renderer output |
-| Build, explore, or edit a Three.js world (a live scene) and its shots | [worlds](../../../rendering/docs/references/worlds-authoring.md), via [timeline editing](../../../rendering/docs/SKILL.md) | World Explorer panel and `Import world…` in the Three.js Live Editor; agent edits through `astrid.live-scene-request/v1` |
+| Edit a runtime timeline | [timeline](../../../timeline/docs/SKILL.md) | `timelines show` and `timelines visualize` inspect the pinned composition |
+| Render a timeline or inspect render output | [rendering](../../../rendering/docs/SKILL.md) | `rendering.render` creates Remotion or other renderer output |
+| Build, explore, or edit a Three.js world (a live scene) and its shots | [rendering](../../../rendering/docs/SKILL.md#worlds) | World Explorer panel and `Import world…` in the Three.js Live Editor; agent edits through `astrid.live-scene-request/v1` |
 | Build an iteration video or compare experiment outputs | [iteration](../../../iteration/docs/SKILL.md) | `iteration.assemble`, `iteration.experiment_review` |
-| Add sound to one short video clip | [fal](../../../fal/docs/SKILL.md), then [timeline editing](../../../rendering/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then publish and point the user to the editor (render only if asked) |
+| Add sound to one short video clip | [fal](../../../fal/docs/SKILL.md), then [timeline](../../../timeline/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then publish and point the user to the editor (render only if asked) |
 | Make a spatial soundscape from video tiles | [foley](../../../foley/docs/SKILL.md) | `foley.foley_map` produces per-tile audio and a review viewer |
 | Distill a long stream or event into reviewable clips | [stream content](../../../stream_content/docs/SKILL.md) | `stream_content.distill` |
 | Build a training dataset or run LoRA training | [training](../../../training/docs/SKILL.md) | `training.dataset_build`, `training.training_run` |

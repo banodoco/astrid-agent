@@ -91,7 +91,7 @@ def test_runner_shell_and_cleanup_must_match(tmp_path):
     candidate, manifest, row, write = evidence(tmp_path)
     write(row)
     assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'windows-2022', 'powershell.exe')
-    assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-14', 'sh')
+    assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh')
     assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'ubuntu-24.04', 'powershell.exe')
     row['final_cleanup'] = 'retained-for-next-leg'
     write(row)
@@ -127,7 +127,7 @@ def test_hosted_image_mappings(tmp_path):
         ('ubuntu-24.04', 'Linux', 'ubuntu24', 'Linux-6.8', 'sh'),
         ('ubuntu-22.04', 'Linux', 'ubuntu22', 'Linux-6.8', 'sh'),
         ('windows-2022', 'Windows', 'win22', 'Windows-Server', 'powershell.exe'),
-        ('macos-14', 'macOS', 'macos14', 'macOS-14.7-arm64', 'sh'),
+        ('macos-15', 'macOS', 'macos15', 'macOS-15.7-arm64', 'sh'),
     ):
         item = copy.deepcopy(row)
         item.update(runner_image=runner, os_build=build, shell=shell)
@@ -137,6 +137,19 @@ def test_hosted_image_mappings(tmp_path):
         item['runner_provenance']['ImageOS'] = 'unexpected'
         write(item)
         assert any('ImageOS' in e for e in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], runner, shell))
+
+
+def test_macos15_receipt_key_rejects_the_retired_macos14_label(tmp_path):
+    candidate, manifest, row, write = evidence(tmp_path)
+    row.update(runner_image='macos-15', os_build='macOS-15.7-arm64', shell='sh')
+    row['runner_provenance'].update(RUNNER_OS='macOS', ImageOS='macos15')
+    write(row)
+    assert not gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh')
+
+    row['runner_image'] = 'macos-14'
+    write(row)
+    assert any('runner image label' in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh'))
 
 
 def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_path):
@@ -182,12 +195,37 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
+def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for job_id in ('direct-macos', 'pinokio-backend-macos', 'pinokio-fully-local-macos'):
+        receipt = tmp_path / job_id / 'journey-result.json'
+        original = json.loads(receipt.read_text())
+        for field, value, message in (
+            ('runner_image', 'macos-14', 'runner does not match'),
+            ('RUNNER_OS', 'Linux', 'hosted runner provenance'),
+            ('ImageOS', 'macos14', 'hosted runner provenance'),
+            ('ImageVersion', '', 'hosted runner provenance'),
+            ('os_build', 'Linux-6.8', 'OS build does not match'),
+        ):
+            bad = copy.deepcopy(original)
+            if field in ('RUNNER_OS', 'ImageOS', 'ImageVersion'):
+                bad['runner_provenance'][field] = value
+            else:
+                bad[field] = value
+            receipt.write_text(json.dumps(bad), encoding='utf-8')
+            assert any(job_id in error and message in error
+                       for error in gate.evaluate_release1_matrix(candidate, tmp_path)), (job_id, field)
+        receipt.write_text(json.dumps(original), encoding='utf-8')
+
+
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
-    for contract in gate.RELEASE1_MATRIX:
-        assert f'"job_id":"{contract["job_id"]}"' in workflow
-        assert f'"mode":"{contract["mode"]}"' in workflow
-        assert f'"runner":"{contract["runner"]}"' in workflow
+    matrix_text = workflow.split('          matrix = [\n', 1)[1].split('          ]', 1)[0]
+    workflow_rows = [json.loads(line.strip().rstrip(',')) for line in matrix_text.splitlines()]
+    contract_rows = [{**row, 'leg': row.get('leg', 'fresh-install')} for row in gate.RELEASE1_MATRIX]
+    assert len(contract_rows) == len({row['job_id'] for row in contract_rows}) == 9
+    assert workflow_rows == contract_rows
     assert "--aggregate-release1" in workflow
     assert "journey-receipt-${{ matrix.job_id }}" in workflow
     assert "candidate-agent" in workflow and "pinokio" in workflow

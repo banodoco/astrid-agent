@@ -56,12 +56,13 @@ def _parse_json_object(value: str) -> dict[str, Any]:
     return parsed
 
 
-def _add_json_flag(subparser: argparse.ArgumentParser) -> None:
+def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) -> None:
     subparser.add_argument(
         "--json",
         action="store_true",
-        default=True,
-        help="Print the exact SDK envelope (ok/data/error/receipt/idempotency_key); default output.",
+        default=default,
+        help=("Print the exact SDK envelope (ok/data/error/receipt/idempotency_key)."
+              if not default else "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key); default output."),
     )
 
 
@@ -84,11 +85,67 @@ def _cmd_create(parsed: argparse.Namespace) -> int:
         metadata=parsed.settings,
         idempotency_key=parsed.idempotency_key,
     )
+    if result.ok and getattr(parsed, "select", False):
+        selected = parsed.client.projects.select(parsed.slug)
+        if not selected.ok:
+            return print_result(selected, as_json=parsed.json)
+        result = selected
+    if result.ok and not parsed.json:
+        project = result.data.get("project", result.data) if isinstance(result.data, dict) else {}
+        print(f"Created project {project.get('name') or parsed.name} ({project.get('slug') or parsed.slug})")
+        print("selected: yes" if parsed.select else "next: astrid projects select " + parsed.slug)
+        return 0
     return print_result(result, as_json=parsed.json)
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
     result = parsed.client.projects.list()
+    if result.ok and not parsed.json:
+        data = result.data
+        rows = data[0] if isinstance(data, (list, tuple)) and len(data) == 2 and isinstance(data[0], list) else data
+        rows = [dict(row) for row in rows or [] if isinstance(row, dict)]
+        current = parsed.client.projects.current()
+        selected = current.data.get("project") if current.ok and isinstance(current.data, dict) else {}
+        selected_refs = {
+            selected.get(key) for key in ("project_id", "id", "slug")
+        } if isinstance(selected, dict) else set()
+        if not rows:
+            print("No projects yet. Create one with: astrid projects create SLUG --name NAME --select")
+            return 0
+        print("  PROJECT  SLUG  TIMELINES  LAST EDITED")
+        from astrid.sdk.timeline._common import TimelineEditError
+        from astrid.sdk.timeline.revisions import RuntimeRevisions
+        revisions = RuntimeRevisions(parsed.client.timelines)
+        for row in rows:
+            ref = row.get("project_id") or row.get("id") or row.get("slug")
+            mark = "*" if ref in selected_refs or row.get("slug") in selected_refs else " "
+            timelines = parsed.client.timelines.list(str(ref)) if ref else None
+            timeline_rows = []
+            if timelines is not None and timelines.ok:
+                from astrid.sdk.pagination import page_pair
+                page = page_pair(timelines.data)
+                timeline_rows = list(page[0]) if page else []
+                cursor = page[1] if page else None
+                while cursor is not None:
+                    following = parsed.client.timelines.list(str(ref), cursor=cursor)
+                    page = page_pair(following.data) if following.ok else None
+                    if page is None:
+                        break
+                    timeline_rows.extend(page[0])
+                    cursor = page[1]
+            edited = []
+            for timeline in timeline_rows:
+                timeline_ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
+                if not timeline_ref:
+                    continue
+                try:
+                    history = revisions.list(str(ref), str(timeline_ref), limit=1)
+                except TimelineEditError:
+                    history = None
+                if history and history[0].created_at:
+                    edited.append(history[0].created_at)
+            print(f"{mark} {row.get('name', '')}  {row.get('slug', '')}  {len(timeline_rows)}  {max(edited, default='-')}")
+        return 0
     return print_result(result, as_json=parsed.json)
 
 
@@ -127,6 +184,7 @@ def _cmd_current(parsed: argparse.Namespace) -> int:
 def _configure_create(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("slug", help="Project slug (immutable).")
     subparser.add_argument("--name", required=True, help="Display name.")
+    subparser.add_argument("--select", action="store_true", help="Select the new project for subsequent commands.")
     subparser.add_argument(
         "--settings",
         type=_parse_json_object,
@@ -134,12 +192,12 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
         help="Settings as a JSON object (e.g. '{\"owner\": \"team\"}').",
     )
     _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_create)
 
 
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_list)
 
 

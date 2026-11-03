@@ -76,6 +76,10 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
     description = entries.describe_entry('custom', registry=registry)
     field = description['inputs'][0]
     assert field == {'name': 'texture', 'type': 'number', 'default': 0.6}
+    native_field = entries.describe_entry('custom', registry=registry, _native=True)['inputs'][0]
+    assert native_field['name'] == 'texture' and native_field['type'] == 'number'
+    assert 'texture_amount' in native_field['aliases']
+    assert native_field['default'] == 0.6 and native_field['max'] == 1
     assert description['inputs'][1]['name'] == 'instruction'
     assert description['inputs'][1]['type'] == 'string'
     assert entries.resolve_entry_inputs('custom', {'grain': 0.8}, registry=registry)[1] == {'texture': 0.8}
@@ -172,6 +176,23 @@ def test_unknown_declared_type_fails_closed():
     description = {'inputs': [{'name': 'opaque', 'type': 'unknown', 'required': False}]}
     with pytest.raises(ValueError, match='no declared scalar type'):
         entries.validate_inputs(description, {'opaque': 'guess'})
+
+
+def test_image_widget_is_a_file_only_for_load_image():
+    workflow = VibeWorkflow('image', WorkflowSource('image'))
+    workflow.nodes['1'] = VibeNode('1', 'LoadImage', inputs={'image': 'input.png'})
+    workflow.nodes['2'] = VibeNode('2', 'CustomNode', inputs={'image': 'input.png'})
+    workflow.register_input('load', '1', 'image', 'input.png', type='IMAGE')
+    workflow.register_input('custom', '2', 'image', 'input.png', type='IMAGE')
+    ports = entries._workflow_inputs({'binds': {}, 'defaults': {}}, 'edit', workflow=workflow)
+    by_name = {port['name']: port for port in ports}
+    assert by_name['load']['type'] == 'file'
+    assert by_name['custom']['type'] == 'image'
+    assert entries.validate_inputs({'inputs': ports}, {'load': 'reference.png'})['load'] == 'reference.png'
+    with pytest.raises(ValueError, match='requires a string'):
+        entries.validate_inputs({'inputs': ports}, {'load': 4})
+    with pytest.raises(ValueError, match='no declared scalar type'):
+        entries.validate_inputs({'inputs': ports}, {'custom': 'guess'})
 
 
 def test_number_values_must_be_finite():

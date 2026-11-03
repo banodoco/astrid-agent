@@ -46,23 +46,23 @@ def _empty_cut_bundle(**plate_fields):
     return bundle([], [plate])
 
 
-def _blocking(report, *words):
-    return [line for line in report.blocking if all(w in line for w in words)]
+def _advice(report, *words):
+    """Scene findings are advisory (PLAN: checks never block a save): problems, never blocking."""
+    assert report.valid is True and not report.blocking, report.blocking
+    return [line for line in report.problems if all(w in line for w in words)]
 
 
 def test_a_cut_left_with_only_a_background_plate_is_not_valid():
     report = Checkout(_empty_cut_bundle()).check()
-    assert report.valid is False
-    assert _blocking(report, "EMPTY", "c02", "4.00"), report.blocking
+    assert _advice(report, "EMPTY", "c02", "4.00"), report.problems
 
 
 def test_a_deliberate_hold_waives_an_empty_cut():
     b = _empty_cut_bundle()
-    # Without the hold: the empty cut blocks.
+    # Without the hold: the empty cut is a sustained finding.
     report = Checkout(b).check()
-    assert report.valid is False
-    assert _blocking(report, "EMPTY", "c02")
-    # With the cut's deliberate hold (stored on the cut: parent.config.cut_notes): valid, EMPTY only as info.
+    assert _advice(report, "EMPTY", "c02")
+    # With the cut's deliberate hold (stored on the cut: parent.config.cut_notes): EMPTY only as info.
     held = Checkout(b)
     held.set_cut_note("c02", hold="deliberate")
     report = held.check()
@@ -75,19 +75,17 @@ def test_an_inset_footage_does_not_cover_the_canvas():
     inset = {"id": "b-inset", "clipType": "am-footage", "track": "fx", "asset": "P", "at": 0.0, "hold": 4.0,
              "params": {"x": 1200, "y": 600, "scale": 0.3}, "app": {"cut": "c02", "layer": "inset"}}
     report = Checkout(bundle([], [inset])).check()
-    assert report.valid is False
-    assert _blocking(report, "GAP") or _blocking(report, "nothing covers the canvas"), report.blocking
+    assert _advice(report, "GAP") or _advice(report, "nothing covers the canvas"), report.problems
 
 
 def test_a_translucent_plate_does_not_cover_the_canvas():
     report = Checkout(_empty_cut_bundle(asset="P", params={}, opacity=0.4)).check()
-    assert report.valid is False
-    assert _blocking(report, "GAP") or _blocking(report, "nothing covers the canvas"), report.blocking
+    assert _advice(report, "GAP") or _advice(report, "nothing covers the canvas"), report.problems
 
 
 def test_a_declared_fade_in_is_a_dip_not_a_gap():
     report = Checkout(_empty_cut_bundle(asset="P", params={}, effects={"fade_in": 0.5})).check()
     assert report.valid is True, report.blocking
-    assert not _blocking(report, "GAP")
+    assert not _advice(report, "GAP")
     assert any("DIP" in line and "c02" in line and "0.50" in line for line in report.problems), report.problems
 

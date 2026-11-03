@@ -48,6 +48,10 @@ class PinokioBackend:
         self.calls.append(("workspace", data))
         return {"realm_id": "test-realm", "realm_root": str(data / "realm")}
 
+    def run(self, argv, **_kwargs):
+        assert "inspect_canonical_schema" in argv[5]
+        return __import__("json").dumps({"identity": {"version": 29}, "target": 33})
+
     def validate_candidate(self, candidate, data, realm):
         self.calls.append(("validate_candidate", candidate, data, realm))
 

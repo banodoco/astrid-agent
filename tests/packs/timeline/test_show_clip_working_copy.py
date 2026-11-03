@@ -1,5 +1,4 @@
-"""show --clip X (flag) and show TL X (positional) read the same thing: the working copy when one exists,
-the published head with --published. An edited param shows its working-copy value in both forms."""
+"""show defaults to published current; a named draft is an explicit alternate source."""
 from __future__ import annotations
 
 import copy
@@ -52,25 +51,31 @@ def _run(client, *args, capsys):
     return capsys.readouterr().out
 
 
-def test_the_flag_form_reads_the_working_copy(world, capsys):
-    out = _run(world, "--clip", "c1-rocket", capsys=capsys)
+def test_the_flag_form_reads_an_explicit_working_copy(world, capsys):
+    out = _run(world, "--clip", "c1-rocket", "--draft", "main", capsys=capsys)
     assert out.startswith("WORKING COPY"), out
     edited = _x_line(out)
-    head = _x_line(_run(world, "--clip", "c1-rocket", "--published", capsys=capsys))
+    head = _x_line(_run(world, "--clip", "c1-rocket", capsys=capsys))
     assert edited != head  # the working copy's x is not the head's
 
 
-def test_the_positional_form_reads_the_working_copy_the_same_way(world, capsys):
-    out = _run(world, "c1-rocket", capsys=capsys)
+def test_the_positional_form_reads_the_explicit_working_copy_the_same_way(world, capsys):
+    out = _run(world, "c1-rocket", "--draft", "main", capsys=capsys)
     assert out.startswith("WORKING COPY"), out
-    assert _x_line(out) == _x_line(_run(world, "--clip", "c1-rocket", capsys=capsys))
+    assert _x_line(out) == _x_line(_run(world, "--clip", "c1-rocket", "--draft", "main", capsys=capsys))
 
 
 def test_published_reads_the_head_in_the_flag_form_and_the_positional_form(world, capsys):
     flag = _run(world, "--clip", "c1-rocket", "--published", capsys=capsys)
     positional = _run(world, "c1-rocket", "--published", capsys=capsys)
     assert flag.startswith("PUBLISHED") and positional.startswith("PUBLISHED")
-    assert _x_line(flag) == _x_line(positional) != _x_line(_run(world, "c1-rocket", capsys=capsys))
+    assert _x_line(flag) == _x_line(positional) == _x_line(_run(world, "c1-rocket", capsys=capsys))
+
+
+def test_unselected_show_reads_published_current_despite_a_draft(world, capsys):
+    out = _run(world, "--clip", "c1-rocket", capsys=capsys)
+    assert out.startswith("PUBLISHED"), out
+    assert _x_line(out) != str(EDITED_X)
 
 
 def test_the_layer_projection_is_still_there_with_its_own_selectors(world, capsys):
@@ -81,3 +86,17 @@ def test_the_layer_projection_is_still_there_with_its_own_selectors(world, capsy
     captured = capsys.readouterr()
     assert "canonical timeline inspection is unavailable" in captured.err
     assert "WORKING COPY" not in captured.out
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_the_flag_form_reads_the_working_copy(world, capsys):
+    out = _run(world, "--clip", "c1-rocket", capsys=capsys)
+    assert out.startswith("WORKING COPY"), out
+    edited = _x_line(out)
+    head = _x_line(_run(world, "--clip", "c1-rocket", "--published", capsys=capsys))
+    assert edited != head  # the working copy's x is not the head's
+
+def test_the_positional_form_reads_the_working_copy_the_same_way(world, capsys):
+    out = _run(world, "c1-rocket", capsys=capsys)
+    assert out.startswith("WORKING COPY"), out
+    assert _x_line(out) == _x_line(_run(world, "--clip", "c1-rocket", capsys=capsys))

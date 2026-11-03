@@ -12,6 +12,55 @@ The runpod pack manages ephemeral cloud GPU compute on RunPod through
 `runpod-lifecycle>=0.3`: provision pods, ship and run scripts, pull artifacts,
 and tear down with a composite session that guarantees cleanup.
 
+## Ordinary generation on a RunPod target
+
+The Phase 1 prepared-worker components support ComfyUI only. The current
+checkout's `astrid generate` parser accepts `--target runpod`, but its public
+preflight still rejects that target: automatic claim and the public follow and
+release wiring are not yet available here. Do not present the selector as a
+working paid-generation command until the A10 integration is installed and
+verified. The default remains `--target auto`; saving RunPod preferences does
+not replace a configured human ComfyUI target. The older `runpod.session`
+action and H3's specialized placement are separate paths, not proof that the
+ordinary generation selector is connected.
+
+The prepared RunPod path requires a fresh, explicit paid authorization for
+each invocation, including reuse. Before claiming, disclose the selected
+account, GPU offer and hourly USD rate, pinned image, network volume and mount,
+maximum USD spend, absolute UTC deadline, and estimated preparation, execution
+and idle times. The offer and rate must still match the authorization; a
+changed price or fallback offer needs new consent. Unknown rates, insufficient
+cap or deadline, and replayed consent block the claim or reuse. The paid bound
+includes preparation and idle as well as execution; reuse cannot extend the
+existing bound. A denied reuse must not postpone an existing idle deadline.
+
+Validate the entry or workflow and its inputs before claim. The journal owns
+only the exact pod it created; it must not adopt or terminate another broker's
+pod. A compatible retained worker can be reused after new consent and identity
+checks. The idle policy is request override, then caller
+`ASTRID_WARM_IDLE_SECONDS`, then service environment, then 600 seconds; zero is
+valid. Expiry of the paid deadline fences even an active hold.
+
+The prepared task adapter admits one ordinary Runtime task, activates that
+exact binding, and can return its receipt before completion. Same-host follow
+must recover the original receipt, source and settings and observe that same
+task and binding, without another claim or submission. The installed public
+follow bridge remains an integration dependency in this checkout. Runtime's
+existing output settlement owns artifacts: verify the published output hashes
+and durable readback; a successful remote process alone is not delivery. Keep
+the existing spool when publication is unavailable, and resume the same
+receipt instead of replaying an uncertain submission.
+
+Idle expiry and explicit release must go through the Runtime release task and
+drain or fence the exact task, stop the owned worker and revoke its activation
+before terminating the journal-owned pod. Release is complete only when an
+independent exact pod GET returns 404 **and** a successful account list shows
+the pod absent; preserve the network volume. Ambiguous provider observations,
+unresolved cancellation, or missing stop evidence remain `cleanup_pending` and
+block reuse. Recover with the same host, journal, task and release receipt;
+never create a replacement to work around uncertain custody. The shared
+release-task dispatcher is also an A10/F07 integration dependency here.
+
 ## Actions
 
 - **`runpod.provision`** — Launch a GPU pod and emit `pod_handle.json`.

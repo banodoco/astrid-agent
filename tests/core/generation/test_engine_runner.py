@@ -752,6 +752,8 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
     from astrid.core.generation import engine_local_endpoint as local
     from astrid.packs.h3_av.actions.transform import run as transform
 
+    # This fake installer test is independent of host filesystem capacity.
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 10**15))
     _, context, adapter, _ = setup
     root = str(tmp_path / "synthetic-engine")
     context.root = root

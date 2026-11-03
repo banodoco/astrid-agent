@@ -36,6 +36,9 @@ type Params = {
   yKeyframes?: PositionKey[];
 };
 
+// Default type colour: light ink for the default canvas, which is dark (the builtin
+// default theme's fg on its bg, about 19:1). Explicit params.color still wins.
+const DEFAULT_COLOR = '#FAFAFA';
 const SLIDE_FRAMES = 8;
 const TYPE_FRAMES_PER_CHAR = 2;
 const UNDERLINE_FRAMES = 6;
@@ -84,7 +87,7 @@ export default function AmType(props: ElementComponentProps): ReactElement | nul
   const size = Math.max(1, finiteNumber(params.size, isLabel ? 28 : 96));
   const tracking = finiteNumber(params.tracking, isLabel ? 0.12 : -0.01);
   const lineHeight = Math.max(0.5, finiteNumber(params.lineHeight, isLabel ? 1.3 : 0.95));
-  const color = params.color ?? COLOR.ink;
+  const color = params.color ?? DEFAULT_COLOR;
   const x = interpolateKeys(params.xKeyframes, 'x', frame) ?? finiteNumber(params.x, 96);
   const y = interpolateKeys(params.yKeyframes, 'y', frame) ?? finiteNumber(params.y, 96);
   const width = Math.max(1, finiteNumber(params.width, 1200));

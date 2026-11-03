@@ -1,0 +1,1269 @@
+{
+  "add-first": {
+    "commands": [
+      {
+        "args": {
+          "action": "add",
+          "media": {
+            "asset": "reserved-new",
+            "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "generation_id": "generation-new",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "variant_id": "variant-new"
+          }
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:reserved-new::": "direct",
+          "occurrence:occ-a/source::app": "direct",
+          "occurrence:occ-a/source::app.astrid": "direct",
+          "occurrence:occ-a/source::app.astrid.pool": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "pool.owner": "occurrence:occ-a"
+        },
+        "created": [
+          "occurrence:occ-a/asset:reserved-new"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:reserved-new::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/source::app": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/source::app.astrid": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/source::app.astrid.pool": {
+            "state": "absent"
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "shot.pool",
+        "reads": [
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ],
+    "pool": [
+      "reserved-new"
+    ],
+    "records": [
+      {
+        "bindings": [
+          {
+            "dependencies": [],
+            "key": "pool.owner",
+            "policy": "fixed",
+            "ref": "occurrence:occ-a"
+          },
+          {
+            "dependencies": [],
+            "key": "collection.owner:collection.clips",
+            "policy": "fixed",
+            "ref": "occurrence:occ-a"
+          }
+        ],
+        "command": {
+          "args": {
+            "action": "add",
+            "media": {
+              "asset": "reserved-new",
+              "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "generation_id": "generation-new",
+              "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "variant_id": "variant-new"
+            }
+          },
+          "authorship": {
+            "occurrence:occ-a/asset:reserved-new::": "direct",
+            "occurrence:occ-a/source::app": "direct",
+            "occurrence:occ-a/source::app.astrid": "direct",
+            "occurrence:occ-a/source::app.astrid.pool": "direct"
+          },
+          "bindings": {
+            "collection.owner:collection.clips": "occurrence:occ-a",
+            "pool.owner": "occurrence:occ-a"
+          },
+          "created": [
+            "occurrence:occ-a/asset:reserved-new"
+          ],
+          "expect": {
+            "occurrence:occ-a/asset:reserved-new::": {
+              "state": "absent"
+            },
+            "occurrence:occ-a/source::app": {
+              "state": "absent"
+            },
+            "occurrence:occ-a/source::app.astrid": {
+              "state": "absent"
+            },
+            "occurrence:occ-a/source::app.astrid.pool": {
+              "state": "absent"
+            }
+          },
+          "intent": {
+            "ownership": "occurrence"
+          },
+          "op": "shot.pool",
+          "reads": [
+            {
+              "path": [
+                "occurrence_id"
+              ],
+              "ref": "occurrence:occ-a",
+              "state": {
+                "state": "present",
+                "value": "occ-a"
+              }
+            },
+            {
+              "path": [
+                "shot_id"
+              ],
+              "ref": "occurrence:occ-a/shot",
+              "state": {
+                "state": "present",
+                "value": "chapter-shot"
+              }
+            },
+            {
+              "path": [
+                "config",
+                "pinnedShotGroups"
+              ],
+              "ref": "parent",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "app",
+                "astrid",
+                "pool"
+              ],
+              "ref": "occurrence:occ-a/source",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [],
+              "ref": "occurrence:occ-a/collection:clip",
+              "state": {
+                "state": "present",
+                "value": {
+                  "members": {
+                    "state": "present",
+                    "value": []
+                  }
+                }
+              }
+            },
+            {
+              "path": [
+                "asset"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-a",
+              "state": {
+                "state": "present",
+                "value": "picture"
+              }
+            },
+            {
+              "path": [
+                "asset_id"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-a",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "asset"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-b",
+              "state": {
+                "state": "present",
+                "value": "picture"
+              }
+            },
+            {
+              "path": [
+                "asset_id"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-b",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [],
+              "ref": "occurrence:occ-a/asset:reserved-new",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "app"
+              ],
+              "ref": "occurrence:occ-a/source",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "app",
+                "astrid"
+              ],
+              "ref": "occurrence:occ-a/source",
+              "state": {
+                "state": "absent"
+              }
+            }
+          ],
+          "resolved": [
+            "occurrence:occ-a"
+          ],
+          "schema_version": 1,
+          "select": "occurrence:occ-a",
+          "selections": [
+            {
+              "boundaries": [
+                "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+              ],
+              "key": "placement.owners",
+              "members": [
+                "occurrence:occ-a"
+              ],
+              "order": [
+                "occurrence:occ-a"
+              ],
+              "owner": "occurrence:occ-a",
+              "policy": "guard-membership",
+              "query_version": 1
+            },
+            {
+              "boundaries": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "key": "collection.clips",
+              "members": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "order": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "owner": "occurrence:occ-a",
+              "policy": "guard-membership",
+              "query_version": 1
+            }
+          ],
+          "version": "1"
+        },
+        "created": [
+          {
+            "kind": "asset",
+            "owner": "occurrence:occ-a",
+            "ref": "occurrence:occ-a/asset:reserved-new"
+          }
+        ],
+        "dependencies": [
+          {
+            "key": "media.new",
+            "kind": "media",
+            "pin": {
+              "asset": "reserved-new",
+              "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "generation_id": "generation-new",
+              "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "variant_id": "variant-new"
+            },
+            "policy": "exact"
+          }
+        ],
+        "derived_writes": [],
+        "ordinal": 0,
+        "writes": [
+          {
+            "after": {
+              "state": "present",
+              "value": {
+                "generationId": "generation-new",
+                "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "type": "image",
+                "variantId": "variant-new"
+              }
+            },
+            "before": {
+              "state": "absent"
+            },
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new"
+          },
+          {
+            "after": {
+              "state": "present",
+              "value": {}
+            },
+            "before": {
+              "state": "absent"
+            },
+            "path": [
+              "app"
+            ],
+            "ref": "occurrence:occ-a/source"
+          },
+          {
+            "after": {
+              "state": "present",
+              "value": {}
+            },
+            "before": {
+              "state": "absent"
+            },
+            "path": [
+              "app",
+              "astrid"
+            ],
+            "ref": "occurrence:occ-a/source"
+          },
+          {
+            "after": {
+              "state": "present",
+              "value": [
+                "reserved-new"
+              ]
+            },
+            "before": {
+              "state": "absent"
+            },
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source"
+          }
+        ]
+      }
+    ]
+  },
+  "add-second": {
+    "commands": [
+      {
+        "args": {
+          "action": "add",
+          "media": {
+            "asset": "pool-b",
+            "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "generation_id": "generation-b",
+            "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "variant_id": "variant-b"
+          }
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:pool-b::": "direct",
+          "occurrence:occ-a/source::app.astrid.pool": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "pool.owner": "occurrence:occ-a"
+        },
+        "created": [
+          "occurrence:occ-a/asset:pool-b"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:pool-b::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/source::app.astrid.pool": {
+            "state": "present",
+            "value": [
+              "reserved-new"
+            ]
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "shot.pool",
+        "reads": [
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": [
+                "reserved-new"
+              ]
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:pool-b",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ],
+    "pool": [
+      "reserved-new",
+      "pool-b"
+    ],
+    "records": [
+      {
+        "bindings": [
+          {
+            "dependencies": [],
+            "key": "pool.owner",
+            "policy": "fixed",
+            "ref": "occurrence:occ-a"
+          },
+          {
+            "dependencies": [],
+            "key": "collection.owner:collection.clips",
+            "policy": "fixed",
+            "ref": "occurrence:occ-a"
+          }
+        ],
+        "command": {
+          "args": {
+            "action": "add",
+            "media": {
+              "asset": "pool-b",
+              "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "generation_id": "generation-b",
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "variant_id": "variant-b"
+            }
+          },
+          "authorship": {
+            "occurrence:occ-a/asset:pool-b::": "direct",
+            "occurrence:occ-a/source::app.astrid.pool": "direct"
+          },
+          "bindings": {
+            "collection.owner:collection.clips": "occurrence:occ-a",
+            "pool.owner": "occurrence:occ-a"
+          },
+          "created": [
+            "occurrence:occ-a/asset:pool-b"
+          ],
+          "expect": {
+            "occurrence:occ-a/asset:pool-b::": {
+              "state": "absent"
+            },
+            "occurrence:occ-a/source::app.astrid.pool": {
+              "state": "present",
+              "value": [
+                "reserved-new"
+              ]
+            }
+          },
+          "intent": {
+            "ownership": "occurrence"
+          },
+          "op": "shot.pool",
+          "reads": [
+            {
+              "path": [
+                "occurrence_id"
+              ],
+              "ref": "occurrence:occ-a",
+              "state": {
+                "state": "present",
+                "value": "occ-a"
+              }
+            },
+            {
+              "path": [
+                "shot_id"
+              ],
+              "ref": "occurrence:occ-a/shot",
+              "state": {
+                "state": "present",
+                "value": "chapter-shot"
+              }
+            },
+            {
+              "path": [
+                "config",
+                "pinnedShotGroups"
+              ],
+              "ref": "parent",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "app",
+                "astrid",
+                "pool"
+              ],
+              "ref": "occurrence:occ-a/source",
+              "state": {
+                "state": "present",
+                "value": [
+                  "reserved-new"
+                ]
+              }
+            },
+            {
+              "path": [],
+              "ref": "occurrence:occ-a/collection:clip",
+              "state": {
+                "state": "present",
+                "value": {
+                  "members": {
+                    "state": "present",
+                    "value": []
+                  }
+                }
+              }
+            },
+            {
+              "path": [
+                "asset"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-a",
+              "state": {
+                "state": "present",
+                "value": "picture"
+              }
+            },
+            {
+              "path": [
+                "asset_id"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-a",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "asset"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-b",
+              "state": {
+                "state": "present",
+                "value": "picture"
+              }
+            },
+            {
+              "path": [
+                "asset_id"
+              ],
+              "ref": "occurrence:occ-a/clip:clip-b",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [],
+              "ref": "occurrence:occ-a/asset:pool-b",
+              "state": {
+                "state": "absent"
+              }
+            }
+          ],
+          "resolved": [
+            "occurrence:occ-a"
+          ],
+          "schema_version": 1,
+          "select": "occurrence:occ-a",
+          "selections": [
+            {
+              "boundaries": [
+                "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+              ],
+              "key": "placement.owners",
+              "members": [
+                "occurrence:occ-a"
+              ],
+              "order": [
+                "occurrence:occ-a"
+              ],
+              "owner": "occurrence:occ-a",
+              "policy": "guard-membership",
+              "query_version": 1
+            },
+            {
+              "boundaries": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "key": "collection.clips",
+              "members": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "order": [
+                "occurrence:occ-a/clip:clip-a",
+                "occurrence:occ-a/clip:clip-b"
+              ],
+              "owner": "occurrence:occ-a",
+              "policy": "guard-membership",
+              "query_version": 1
+            }
+          ],
+          "version": "1"
+        },
+        "created": [
+          {
+            "kind": "asset",
+            "owner": "occurrence:occ-a",
+            "ref": "occurrence:occ-a/asset:pool-b"
+          }
+        ],
+        "dependencies": [
+          {
+            "key": "media.new",
+            "kind": "media",
+            "pin": {
+              "asset": "pool-b",
+              "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "generation_id": "generation-b",
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "variant_id": "variant-b"
+            },
+            "policy": "exact"
+          }
+        ],
+        "derived_writes": [],
+        "ordinal": 0,
+        "writes": [
+          {
+            "after": {
+              "state": "present",
+              "value": {
+                "generationId": "generation-b",
+                "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "type": "image",
+                "variantId": "variant-b"
+              }
+            },
+            "before": {
+              "state": "absent"
+            },
+            "path": [],
+            "ref": "occurrence:occ-a/asset:pool-b"
+          },
+          {
+            "after": {
+              "state": "present",
+              "value": [
+                "reserved-new",
+                "pool-b"
+              ]
+            },
+            "before": {
+              "state": "present",
+              "value": [
+                "reserved-new"
+              ]
+            },
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source"
+          }
+        ]
+      }
+    ]
+  },
+  "remove-middle": {
+    "commands": [
+      {
+        "args": {
+          "action": "remove",
+          "media": {
+            "asset": "pool-b",
+            "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "generation_id": "generation-b",
+            "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "variant_id": "variant-b"
+          }
+        },
+        "authorship": {
+          "occurrence:occ-a/source::app.astrid.pool": "direct"
+        },
+        "bindings": {
+          "pool.owner": "occurrence:occ-a"
+        },
+        "created": [],
+        "expect": {
+          "occurrence:occ-a/source::app.astrid.pool": {
+            "state": "present",
+            "value": [
+              "reserved-new",
+              "pool-b",
+              "pool-c"
+            ]
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "shot.pool",
+        "reads": [
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": [
+                "reserved-new",
+                "pool-b",
+                "pool-c"
+              ]
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:pool-b",
+            "state": {
+              "state": "present",
+              "value": {
+                "generationId": "generation-b",
+                "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "type": "image",
+                "variantId": "variant-b"
+              }
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ],
+    "pool": [
+      "reserved-new",
+      "pool-c"
+    ],
+    "records": [
+      {
+        "bindings": [
+          {
+            "dependencies": [],
+            "key": "pool.owner",
+            "policy": "fixed",
+            "ref": "occurrence:occ-a"
+          }
+        ],
+        "command": {
+          "args": {
+            "action": "remove",
+            "media": {
+              "asset": "pool-b",
+              "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "generation_id": "generation-b",
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "variant_id": "variant-b"
+            }
+          },
+          "authorship": {
+            "occurrence:occ-a/source::app.astrid.pool": "direct"
+          },
+          "bindings": {
+            "pool.owner": "occurrence:occ-a"
+          },
+          "created": [],
+          "expect": {
+            "occurrence:occ-a/source::app.astrid.pool": {
+              "state": "present",
+              "value": [
+                "reserved-new",
+                "pool-b",
+                "pool-c"
+              ]
+            }
+          },
+          "intent": {
+            "ownership": "occurrence"
+          },
+          "op": "shot.pool",
+          "reads": [
+            {
+              "path": [
+                "occurrence_id"
+              ],
+              "ref": "occurrence:occ-a",
+              "state": {
+                "state": "present",
+                "value": "occ-a"
+              }
+            },
+            {
+              "path": [
+                "shot_id"
+              ],
+              "ref": "occurrence:occ-a/shot",
+              "state": {
+                "state": "present",
+                "value": "chapter-shot"
+              }
+            },
+            {
+              "path": [
+                "config",
+                "pinnedShotGroups"
+              ],
+              "ref": "parent",
+              "state": {
+                "state": "absent"
+              }
+            },
+            {
+              "path": [
+                "app",
+                "astrid",
+                "pool"
+              ],
+              "ref": "occurrence:occ-a/source",
+              "state": {
+                "state": "present",
+                "value": [
+                  "reserved-new",
+                  "pool-b",
+                  "pool-c"
+                ]
+              }
+            },
+            {
+              "path": [],
+              "ref": "occurrence:occ-a/asset:pool-b",
+              "state": {
+                "state": "present",
+                "value": {
+                  "generationId": "generation-b",
+                  "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                  "type": "image",
+                  "variantId": "variant-b"
+                }
+              }
+            }
+          ],
+          "resolved": [
+            "occurrence:occ-a"
+          ],
+          "schema_version": 1,
+          "select": "occurrence:occ-a",
+          "selections": [
+            {
+              "boundaries": [
+                "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+              ],
+              "key": "placement.owners",
+              "members": [
+                "occurrence:occ-a"
+              ],
+              "order": [
+                "occurrence:occ-a"
+              ],
+              "owner": "occurrence:occ-a",
+              "policy": "guard-membership",
+              "query_version": 1
+            }
+          ],
+          "version": "1"
+        },
+        "dependencies": [
+          {
+            "key": "media.old",
+            "kind": "media",
+            "pin": {
+              "asset": "pool-b",
+              "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "generation_id": "generation-b",
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "variant_id": "variant-b"
+            },
+            "policy": "exact"
+          }
+        ],
+        "derived_writes": [],
+        "ordinal": 0,
+        "writes": [
+          {
+            "after": {
+              "state": "present",
+              "value": [
+                "reserved-new",
+                "pool-c"
+              ]
+            },
+            "before": {
+              "state": "present",
+              "value": [
+                "reserved-new",
+                "pool-b",
+                "pool-c"
+              ]
+            },
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -25,6 +25,7 @@ from astrid.core.pack import PackValidationError
 from astrid.core.pack.validate import (
     PackValidator,
     validate_first_party_packs_root,
+    validate_first_party_packs_root_report,
     validate_pack,
 )
 from astrid.core.pack.validate_layout import parse_layout_exceptions
@@ -1423,6 +1424,43 @@ class TestFirstPartyPacksRootValidation(MinimalPackTestCase):
         errors, warnings = validate_first_party_packs_root(_FIRST_PARTY_PACKS_ROOT)
         self.assertEqual(errors, [], f"Unexpected errors: {errors}")
         self.assertIsInstance(warnings, list)
+
+    def test_declared_extra_skill_is_accepted(self) -> None:
+        packs_root = self.make_pack_root("packs")
+        pack_root = packs_root / "timeline"
+        pack_root.mkdir()
+        _write(
+            pack_root / "pack.yaml",
+            """schema_version: 3
+id: timeline
+name: Astrid Timeline
+version: 1.0.0
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+resources:
+  - kind: skill
+    path: docs/extra/SKILL.md
+""",
+        )
+        _write(
+            pack_root / "docs" / "SKILL.md",
+            "---\nname: timeline\ndescription: Main timeline skill.\n---\nMain.\n",
+        )
+        _write(
+            pack_root / "docs" / "extra" / "SKILL.md",
+            "---\nname: extra\ndescription: Extra timeline skill.\n---\nExtra.\n",
+        )
+
+        report = validate_first_party_packs_root_report(
+            packs_root, pack_roots=[pack_root]
+        )
+
+        self.assertEqual(report.errors, [])
+        self.assertEqual(
+            report.results[0].skill_exports,
+            ("docs/SKILL.md", "docs/extra/SKILL.md"),
+        )
 
     def test_inventory_and_layout_fail_under_one_aggregate_surface(self) -> None:
         root = self.make_pack_root() / "packs"

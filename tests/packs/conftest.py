@@ -22,6 +22,7 @@ def renderer_execution_environment():
 
 @pytest.fixture
 def remotion_runtime_environment(
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     renderer_execution_environment: None,
 ) -> None:
@@ -34,3 +35,6 @@ def remotion_runtime_environment(
             pytrace=False,
         )
     configure_remotion_runtime(monkeypatch)
+    from tests.helpers.remotion_validation import issue_remotion_launch_validation
+
+    issue_remotion_launch_validation(tmp_path, monkeypatch)

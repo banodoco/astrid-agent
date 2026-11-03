@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 import jsonschema
 
 
+ROOT = Path(__file__).resolve().parents[2]
 REPOS = ("runtime", "agent", "app", "pinokio")
 
 
@@ -25,6 +26,9 @@ def canonical_digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).hexdigest()
+
+
+digest = canonical_digest
 
 
 def strict_json_bytes(raw: bytes) -> object:
@@ -56,6 +60,9 @@ def sha256(path: str | Path) -> str:
 
 
 def validate_schema(value: object, schema_path: str | Path) -> None:
+    schema_path = Path(schema_path)
+    if not schema_path.is_absolute() and schema_path.name == str(schema_path):
+        schema_path = ROOT / ".github/integration" / schema_path
     schema = read_json(schema_path)
     require(isinstance(schema, dict), "schema is not an object")
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(value)
@@ -113,11 +120,15 @@ def evaluate(
     ledger_path: str | Path,
     evidence_dir: str | Path,
     freshness_path: str | Path,
-    tuple_schema: str | Path,
-    ledger_schema: str | Path,
+    tuple_schema: str | Path | dt.date | None = None,
+    ledger_schema: str | Path | None = None,
     today: dt.date | None = None,
 ) -> tuple[list[str], list[str]]:
     """Evaluate complete P-04 evidence; malformed input is always red."""
+    if isinstance(tuple_schema, dt.date):
+        today, tuple_schema = tuple_schema, None
+    tuple_schema = tuple_schema or ROOT / ".github/integration/tuple.schema.json"
+    ledger_schema = ledger_schema or ROOT / ".github/integration/ledger.schema.json"
     errors: list[str] = []
     retirement: list[str] = []
     today = today or dt.datetime.now(dt.timezone.utc).date()

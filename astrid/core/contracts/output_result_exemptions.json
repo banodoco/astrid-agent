@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "description": "Committed output-result inventory. Every bundled executor in the default registry either writes a universal result manifest (non-exempt) or appears here with a specific M2-approved reason; optional external routes remain explicitly listed without being treated as bundled discovery. The registry conformance gate uses this list to allow non-conforming executors while making the gap visible.",
-  "last_registry_snapshot": "2026-10-16T00:00:00Z",
-  "total_executors": 114,
-  "m1_adopters": 78,
+  "last_registry_snapshot": "2026-11-01T00:00:00Z",
+  "total_executors": 115,
+  "m1_adopters": 79,
   "exempted": 36,
   "non_exempt": [
     "editorial.arrange",
@@ -83,151 +83,241 @@
     "video_editing.vary_grid",
     "music.duck",
     "rendering.timeline_export_plan",
-    "rendering.timeline_prepare_import"
+    "rendering.timeline_prepare_import",
+    "h3_av.transform"
   ],
   "exemptions": {
     "blender.render": {
-      "reasons": ["GPU", "external-escape-hatch"],
+      "reasons": [
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Runs Blender locally or through an external render host and does not yet write the universal result manifest."
     },
     "comfy_wrap.run": {
-      "reasons": ["GPU", "external-escape-hatch"],
+      "reasons": [
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Runs ComfyUI workflows through external VibeComfy/ComfyUI tooling requiring GPU."
     },
     "editorial.human_review": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Interactive HTTP review server for human-gate approval with no stable output artifact."
     },
     "editorial.inspect_cut": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Read-only inspection tool for cut run directories with no produced artifact."
     },
     "fal.fal_foley": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "fal.ai hunyuan-video-foley model requiring FAL_KEY API token and external GPU infrastructure."
     },
     "hivemind.contribute": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.get_item": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.ingest_article": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.ingest_workflow": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.ingest_youtube": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.refresh_media": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "hivemind.search": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Optional Hivemind executor declared by config/astrid-beta-capabilities.json; no bundled executor manifest is installed in this checkout."
     },
     "moirae.moirae": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "External Moirae screenplay-to-video tool requiring paid API access and GPU infrastructure."
     },
     "rendering.render": {
-      "reasons": ["GPU"],
+      "reasons": [
+        "GPU"
+      ],
       "note": "Renders brief timeline to video through Remotion with GPU-accelerated rendering."
     },
     "runpod.exec": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Executes scripts on provisioned RunPod GPU pods requiring paid RunPod account."
     },
     "runpod.provision": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Provisions RunPod GPU pods requiring paid RunPod account."
     },
     "runpod.pull": {
-      "reasons": ["paid", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "external-escape-hatch"
+      ],
       "note": "Pulls remote artifacts from RunPod pods via SSH requiring paid RunPod account."
     },
     "runpod.session": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Composite provision-exec-download-teardown RunPod session requiring paid account."
     },
     "runpod.teardown": {
-      "reasons": ["paid", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "external-escape-hatch"
+      ],
       "note": "Terminates RunPod pods requiring paid RunPod account."
     },
     "stream_content.clip_candidates": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Writes ranked clip-candidate JSON but does not yet emit a universal result manifest."
     },
     "stream_content.segment_map": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Writes segment-map JSON but does not yet emit a universal result manifest."
     },
     "training.search_loras": {
-      "reasons": ["paid"],
+      "reasons": [
+        "paid"
+      ],
       "note": "Searches Hugging Face Hub for LoRA adapters requiring HF_TOKEN/HUGGING_FACE_HUB_TOKEN."
     },
     "understanding.understand": {
-      "reasons": ["paid"],
+      "reasons": [
+        "paid"
+      ],
       "note": "Dispatch router delegating to paid audio/visual/video understanding executors (OpenAI, etc.)."
     },
     "vibecomfy.edit": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Edits VibeComfy workflows through external VibeComfy CLI; outputs stay with the external tool."
     },
     "vibecomfy.import": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Imports workflows through the external VibeComfy porting service; the canonical bundle outputs are settled without a universal result manifest."
     },
     "vibecomfy.inspect": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Inspects VibeComfy workflows through external VibeComfy CLI with no Astrid result receipt."
     },
     "vibecomfy.validate": {
-      "reasons": ["external-escape-hatch"],
+      "reasons": [
+        "external-escape-hatch"
+      ],
       "note": "Validates VibeComfy workflows through external VibeComfy CLI."
     },
     "wan2gp.validate_settings": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Compiles and validates Wan2GP settings without producing a media artifact."
     },
     "youtube.upload": {
-      "reasons": ["paid", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "external-escape-hatch"
+      ],
       "note": "Uploads finished video to YouTube via Zapier integration requiring paid API access."
     },
     "foley.foley_map": {
-      "reasons": ["paid"],
+      "reasons": [
+        "paid"
+      ],
       "note": "Orchestrates fal.fal_foley calls (paid fal.ai API key) per tile; writes its tiles manifest, prompts and review page but does not yet emit the universal result manifest."
     },
     "stream_content.distill": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Writes segment-map, segments, candidates and a static review page but does not yet emit a universal result manifest."
     },
     "training.dataset_build": {
-      "reasons": ["paid"],
+      "reasons": [
+        "paid"
+      ],
       "note": "Builds a training dataset with captioning delegated to paid understanding executors; writes final.manifest.json and quality_report.json but not the universal result manifest."
     },
     "training.training_run": {
-      "reasons": ["paid", "GPU", "external-escape-hatch"],
+      "reasons": [
+        "paid",
+        "GPU",
+        "external-escape-hatch"
+      ],
       "note": "Coordinates RunPod GPU training through registry-declared backends and a paid RunPod account; writes its own run state and registered_lora.json, not the universal result manifest."
     },
     "video_editing.event_talks": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Emits only the event-talk workflow plan JSON; the render step is still a stub, so no media artifact is produced."
     },
     "video_editing.sync_draft_voiceover": {
-      "reasons": ["paid"],
+      "reasons": [
+        "paid"
+      ],
       "note": "Requests changed speech through generation.generate_speech (paid TTS provider) and publishes through the authoring client; returns a structured report and receipt rather than the universal result manifest."
     },
     "video_editing.thumbnail_maker": {
-      "reasons": ["no-artifact"],
+      "reasons": [
+        "no-artifact"
+      ],
       "note": "Emits only the thumbnail workflow plan and source evidence; generate-thumbnails is still a stub, so no image artifact is produced."
     }
   }

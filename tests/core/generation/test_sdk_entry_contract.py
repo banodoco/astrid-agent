@@ -238,3 +238,48 @@ def test_task129_h3_producer_controls_keep_declared_boolean_validation(monkeypat
     with pytest.raises(CapabilityValidationError, match="requires a boolean"):
         GenerationFacade().video(entry="h3", request="/tmp/request.json", asset_map="/tmp/assets.json",
                                  require_worker_qualification="false")
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'engine': 'wan2gp'}, {'target': 'runpod'}, {'consent': 'user_env'},
+    {'consent': ('standing_grant',)},
+])
+def test_launch_rejects_invalid_controls_before_selection(monkeypatch, kwargs):
+    from astrid.core.generation import targets, target_launch
+    monkeypatch.setattr(targets, 'resolve_target', lambda *a, **k: pytest.fail('invalid selection'))
+    monkeypatch.setattr(target_launch, 'launch_target', lambda *a, **k: pytest.fail('invalid launch'))
+    with pytest.raises(CapabilityValidationError) as exc:
+        GenerationFacade().launch(**kwargs)
+    assert exc.value.to_envelope()['issues'][0]['code'] == 'input_rejected'
+
+
+def test_launch_resolves_supplied_repo_and_forwards_same_selection(monkeypatch):
+    from astrid.core.generation import targets, target_launch
+    from astrid.core.generation.preflight import readiness_envelope
+    selection = targets.TargetSelection(targets.TargetRecord(endpoint='http://127.0.0.1:8199'),
+                                        'repo', True)
+    calls = []
+    def resolve(request, **kwargs):
+        assert request == 'auto' and kwargs == {'repo': '/selected/project'}
+        return selection
+    payload = readiness_envelope(target=selection.record)
+    def launch(selected, **kwargs):
+        assert selected is selection
+        calls.append(kwargs)
+        return SimpleNamespace(readiness=payload)
+    monkeypatch.setattr(targets, 'resolve_target', resolve)
+    monkeypatch.setattr(target_launch, 'launch_target', launch)
+    assert GenerationFacade().launch(project_root='/selected/project', engine='local',
+        consent=('user_env',), timeout=0.2) == payload
+    assert calls == [{'consent': ('user_env',), 'timeout': 0.2}]
+
+
+def test_launch_corrupt_selection_retains_canonical_input_error(monkeypatch):
+    from astrid.core.generation import targets, target_launch
+    def corrupt(*args, **kwargs):
+        raise targets.TargetConfigError('repair selected target config')
+    monkeypatch.setattr(targets, 'resolve_target', corrupt)
+    monkeypatch.setattr(target_launch, 'launch_target', lambda *a, **k: pytest.fail('corrupt launched'))
+    with pytest.raises(CapabilityValidationError) as exc:
+        GenerationFacade().launch(consent=('user_env',))
+    assert exc.value.to_envelope()['issues'][0]['code'] == 'input_rejected'

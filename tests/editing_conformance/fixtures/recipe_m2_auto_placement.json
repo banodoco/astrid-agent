@@ -1,0 +1,2166 @@
+{
+  "image-absent": {
+    "capture": {
+      "anchor": {
+        "id": "gone",
+        "state": "absent"
+      },
+      "clip": "placed",
+      "consumed": [
+        "clip-a",
+        "clip-b"
+      ],
+      "fps": {
+        "denominator": 1001,
+        "numerator": 30000
+      },
+      "kind": "image",
+      "lane": "picture",
+      "media": {
+        "asset": "reserved-new",
+        "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "generation_id": "generation-new",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "variant_id": "variant-new"
+      },
+      "on": 15.015,
+      "owner": "occurrence:occ-a",
+      "resolution": "lane-end",
+      "seconds": 5,
+      "start_frame": 450
+    },
+    "child": {
+      "asset": "reserved-new",
+      "at": 7.015000000000001,
+      "clipType": "image",
+      "hold": 5,
+      "id": "placed",
+      "track": "picture"
+    },
+    "commands": [
+      {
+        "args": {
+          "consumed": [
+            "clip-a",
+            "clip-b"
+          ],
+          "hold": 5,
+          "id": "placed",
+          "media": {
+            "asset": "reserved-new",
+            "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "generation_id": "generation-new",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "variant_id": "variant-new"
+          },
+          "on": 15.015
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:reserved-new::": "direct",
+          "occurrence:occ-a/clip:placed::": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "collection.owner:collection.tracks": "occurrence:occ-a",
+          "create.owner": "occurrence:occ-a",
+          "media.owner": "occurrence:occ-a",
+          "media.track": "occurrence:occ-a/track:picture"
+        },
+        "created": [
+          "occurrence:occ-a/asset:reserved-new",
+          "occurrence:occ-a/clip:placed"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:reserved-new::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/clip:placed::": {
+            "state": "absent"
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "placement.create",
+        "reads": [
+          {
+            "path": [],
+            "ref": "parent/collection:occurrence",
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 8000
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 20000
+            }
+          },
+          {
+            "path": [
+              "source_offset"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "output",
+              "fps"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "source_window"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": 5
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:track",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/track:picture",
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "picture",
+                "kind": "visual"
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/clip:placed",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "key": "collection.occurrences",
+            "members": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "order": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "owner": "parent",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "key": "collection.tracks",
+            "members": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "order": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ]
+  },
+  "image-anchor": {
+    "capture": {
+      "anchor": {
+        "id": "clip-a",
+        "state": "present"
+      },
+      "clip": "placed",
+      "consumed": [
+        "clip-a"
+      ],
+      "fps": {
+        "denominator": 1001,
+        "numerator": 30000
+      },
+      "kind": "image",
+      "lane": "picture",
+      "media": {
+        "asset": "reserved-new",
+        "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "generation_id": "generation-new",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "variant_id": "variant-new"
+      },
+      "on": 11.011,
+      "owner": "occurrence:occ-a",
+      "resolution": "anchor-after",
+      "seconds": 5,
+      "start_frame": 330
+    },
+    "child": {
+      "asset": "reserved-new",
+      "at": 3.0109999999999992,
+      "clipType": "image",
+      "hold": 5,
+      "id": "placed",
+      "track": "picture"
+    },
+    "commands": [
+      {
+        "args": {
+          "consumed": [
+            "clip-a"
+          ],
+          "hold": 5,
+          "id": "placed",
+          "media": {
+            "asset": "reserved-new",
+            "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "generation_id": "generation-new",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "variant_id": "variant-new"
+          },
+          "on": 11.011
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:reserved-new::": "direct",
+          "occurrence:occ-a/clip:placed::": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "collection.owner:collection.tracks": "occurrence:occ-a",
+          "create.owner": "occurrence:occ-a",
+          "media.owner": "occurrence:occ-a",
+          "media.track": "occurrence:occ-a/track:picture"
+        },
+        "created": [
+          "occurrence:occ-a/asset:reserved-new",
+          "occurrence:occ-a/clip:placed"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:reserved-new::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/clip:placed::": {
+            "state": "absent"
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "placement.create",
+        "reads": [
+          {
+            "path": [],
+            "ref": "parent/collection:occurrence",
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 8000
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 10000
+            }
+          },
+          {
+            "path": [
+              "source_offset"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "output",
+              "fps"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "source_window"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:track",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/track:picture",
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "picture",
+                "kind": "visual"
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/clip:placed",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "key": "collection.occurrences",
+            "members": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "order": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "owner": "parent",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "key": "collection.tracks",
+            "members": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "order": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ]
+  },
+  "video-absent": {
+    "capture": {
+      "anchor": {
+        "id": null,
+        "state": "absent"
+      },
+      "clip": "placed",
+      "consumed": [
+        "clip-a",
+        "clip-b"
+      ],
+      "fps": {
+        "denominator": 1001,
+        "numerator": 30000
+      },
+      "kind": "video",
+      "lane": "picture",
+      "media": {
+        "asset": "reserved-new",
+        "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "generation_id": "generation-new",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "variant_id": "variant-new"
+      },
+      "on": 15.015,
+      "owner": "occurrence:occ-a",
+      "resolution": "lane-end",
+      "seconds": 5,
+      "start_frame": 450
+    },
+    "child": {
+      "asset": "reserved-new",
+      "at": 7.015000000000001,
+      "clipType": "video",
+      "from": 0,
+      "hold": 5,
+      "id": "placed",
+      "speed": 1,
+      "to": 5,
+      "track": "picture"
+    },
+    "commands": [
+      {
+        "args": {
+          "consumed": [
+            "clip-a",
+            "clip-b"
+          ],
+          "media": {
+            "asset": "reserved-new",
+            "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "generation_id": "generation-new",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "variant_id": "variant-new"
+          },
+          "row": {
+            "asset": "reserved-new",
+            "at": 7.015000000000001,
+            "clipType": "video",
+            "from": 0,
+            "hold": 5,
+            "id": "placed",
+            "speed": 1,
+            "to": 5,
+            "track": "picture"
+          }
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:reserved-new::": "direct",
+          "occurrence:occ-a/clip:placed::": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "collection.owner:collection.tracks": "occurrence:occ-a",
+          "create.owner": "occurrence:occ-a",
+          "media.owner": "occurrence:occ-a",
+          "media.track": "occurrence:occ-a/track:picture"
+        },
+        "created": [
+          "occurrence:occ-a/asset:reserved-new",
+          "occurrence:occ-a/clip:placed"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:reserved-new::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/clip:placed::": {
+            "state": "absent"
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "occurrence.add-media",
+        "reads": [
+          {
+            "path": [],
+            "ref": "parent/collection:occurrence",
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 8000
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 20000
+            }
+          },
+          {
+            "path": [
+              "source_offset"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "output",
+              "fps"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "source_window"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 4
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 6
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": 5
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-b",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:track",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/track:picture",
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "picture",
+                "kind": "visual"
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/clip:placed",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "key": "collection.occurrences",
+            "members": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "order": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "owner": "parent",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "key": "collection.tracks",
+            "members": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "order": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ]
+  },
+  "video-anchor": {
+    "capture": {
+      "anchor": {
+        "id": "clip-a",
+        "state": "present"
+      },
+      "clip": "placed",
+      "consumed": [
+        "clip-a"
+      ],
+      "fps": {
+        "denominator": 1001,
+        "numerator": 30000
+      },
+      "kind": "video",
+      "lane": "picture",
+      "media": {
+        "asset": "reserved-new",
+        "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "generation_id": "generation-new",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "variant_id": "variant-new"
+      },
+      "on": 11.011,
+      "owner": "occurrence:occ-a",
+      "resolution": "anchor-after",
+      "seconds": 5,
+      "start_frame": 330
+    },
+    "child": {
+      "asset": "reserved-new",
+      "at": 3.0109999999999992,
+      "clipType": "video",
+      "from": 0,
+      "hold": 5,
+      "id": "placed",
+      "speed": 1,
+      "to": 5,
+      "track": "picture"
+    },
+    "commands": [
+      {
+        "args": {
+          "consumed": [
+            "clip-a"
+          ],
+          "media": {
+            "asset": "reserved-new",
+            "catalog_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "generation_id": "generation-new",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "variant_id": "variant-new"
+          },
+          "row": {
+            "asset": "reserved-new",
+            "at": 3.0109999999999992,
+            "clipType": "video",
+            "from": 0,
+            "hold": 5,
+            "id": "placed",
+            "speed": 1,
+            "to": 5,
+            "track": "picture"
+          }
+        },
+        "authorship": {
+          "occurrence:occ-a/asset:reserved-new::": "direct",
+          "occurrence:occ-a/clip:placed::": "direct"
+        },
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-a",
+          "collection.owner:collection.tracks": "occurrence:occ-a",
+          "create.owner": "occurrence:occ-a",
+          "media.owner": "occurrence:occ-a",
+          "media.track": "occurrence:occ-a/track:picture"
+        },
+        "created": [
+          "occurrence:occ-a/asset:reserved-new",
+          "occurrence:occ-a/clip:placed"
+        ],
+        "expect": {
+          "occurrence:occ-a/asset:reserved-new::": {
+            "state": "absent"
+          },
+          "occurrence:occ-a/clip:placed::": {
+            "state": "absent"
+          }
+        },
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "op": "occurrence.add-media",
+        "reads": [
+          {
+            "path": [],
+            "ref": "parent/collection:occurrence",
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "occ-a"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:occ-a/shot",
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 8000
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 10000
+            }
+          },
+          {
+            "path": [
+              "source_offset"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:occ-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "output",
+              "fps"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "present",
+              "value": {
+                "denominator": 1001,
+                "numerator": 30000
+              }
+            }
+          },
+          {
+            "path": [
+              "source_window"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "pool"
+            ],
+            "ref": "occurrence:occ-a/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:clip",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": "picture"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 4
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 6
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:occ-a/clip:clip-a",
+            "state": {
+              "state": "present",
+              "value": 2
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/collection:track",
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/track:picture",
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "picture",
+                "kind": "visual"
+              }
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/asset:reserved-new",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [],
+            "ref": "occurrence:occ-a/clip:placed",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:occ-a"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:occ-a",
+        "selections": [
+          {
+            "boundaries": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "key": "collection.occurrences",
+            "members": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "order": [
+              "occurrence:occ-a",
+              "occurrence:occ-b"
+            ],
+            "owner": "parent",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "shot:shot-placement-17545afbc02f243b9327cabff19dacf2c3bc6ee5e2abd3a4c4a0415124093e9f"
+            ],
+            "key": "placement.owners",
+            "members": [
+              "occurrence:occ-a"
+            ],
+            "order": [
+              "occurrence:occ-a"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "key": "collection.clips",
+            "members": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-a/clip:clip-a",
+              "occurrence:occ-a/clip:clip-b"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          },
+          {
+            "boundaries": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "key": "collection.tracks",
+            "members": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "order": [
+              "occurrence:occ-a/track:picture"
+            ],
+            "owner": "occurrence:occ-a",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      }
+    ]
+  }
+}

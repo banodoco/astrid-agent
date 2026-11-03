@@ -78,7 +78,7 @@ def _dispatch_skills(args: list[str]) -> int:
 
 
 def _dispatch_generate(args: list[str]) -> int:
-    if args and args[0] in {"image", "video"}:
+    if args and args[0] in {"image", "video", "align", "-h", "--help"}:
         from astrid.core.generation.cli import main
     else:
         from astrid.core.generation.listing import main
@@ -102,7 +102,9 @@ def _dispatch_status(args: list[str]) -> int:
     from astrid.core.auth import contributor_key_present
     from astrid.core.gateway.diagnostics import collect_diagnostic
     from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+    from astrid.sdk.exceptions import ServiceUnavailableError
     from astrid.sdk.storage_root import resolve_runtime_data_root
+    from astrid.sdk.timeline._common import TimelineEditError
 
     try:
         support_root = resolve_runtime_data_root()
@@ -171,6 +173,49 @@ def _dispatch_status(args: list[str]) -> int:
         print("Astrid status")
         for key, value in payload["readiness"].items():
             print(f"{key.replace('_', ' ')}: {value}")
+        if payload["ok"]:
+            try:
+                from astrid.sdk.client import AstridClient
+                with AstridClient.open_existing_from_launcher() as client:
+                    current = client.projects.current()
+                    project = current.data.get("project") if current.ok and isinstance(current.data, dict) else None
+                    if isinstance(project, dict):
+                        project_ref = project.get("slug") or project.get("project_id") or project.get("id")
+                        print(f"project: {project_ref} (selected)")
+                        from astrid.sdk.timeline.revisions import RuntimeRevisions
+                        from astrid.sdk.pagination import paged_rows
+                        project_rows = paged_rows(client.projects.list)
+                        if project_rows is None:
+                            print("recent: unavailable (project pagination incomplete)")
+                        else:
+                            recent = []
+                            incomplete_timelines = False
+                            revisions = RuntimeRevisions(client.timelines)
+                            for recent_project in project_rows:
+                                recent_project_id = recent_project.get("project_id") or recent_project.get("id") or recent_project.get("slug")
+                                if not recent_project_id:
+                                    continue
+                                timeline_rows = paged_rows(
+                                    client.timelines.list, str(recent_project_id), include_archived=False
+                                )
+                                if timeline_rows is None:
+                                    incomplete_timelines = True
+                                    continue
+                                for timeline in timeline_rows:
+                                    ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
+                                    history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
+                                    if history:
+                                        label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
+                                        recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
+                                                       str(recent_project_id)))
+                            if incomplete_timelines:
+                                print("recent: partial (timeline pagination incomplete)")
+                            for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
+                                print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
+                    else:
+                        print("project: none selected — run `astrid projects list`")
+            except (RuntimeCLIError, ServiceUnavailableError, TimelineEditError, OSError, ValueError):
+                print("project: unavailable")
         if not payload["ok"]:
             print("next action: run the Astrid install line again")
     return 0 if payload["ok"] else 1
@@ -184,13 +229,41 @@ def _dispatch_dev(args: list[str]) -> int:
 
 
 def _dispatch_doctor(args: list[str]) -> int:
-    """Read the Runtime observer directly; never connect, start or provision."""
+    """Run a diagnostic, or the explicit bounded update-recovery front door."""
     import argparse
     import json
     import sys
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(prog="astrid doctor", description="Read-only runtime health check.")
+    # Recovery is deliberately outside Runtime and the normal update route.
+    # In particular, it must not turn an H4/H5 held operation into a retry:
+    # the installer maintenance seam first produces a read-only plan, then
+    # requires an explicit reviewed hash before it can make a new generation.
+    if args and args[0] == "update-recovery":
+        if any(token in {"-h", "--help"} for token in args[1:]):
+            print(
+                "usage: astrid doctor update-recovery --root PROGRAM_ROOT "
+                "--data-root DATA_ROOT [--apply PLAN_SHA256]\n\n"
+                "Plan data-preserving recovery of unresolved update evidence. The default is a\n"
+                "read-only plan; --apply requires that plan's reviewed SHA-256 and never\n"
+                "retries the prior update operation.\n\n"
+                "options:\n"
+                "  --root PROGRAM_ROOT       absolute managed program directory\n"
+                "  --data-root DATA_ROOT     absolute workspace support directory\n"
+                "  --apply PLAN_SHA256       apply the reviewed recovery plan\n"
+                "  -h, --help                show this help\n"
+            )
+            return 0
+        from astrid.installer.cli import main as installer_main
+
+        return int(installer_main(["--update-recovery", *args[1:]]))
+
+    parser = argparse.ArgumentParser(
+        prog="astrid doctor",
+        description="Read-only runtime health check.",
+        epilog=("Recovery: astrid doctor update-recovery --root PROGRAM_ROOT "
+                "--data-root DATA_ROOT [--apply PLAN_SHA256]"),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--diagnostic", action="store_true", help="emit the strict C2 diagnostic document")
     parser.add_argument("--shared", action="store_true", help="redact the diagnostic for shared transport")
@@ -202,9 +275,10 @@ def _dispatch_doctor(args: list[str]) -> int:
     parsed = parser.parse_args(args)
     support_root = None
     warning = None
+    from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+
     try:
         from astrid.core.gateway.diagnostics import collect_diagnostic
-        from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
         support_root = resolve_runtime_data_root()

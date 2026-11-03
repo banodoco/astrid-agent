@@ -1,0 +1,121 @@
+# Local regression evidence contract
+
+`int/regression-green` is evaluated on the orchestrator, not in GitHub Actions: the broker journal is local and is not transported to GitHub. The existing reusable hosted check is always red, including on dispatch and failed/skipped prerequisites. It must not be interpreted as the local result. The orchestrator must always invoke the CP1 local aggregate even if collection or preceding jobs failed, and publish its status. See the CP1 aggregate section below; the orchestrator must wire the invocation into its own finalization path.
+
+Install Python 3.11+, `jsonschema` and `PyYAML`. For a ledger and provenance diagnostic, run:
+
+```sh
+python scripts/ci/local_regression_green.py \
+  --tuple tuple.json --inventory reviewed-inventory.json --coverage reviewed-coverage.json --ledger ledger.jsonl \
+  --broker-root /home/user/merge/podq --hosted-root downloaded-artifacts \
+  --freshness freshness.json --not-before 2026-10-31T23:10:39Z
+```
+
+All arguments are required. This diagnostic does not evaluate feature obligations and always exits nonzero; use the CP1 aggregate below for `int/regression-green`. The tuple, reviewed **complete** inventory, ledger, freshness receipt, cutoff, broker journal, downloaded artifacts and API metadata are trusted inputs provided by M-INT; this program does not fetch or authenticate them. The cutoff is a timezone-bearing timestamp chosen for this evaluation, at least as late as the start of the required run; the evaluator also requires evidence no older than tuple creation and no later than the current time. A C-07 `{"check":"C-07","result":"pass","tuple_digest":"...","repo_shas":{...}}` receipt is required; M-INT must verify the actual C-07 job succeeded and supply the receipt only then. Local possession of a JSON receipt is not an authentication mechanism.
+
+The separate reviewed coverage file is `{ "lanes": [{"repo":"runtime","lane":"unit-1","platform":"linux"}, ...] }`; its exact suite/shard set must match the test inventory. Both files must be reviewed against the approved coverage; the evaluator cannot detect the same omission from both. The inventory has the prior P-04 shape, extended with one `source` per lane. Its `lanes` array must enumerate **every** required suite, platform, shard and full test node ID, and mark protected journeys. The evaluator checks exactly this reviewed list; it cannot infer omitted suites or prove inventory completeness. C-05's approved inventory and sequential plan must be translated into this file and reviewed, including all eight Agent unit shards, all four integration shards, both release Python versions and hosted OS matrices. A synthetic example (not the production inventory):
+
+```json
+{"tuple_digest":"<digest>","lanes":[
+  {"repo":"runtime","lane":"unit-1","platform":"linux","tests":[{"node_id":"tests/test_a.py::test_a","protected":false}],"source":{"kind":"broker","id":"CI-job-1","job_sha256":"<reviewed sha256 of exact job.yaml>","checkouts":["runtime"]}},
+  {"repo":"agent","lane":"unit-1","platform":"windows","tests":[{"node_id":"tests/test_b.py::test_b","protected":false}],"source":{"kind":"hosted","id":"artifact-1","checkouts":["agent","runtime"],"run_id":123,"run_attempt":1,"job_id":456,"workflow_path":".github/workflows/integration.yml"}}
+]}
+```
+
+Each source id is unique. The tuple digest is SHA-256 of UTF-8 JSON with sorted keys, compact separators and no ASCII escaping, excluding `digest`. Each manifest has `repo`, `lane`, `platform`, `tuple_digest`, the complete `repo_shas` map, `checkouts` (effective repository-to-SHA map exactly matching source.checkouts), `junit_sha256`, `created_at`, `result` and integer `test_exit_code`. A successful test command uses `success` and 0. A completed command with test failures uses `failure` and 1, and must contain corresponding JUnit failures, all matched by admitted ledger rows. Infrastructure errors, skips, collection errors, and contradictory exit/JUnit outcomes are red. A source's identity and checkout list, including every sibling actually used, must be reviewed; the evaluator cannot infer sibling use from arbitrary shell commands. The source job spec digest must be reviewed and obtained independently of the evidence submission. Spec text must include each declared repository URL and exact SHA. This binds the approved command but does not execute or prove arbitrary shell semantics.
+
+For broker lanes the root contains `jobs/<id>/job.yaml`, `result.json`, and root-level `pods.jsonl` as produced by the broker. The job must download `manifest.json` and `junit.xml` under its declared download destination, and manifest must also contain `job_id` and `pod_id`. `result.json` must report successful broker steps and verified release, include sizes and SHA-256 for every download, and match a unique created/released pod with an intent in the shared journal. Test commands must capture their test exit code and still allow the broker step to complete, as directed by ORCHESTRATOR. Logs and all other listed downloads are also hash checked. The downloaded manifest must be produced inside the job during its recorded lifetime; the existing C-05b/c artifacts do not satisfy this contract.
+
+For hosted lanes `downloaded-artifacts/<id>/` contains the artifact's `manifest.json` and `junit.xml`, plus `run.json` built by the trusted downloader from GitHub's run **and job** API responses: `id`, `run_attempt`, `repository` (canonical tuple URL), `head_sha`, `status`, `conclusion`, `workflow_path`, `job_id`, `job_conclusion`, `run_started_at`, `updated_at`, and the artifact association described below. The manifest adds the same `run_id`, `run_attempt`, and `job_id`. The run and job must be completed successfully and exactly match the inventory and tuple. The trusted downloader must verify that the artifact came from that exact run/attempt and that metadata describes the job producing it; these local JSON files are not independently signed. No token or network is used by this evaluator.
+
+JUnit must have at least one testcase, with a `node_id` property equal to the full reviewed test ID. Failure/error cases need `outcome`, `phase`, `fingerprint`, and `semantics_hash` when the ledger row requires it. Duplicate, unexpected, renamed, absent, skipped, malformed, protected-failing, and collection-error cases are red. Ledger rows retain P-04 schema and expiration semantics; a passing admitted case is flagged for retirement. The legacy `regression_green.py` function is the ledger/JUnit engine only; do not use its standalone `--evidence` interface as a provenance-aware aggregate.
+
+## CP1 local aggregate
+
+The orchestrator must invoke `scripts/ci/regression_aggregate.py` unconditionally, including after collection or prerequisites fail. It writes an atomic JSON status with `check`, `result`, errors, retirement notices and CP1 SHAs, prints the same status and exits nonzero on red:
+
+```sh
+python3 scripts/ci/regression_aggregate.py --status /path/to/regression-green-status.json \
+  --tuple /path/to/cp1.json --ledger /path/to/ledger.jsonl \
+  --broker-root /home/user/merge/podq --hosted-root /path/to/downloaded-artifacts \
+  --freshness /path/to/c07.json --collection /path/to/collection.json
+```
+
+`collection.json` must be written by the trusted orchestrator as exactly `{"collection":"success","prerequisites":"success"}` only when both stages actually succeeded. A missing file, any failure, or a malformed file is red. This command performs no collection and does not itself schedule the caller; the orchestrator must put it in its unconditional/finally path and publish the status. The output path must be writable; if it is not, the command emits a failure on stdout and exits nonzero, but cannot write that file.
+
+The fixed `cp1-coverage.json` is the reviewed job/matrix floor; Linux service-manager journey rows use hosted runners. Its `protected` flag makes all cases of those jobs unwaivable. Further protected cases inside other jobs must be independently identified in the reviewed test inventory. `cp1-reviewed-inventory.json` is intentionally incomplete: before production green, review and commit an exhaustive, tuple-digest-bound per-lane test-node list and source bindings (including broker spec hashes, checkout lists and hosted run/job/artifact identities) against the approved inventory, protected obligations and actual test collections. It must have `complete: true`, `tuple_digest`, and `lanes` in the inventory shape above. It cannot be supplied by the evidence producer at runtime. An incomplete or absent review is red. Node-level completeness and job spec semantics require human review and cannot be inferred from the evidence. The nine Release-1 journey rows and the two Windows task-host rows are a conservative protected floor in addition to the explicit G3 suites.
+
+Hosted `run.json` must additionally contain `artifact: {"id": <integer>, "name": "<source id>", "run_id": <id>, "run_attempt": <attempt>, "job_id": <id>}`; `source.artifact_id` must match. The trusted downloader is responsible for establishing artifact-to-job association, since GitHub artifact metadata alone does not establish the producing job. The evaluator does not authenticate the local metadata. CP1 accepts the documented App lock/install-manifest mismatch only through the trusted C-07 result; it does not manufacture a passing C-07 receipt.
+
+## Feature predicate contract
+
+Fixed coverage must list every feature obligation by `repo`, `lane`, `platform`, `scenario` and `slot_id`; the complete reviewed inventory must match that set and select an `attempt`, the exact tuple repository SHA map as `candidate`, and nonempty artifact-relative JSON `files`. A candidate may additionally include `manifest_sha256` only when it equals the lowercase SHA-256 in the independently frozen tuple's `generated.manifest_sha256`; that field is covered by the tuple digest and identifies the frozen release manifest, not the downloaded evidence manifest. Other candidate fields are rejected. The authenticated manifest binds the scenario, slot and attempt, while its tuple and checkout identities are checked against the reviewed inventory. Feature jobs must succeed without skipped tests. The trusted hosted `run.json` supplies `files` entries with `path`, `bytes` and `sha256`; broker downloads supply the corresponding metadata in `result.json`.
+
+After provenance, byte length, SHA-256, tuple, attempt, ledger and freshness checks succeed, the evaluator loads the byte-identical published M-QUAL R-36-v3 module from `scripts/ci/journey_predicates.py` under its original `scripts.journey_predicates` package name and invokes `check_<scenario>({"slot_id": ..., "candidate": ..., "files": [{"path": ..., "sha256": ..., "json": ...}]})` on the checked byte snapshots. The return contract is `(bool, list[str])`; false, nonempty reasons, malformed returns, exceptions, missing functions or a missing module are red. The published module currently exposes `check_m4_6` and deliberately refuses success until independent section 5 observation proofs and frozen bindings exist. Synthetic fixtures exercise the integration but are not receipts.
+
+## Trusted local finalization caller
+
+Run `scripts/ci/regression_finalizer.py` on the orchestrator, with local broker journal and authenticated C-07 inputs. This is the entry point for an evaluation, not a GitHub-hosted substitute. The orchestrator must execute it after each planned producer batch, including failed or skipped batches, and publish the resulting status. The wrapper itself executes the trusted producer plan, records each exit code, attempts collection after failures, and calls the aggregate in its `finally` path. A failed command or collection leaves the aggregate red. An empty, missing or malformed plan is red. The plan is trusted orchestrator configuration, a JSON array of nonempty argument arrays (no shell parsing), for example `[["/absolute/path/to/trusted-producer", "--tuple", "/secure/tuple.json"]]`. It must include every required prerequisite, including actual C-07 execution or independently verified C-07 completion. The file supplied as `--freshness` must be the actual authenticated output of that successful C-07 execution, bound to this tuple; an arbitrary passing JSON file is not authenticated by this wrapper. Run each evaluation in a fresh trusted workspace, and prevent evidence producers from editing the plan, tuple, ledger, reviewed files, C-07 receipt or temporary directory.
+
+```sh
+python3 scripts/ci/regression_finalizer.py --status /secure/regression-green-status.json \
+  --tuple /secure/cp1.json --ledger /secure/ledger.jsonl \
+  --broker-root /home/user/merge/podq --freshness /secure/c07.json \
+  --producer-plan /secure/producer-plan.json
+```
+
+The wrapper reads the fixed, version-controlled review and automatically fetches its hosted rows via the GitHub API. `GH_TOKEN` may supply read access. The downloader requires an independently reviewed exact run, attempt, job, workflow, artifact ID/name and tuple commit. It currently supports **only runs with exactly one job and attempt 1**. GitHub's run-scoped artifact metadata does not identify its job: this restriction is essential to associate the run's artifact with its sole job, and the reviewed workflow must be the intended producer. It rejects reruns, multi-job runs, absent API SHA-256 archive digests, ambiguous artifact lists and unsafe or duplicate archive members. Archive bytes are checked against the GitHub digest, each extracted file is hashed into private `run.json`, and the evaluator checks the byte snapshots again. Broker bytes are checked against the orchestrator's journal before interpretation. Metadata and files controlled by an evidence producer are not trust anchors. No hosted producer in the current C-05 matrix is represented as compliant merely by this contract; C-05 must provide reviewed compliant producers and identity bindings, or a separately authenticated job-to-artifact protocol.
+
+A workflow using `if: always()` cannot expose the local broker journal by itself. The existing reusable GitHub workflow therefore remains deliberately red; the local orchestrator still has to call this entry point from its own unconditional finalization path. Cancellation, machine termination, inability to write the status, or failure before the local wrapper is started requires the orchestrator to publish failure itself. This implementation and its fixtures do not constitute a production result.
+
+## Deployment handoff and required-check adapter
+
+`scripts/ci/regression_deployment.py` is the bounded local bridge for the
+orchestrator's tuple coordinator. It never runs a producer. Its sealed handoff
+has this exact shape (paths are absolute and each sealed file is SHA-256 bound):
+
+```json
+{
+  "version": "c06-tuple-coordinator/v1",
+  "batch_id": "unique-coordinator-batch",
+  "tuple_digest": "<frozen tuple digest>",
+  "tuple": {"path": "/secure/tuple.json", "sha256": "..."},
+  "ledger": {"path": "/secure/ledger.jsonl", "sha256": "..."},
+  "freshness": {"path": "/secure/c07.json", "sha256": "..."},
+  "producer_results": {"path": "/secure/terminal-results.json", "sha256": "..."},
+  "broker_root": "/home/user/merge/podq",
+  "not_before": "2026-10-31T23:36:50Z",
+  "publication": {"sequence": 1}
+}
+```
+
+`producer_results` is a nonempty list of unique
+`{"id":"...","kind":"broker|hosted","state":"success|failure|cancelled|worker-death|skipped|unstartable"}`
+records. Broker rows are compared to the terminal `jobs/<id>/state` and
+`result.json` written by the broker: missing recovery output is worker death,
+`exit_codes` containing `-1` is cancellation, and only a verified released
+zero-exit record is success. Once the reviewed inventory is complete, its
+source IDs must exactly match the handoff. Duplicate, missing, added,
+nonterminal, forged, stale or wrong-tuple inputs are red. Hosted success is
+still independently authenticated by the trusted API downloader in the
+finalizer.
+
+Run the bridge after all coordinator-owned producers become terminal, including
+failure, cancellation and worker death; it invokes the finalizer in a `finally`
+path even when the handoff itself is malformed:
+
+```sh
+python3 scripts/ci/regression_deployment.py --handoff /secure/c06-handoff.json \
+  --status /secure/regression-green-status.json --publish \
+  --publication-state /secure/regression-green-publications.json
+```
+
+`--publish` requires `GH_TOKEN` with Checks write permission. The publisher
+creates the `int/regression-green` Check Run on the frozen Agent SHA, binding
+the check's external ID to batch and tuple digest. Its durable state records a
+monotonic coordinator publication sequence per Agent SHA; a lower sequence or
+a conflicting equal sequence is rejected, so a late result cannot overwrite a
+newer result. A publisher failure changes the local result to red. A missing
+credential, missing tuple, failed status write, or unavailable publisher is not
+a green result. The publisher's state file, handoff and sealed inputs are
+trusted coordinator custody, never evidence-worker output.

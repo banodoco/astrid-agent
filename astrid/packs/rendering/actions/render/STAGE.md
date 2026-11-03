@@ -285,6 +285,14 @@ the optional `review` flag. `review` controls only the burned-in visual labels;
 the immutable occurrence envelope is also consumed by filmstrip and timeline
 visualizer tooling to map each admitted shot binding to its rendered interval.
 
+For saved managed renders, the host carries the canonical incoming-transition
+contract only after resolving the exact typed parent, shot, and internal
+timeline revision closure. Native file inputs retain their legacy transition
+semantics. Unpublished candidate exports are not certified by this saved-head
+path; extending them requires forwarding the admitted frozen candidate through
+Runtime and binding its candidate, publication, and base-revision digests before
+enabling the same transition contract.
+
 Every successful facade render writes `<output>.provenance.json`. Core owns its
 routing and identity fields: request digest, requested policy, planner, ordered
 segments and renderer resolution, finalizer, manifest/input/artifact hashes,

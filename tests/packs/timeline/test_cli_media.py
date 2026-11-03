@@ -23,7 +23,10 @@ def _run(monkeypatch, tl, *argv) -> int:
     monkeypatch.setattr(timeline_cli, "_edit_checkout", lambda _parsed: tl)
     monkeypatch.setattr(cli_sweep, "touched_cuts", lambda *_args: set())
     monkeypatch.setattr(cli_sweep, "auto_sweep_after_edit", lambda *_args, **_kwargs: 0)
-    parsed = timeline_cli.build_parser(object()).parse_args(["edit", "--project", "p1", "main", *argv])
+    # These cases exercise the detached working-copy path.  Supplying an
+    # opaque client makes native trim dispatch try to inspect Runtime before
+    # the patched checkout path can run.
+    parsed = timeline_cli.build_parser(None).parse_args(["edit", "--project", "p1", "main", *argv])
     return parsed.handler(parsed)
 
 

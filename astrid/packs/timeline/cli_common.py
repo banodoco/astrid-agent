@@ -34,6 +34,10 @@ def guard(default_code: int):
                 return exc.code
             except (TimelineEditError, SheetError) as exc:
                 print(str(exc), file=sys.stderr)
+                presentation = getattr(exc, "presentation", None)
+                detail = presentation.get("detail") if isinstance(presentation, dict) else None
+                if isinstance(detail, str) and detail:
+                    print(detail, file=sys.stderr)  # e.g. the candidate listing an ambiguous ref points to
                 return default_code
 
         run.__name__ = fn.__name__
@@ -145,13 +149,14 @@ def stale_copy_lines(parsed: argparse.Namespace, tl: Any, name: str, head: str) 
     return [
         f'STALE: working copy "{name}" was made from {short_rev(tl.base_revision)}, but the head is now {short_rev(head)}{written}.',
         f"  checkout reused the copy and did not pick up the head; {holds}.",
-        "  publish merges your edits onto the head, or stops with a conflict and changes nothing.",
+        "  commit merges guarded edits onto the head, or reports a conflict and changes nothing.",
         f"  to start from the head: timelines discard {where}, then timelines checkout {where} --fresh",
     ]
 
 
 def checkout_summary(parsed: argparse.Namespace, tl: Any, *, existed: bool) -> list[str]:
     """What ``timelines checkout`` says: which working copy, from which published revision, and the next steps."""
+    from astrid.packs.timeline.cli import _document_edit_commands
     from astrid.sdk.timeline_checkout import current_draft, resolve_ids
 
     name = getattr(parsed, "draft", None)
@@ -178,7 +183,7 @@ def checkout_summary(parsed: argparse.Namespace, tl: Any, *, existed: bool) -> l
         f"           or  timelines edit {where} --clip c30.cover --until Astrid",
         f'           or  Python: tl = Checkout.draft("{parsed.project}", "{parsed.ref}"); tl.clip("c30.cover").until("Astrid"); tl.save()',
         f"  look     timelines visualize {where} --preset motion --at Astrid   (--compare published: before/after)",
-        f'  publish  timelines status {where}   ·   timelines publish {where} -m "what changed"',
+        f"  commit   {_document_edit_commands(str(getattr(tl, 'path', None) or 'FILE'), parsed.ref, parsed.project)['commit']}",
     ]
 
 
@@ -211,6 +216,7 @@ def render_line(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
 
 def status_text(parsed: argparse.Namespace, project_id: str, timeline_id: str, head: str, name: str, path: Any) -> int:
     """``timelines status --text``: the working copy's changes in plain words, its check, and the next step."""
+    from astrid.packs.timeline.cli import _document_edit_commands
     from astrid.sdk.timeline_checkout import Checkout
 
     where = f"{parsed.ref} --project {parsed.project}"
@@ -239,9 +245,9 @@ def status_text(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
     for line in (report.brief(full=True) if show_all else check_lines(report)):
         print(line)
     if head != tl.base_revision:
-        print(f"the published head moved to {head}; publish will merge (three-way) or report conflicts")
+        print(f"the published head moved to {head}; commit will merge guarded edits or report conflicts")
     print(render_line(parsed, project_id, timeline_id, head) if want_render
           else "latest render: --render to look it up (it scans the run history, ~10 s)")
-    print(f'next: timelines publish {where} -m "…"' if changes
+    print(f"next: {_document_edit_commands(str(path), parsed.ref, parsed.project)['commit']}" if changes
           else f"next: timelines show {where} --as sheet   ·   timelines edit {where} --clip c22.rocket --on viral")
     return 0 if report.valid else 1

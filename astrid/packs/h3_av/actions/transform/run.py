@@ -2818,7 +2818,6 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
     """Installed Python action; the host owns output root, lease and settlement."""
     from os import environ
     from astrid.sdk import _child_bridge
-    from astrid.core._shared.result_manifest import build_manifest, write_manifest
     if not environ.get(ASTRID_TASK_RUN_ID, "").strip() or _child_bridge._bridge is None:
         raise AstridError("H3 parent requires a live Runtime-admitted attempt and child bridge")
     if unused or not isinstance(plan, Mapping) or plan.get("version") != 1 or host_output_root is None:
@@ -2871,14 +2870,26 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
                   if row["output_port"] == "verified_candidate"]
     if len(final_rows) != 1 or _parent_digest(candidate.read_bytes()) != final_rows[0]["object_id"]:
         raise AstridError("H3 parent must retain the actual final publication bytes")
-    write_manifest(root / "manifest.json", build_manifest(kind="h3_av.transform", inputs={}, outputs=[
-        {"name": "verified_candidate", "path": candidate.name, "ordinal": 0,
-         "group_key": "main", "variant_key": "final-composition",
-         "media_type": final_rows[0]["media_type"]},
-        {"name": "final_receipt", "path": final_receipt.name, "ordinal": 0, "media_type": "application/json"},
-    ], created=datetime.now(timezone.utc).isoformat()))
+    _write_parent_manifests(root, final_rows[0]["media_type"])
     return {"status": receipt["overall_status"], "overall_status": receipt["overall_status"],
             "states": receipt["states"]}
+
+
+def _write_parent_manifests(root: Path, media_type: str) -> None:
+    """Settle a retrievable media inventory alongside the host harvest receipt."""
+    from astrid.core._shared.result_manifest import build_manifest, write_manifest
+    outputs = [
+        {"name": "verified_candidate", "path": "verified-candidate.media", "ordinal": 0,
+         "group_key": "main", "variant_key": "final-composition",
+         "media_type": media_type},
+        {"name": "final_receipt", "path": "final-receipt.json", "ordinal": 1, "media_type": "application/json"},
+    ]
+    created = datetime.now(timezone.utc).isoformat()
+    write_manifest(root / "parent-manifest.json", build_manifest(
+        kind="h3_av.transform", inputs={}, outputs=outputs, created=created))
+    write_manifest(root / "manifest.json", build_manifest(kind="h3_av.transform", inputs={},
+        outputs=[*outputs, {"name": "manifest", "path": "parent-manifest.json", "ordinal": 2,
+                            "media_type": "application/json"}], created=created))
 
 
 if __name__ == "__main__":

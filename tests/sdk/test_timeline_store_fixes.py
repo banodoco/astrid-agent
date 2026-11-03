@@ -10,7 +10,8 @@ import pytest
 import astrid.sdk.storage_root as storage_root
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline import store
-from astrid.sdk.timeline.store import drafts_root, three_way
+from astrid.sdk.timeline.store import drafts_root
+from astrid.sdk.timeline_checkout import Checkout, TimelineEditError
 
 PUBLISHABLE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "timeline_editing" / "tiny_publishable.json"
 
@@ -78,30 +79,36 @@ def _unrelated_clip_change(bundle: dict) -> dict:
     return out
 
 
-def test_publish_merge_keeps_candidate_parent_config_changes_next_to_head_changes():
-    base = _base()
-    head = _unrelated_clip_change(base)
-    candidate = copy.deepcopy(base)
-    candidate["parent"]["config"]["chapters"] = [{"name": "01 OPEN", "from": "c1"}]
+def test_publish_merge_keeps_candidate_parent_config_changes_next_to_head_changes(tmp_path):
+    path = tmp_path / "main.json"
+    Checkout(_base()).save(path, quiet=True)
+    head, candidate = Checkout.load(path), Checkout.load(path)
+    head.bundle = _unrelated_clip_change(head.bundle)
+    candidate.bundle["parent"]["config"]["chapters"] = [{"name": "01 OPEN", "from": "c1"}]
 
-    merged, conflicts = three_way(base, head, candidate)
+    head.save(quiet=True)
+    candidate.save(quiet=True)
 
-    assert conflicts == []
+    merged = Checkout.load(path).bundle
     assert intent.chapters(merged) == [{"name": "01 OPEN", "from": "c1"}]  # read through intent: written under app.astrid
-    assert merged["shots"] == head["shots"]  # the head's clip change is kept too
+    assert merged["shots"] == head.bundle["shots"]  # the head's clip change is kept too
 
 
-def test_publish_merge_flags_a_parent_config_key_changed_differently_and_force_wins():
-    base = _base()
-    head = copy.deepcopy(base)
-    head["parent"]["config"]["theme_overrides"] = {"visual": {"canvas": {"fps": 24}}}
-    candidate = copy.deepcopy(base)
-    candidate["parent"]["config"]["theme_overrides"] = {"visual": {"canvas": {"fps": 60}}}
+def test_publish_merge_flags_a_parent_config_key_changed_differently_and_force_wins(tmp_path):
+    path = tmp_path / "main.json"
+    Checkout(_base()).save(path, quiet=True)
+    head, candidate = Checkout.load(path), Checkout.load(path)
+    head.bundle["parent"]["config"]["theme_overrides"] = {"visual": {"canvas": {"fps": 24}}}
+    candidate.bundle["parent"]["config"]["theme_overrides"] = {"visual": {"canvas": {"fps": 60}}}
 
-    _merged, conflicts = three_way(base, head, candidate)
-    # the existing message format is "<key> (<unit kind>) changed ...", so the parent-config key reads "theme_overrides (parent-config)"
-    assert any("theme_overrides (parent-config)" in line for line in conflicts), conflicts
+    head.save(quiet=True)
+    with pytest.raises(TimelineEditError, match=r"both changed 1 of the same thing\(s\): parent\."):
+        candidate.save(quiet=True)
+    assert Checkout.load(path).bundle["parent"]["config"]["theme_overrides"] == {
+        "visual": {"canvas": {"fps": 24}}
+    }
 
-    forced, forced_conflicts = three_way(base, head, candidate, force=True)
-    assert forced_conflicts
-    assert forced["parent"]["config"]["theme_overrides"] == {"visual": {"canvas": {"fps": 60}}}
+    candidate.save(force=True, quiet=True)
+    assert Checkout.load(path).bundle["parent"]["config"]["theme_overrides"] == {
+        "visual": {"canvas": {"fps": 60}}
+    }

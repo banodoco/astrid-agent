@@ -8,7 +8,7 @@ description: Request-driven MiniMax H3 audiovisual transformations with explicit
 H3 inference currently runs only on RunPod workers. Select a RunPod worker
 execution request, worker qualification receipt, or prepared worker selection.
 The parent orchestrator runs locally; there is no local H3 inference route on
-Windows, Linux, or macOS. See [where generation runs](../../../../docs/reference/where-things-run.md).
+Windows, Linux, or macOS. See [where generation runs](../../../../docs/reference/compute-profiles.md).
 
 For the short pack contract overview, see [README.md](../README.md). Action-specific
 notes remain linked beside their v3 entrypoints: [prepare](../actions/prepare/STAGE.md),

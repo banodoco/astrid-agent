@@ -20,6 +20,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .provenance import snapshot_label
+
 FAST_ROOT = Path(tempfile.gettempdir()) / "astrid-v3-fast-lane"
 KEEP_RUNS = 6
 MAX_MOMENTS = 4
@@ -768,6 +770,10 @@ def verify_lines(result: Mapping[str, Any]) -> list[str]:
     lines.append(f"page    {result['page']}   (left published, right working copy; read it)")
     timing = result["timing"]
     lines.append(f"time    {timing['total_s']:.1f} s (decoded from the two managed renders; no capture)")
+    labels = result.get("snapshot_labels") or {}
+    if labels:
+        lines.append(f"snapshot published: {(labels.get('published') or {}).get('label', 'revision unavailable')}")
+        lines.append(f"snapshot working: {(labels.get('working') or {}).get('label', 'revision unavailable')}")
     lines.extend(str(note) for note in result.get("notes") or ())
     return lines
 
@@ -862,7 +868,20 @@ def verify(
                 for side, labelled_path in row["labelled"].items():
                     row[f"{side}_display"] = labelled_path
             rows.append(row)
-        page = _compose_page(rows, run_dir / "verify.png", title=f"verify {timeline} · {len(rows)} moment(s)", footer=footer)
+        snapshot_labels = {
+            "published": snapshot_label(pair.get("base_snapshot")),
+            "working": snapshot_label(pair.get("working_snapshot")),
+        }
+        page = _compose_page(
+            rows,
+            run_dir / "verify.png",
+            title=f"verify {timeline} · {len(rows)} moment(s)",
+            footer=(
+                f"published snapshot: {snapshot_labels['published']['label']}",
+                f"working snapshot: {snapshot_labels['working']['label']}",
+                *footer,
+            ),
+        )
         notes: list[str] = []
         if skipped:  # one page holds MAX_MOMENTS; say what was left out instead of dropping it silently
             notes.append(f"verified the first {len(selected)} of {len(requested)} moments (a page holds {MAX_MOMENTS}); "
@@ -871,7 +890,8 @@ def verify(
                   "timing": {"total_s": round(time.monotonic() - started, 1), "startup_s": round(startup_s, 1),
                              "end_to_end_s": round(startup_s + time.monotonic() - started, 1)},
                   "notes": notes, "render_runs": {"published": pair["base_run"], "working": pair["working_run"]},
-                  "base_media": pair["base_media"], "working_media": pair["working_media"]}
+                  "base_media": pair["base_media"], "working_media": pair["working_media"],
+                  "snapshot_labels": snapshot_labels}
         result["lines"] = verify_lines(result)
         return result
     except FastLaneError:

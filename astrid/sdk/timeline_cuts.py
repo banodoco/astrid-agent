@@ -406,15 +406,20 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
     words_by_occurrence: dict[str, list[tuple[float, float, str | None]]] = {}
     voice_by_occurrence: dict[str, list[dict[str, Any]]] = {}
     end_of_timeline = 0.0
+    if not bundle.get("placements") and _map(bundle.get("parent")).get("clips"):
+        from astrid.core.timeline.duration import timeline_duration_seconds
+
+        end_of_timeline = timeline_duration_seconds(bundle["parent"], fps)
     for occurrence in occurrences:
         occurrence_id = occurrence["occurrence_id"]
         start, end = occurrence["start"], occurrence["end"]
         end_of_timeline = max(end_of_timeline, end)
-        chapters.append({
-            "shot_id": occurrence["shot_id"], "occurrence_id": occurrence_id,
-            "name": occurrence["name"], "start": start, "end": end,
-        })
-        shot = occurrence["shot"]
+        if occurrence["shot_id"]:
+            chapters.append({
+                "shot_id": occurrence["shot_id"], "occurrence_id": occurrence_id,
+                "name": occurrence["name"], "start": start, "end": end,
+            })
+        shot = occurrence.get("shot", {})
         internal = _internal(shot)
         kinds = _track_kinds(internal)
         clips = [_map(clip) for clip in _list(internal.get("clips")) if isinstance(clip, Mapping)]

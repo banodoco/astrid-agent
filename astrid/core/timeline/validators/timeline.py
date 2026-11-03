@@ -12,6 +12,7 @@ from astrid.core.timeline.banodoco_schema import (
     _validate_shared_timeline,
 )
 from astrid.core.timeline.kinds import normalize_track_kind
+from astrid.core.timeline.validators.meta import validate_timeline_meta_locations
 
 # Registry lookups are late-imported through banodoco_schema so that
 # mock.patch.object(banodoco_schema, ...) still affects internal callers.
@@ -136,8 +137,14 @@ def _clip_duration_seconds(clip: dict[str, Any]) -> float | None:
 
 
 def _validate_clip_transitions(clips: list[dict[str, Any]], fps: float) -> None:
-    from astrid.core.timeline.banodoco_schema import _transition_ids
-    known_ids = _transition_ids()
+    known_ids: set[str] | None = None
+    if any("transition" in clip for clip in clips):
+        # Transition catalog integrity is part of validating a
+        # transition-bearing clip, including clips that are later ignored
+        # because their track is not a supported string key.
+        from astrid.core.timeline.banodoco_schema import _transition_ids
+
+        known_ids = _transition_ids()
     by_track: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for index, clip in enumerate(clips):
         track = clip.get("track")
@@ -200,6 +207,7 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
     """
     if not isinstance(config, dict):
         raise ValueError("Timeline must be a JSON object")
+    validate_timeline_meta_locations(config)
     theme = config.get("theme")
     if theme is not None and (not isinstance(theme, str) or not theme):
         raise ValueError("Timeline.theme must be a non-empty slug")

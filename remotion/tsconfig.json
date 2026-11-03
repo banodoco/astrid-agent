@@ -5,15 +5,6 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
-    // TODO(type_safety): noUncheckedIndexedAccess is blocked on upstream
-    //   @banodoco/timeline-composition — its TimelineComposition.tsx has
-    //   3 unchecked-index reads (sortedClips[index]/[index+1]) and ships as
-    //   .ts source (no .d.ts), so the flag propagates into node_modules and
-    //   skipLibCheck can't help. First-party errors in model-trends/component.tsx
-    //   are ready to fix (~23 errors); re-enable once upstream is patched.
-    // TODO(type_safety): exactOptionalPropertyTypes is blocked on upstream
-    //   @banodoco/timeline-composition + theme-2rp — they violate this flag in
-    //   their own .tsx sources, and skipLibCheck only skips .d.ts.
     "baseUrl": ".",
     "paths": {
       "@theme-elements-effects/*": ["_active_theme/elements/effects/*"],
@@ -33,10 +24,9 @@
       "@pack-astrid_motion-elements-transitions/*": ["../astrid/packs/astrid_motion/rendering/elements/transitions/*"],
       "react": ["node_modules/@types/react/index.d.ts"],
       "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime.d.ts"],
-      "remotion": ["node_modules/remotion"],
-      "@banodoco/timeline-composition/theme-api": ["node_modules/@banodoco/timeline-composition/typescript/src/theme-api.ts"]
+      "remotion": ["node_modules/remotion"]
     },
-    "typeRoots": ["../node_modules/@types"],
+    "typeRoots": ["node_modules/@types"],
     "lib": ["DOM", "ES2020"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
@@ -52,8 +42,8 @@
     "_active_theme/elements/animations/**/*.{ts,tsx}",
     "_active_theme/transitions/**/*.{ts,tsx}",
     "_active_theme/elements/transitions/**/*.{ts,tsx}",
-    "../astrid/packs/rendering/elements/**/*.{ts,tsx}",
-    "../astrid/packs/local/elements/**/*.{ts,tsx}",
+    "../astrid/packs/rendering/rendering/elements/**/*.{ts,tsx}",
+    "../astrid/packs/local/rendering/elements/**/*.{ts,tsx}",
     "../../themes/*/effects/**/*.{ts,tsx}",
     "../../themes/*/elements/effects/**/*.{ts,tsx}",
     "../../themes/*/animations/**/*.{ts,tsx}",

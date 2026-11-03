@@ -104,3 +104,31 @@ def test_python_module_help_uses_the_same_public_cli(tmp_path, args):
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout.lower()
 
+
+def test_timeline_help_works_without_runtime_protocol(tmp_path):
+    blocker = tmp_path / "block-runtime-protocol"
+    blocker.mkdir()
+    (blocker / "sitecustomize.py").write_text(
+        "import builtins\n"
+        "_import = builtins.__import__\n"
+        "def _without_runtime_protocol(name, *args, **kwargs):\n"
+        "    if name == 'runtime_protocol' or name.startswith('runtime_protocol.'):\n"
+        "        raise ModuleNotFoundError(\"No module named 'runtime_protocol'\", name='runtime_protocol')\n"
+        "    return _import(name, *args, **kwargs)\n"
+        "builtins.__import__ = _without_runtime_protocol\n",
+        encoding="utf-8",
+    )
+    env = _isolated_env(tmp_path)
+    env["PYTHONPATH"] = os.pathsep.join((str(blocker), str(ROOT)))
+    result = subprocess.run(
+        [sys.executable, "-m", "astrid", "timelines", "--help"],
+        cwd=env["HOME"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage: astrid timelines" in result.stdout.lower()
+    assert "unstructured" not in result.stderr.lower()
+

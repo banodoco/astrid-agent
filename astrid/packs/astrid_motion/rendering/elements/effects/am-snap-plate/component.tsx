@@ -7,7 +7,6 @@ import {
   LOGICAL_W,
   clamp,
   clipFrames,
-  elementSource,
   finiteNumber,
   integerIn,
   narrowParams,
@@ -18,6 +17,8 @@ import {
 } from '../../_shared/am';
 import {type Point, type Span} from '../am-presenter/presenter-core';
 import {plateView} from './motion';
+import {plateSurface} from './surface';
+import {preparePlateScene} from './scene';
 import {MosaicImage, mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 
 // am-snap-plate: a pixel snapshot shown through an integer-zoom viewport.
@@ -75,26 +76,11 @@ type Params = {
 const ENTER_EXIT = ['cut', 'blockWipe'] as const;
 const PATTERNS: readonly WipePattern[] = ['diagonal', 'random', 'scan'];
 
-// Brand tokens accepted by params.fill; anything else is used as a CSS colour.
-const FILL_TOKENS: Record<string, string> = {
-  paper: COLOR.paper,
-  panel: COLOR.panel,
-  ink: COLOR.ink,
-  muted: COLOR.muted,
-  rust: COLOR.rust,
-  orange: COLOR.orange,
-  rule: COLOR.rule,
-  charcoal: COLOR.charcoal,
-};
-
-export default function AmSnapPlate(props: ElementComponentProps): ReactElement | null {
+function AmSnapPlate(props: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const {width, height, fps: compositionFps} = useVideoConfig();
   const params = narrowParams<Params>(props.params);
-  const url = elementSource(props.assetEntry, params.src);
-  const fill = typeof params.fill === 'string' && params.fill.trim() !== ''
-    ? (FILL_TOKENS[params.fill.trim()] ?? params.fill.trim())
-    : null;
+  const {url, fill, background} = plateSurface(props.params, props.assetEntry);
   if (!url && !fill) {
     return null;
   }
@@ -111,7 +97,6 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
   const pattern = oneOf<WipePattern>(params.pattern, PATTERNS, 'diagonal');
   const seed = timing.seed;
   const wipeColor = params.wipeColor ?? COLOR.charcoal;
-  const background = params.background ?? fill ?? COLOR.paper;
 
   let wipe: ReactElement | null = null;
   const exitStart = total - exitFrames;
@@ -167,3 +152,5 @@ export default function AmSnapPlate(props: ElementComponentProps): ReactElement 
     </AbsoluteFill>
   );
 }
+
+export default Object.assign(AmSnapPlate, {prepareSceneCapability: preparePlateScene});

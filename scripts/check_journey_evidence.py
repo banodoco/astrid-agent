@@ -12,6 +12,8 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
+        GPU_MATRIX,
+        END_STATE_INVENTORY,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
         M4_4A_OLD_LAUNCHER_REF,
@@ -28,6 +30,8 @@ if __package__:
 else:
     try:
         from journey_matrix import (
+            GPU_MATRIX,
+            END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -43,6 +47,8 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
+            GPU_MATRIX,
+            END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -66,11 +72,19 @@ RELEASE0_BOOTSTRAP_SHA256 = {
     "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
 }
 RUNNER_PROVENANCE = {
+    "runpod": ("Linux", "runpod"),
     "ubuntu-24.04": ("Linux", "ubuntu24"),
     "ubuntu-22.04": ("Linux", "ubuntu22"),
     "windows-2022": ("Windows", "win22"),
-    "macos-14": ("macOS", "macos14"),
+    "macos-15": ("macOS", "macos15"),
 }
+
+
+def _migrate_macos_receipt_key(contract):
+    """Compatibility for existing receipt fixtures; the matrix now owns this key."""
+    return contract
+
+
 REQUIRED = {
     # Release candidates are no longer a loose list of legs.  They are the
     # exact nine ownership/OS jobs and must use --aggregate-release1.
@@ -80,7 +94,15 @@ REQUIRED = {
 
 
 def read(path):
-    obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError(f"duplicate JSON field {key}")
+            obj[key] = value
+        return obj
+
+    obj = json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique)
     if not isinstance(obj, dict):
         raise ValueError(f"{path}: expected object")
     return obj
@@ -142,17 +164,16 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
         if row.get("runner_image") != expected_runner:
             errors.append(f"{name}: runner image label does not match {expected_runner}")
         provenance = row.get("runner_provenance")
-        expected_os = {"ubuntu-24.04": "Linux", "ubuntu-22.04": "Linux",
-                       "windows-2022": "Windows", "macos-14": "macOS",
-                       "local": {"Darwin": "macOS"}.get(platform.system(), platform.system())}[expected_runner]
+        expected_os = (RUNNER_PROVENANCE[expected_runner][0]
+                       if expected_runner != "local"
+                       else {"Darwin": "macOS"}.get(platform.system(), platform.system()))
         if expected_runner != "local":
             if not isinstance(provenance, dict):
                 errors.append(f"{name}: runner provenance is missing")
             else:
                 if provenance.get("RUNNER_OS") != expected_os:
                     errors.append(f"{name}: runner OS provenance does not match {expected_os}")
-                expected_image_os = {"ubuntu-24.04": "ubuntu24", "ubuntu-22.04": "ubuntu22",
-                                     "windows-2022": "win22", "macos-14": "macos14"}[expected_runner]
+                expected_image_os = RUNNER_PROVENANCE[expected_runner][1]
                 if provenance.get("ImageOS") != expected_image_os:
                     errors.append(f"{name}: ImageOS provenance does not match {expected_image_os}")
                 for field in ("ImageOS", "ImageVersion"):
@@ -189,13 +210,98 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
-def evaluate_release1_matrix(candidate, results):
-    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set.
+def _release1_row_errors(candidate, contract, row):
+    """Validate one Release-1 row for both the aggregate and inventory view."""
+    job_id = contract["job_id"]
+    errors = []
+    if row.get("receipt_kind") != "release1-installed-lifecycle":
+        errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
+    if row.get("status") != "pass":
+        errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
+    if row.get("mode") != contract["mode"]:
+        errors.append(f"{job_id}: mode does not match the required matrix")
+    if row.get("scenario") != contract.get("leg", "fresh-install"):
+        errors.append(f"{job_id}: scenario does not match the required matrix leg")
+    if row.get("runner_image") != contract["runner"]:
+        errors.append(f"{job_id}: runner does not match the required matrix")
+    if row.get("shell") != contract["shell"]:
+        errors.append(f"{job_id}: shell does not match the required matrix")
+    expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
+    provenance = row.get("runner_provenance")
+    if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
+            or provenance.get("ImageOS") != expected_image
+            or not isinstance(provenance.get("ImageVersion"), str)
+            or not provenance["ImageVersion"].strip()):
+        errors.append(f"{job_id}: hosted runner provenance does not match the required matrix")
+    os_build = row.get("os_build")
+    if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
+        errors.append(f"{job_id}: OS build does not match the required matrix")
+    if row.get("source_override_test_mode") is not False:
+        errors.append(f"{job_id}: source override is not admissible")
+    if row.get("final_cleanup") != "pass":
+        errors.append(f"{job_id}: final cleanup did not pass")
+    observed = row.get("candidate_checkouts")
+    if not isinstance(observed, dict):
+        errors.append(f"{job_id}: exact candidate checkout receipt is absent")
+    else:
+        for name in ("app", "agent", "runtime", "pinokio"):
+            if (observed.get(name) or {}).get("sha") != candidate[name]:
+                errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
+    sources = row.get("sources") or {}
+    installed = row.get("installed_tuple") or {}
+    for name in ("app", "agent", "runtime"):
+        source = sources.get(name) or {}
+        if installed.get(name) != candidate[name] or source.get("sha") != candidate[name]:
+            errors.append(f"{job_id}: {name} installed/source identity differs from frozen candidate")
+    if not row.get("import_origins"):
+        errors.append(f"{job_id}: installed import origins are absent")
+    prerequisite = row.get("service_manager_prerequisite")
+    if not isinstance(prerequisite, dict):
+        errors.append(f"{job_id}: service-manager prerequisite receipt is absent")
+    elif contract["mode"] == "direct":
+        if (prerequisite.get("required") is not True or prerequisite.get("outcome") != "pass"
+                or not isinstance(prerequisite.get("version"), str)
+                or not prerequisite["version"].strip()
+                or prerequisite.get("foreground_fallback") is not False):
+            errors.append(f"{job_id}: native service-manager prerequisite did not pass")
+        manager = row.get("service_manager")
+        if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
+            errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
+        if row.get("scenario") != "release0-to-release1":
+            errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
+        transition = row.get("release_transition")
+        if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
+                or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
+            errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
+        fixture = row.get("release0_fixture")
+        if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
+                or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
+                isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
+                for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
+                or fixture.get("sources") != {
+                    "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                    "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+                }):
+            errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
+        semantic = row.get("semantic_data")
+        if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+                or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                           for name in ("before_sha256", "after_sha256"))
+                or semantic.get("before_sha256") != semantic.get("after_sha256")):
+            errors.append(f"{job_id}: semantic data preservation is absent or unequal")
+        for check in ("release", "service", "health", "semantic_data", "task_settled",
+                      "one_runtime", "unrelated_sentinel"):
+            if (row.get("checks") or {}).get(check) != "pass":
+                errors.append(f"{job_id}: {check} assertion did not pass")
+    elif (prerequisite.get("outcome") != "explicit-owner"
+          or prerequisite.get("managed_by") != "pinokio"
+          or prerequisite.get("foreground_fallback") is not False):
+        errors.append(f"{job_id}: Pinokio ownership prerequisite is not explicit")
+    return errors
 
-    This runs after artifacts have been downloaded into one directory.  It does
-    not infer a missing row from a successful matrix dependency: each named job
-    must leave exactly one machine-readable ``journey-result.json`` receipt.
-    """
+
+def evaluate_release1_matrix(candidate, results):
+    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set."""
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
@@ -217,89 +323,7 @@ def evaluate_release1_matrix(candidate, results):
         if row is None:
             errors.append(f"{job_id}: missing receipt")
             continue
-        if row.get("receipt_kind") != "release1-installed-lifecycle":
-            errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
-        if row.get("status") != "pass":
-            errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
-        if row.get("mode") != contract["mode"]:
-            errors.append(f"{job_id}: mode does not match the required matrix")
-        if row.get("scenario") != contract.get("leg", "fresh-install"):
-            errors.append(f"{job_id}: scenario does not match the required matrix leg")
-        if row.get("runner_image") != contract["runner"]:
-            errors.append(f"{job_id}: runner does not match the required matrix")
-        if row.get("shell") != contract["shell"]:
-            errors.append(f"{job_id}: shell does not match the required matrix")
-        expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
-        provenance = row.get("runner_provenance")
-        if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
-                or provenance.get("ImageOS") != expected_image
-                or not isinstance(provenance.get("ImageVersion"), str)
-                or not provenance["ImageVersion"].strip()):
-            errors.append(f"{job_id}: hosted runner provenance does not match the required matrix")
-        os_build = row.get("os_build")
-        if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
-            errors.append(f"{job_id}: OS build does not match the required matrix")
-        if row.get("source_override_test_mode") is not False:
-            errors.append(f"{job_id}: source override is not admissible")
-        if row.get("final_cleanup") != "pass":
-            errors.append(f"{job_id}: final cleanup did not pass")
-        observed = row.get("candidate_checkouts")
-        if not isinstance(observed, dict):
-            errors.append(f"{job_id}: exact candidate checkout receipt is absent")
-        else:
-            for name in ("app", "agent", "runtime", "pinokio"):
-                if (observed.get(name) or {}).get("sha") != candidate[name]:
-                    errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
-        sources = row.get("sources") or {}
-        installed = row.get("installed_tuple") or {}
-        for name in ("app", "agent", "runtime"):
-            source = sources.get(name) or {}
-            if installed.get(name) != candidate[name] or source.get("sha") != candidate[name]:
-                errors.append(f"{job_id}: {name} installed/source identity differs from frozen candidate")
-        if not row.get("import_origins"):
-            errors.append(f"{job_id}: installed import origins are absent")
-        prerequisite = row.get("service_manager_prerequisite")
-        if not isinstance(prerequisite, dict):
-            errors.append(f"{job_id}: service-manager prerequisite receipt is absent")
-        elif contract["mode"] == "direct":
-            if (prerequisite.get("required") is not True or prerequisite.get("outcome") != "pass"
-                    or not isinstance(prerequisite.get("version"), str)
-                    or not prerequisite["version"].strip()
-                    or prerequisite.get("foreground_fallback") is not False):
-                errors.append(f"{job_id}: native service-manager prerequisite did not pass")
-            manager = row.get("service_manager")
-            if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
-                errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
-            if row.get("scenario") != "release0-to-release1":
-                errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
-            transition = row.get("release_transition")
-            if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
-                    or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
-                errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
-            fixture = row.get("release0_fixture")
-            if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
-                    or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
-                    isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
-                    for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
-                    or fixture.get("sources") != {
-                        "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                        "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
-                    }):
-                errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
-            semantic = row.get("semantic_data")
-            if (not isinstance(semantic, dict) or semantic.get("identical") is not True
-                    or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
-                               for name in ("before_sha256", "after_sha256"))
-                    or semantic.get("before_sha256") != semantic.get("after_sha256")):
-                errors.append(f"{job_id}: semantic data preservation is absent or unequal")
-            for check in ("release", "service", "health", "semantic_data", "task_settled",
-                          "one_runtime", "unrelated_sentinel"):
-                if (row.get("checks") or {}).get(check) != "pass":
-                    errors.append(f"{job_id}: {check} assertion did not pass")
-        elif (prerequisite.get("outcome") != "explicit-owner"
-              or prerequisite.get("managed_by") != "pinokio"
-              or prerequisite.get("foreground_fallback") is not False):
-            errors.append(f"{job_id}: Pinokio ownership prerequisite is not explicit")
+        errors.extend(_release1_row_errors(candidate, contract, row))
     return errors
 
 
@@ -404,8 +428,7 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
         if row.get("final_cleanup") != "pass":
             errors.append(f"{job_id}: final cleanup did not pass")
         provenance = row.get("runner_provenance") or {}
-        expected_os = {"macos-14": "macOS", "ubuntu-24.04": "Linux", "windows-2022": "Windows"}[contract["runner"]]
-        expected_image = {"macos-14": "macos14", "ubuntu-24.04": "ubuntu24", "windows-2022": "win22"}[contract["runner"]]
+        expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
         if (provenance.get("RUNNER_OS") != expected_os or provenance.get("ImageOS") != expected_image
                 or not isinstance(provenance.get("ImageVersion"), str) or not provenance["ImageVersion"].strip()):
             errors.append(f"{job_id}: hosted runner provenance is absent or mismatched")
@@ -531,6 +554,28 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
     return errors
 
 
+def _m4_5_row_errors(row):
+    """Validate one M4-5 receipt without creating another evaluator."""
+    if __package__:
+        from . import journey_release2
+    else:
+        try:
+            import journey_release2
+        except ModuleNotFoundError:
+            from scripts import journey_release2
+
+    errors = []
+    try:
+        journey_release2.validate_receipt(row)
+    except ValueError as exc:
+        errors.append(str(exc))
+    if row.get("status") != "pass" or row.get("evidence_kind") != "hosted-lifecycle":
+        errors.append("only a hosted-lifecycle pass is admissible")
+    if row.get("source_override_test_mode") is not False:
+        errors.append("source override evidence is not admissible")
+    return errors
+
+
 def evaluate_m4_5_matrix(results):
     """Require one authentic hosted receipt for each distinct Release-2 scenario."""
     if __package__:
@@ -564,14 +609,7 @@ def evaluate_m4_5_matrix(results):
         if row is None:
             errors.append(f"{scenario_id}: missing M4-5 receipt")
             continue
-        try:
-            journey_release2.validate_receipt(row)
-        except ValueError as exc:
-            errors.append(f"{scenario_id}: {exc}")
-        if row.get("status") != "pass" or row.get("evidence_kind") != "hosted-lifecycle":
-            errors.append(f"{scenario_id}: only a hosted-lifecycle pass is admissible")
-        if row.get("source_override_test_mode") is not False:
-            errors.append(f"{scenario_id}: source override evidence is not admissible")
+        errors.extend(f"{scenario_id}: {error}" for error in _m4_5_row_errors(row))
     return errors
 
 
@@ -608,20 +646,62 @@ def evaluate_m4_4b_local_smoke(results):
     return errors
 
 
+def _m4_6_local_row_errors(candidate, contract, row, path):
+    """Validate one local M4-6 receipt; it is never hosted end-state proof."""
+    try:
+        if __package__:
+            from . import failure_mode_executor
+            from .check_failure_receipts import verify_evidence_files
+            from .journey_failure_modes import candidate_errors
+        else:
+            try:
+                import failure_mode_executor
+                from check_failure_receipts import verify_evidence_files
+                from journey_failure_modes import candidate_errors
+            except ModuleNotFoundError:
+                from scripts import failure_mode_executor
+                from scripts.check_failure_receipts import verify_evidence_files
+                from scripts.journey_failure_modes import candidate_errors
+    except ModuleNotFoundError as exc:
+        return [f"local M4-6 validator is unavailable: {exc}"]
+
+    slot_id = contract["job_id"]
+    errors = []
+    errors.extend(f"candidate: {error}" for error in candidate_errors(candidate))
+    for key, value in (("receipt_kind", "m4-6-local-disposable-execution"),
+                       ("status", "exercised"), ("slot_id", slot_id),
+                       ("execution_scope", "local-disposable"),
+                       ("source_override_test_mode", False)):
+        if row.get(key) != value:
+            errors.append(f"local receipt {key} is not {value!r}")
+    observation = row.get("observation")
+    if not isinstance(observation, dict):
+        return errors + ["local executor observation is missing or malformed"]
+    if row.get("candidate") != candidate:
+        errors.append("local receipt candidate tuple differs from the frozen tuple")
+    observed_candidate = observation.get("candidate_checkouts") or {}
+    if (observation.get("manifest_sha256") != candidate.get("manifest_sha256")
+            or any((observed_candidate.get(name) or {}).get("sha") != candidate.get(name)
+                   for name in ("app", "agent", "runtime", "pinokio"))):
+        errors.append("local executor observed a wrong candidate tuple")
+    if (observation.get("slot_id") != slot_id or observation.get("runner_image") != contract["runner"]
+            or observation.get("shell") != contract["shell"]
+            or observation.get("execution_scope") != "local-disposable"
+            or (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable"):
+        errors.append("local executor observation has a wrong tuple or scope")
+    errors.extend(failure_mode_executor.execution_observation_errors(observation))
+    errors.extend(verify_evidence_files(row, path))
+    return errors
+
+
 def evaluate_m4_6_local_matrix(results, candidate):
     """Validate all nine local-disposable M4-6 executions, never hosted receipts."""
     if __package__:
-        from . import failure_mode_executor
-        from .check_failure_receipts import verify_evidence_files
         from .journey_failure_modes import candidate_errors
     else:
         try:
-            import failure_mode_executor
-            from check_failure_receipts import verify_evidence_files
             from journey_failure_modes import candidate_errors
         except ModuleNotFoundError:
-            from scripts import failure_mode_executor
-            from scripts.check_failure_receipts import verify_evidence_files
             from scripts.journey_failure_modes import candidate_errors
 
     errors = [f"candidate: {error}" for error in candidate_errors(candidate)]
@@ -646,32 +726,189 @@ def evaluate_m4_6_local_matrix(results, candidate):
             errors.append(f"{slot_id}: missing M4-6 local execution")
             continue
         row, path = entry
-        contract = expected[slot_id]
-        for key, value in (("receipt_kind", "m4-6-local-disposable-execution"),
-                           ("status", "exercised"), ("slot_id", slot_id),
-                           ("execution_scope", "local-disposable"),
-                           ("source_override_test_mode", False)):
-            if row.get(key) != value:
-                errors.append(f"{slot_id}: local receipt {key} is not {value!r}")
-        observation = row.get("observation")
-        if not isinstance(observation, dict):
-            errors.append(f"{slot_id}: local executor observation is missing or malformed")
+        errors.extend(f"{slot_id}: {error}" for error in _m4_6_local_row_errors(
+            candidate, expected[slot_id], row, path))
+    return errors
+
+
+def _visibility_receipts(results):
+    """Collect only the receipt kinds admitted by the end-state inventory."""
+    release1, m4_5, m4_6 = {}, {}, {}
+    errors = []
+
+    def add(target, key, entry, path):
+        if not isinstance(key, str):
+            errors.append(f"{path}: required receipt identity is absent")
+        else:
+            target.setdefault(key, []).append(entry)
+
+    for path in sorted(Path(results).rglob("journey-result.json")):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: malformed journey receipt: {exc}")
             continue
-        if row.get("candidate") != candidate:
-            errors.append(f"{slot_id}: local receipt candidate tuple differs from the frozen tuple")
-        observed_candidate = observation.get("candidate_checkouts") or {}
-        if (observation.get("manifest_sha256") != candidate.get("manifest_sha256")
-                or any((observed_candidate.get(name) or {}).get("sha") != candidate.get(name)
-                       for name in ("app", "agent", "runtime", "pinokio"))):
-            errors.append(f"{slot_id}: local executor observed a wrong candidate tuple")
-        if (observation.get("slot_id") != slot_id or observation.get("runner_image") != contract["runner"]
-                or observation.get("shell") != contract["shell"]
-                or observation.get("execution_scope") != "local-disposable"
-                or (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable"):
-            errors.append(f"{slot_id}: local executor observation has a wrong tuple or scope")
-        observation_errors = failure_mode_executor.execution_observation_errors(observation)
-        errors.extend(f"{slot_id}: {error}" for error in observation_errors)
-        errors.extend(f"{slot_id}: {error}" for error in verify_evidence_files(row, path))
+        kind = row.get("receipt_kind")
+        if kind == "release1-installed-lifecycle":
+            add(release1, row.get("job_id"), (row, path), path)
+        elif kind == "release2-installed-lifecycle":
+            add(m4_5, row.get("scenario_id"), (row, path), path)
+    for path in sorted(Path(results).rglob("m4-6-local-result.json")):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: malformed M4-6 receipt: {exc}")
+            continue
+        add(m4_6, row.get("slot_id"), (row, path), path)
+    return release1, m4_5, m4_6, errors
+
+
+def evaluate_end_state_obligations(candidate, results):
+    """Return the closed END-STATE inventory with fail-closed row statuses.
+
+    This is a presentation of the existing receipt predicates, not another
+    aggregate/verdict system.  A valid local-disposable M4-6 record remains
+    ``not-run`` because the inventory requires hosted native-service evidence.
+    """
+    release1, m4_5, m4_6, errors = _visibility_receipts(results)
+    release1_contracts = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    m4_6_contracts = {row["job_id"]: row for row in M4_6_MATRIX}
+    statuses = []
+
+    for obligation in END_STATE_INVENTORY:
+        identity = obligation["id"]
+        kind = obligation["evidence_kind"]
+        row_errors = []
+        if kind == "unsupported":
+            status = "not-run"
+            row_errors.append("no supported authenticated evidence route")
+        elif kind == "release1":
+            job_id = obligation["job_id"]
+            entries = release1.get(job_id, [])
+            if not entries:
+                status = "not-run"
+                row_errors.append("missing Release-1 lifecycle receipt")
+            elif len(entries) != 1:
+                status = "failed"
+                row_errors.append("duplicate Release-1 lifecycle receipts")
+            else:
+                row_errors.extend(_release1_row_errors(candidate, release1_contracts[job_id], entries[0][0]))
+                status = "passed" if not row_errors else "failed"
+        elif kind == "m4-5":
+            entries = m4_5.get(identity, [])
+            if not entries:
+                status = "not-run"
+                row_errors.append("missing M4-5 hosted lifecycle receipt")
+            elif len(entries) != 1:
+                status = "failed"
+                row_errors.append("duplicate M4-5 lifecycle receipts")
+            else:
+                row_errors.extend(_m4_5_row_errors(entries[0][0]))
+                observed = entries[0][0].get("candidate")
+                if (not isinstance(observed, dict) or any(
+                        observed.get(name) != candidate.get(name)
+                        for name in ("app", "agent", "runtime", "pinokio"))):
+                    row_errors.append("M4-5 receipt candidate differs from the frozen checker candidate")
+                status = "passed" if not row_errors else "failed"
+        elif kind == "m4-6":
+            job_id = obligation["job_id"]
+            entries = m4_6.get(job_id, [])
+            if not entries:
+                status = "not-run"
+                row_errors.append("hosted M4-6 route is unimplemented; no receipt")
+            elif len(entries) != 1:
+                status = "failed"
+                row_errors.append("duplicate M4-6 local receipts")
+            else:
+                row_errors.extend(_m4_6_local_row_errors(
+                    candidate, m4_6_contracts[job_id], entries[0][0], entries[0][1]))
+                if row_errors:
+                    status = "failed"
+                else:
+                    status = "not-run"
+                    row_errors.append("local-disposable M4-6 evidence cannot satisfy hosted end-state evidence")
+        else:  # Matrix changes must be explicit before they can be admitted.
+            status = "failed"
+            row_errors.append(f"unknown inventory evidence kind {kind!r}")
+        statuses.append({
+            "id": identity,
+            "phase": obligation["phase"],
+            "status": status,
+            "reasons": tuple(row_errors),
+        })
+    return statuses, errors
+
+
+def format_end_state_obligations(statuses):
+    lines = ["## Release-obligation visibility", ""]
+    for row in statuses:
+        reason = "; ".join(row["reasons"]) if row["reasons"] else "validated by the existing receipt predicate"
+        lines.append(f"- [{row['status']}] {row['id']} ({row['phase']}): {reason}")
+    return "\n".join(lines) + "\n"
+
+
+def evaluate_gpu_matrix(candidate, manifest, results, required=None):
+    """Check RunPod receipts with the ordinary journey gate and extra row assertions."""
+    expected = {row["scenario_id"]: row for row in GPU_MATRIX}
+    required = tuple(expected) if required is None else tuple(required)
+    errors = []
+    if not required or len(set(required)) != len(required) or any(name not in expected for name in required):
+        return ["GPU required scenarios are empty, duplicated or unknown"]
+    # Duplicate JSON members are ambiguous, including nested members. Do not let
+    # the JSON parser silently retain only the last value.
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON field {key}")
+            result[key] = value
+        return result
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+            if not isinstance(row, dict):
+                raise ValueError("expected object")
+            name = row.get("scenario")
+            if name not in expected:
+                errors.append(f"{path}: unknown or missing GPU scenario")
+            elif name in found:
+                errors.append(f"{name}: duplicate GPU receipt")
+            else:
+                found[name] = row
+        except (OSError, ValueError, TypeError) as exc:
+            errors.append(f"{path}: {exc}")
+    try:
+        errors.extend(evaluate(candidate, manifest, results, required, "runpod", "sh"))
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
+        errors.append(f"malformed journey receipt: {exc}")
+    for name in required:
+        row = found.get(name)
+        if row is None:
+            continue
+        contract = expected[name]
+        for key, value in (("schema_version", 2), ("receipt_kind", "gpu-installed-journey"),
+                           ("mode", contract["mode"])):
+            if type(row.get(key)) is not type(value) or row.get(key) != value:
+                errors.append(f"{name}: {key} is not {value!r}")
+        if not DIGEST.fullmatch(str(row.get("manifest_sha256", ""))) or row.get("manifest_sha256") != candidate.get("manifest_sha256"):
+            errors.append(f"{name}: manifest digest is absent or differs from frozen candidate")
+        checkouts = row.get("candidate_checkouts")
+        for key in ("app", "agent", "runtime", "pinokio"):
+            entry = checkouts.get(key) if isinstance(checkouts, dict) else None
+            if not isinstance(entry, dict) or entry.get("sha") != candidate.get(key) or not SHA.fullmatch(str(entry.get("sha", ""))):
+                errors.append(f"{name}: {key} checkout is absent or differs from frozen candidate")
+        schema = (manifest.get("runtime") or {}).get("schema_digest")
+        if not isinstance(schema, str) or not schema.strip():
+            errors.append(f"{name}: manifest runtime schema digest is absent")
+        checks = row.get("checks")
+        for key in contract["checks"]:
+            if not isinstance(checks, dict) or checks.get(key) != "pass":
+                errors.append(f"{name}: {key} assertion did not pass")
+        exits = row.get("inner_exits")
+        for key in contract["inner_exits"]:
+            if not isinstance(exits, dict) or type(exits.get(key)) is not int or exits[key] != 0:
+                errors.append(f"{name}: {key} inner exit is missing or nonzero")
     return errors
 
 
@@ -680,7 +917,7 @@ def main():
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--app-checkout", type=Path)
     parser.add_argument("--results", type=Path)
-    parser.add_argument("--expected-runner", choices=("ubuntu-24.04", "ubuntu-22.04", "windows-2022", "macos-14", "local"))
+    parser.add_argument("--expected-runner", choices=(*RUNNER_PROVENANCE, "local"))
     parser.add_argument("--expected-shell", choices=("sh", "powershell.exe", "pwsh.exe"))
     parser.add_argument("--cadence", choices=tuple(REQUIRED), default="release-candidate")
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")
@@ -696,14 +933,31 @@ def main():
                         help="require one local-process M4-4b smoke receipt; never hosted evidence")
     parser.add_argument("--aggregate-m4-6-local", action="store_true",
                         help="require all nine separately retained local-disposable M4-6 outputs")
+    parser.add_argument("--aggregate-gpu", action="store_true",
+                        help="require all RunPod GPU journey receipts")
+    parser.add_argument("--report-end-state-obligations", action="store_true",
+                        help="list every END-STATE obligation using the existing receipt predicates")
     args = parser.parse_args()
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local))
+                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
-        if args.aggregate_m4_4b_local:
+        if args.report_end_state_obligations and aggregate_modes:
+            raise ValueError("end-state obligation reporting cannot be combined with an aggregate mode")
+        if args.report_end_state_obligations:
+            if args.results is None or args.candidate is None or args.app_checkout is None:
+                raise ValueError("--results, --candidate and --app-checkout are required with --report-end-state-obligations")
+            candidate = read(args.candidate)
+            validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+            obligation_statuses, visibility_errors = evaluate_end_state_obligations(candidate, args.results)
+            errors.extend(visibility_errors)
+            errors.extend(
+                f"{row['id']}: obligation status {row['status']}"
+                for row in obligation_statuses if row["status"] != "passed"
+            )
+        elif args.aggregate_m4_4b_local:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-m4-4b-local")
             errors.extend(evaluate_m4_4b_local_smoke(args.results))
@@ -716,7 +970,11 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
+        if args.aggregate_gpu:
+            if args.results is None or args.allow_source_override or args.required or args.prepare_only:
+                raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
+            errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
             errors.extend(evaluate_release1_matrix(candidate, args.results))
@@ -744,6 +1002,8 @@ def main():
         errors.append(str(exc))
     heading = "## Journey evidence: " + ("FAIL" if errors else "PASS")
     report = heading + "\n\n" + ("\n".join(f"- {error}" for error in errors) if errors else "All required scenarios and candidate identity verified.") + "\n"
+    if args.report_end_state_obligations and "obligation_statuses" in locals():
+        report += "\n" + format_end_state_obligations(obligation_statuses)
     print(report)
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:

@@ -10,8 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from runtime_protocol import platform
-
 C2_SCHEMA_VERSION = 2
 C2_CONTRACT_REVISION = "C2"
 C2_CONTRACT_DIGEST = "sha256:ca251dfbcadc6fbc68a5404495f2f0fd42128c821ce47a3560d2952399278d37"
@@ -234,9 +232,11 @@ def _call_with_remaining(method: Callable[..., Any], *args: Any, timeout: float,
 
 def collect_product_observations(support_root: str, runtime_data: Mapping[str, Any]) -> dict[str, Any]:
     """Read existing product observations; never start or recover services."""
-    from astrid.core.pack.loader import pack_quarantine_section
+    from runtime_protocol import platform
+
     from astrid.core.element.registry import element_skip_section
     from astrid.core.execution.process_group import CLEANUP_LATCH_NAME, read_cleanup_latch
+    from astrid.core.pack.loader import pack_quarantine_section
 
     root = Path(support_root)
     runtime_root = root if root.name == "runtime" else root / "runtime"

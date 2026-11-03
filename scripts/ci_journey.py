@@ -55,8 +55,22 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release0-to-release1")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
-                 "windows-2022": "win32", "macos-14": "darwin"}
+                 "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
+
+JOURNEY_EVIDENCE_NAMES = frozenset({
+    "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
+    "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
+    "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
+    "service-manager-prerequisite.log", "direct-service-ownership.log",
+    "preflight-scheduled-task.txt",
+    "runtime-owner-processes.json",
+    "runtime-service-runtime.log",
+    "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
+    "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
+    "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+})
+EVIDENCE_LOG_LIMIT = 1024 * 1024
 
 
 def journey_os_label() -> str:
@@ -453,11 +467,218 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
+    """Record small, named service-manager and unit observations around cleanup."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager_path = evidence / f"manager-state-{phase}.json"
+    unit_path = evidence / f"unit-file-{phase}.txt"
+    manager = {"platform": sys.platform, "phase": phase}
+    unit_content = None
+    try:
+        if sys.platform == "linux":
+            unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+            command = ["systemctl", "--user", "show", "astrid.service",
+                       "--property=LoadState,FragmentPath,ActiveState,SubState"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            manager.update(command=command, returncode=completed.returncode,
+                           stdout=completed.stdout, stderr=completed.stderr)
+        elif sys.platform == "darwin":
+            unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+            command = ["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            manager.update(command=command, returncode=completed.returncode,
+                           stdout=completed.stdout, stderr=completed.stderr)
+        elif sys.platform == "win32":
+            output = windows.powershell(
+                "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
+                "if ($null -eq $t) { 'not-found' } else { 'STATE:'; $t | Get-ScheduledTaskInfo | "
+                "Select-Object TaskName,LastRunTime,LastTaskResult,NumberOfMissedRuns | "
+                "ConvertTo-Json -Compress; 'TASK_XML:'; Export-ScheduledTask -TaskName 'Astrid Runtime' }",
+                f"manager-state-{phase}.log", show=False, timeout=30)
+            manager.update(command="Get-ScheduledTask / Get-ScheduledTaskInfo", stdout=output)
+            task_xml = re.split(r"TASK_XML:\r?\n", output, maxsplit=1)
+            unit_content = task_xml[1] if len(task_xml) == 2 else None
+            manager["unit_file"] = "Task Scheduler exported task definition" if unit_content else None
+        else:
+            raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
+        if sys.platform == "win32" and unit_content:
+            unit_path.write_text(unit_content, encoding="utf-8")
+        elif sys.platform != "win32" and unit.is_file() and not unit.is_symlink():
+            unit_path.write_bytes(unit.read_bytes())
+            manager["unit_file"] = str(unit)
+        elif sys.platform != "win32":
+            unit_path.write_text(f"Unit file unavailable: {unit}\n", encoding="utf-8")
+            manager["unit_file"] = None
+        else:
+            unit_path.write_text("Task Scheduler definition unavailable\n", encoding="utf-8")
+        if sys.platform in {"linux", "darwin"} and completed.returncode:
+            missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
+                               and completed.returncode == 113
+                               and completed.stderr.strip() ==
+                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+            if missing_service:
+                manager["service_state"] = "absent"
+            else:
+                manager["error"] = f"manager command exited {completed.returncode}"
+                print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
+                      f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"Journey evidence capture ({phase}) failed: {message}", file=sys.stderr, flush=True)
+        manager["error"] = message
+        possible_unit = {
+            "linux": data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service",
+            "darwin": data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist",
+        }.get(sys.platform)
+        try:
+            if possible_unit is not None and possible_unit.is_file() and not possible_unit.is_symlink():
+                unit_path.write_bytes(possible_unit.read_bytes())
+                manager["unit_file"] = str(possible_unit)
+            else:
+                unit_path.write_text(f"Unit file capture failed: {message}\n", encoding="utf-8")
+        except OSError as unit_error:
+            print(f"Journey unit-file capture ({phase}) failed: {type(unit_error).__name__}: {unit_error}",
+                  file=sys.stderr, flush=True)
+    try:
+        write_json(manager_path, manager)
+    except Exception as exc:
+        print(f"Journey manager-state write ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
+    """Retain bounded tails of the run-owned Runtime and named service logs."""
+    if sys.platform == "darwin":
+        log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    elif sys.platform == "win32":
+        log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    else:
+        log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+    paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    for source in paths:
+        if source.is_symlink() or not source.is_file():
+            continue
+        name = ("install.log" if source.name == "install.log" else
+                "runtime-service-runtime.log" if source.name == "runtime.log" else
+                f"runtime-service-{source.name}")
+        target = evidence / name
+        try:
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+        except Exception as exc:
+            print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+def retain_named_evidence(evidence: Path, phase: str) -> None:
+    """Copy only the allowlisted journey evidence, clipping verbose text logs."""
+    destination = evidence.parent.parent / "evidence-upload" / phase
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+        name = source.name
+        if (name not in JOURNEY_EVIDENCE_NAMES and
+                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+            continue
+        if not source.is_file() or source.is_symlink():
+            continue
+        target = destination / name
+        try:
+            if source.suffix == ".log":
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            else:
+                shutil.copyfile(source, target)
+        except Exception as exc:
+            print(f"Journey evidence copy ({phase}) failed for {name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    # The existing hosted boundary accepts this legacy service-log filename
+    # pattern. Flatten the seed directories into it without truncating bytes.
+    # Numbering follows sorted relative paths so distinct invocations survive.
+    seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
+                       if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
+    for index, directory in enumerate(seed_dirs, 1):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        for kind in ("input", "command", "stdout", "stderr", "exit"):
+            suffix = "json" if kind in {"input", "command", "exit"} else "txt"
+            source = directory / f"{kind}.{suffix}"
+            if source.is_file() and not source.is_symlink():
+                target = destination / f"runtime-service-service-seed-{index:04d}-{kind}.log"
+                try:
+                    shutil.copyfile(source, target)
+                except Exception as exc:
+                    print(f"Journey seed evidence copy ({phase}) failed for {source}: "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
+    """Stage named diagnostics and bind their availability to the journey receipt."""
+    result_path = evidence / "journey-result.json"
+    try:
+        capture_runtime_service_logs(evidence, run_root, phase)
+        capture_manager_state(evidence, data, phase)
+        retain_named_evidence(evidence, phase)
+        destination = evidence.parent.parent / "evidence-upload" / phase
+        recorded = read_json(result_path) if result_path.is_file() else {}
+        diagnostic = {}
+        for key, name in (("install_log", "install.log"),
+                          ("service_manager", f"manager-state-{phase}.json")):
+            path = destination / name
+            item = {"status": "captured" if path.is_file() else "unavailable",
+                    "path": path.relative_to(run_root).as_posix() if path.is_file() else None}
+            if key == "service_manager" and path.is_file():
+                manager = read_json(path)
+                item["observation_status"] = "error" if manager.get("error") else "observed"
+                if manager.get("error"):
+                    item["error"] = manager["error"]
+            diagnostic[key] = item
+        if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
+            # This log is nested under release0, and must remain byte-for-byte
+            # intact rather than taking the usual bounded tail of text logs.
+            source = evidence / "release0" / "release0-bootstrap.log"
+            exit_path = evidence / "release0" / "release0-bootstrap-exit.json"
+            previous = recorded.get("failure_diagnostics", {}).get("before-cleanup", {}).get(
+                "release0_bootstrap", {})
+            exit_code = previous.get("exit_code")
+            if exit_path.is_file() and not exit_path.is_symlink():
+                exit_code = read_json(exit_path).get("exit_code")
+            if not source.is_file() or source.is_symlink():
+                source = destination.parent / "before-cleanup" / "release0-bootstrap.log"
+            target = destination / "release0-bootstrap.log"
+            item = {"status": "unavailable", "path": None, "exit_code": exit_code, "sha256": None}
+            if source.is_file() and not source.is_symlink():
+                if source != target:
+                    shutil.copyfile(source, target)
+                digest = hashlib.sha256()
+                with target.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                item.update(status="captured", path=target.relative_to(run_root).as_posix(),
+                            sha256=digest.hexdigest())
+            diagnostic["release0_bootstrap"] = item
+        recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
+        write_json(result_path, recorded)
+        # Refresh the staged receipt after adding paths and observation status.
+        retain_named_evidence(evidence, phase)
+    except Exception as exc:
+        print(f"Journey evidence snapshot ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def _under(path: Path, parent: Path) -> bool:
     return path != parent and path.is_relative_to(parent)
 
 
-def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, Path, Path, Path]:
+def run_scope(run_root: Path, root: Path, data: Path, leg: str, *,
+              diagnostic_start_at: str | None = None) -> tuple[Path, Path, Path, Path]:
     """Fail closed before a lifecycle command can touch login-managed state."""
     if not all(path.is_absolute() for path in (run_root, root, data)):
         raise ValueError("--run-root, --root and --data-root must be absolute")
@@ -472,7 +693,17 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, P
         raise ValueError("--root and --data-root must be the run-owned program/data children")
     root, data = root.resolve(), data.resolve()
     owner_path = run_root / OWNER_FILE
-    if leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
+    if diagnostic_start_at is not None:
+        if diagnostic_start_at != "release0-api-seed":
+            raise ValueError("Unknown diagnostic start stage")
+        if owner_path.is_symlink():
+            raise ValueError("Journey ownership record cannot be a symlink")
+        owner = read_json(owner_path)
+        if (owner.get("schema_version") != 1 or
+                not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", ""))) or
+                owner.get("root") != str(root) or owner.get("data_root") != str(data)):
+            raise ValueError("Existing journey roots lack this run's ownership record")
+    elif leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
         if run_root.exists() and any(run_root.iterdir()):
             raise ValueError("A fresh journey requires an empty run-owned directory")
         run_root.mkdir(parents=True, exist_ok=True)
@@ -493,7 +724,9 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, P
                    run_root / "home" / ".local", run_root / "home" / ".local" / "share"):
         if scoped != scoped.resolve():
             raise ValueError("Journey environment path cannot alias another installation")
-    evidence = run_root / "evidence" / leg
+    evidence_leg = (f"{leg}-diagnostic-{diagnostic_start_at}"
+                    if diagnostic_start_at is not None else leg)
+    evidence = run_root / "evidence" / evidence_leg
     if evidence != evidence.resolve():
         raise ValueError("Journey evidence cannot alias another path")
     return run_root, root, data, evidence
@@ -560,28 +793,50 @@ def sentinel_observation(process: subprocess.Popen, birth: str) -> dict:
 
 
 @contextmanager
-def sentinel_process(run_root: Path):
+def sentinel_process(run_root: Path, evidence: Path | None = None):
     """A harmless unrelated process, terminated only while its birth still matches."""
     token = uuid.uuid4().hex
     process = subprocess.Popen(
         [sys.executable, "-u", "-c", "import time; time.sleep(7200)", token],
         cwd=run_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=os.name == "posix")
+    entered = False
     try:
         birth = process_birth(process.pid)
         if not birth or not sentinel_alive(process, birth):
             raise RuntimeError("Could not establish the sentinel process birth identity")
+        entered = True
         yield process, birth
     finally:
-        # Popen retains this child process's handle; poll() cannot mistake a reused PID for it.
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                if process.poll() is None:
-                    process.kill()
+        primary = sys.exc_info()[1]
+        try:
+            # Popen retains this child handle; poll() cannot mistake a reused PID for it.
+            if process.poll() is None:
+                process.terminate()
+                try:
                     process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+        except Exception as cleanup_error:
+            if primary is None:
+                raise
+            if not entered:
+                print(f"Journey failed: {type(primary).__name__}: {primary}", file=sys.stderr, flush=True)
+            print(f"Journey sentinel cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
+                  file=sys.stderr, flush=True)
+            if evidence is not None:
+                try:
+                    result_path = evidence / "journey-result.json"
+                    recorded = read_json(result_path) if result_path.is_file() else {}
+                    recorded.update(status="fail", sentinel_cleanup_error=
+                                    f"{type(cleanup_error).__name__}: {cleanup_error}")
+                    write_json(result_path, recorded)
+                    retain_named_evidence(evidence, "after-cleanup")
+                except Exception as receipt_error:
+                    print(f"Journey sentinel cleanup receipt failed: {type(receipt_error).__name__}: {receipt_error}",
+                          file=sys.stderr, flush=True)
 
 
 def git_source(checkout: Path) -> dict:
@@ -673,12 +928,13 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                 if fresh or fields.get("FragmentPath") != expected:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
-        existing = windows.powershell(
-            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
-            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
-            "preflight-scheduled-task.txt", show=False, timeout=30)
-        if existing.strip() and (fresh or not windows_task_owned(existing, root)):
-            raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
+        existing = windows.scheduled_task_diagnostics(leg=leg)
+        if existing["status"] == "present":
+            tasks = existing["tasks"]
+            owned = (len(tasks) == 1 and len(tasks[0]["executables"]) == 1
+                     and windows_task_owned("present\n" + tasks[0]["executables"][0], root))
+            if fresh or not owned:
+                raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
     if fresh and runtime_processes(data):
         raise RuntimeError("A Runtime owner is already running on this host")
 
@@ -728,6 +984,8 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
         _manager_probe(["launchctl", "print", f"gui/{os.getuid()}"], label="launchd GUI domain")
         manager = "launchd"
     elif sys.platform == "win32":
+        # Retain the query even if the subsequent manager prerequisite fails.
+        windows.scheduled_task_preflight(args.leg)
         # The command checks both the PowerShell service-manager module and its
         # scheduler surface; it does not manufacture or start a task.
         version = windows.powershell(
@@ -829,12 +1087,56 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
 
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
+    parts = [str(part) for part in argv]
+    if (log.name == "seed.json" and len(parts) >= 4 and
+            Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
+        return run_seed(parts, log, env=env, timeout=timeout)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
+        try:
+            write_json(log.parent / "release0-bootstrap-exit.json", {"exit_code": result.returncode})
+        except OSError as exc:
+            print(f"Journey bootstrap exit capture failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {log}")
+    return output
+
+
+def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> str:
+    """Preserve the exact seed request, argv and separate byte streams per call."""
+    directory = log.parent / "seed-diagnostics"
+    directory.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        invocation = directory / f"{index:04d}"
+        try:
+            invocation.mkdir()
+            break
+        except FileExistsError:
+            index += 1
+    request = Path(argv[argv.index("--request") + 1])
+    shutil.copyfile(request, invocation / "input.json")
+    write_json(invocation / "command.json", argv)
+    status = {"exit_code": None}
+    try:
+        with ((invocation / "stdout.txt").open("wb") as stdout,
+              (invocation / "stderr.txt").open("wb") as stderr):
+            result = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr,
+                                    timeout=timeout, check=False)
+        status["exit_code"] = result.returncode
+    except Exception as exc:
+        status["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        write_json(invocation / "exit.json", status)
+        shutil.copyfile(invocation / "stdout.txt", log)
+    output = log.read_text(encoding="utf-8-sig", errors="replace")
+    if result.returncode:
+        raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
     return output
 
 
@@ -888,6 +1190,15 @@ def healthy(data: Path) -> dict:
     return discovery
 
 
+def _runtime_owner_command(command: str) -> bool:
+    # Installed services run the Runtime CLI through a Python -c prelude. Keep
+    # recognizing the older runtime_protocol form for other running owners.
+    return ("-m runtime_protocol start" in command or
+            (re.search(r"(?:^|\s)-c(?:\s|$)", command) is not None and
+             "from astrid_runtime.cli import main" in command and
+             re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
+
+
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
@@ -896,14 +1207,19 @@ def runtime_processes(data: Path) -> list[int]:
             "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
         return [int(row["ProcessId"]) for row in rows if
-                "-m runtime_protocol start" in str(row.get("CommandLine") or "")]
-    output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
-    found = []
+                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    # The installed prelude can be long and can contain newlines. Ask ps for
+    # the full command, then keep continuation lines with their process.
+    output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
+    records: list[tuple[int, str]] = []
     for line in output.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if "-m runtime_protocol start" in command:
-            found.append(int(pid))
-    return found
+        match = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        if match:
+            records.append((int(match.group(1)), match.group(2)))
+        elif records:
+            pid, command = records[-1]
+            records[-1] = (pid, command + "\n" + line)
+    return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
 def assert_one_runtime(data: Path) -> None:
@@ -1035,7 +1351,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     result_path = evidence / "journey-result.json"
     write_json(result_path, result)
     try:
-        if args.mode == "pinokio-backend":
+        if getattr(args, "mode", "direct") == "pinokio-backend":
             backend_receipt = execute_pinokio_backend(args, evidence)
             result.update(backend_receipt)
             result["pinokio_backend"] = backend_receipt["pinokio_backend"]
@@ -1141,9 +1457,26 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
 
 
 def execute(args: argparse.Namespace) -> dict:
-    run_root, root, data, evidence = run_scope(args.run_root, args.root, args.data_root, args.leg)
+    diagnostic_start_at = getattr(args, "diagnostic_start_at", None)
+    run_root, root, data, evidence = run_scope(
+        args.run_root, args.root, args.data_root, args.leg,
+        diagnostic_start_at=diagnostic_start_at,
+    )
     windows.EVIDENCE = evidence
     identity = runner_identity()
+    if diagnostic_start_at is not None:
+        # This path deliberately does not enter the normal lifecycle/cleanup
+        # wrapper.  It can only exercise its named retained-state block and
+        # records an ineligible diagnostic receipt rather than a matrix result.
+        assert_runner_identity(identity)
+        with isolated_environment(run_root, root, data):
+            if __package__:
+                from . import journey_version_jumps
+            else:
+                import journey_version_jumps
+            return journey_version_jumps.execute_diagnostic_release0_stage(
+                args, root, data, evidence,
+            )
     try:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
@@ -1182,52 +1515,90 @@ def execute(args: argparse.Namespace) -> dict:
         }
         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         write_json(failure_path, recorded)
+        print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
         raise
-    with isolated_environment(run_root, root, data):
-        with sentinel_process(run_root) as (sentinel, birth):
-            try:
-                result = _execute_owned(args, root, data, evidence, sentinel, birth)
-            finally:
-                if not getattr(args, "retain_for_next_leg", False):
-                    result_path = evidence / "journey-result.json"
+    try:
+        with isolated_environment(run_root, root, data):
+            with sentinel_process(run_root, evidence) as (sentinel, birth):
+                primary_error = None
+                try:
+                    result = _execute_owned(args, root, data, evidence, sentinel, birth)
+                except Exception as exc:
+                    primary_error = exc
+                    print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                     try:
-                        if (root / "current").is_file():
-                            _, _, installed = installation(root, data)
-                            installed_cli(installed, ["install", "--uninstall", "--root", str(root),
-                                                      "--data-root", str(data)], evidence,
-                                          "final-uninstall.log", timeout=1800)
-                            if (root / "current").exists() or runtime_processes(data):
-                                raise RuntimeError("Owned installation remained after final uninstall")
-                        cleanup_sentinel = sentinel_observation(sentinel, birth)
+                        result_path = evidence / "journey-result.json"
+                        recorded = read_json(result_path) if result_path.is_file() else {}
+                        recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+                        write_json(result_path, recorded)
+                    except Exception as receipt_error:
+                        print(f"Journey failure receipt failed: {type(receipt_error).__name__}: {receipt_error}",
+                              file=sys.stderr, flush=True)
+                    raise
+                finally:
+                    snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+                    if not getattr(args, "retain_for_next_leg", False):
+                        result_path = evidence / "journey-result.json"
+                        try:
+                            if (root / "current").is_file():
+                                _, _, installed = installation(root, data)
+                                installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                                          "--data-root", str(data)], evidence,
+                                              "final-uninstall.log", timeout=1800)
+                                if (root / "current").exists() or runtime_processes(data):
+                                    raise RuntimeError("Owned installation remained after final uninstall")
+                            cleanup_sentinel = sentinel_observation(sentinel, birth)
+                            if result_path.is_file():
+                                recorded = read_json(result_path)
+                                recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
+                                write_json(result_path, recorded)
+                            assert_host_available("cleanup", root, data)
+                            if not cleanup_sentinel["alive"]:
+                                raise RuntimeError("Unrelated sentinel did not survive final uninstall")
+                            if result_path.is_file():
+                                recorded = read_json(result_path)
+                                recorded["final_cleanup"] = "pass"
+                                write_json(result_path, recorded)
+                            if "result" in locals():
+                                result["final_cleanup"] = "pass"
+                        except Exception as cleanup_error:
+                            print(f"Journey cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
+                                  file=sys.stderr, flush=True)
+                            try:
+                                recorded = read_json(result_path) if result_path.is_file() else {
+                                    "schema_version": 1, "scenario": args.leg}
+                                recorded.update(status="fail", final_cleanup="fail",
+                                                cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
+                                write_json(result_path, recorded)
+                            except Exception as receipt_error:
+                                print(f"Journey cleanup receipt failed: {type(receipt_error).__name__}: {receipt_error}",
+                                      file=sys.stderr, flush=True)
+                            snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+                            if primary_error is None:
+                                raise
+                    else:
+                        result_path = evidence / "journey-result.json"
                         if result_path.is_file():
                             recorded = read_json(result_path)
-                            recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
-                            write_json(result_path, recorded)
-                        assert_host_available("cleanup", root, data)
-                        if not cleanup_sentinel["alive"]:
-                            raise RuntimeError("Unrelated sentinel did not survive final uninstall")
-                        if result_path.is_file():
-                            recorded = read_json(result_path)
-                            recorded["final_cleanup"] = "pass"
+                            recorded["final_cleanup"] = "retained-for-next-leg"
                             write_json(result_path, recorded)
                         if "result" in locals():
-                            result["final_cleanup"] = "pass"
-                    except Exception as cleanup_error:
-                        recorded = read_json(result_path) if result_path.is_file() else {
-                            "schema_version": 1, "scenario": args.leg}
-                        recorded.update(status="fail", final_cleanup="fail",
-                                        cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
-                        write_json(result_path, recorded)
-                        raise
-                else:
-                    result_path = evidence / "journey-result.json"
-                    if result_path.is_file():
-                        recorded = read_json(result_path)
-                        recorded["final_cleanup"] = "retained-for-next-leg"
-                        write_json(result_path, recorded)
-                    if "result" in locals():
-                        result["final_cleanup"] = "retained-for-next-leg"
-            return result
+                            result["final_cleanup"] = "retained-for-next-leg"
+                    snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+                return result
+    except Exception as exc:
+        # Context setup can fail before the lifecycle body has produced a receipt.
+        result_path = evidence / "journey-result.json"
+        recorded = read_json(result_path) if result_path.is_file() else {}
+        if "before-cleanup" not in recorded.get("failure_diagnostics", {}) or recorded.get("status") != "fail":
+            recorded.update(schema_version=2, receipt_kind="release1-installed-lifecycle",
+                            scenario=args.leg, status="fail",
+                            error=f"{type(exc).__name__}: {exc}")
+            write_json(result_path, recorded)
+            print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+        raise
 
 
 def _shared_executor_main(argv: list[str]) -> int:
@@ -1458,10 +1829,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-checkout", type=Path)
     parser.add_argument("--retain-for-next-leg", action="store_true",
                         help="keep only this run's installed service for the next named leg")
+    parser.add_argument("--diagnostic-start-at", choices=("release0-api-seed",),
+                        help="DIAGNOSTIC ONLY: run one retained release-0 stage, never qualification")
+    parser.add_argument("--diagnostic-state", type=Path,
+                        help="exact run-owned precondition checkpoint for --diagnostic-start-at")
     args = parser.parse_args(argv)
+    diagnostic = args.diagnostic_start_at is not None
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
-    if bool(args.job_id) != bool(args.candidate):
+    if bool(args.diagnostic_state) != diagnostic:
+        parser.error("--diagnostic-state is required only with --diagnostic-start-at")
+    if diagnostic:
+        if args.job_id:
+            parser.error("diagnostic stage starts cannot use a qualification job id")
+        if args.mode != "direct" or args.leg != "release0-to-release1":
+            parser.error("diagnostic stage starts are limited to the direct release0-to-release1 leg")
+        if args.source_override:
+            parser.error("diagnostic stage starts never admit --source-override")
+        if args.candidate is None or not all((args.candidate_agent_checkout,
+                                              args.candidate_runtime_checkout,
+                                              args.pinokio_checkout)):
+            parser.error("diagnostic stage starts require frozen candidate and all candidate checkouts")
+        if args.retain_for_next_leg:
+            parser.error("diagnostic stage starts retain their validated state automatically")
+    elif bool(args.job_id) != bool(args.candidate):
         parser.error("--job-id and --candidate are required together for Release-1 receipts")
     if args.job_id:
         try:
@@ -1484,7 +1875,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
-        if not (args.job_id and args.mode == "direct" and args.candidate):
+        if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
         if args.release0_fixture is None or not args.allow_release0_to_release1:
             parser.error("release0-to-release1 requires --release0-fixture and --allow-release0-to-release1")

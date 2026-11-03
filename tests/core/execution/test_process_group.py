@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import os
+import platform
 import sys
 import select
 from pathlib import Path
@@ -261,6 +262,37 @@ def test_observation_uncertainty_persists_without_adopting_unknown_children(monk
         groups.terminate_tree(process, grace_seconds=0)
 
 
+def test_reaped_root_pid_reuse_does_not_poison_final_tree_observation(monkeypatch):
+    """A reaped root replacement is unrelated; known descendants remain fenced."""
+    process = SimpleNamespace(
+        pid=100,
+        returncode=0,
+        _astrid_process_birth="root",
+        _astrid_tree_members={100: "root", 200: "child"},
+        _astrid_custody=FakeCustody(),
+    )
+    monkeypatch.setattr(groups, "_process_snapshot", lambda: {
+        100: groups._ProcessInfo(100, 1, 100, "replacement-root"),
+        200: groups._ProcessInfo(200, 1, 200, "child"),
+        900: groups._ProcessInfo(900, 1, 900, "unrelated"),
+    })
+
+    assert groups.observe_tree(process) == {200: "child"}
+    assert not hasattr(process, "_astrid_tree_uncertain")
+    process._astrid_custody.retained_incarnation_exited = (
+        lambda pid, birth: pid == 200 and birth == "child"
+    )
+    monkeypatch.setattr(groups, "_process_snapshot", lambda: {
+        100: groups._ProcessInfo(100, 1, 100, "replacement-root"),
+        200: groups._ProcessInfo(200, 1, 200, "replacement-child"),
+    })
+    assert groups.observe_tree(process) == {}
+    assert not hasattr(process, "_astrid_tree_uncertain")
+    process._astrid_custody.retained_incarnation_exited = lambda *_: False
+    with pytest.raises(groups.CleanupUncertainError, match="owned process identity was reused"):
+        groups.observe_tree(process)
+
+
 def test_keyboard_interrupt_during_first_census_fails_closed(monkeypatch):
     process = _process()
     signals = []
@@ -340,6 +372,8 @@ def test_first_signal_callee_metadata_survives_task_wrapper_without_clearing_unc
 
 def test_verified_detached_tree_stops_leaves_before_ancestors_and_leader(monkeypatch):
     process = _process()
+    exited = False
+    process.poll = lambda: 0 if exited else None
     census = _snapshot()
     census[300] = groups._ProcessInfo(300, 200, 200, "node")
     census[400] = groups._ProcessInfo(400, 300, 400, "browser")
@@ -348,8 +382,11 @@ def test_verified_detached_tree_stops_leaves_before_ancestors_and_leader(monkeyp
     calls = []
 
     def kill(pid, sig):
+        nonlocal exited
         calls.append((pid, sig))
         del census[pid]
+        if pid == process.pid:
+            exited = True
 
     process._astrid_custody.signal_owner = kill
     groups.terminate_tree(process, grace_seconds=0)
@@ -579,19 +616,25 @@ def test_original_root_term_wait_precedes_kill_and_preserves_escalation_budget(m
     census = {100: initial[100], 900: initial[900]}
     monkeypatch.setattr(groups, '_process_snapshot', lambda: dict(census))
     events = []
+    exited = False
     def signal_root(pid, sig):
+        nonlocal exited
         assert pid == 100
         events.append(('signal', sig))
-        if sig == signal.SIGKILL: census.pop(100)
+        if sig == signal.SIGKILL:
+            census.pop(100)
+            exited = True
     def wait(*, timeout):
+        nonlocal exited
         events.append(('wait', timeout))
-        if 100 in census:
+        if not exited:
             if stubborn: raise subprocess.TimeoutExpired(['original-root'], timeout)
             assert timeout > 0
             census.pop(100)
+            exited = True
         return 0
     process._astrid_custody.signal_owner = signal_root
-    process.poll = lambda: None if 100 in census else 0
+    process.poll = lambda: 0 if exited else None
     process.wait = wait
     groups.terminate_tree(process, grace_seconds=1)
     signal_events = [event for event in events if event[0] == 'signal']
@@ -981,6 +1024,124 @@ def test_final_verification_still_fails_closed_when_lock_stays_busy(tmp_path, mo
 linux_only = pytest.mark.linux_native
 
 
+def _ready_owned_child(code):
+    process = groups.popen_owned_group(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        _delegate_inventory=False,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 5)[0], "child readiness timed out"
+        assert process.stdout.readline().strip() == b"READY"
+    except BaseException:
+        _close_owned_child(process)
+        raise
+    return process
+
+
+def _close_owned_child(process):
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+    finally:
+        process._astrid_custody.release_pidfds()
+        process.stdout.close()
+        process.stderr.close()
+
+
+@linux_only
+def test_zombie_leader_with_live_thread_is_killed_and_reaped(monkeypatch):
+    # SYS_exit ends just the calling task, unlike Python's process-wide exit.
+    sys_exit = {"x86_64": 60, "aarch64": 93, "riscv64": 93, "i386": 1,
+                "i686": 1, "armv7l": 1, "ppc64": 1, "ppc64le": 1, "s390x": 1}[platform.machine()]
+    code = """
+import ctypes, os, signal, threading, time
+libc = ctypes.CDLL(None)
+def worker():
+    time.sleep(20)
+    os._exit(0)
+threading.Thread(target=worker).start()
+def term(*_):
+    libc.syscall(%d, 0)  # exit the leader task, leaving the worker alive
+signal.signal(signal.SIGTERM, term)
+print('READY', flush=True)
+while True: time.sleep(.01)
+""" % sys_exit
+    process = _ready_owned_child(code)
+    observed_states = []
+    original_observe = groups.observe_tree
+    def observe(*args, **kwargs):
+        live = original_observe(*args, **kwargs)
+        if process.pid not in live and process.poll() is None:
+            tasks = Path(f"/proc/{process.pid}/task")
+            observed_states.append({p.name: (p / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                                    for p in tasks.iterdir()})
+        return live
+    monkeypatch.setattr(groups, "observe_tree", observe)
+    try:
+        groups.terminate_tree(process, grace_seconds=.1, cleanup_deadline=time.monotonic() + 8)
+        assert any(states.get(str(process.pid)) == "Z" and
+                   any(tid != str(process.pid) and state not in {"Z", "X"}
+                       for tid, state in states.items()) for states in observed_states)
+        assert process.returncode == -signal.SIGKILL
+        assert not Path(f"/proc/{process.pid}").exists()
+        groups.verify_tree_absent(process)
+        assert not getattr(process, "_astrid_tree_uncertain", None)
+    finally:
+        _close_owned_child(process)
+
+
+@linux_only
+@pytest.mark.parametrize("ignore_term,expected", [(False, -signal.SIGTERM), (True, -signal.SIGKILL)])
+def test_real_original_root_term_and_kill_controls(monkeypatch, ignore_term, expected):
+    setup = "signal.signal(signal.SIGTERM, signal.SIG_IGN);" if ignore_term else ""
+    process = _ready_owned_child("import signal,time;" + setup + "print('READY',flush=True);time.sleep(20)")
+    owner = process._astrid_custody
+    original_signal = owner.signal
+    signals = []
+    def record_signal(pid, birth, signum, **kwargs):
+        signals.append((pid, signum))
+        return original_signal(pid, birth, signum, **kwargs)
+    monkeypatch.setattr(owner, "signal", record_signal)
+    try:
+        groups.terminate_tree(process, grace_seconds=.1, cleanup_deadline=time.monotonic() + 8)
+        assert process.returncode == expected
+        assert signals == ([(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)]
+                           if ignore_term else [(process.pid, signal.SIGTERM)])
+        assert not Path(f"/proc/{process.pid}").exists()
+        groups.verify_tree_absent(process)
+        assert not getattr(process, "_astrid_tree_uncertain", None)
+    finally:
+        _close_owned_child(process)
+
+
+@linux_only
+def test_real_cleanup_deadline_exhaustion_still_raises(monkeypatch):
+    process = _ready_owned_child(
+        "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        "print('READY',flush=True);time.sleep(20)"
+    )
+    owner = process._astrid_custody
+    original_signal = owner.signal
+    signals = []
+    def withhold_kill(pid, birth, signum, **kwargs):
+        signals.append((pid, signum))
+        if signum != signal.SIGKILL:
+            return original_signal(pid, birth, signum, **kwargs)
+    monkeypatch.setattr(owner, "signal", withhold_kill)
+    deadline = time.monotonic() + .3
+    try:
+        with pytest.raises(groups.CleanupUncertainError, match="owned leader survived bounded termination"):
+            groups.terminate_tree(process, grace_seconds=.03, cleanup_deadline=deadline)
+        assert time.monotonic() >= deadline
+        assert process.poll() is None
+        assert (process.pid, signal.SIGTERM) in signals
+        assert (process.pid, signal.SIGKILL) in signals
+        assert process._astrid_tree_uncertain == "owned leader survived bounded termination"
+    finally:
+        _close_owned_child(process)
+
+
 _BOUND_OWNERS: list = []
 
 
@@ -1009,6 +1170,241 @@ def _bound_sleeper():
 def _exit_without_reaping(process):
     process.kill()
     os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+
+
+@linux_only
+def test_retained_pidfd_exit_proof_rejects_lost_or_substituted_descriptor():
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    try:
+        os.close(descriptor)
+        assert process.poll() is None
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        owner.release_pidfds(only_exited=True)
+        assert owner._handles[process.pid][1] == descriptor
+
+        replacement = os.open(os.devnull, os.O_RDONLY)
+        if replacement != descriptor:
+            os.dup2(replacement, descriptor)
+            os.close(replacement)
+        assert process.poll() is None
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        owner.release_pidfds(only_exited=True)
+        assert owner._handles[process.pid][1] == descriptor
+    finally:
+        process.kill()
+        process.wait()
+
+
+@linux_only
+def test_retained_pidfd_exit_proof_accepts_genuine_exit_and_terminal_release():
+    owner, process = _bound_sleeper()
+    birth = owner._handles[process.pid][0]
+    try:
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        process.terminate()
+        process.wait()
+        assert owner.retained_incarnation_exited(process.pid, birth)
+        owner.release_pidfds(only_exited=True)
+        assert owner._handles[process.pid][1] is custody._PIDFD_RELEASED
+        assert owner.retained_incarnation_exited(process.pid, birth)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+@linux_only
+@pytest.mark.parametrize("duplicate_original", [False, True])
+@pytest.mark.parametrize("fault", ["live", "closed", "ordinary", "other-live", "other-exited"])
+def test_pidfd_kernel_watch_refuses_descriptor_faults_with_shared_metadata(monkeypatch, duplicate_original, fault):
+    # Model the pre-pidfs shared inode from binding onward. All descriptor,
+    # process-lifetime and readiness operations remain real kernel operations.
+    shared = os.stat(os.devnull)
+    monkeypatch.setattr(os, "fstat", lambda _: shared)
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    duplicate = os.dup(descriptor) if duplicate_original else None
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    replacement = os.pidfd_open(other.pid)
+    try:
+        assert os.fstat(descriptor) == os.fstat(replacement)
+        assert os.readlink(f"/proc/self/fd/{descriptor}") == os.readlink(f"/proc/self/fd/{replacement}")
+        if fault == "closed":
+            os.close(descriptor)
+        elif fault == "ordinary":
+            with open(os.devnull, "rb") as ordinary:
+                os.dup2(ordinary.fileno(), descriptor)
+        elif fault.startswith("other-"):
+            if fault == "other-exited":
+                other.kill()
+                other.wait()
+            os.dup2(replacement, descriptor)
+            if fault == "other-exited":
+                poller = select.poll()
+                poller.register(descriptor, select.POLLIN)
+                assert poller.poll(0) == [(descriptor, select.POLLIN | select.POLLHUP)]
+        assert process.poll() is None
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        assert not owner.retained_incarnation_exited(process.pid, birth + "-wrong")
+        assert not owner.retained_incarnation_exited(-1, birth)
+        owner.release_pidfds(only_exited=True)
+        assert owner._handles[process.pid] == (birth, descriptor)
+        assert process.pid not in owner._pidfd_terminal_births
+        snapshot = groups._process_snapshot()
+        snapshot[process.pid] = groups._ProcessInfo(process.pid, 1, process.pid, birth + "-reused")
+        monkeypatch.setattr(groups, "_process_snapshot", lambda: snapshot)
+        with pytest.raises(groups.CleanupUncertainError, match="identity was reused"):
+            groups.observe_tree(process)
+        owner.release_pidfds()
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        assert not owner._pidfd_exit_proofs
+    finally:
+        process.kill()
+        process.wait()
+        other.kill()
+        other.wait()
+        os.close(replacement)
+        if duplicate is not None:
+            os.close(duplicate)
+
+
+@linux_only
+@pytest.mark.parametrize("during_poll", [False, True])
+def test_pidfd_watch_rejects_substitution_even_when_original_watch_is_ready(monkeypatch, during_poll):
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    duplicate = os.dup(descriptor)  # Keep the old watch alive after dup2.
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    replacement = os.pidfd_open(other.pid)
+    proof = owner._pidfd_exit_proofs[process.pid]
+    watch = proof._watch
+    try:
+        process.kill()
+        process.wait()
+        assert watch.poll(0) == [(descriptor, select.EPOLLIN | select.EPOLLHUP)]
+        if during_poll:
+            def substitute(timeout):
+                events = watch.poll(timeout)
+                os.dup2(replacement, descriptor)
+                return events
+            monkeypatch.setattr(proof, "_watch", SimpleNamespace(
+                modify=watch.modify, poll=substitute, close=watch.close))
+        else:
+            os.dup2(replacement, descriptor)
+        assert not owner.retained_incarnation_exited(process.pid, birth)
+        owner.release_pidfds(only_exited=True)
+        assert owner._handles[process.pid] == (birth, descriptor)
+        assert process.pid not in owner._pidfd_terminal_births
+    finally:
+        other.kill()
+        other.wait()
+        os.close(replacement)
+        os.close(duplicate)
+
+
+@linux_only
+def test_pidfd_watch_unavailable_cannot_prove_exit(monkeypatch):
+    def unavailable():
+        raise OSError("epoll unavailable")
+    monkeypatch.setattr(select, "epoll", unavailable)
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    process.kill()
+    process.wait()
+    assert not owner.retained_incarnation_exited(process.pid, birth)
+    owner.release_pidfds(only_exited=True)
+    assert owner._handles[process.pid] == (birth, descriptor)
+    assert not owner._pidfd_terminal_births
+
+
+@linux_only
+@pytest.mark.parametrize("event", [select.POLLERR, select.POLLHUP,
+                                  select.POLLIN | select.POLLERR, "wrong-fd", "duplicate", "empty", "error"])
+def test_pidfd_watch_refuses_errors_and_malformed_events(monkeypatch, event):
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    process.kill()
+    process.wait()
+    proof = owner._pidfd_exit_proofs[process.pid]
+    watch = proof._watch
+    def poll(_):
+        if event == "error":
+            raise OSError("epoll wait failed")
+        if event == "empty":
+            return []
+        if event == "wrong-fd":
+            return [(descriptor + 100, select.EPOLLIN)]
+        if event == "duplicate":
+            return [(descriptor, select.EPOLLIN)] * 2
+        return [(descriptor, event)]
+    monkeypatch.setattr(proof, "_watch", SimpleNamespace(modify=watch.modify, poll=poll, close=watch.close))
+    assert not owner.retained_incarnation_exited(process.pid, birth)
+    owner.release_pidfds(only_exited=True)
+    assert owner._handles[process.pid] == (birth, descriptor)
+    assert not owner._pidfd_terminal_births
+
+
+@linux_only
+def test_pidfd_watch_closes_with_custody_and_on_failed_capture():
+    owner, process = _bound_sleeper()
+    birth, descriptor = owner._handles[process.pid]
+    proof = owner._pidfd_exit_proofs[process.pid]
+    watch = proof._watch
+    assert not os.get_inheritable(watch.fileno())
+    assert not os.get_inheritable(descriptor)
+    process.kill()
+    process.wait()
+    owner.release_pidfds(only_exited=True)
+    assert watch.closed and proof._watch is None
+    assert owner.retained_incarnation_exited(process.pid, birth)
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+    before = set(os.listdir("/proc/self/fd"))
+    with open(os.devnull, "rb") as ordinary:
+        unavailable = groups._PidfdExitProof(ordinary.fileno())
+        assert unavailable._watch is None and not unavailable.exited(ordinary.fileno())
+    assert set(os.listdir("/proc/self/fd")) == before
+
+
+@linux_only
+@pytest.mark.parametrize("released", [False, True])
+def test_exact_exited_descendant_allows_reused_pid_cleanup_without_adoption(monkeypatch, released):
+    owner, process = _bound_sleeper()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        birth = groups.process_birth_identity(child.pid)
+        owner.register(child.pid, birth)
+        process._astrid_tree_members[child.pid] = birth
+        _exit_without_reaping(child)
+        assert owner.retained_incarnation_exited(child.pid, birth)
+        child.wait()
+        assert owner.retained_incarnation_exited(child.pid, birth)
+        if released:
+            owner.release_pidfds(only_exited=True)
+            assert owner._handles[child.pid][1] is custody._PIDFD_RELEASED
+        assert owner.retained_incarnation_exited(child.pid, birth)
+        assert not owner.retained_incarnation_exited(child.pid, birth + "-wrong")
+        snapshot = groups._process_snapshot()
+        replacement = child.pid
+        descendant = max(snapshot) + 1000
+        snapshot[replacement] = groups._ProcessInfo(replacement, 1, replacement, birth + "-reused")
+        snapshot[descendant] = groups._ProcessInfo(descendant, replacement, replacement, "unowned")
+        monkeypatch.setattr(groups, "_process_snapshot", lambda: snapshot)
+        assert groups.observe_tree(process) == {process.pid: process._astrid_process_birth}
+        assert descendant not in process._astrid_tree_members
+        process.kill()
+        process.wait()
+        del snapshot[process.pid]
+        groups.verify_tree_absent(process)
+        assert owner.retained_incarnation_exited(child.pid, birth) is released
+        assert not owner._pidfd_exit_proofs
+        assert not hasattr(process, "_astrid_tree_uncertain")
+    finally:
+        process.kill()
+        process.wait()
+        child.kill()
+        child.wait()
 
 
 @linux_only

@@ -402,3 +402,14 @@ def test_sandbox_custody_stops_a_real_tree_without_pidfds(tmp_path, monkeypatch,
         if root.poll() is None:
             root.kill()
             root.wait(timeout=5)
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+@pytest.mark.linux_native
+def test_sandbox_descendant_with_another_start_time_is_not_admitted(tmp_path, monkeypatch, sandbox_mode):
+    monkeypatch.setattr(platform, "process_identity",
+                        lambda pid: {"pid": pid, "uid": 1000, "birth_id": "proc-start-ticks:99"})
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    owner.register(456, "boot:77")
+    assert 456 not in owner._handles

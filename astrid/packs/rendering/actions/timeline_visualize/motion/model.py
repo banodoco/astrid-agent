@@ -597,8 +597,10 @@ def _callout_props(element: Element, frame: int, fps: float) -> dict[str, float]
     return {"connector": min(1.0, ((frame // step) * step) / draw), "visible": 1.0}
 
 
-def _presenter_props(element: Element, frame: int, fps: float) -> dict[str, float]:
-    state = mouth_state(element, frame, fps)
+def _presenter_props(element: Element, frame: int, fps: float, *,
+                     presenter_mouth_state: str | None = None) -> dict[str, float]:
+    state = (presenter_mouth_state if presenter_mouth_state is not None
+             else mouth_state(element, frame, fps))
     scale, _ox, _oy = presenter_view(element.params, frame)
     return {"mouth": {"closed": 0.0, "half": 0.5, "open": 1.0}[state], "zoom": scale / LOGICAL_PX, "visible": 1.0}
 
@@ -624,7 +626,8 @@ PROPS: dict[str, Callable[[Element, int, float], dict[str, float]]] = {
 }
 
 
-def props_at(element: Element, t: float, fps: float) -> dict[str, float]:
+def props_at(element: Element, t: float, fps: float, *,
+             presenter_mouth_state: str | None = None) -> dict[str, float]:
     """Animated properties at timeline second ``t`` (empty when not on screen)."""
     if not element.start - 1e-6 <= t < element.end - 1e-6:
         return {}
@@ -633,6 +636,8 @@ def props_at(element: Element, t: float, fps: float) -> dict[str, float]:
     if own is not None:
         return own
     model = PROPS.get(element.type)
+    if element.type == "am-presenter" and presenter_mouth_state is not None:
+        return _presenter_props(element, frame, fps, presenter_mouth_state=presenter_mouth_state)
     return model(element, frame, fps) if model else {"visible": 1.0}
 
 

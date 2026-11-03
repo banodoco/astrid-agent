@@ -96,7 +96,7 @@ A transparent cutout (managed PNG on `clip.asset`) placed on the logical grid.
 | `text` | required | the copy. Empty text renders nothing. |
 | `font` | `display` | `display` = Gelasio, `label` = Departure Mono (uppercase, +0.12em). |
 | `size` | 96 / 28 | canvas px. |
-| `color` | `#25241F` | ink. |
+| `color` | `#FAFAFA` | light ink for the default dark canvas; set a dark colour on a light plate. |
 | `align` | `left` | `left`, `center`, or `right`. |
 | `x`, `y`, `width` | 96, 96, 1200 | canvas px. |
 | `reveal` | `slideUp` | `slideUp` (masked, 8 frames, ease-out), `type` (one char every 2 frames), or `none`. |

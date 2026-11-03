@@ -2,11 +2,11 @@
 
 The finalizer receives ordered Runtime CAS outputs and Runtime event-derived
 dependency edges.  It only emits typed admission data; the Runtime owns
-claiming, execution lifecycle, publication, and fenced settlement.
+claiming, execution lifecycle, commit acceptance, and fenced settlement.
 
 build_stitch_admission and publish_authoring_proposal are the narrow supported
-internal handoff consumed by Video Editing; Runtime retains lifecycle/publication
-authority and the existing attempt fence.
+internal handoff consumed by Video Editing. The requester commits the settled
+native proposal before admitting an exact-revision render.
 """
 
 from __future__ import annotations
@@ -107,93 +107,72 @@ def publish_authoring_proposal(
     proposal: Mapping[str, Any],
     timeline_id: str,
     expected_version: int,
-    runtime_attempt: Mapping[str, Any],
+    runtime_attempt: Mapping[str, Any] | None = None,
     render_capability_digest: str,
     output_name: str = "hype.mp4",
     selector: str = "rendering.ffmpeg",
     idempotency_key: str,
+    requester_session=None,
+    label="Assemble timeline", steps=None, merge="fields", reads=None, dry_run=False,
+    group_id=None,
 ) -> Mapping[str, Any]:
-    """Commit an ``assemble_timeline`` proposal through Runtime's checkpoint.
+    """Requester commit followed by ordinary, exact-revision render admission.
 
-    This is the trusted host boundary after the result-only authoring executor.
-    It deliberately has no timeline-save or invoke-render fallback: the
-    Runtime receives the authoring attempt fence and creates the canonical
-    revision and ``rendering.render`` task in one transaction.
+    The worker only supplies a settled managed proposal. Runtime authenticates its
+    producer guard; the requester remains the publisher and renderer task owner.
     """
     if not isinstance(proposal, Mapping):
         raise OrchestrationContractError("timeline authoring proposal must be an object")
-    timeline = proposal.get("timeline")
-    registry = proposal.get("registry")
-    if not isinstance(timeline, Mapping) or not isinstance(registry, Mapping):
-        raise OrchestrationContractError("timeline authoring proposal must contain timeline and registry objects")
-    publication = proposal.get("publication")
-    if not isinstance(publication, Mapping) or publication.get("authority") != "workspace_runtime":
-        raise OrchestrationContractError("timeline authoring proposal is not Runtime-owned")
-    if publication.get("render_capability") != "rendering.render":
-        raise OrchestrationContractError("timeline authoring proposal must use rendering.render")
-
-    context = _runtime_attempt(runtime_attempt)
-    if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 1:
-        raise OrchestrationContractError("expected_version must be a positive integer")
-    _string(timeline_id, "timeline_id")
+    if requester_session is None:
+        raise OrchestrationContractError("native assembly publication requires its original requester session")
+    target = proposal.get("admitted_target", {})
+    if (target.get("project_id"), target.get("timeline_id")) != (
+            requester_session.project_id, requester_session.timeline_id):
+        raise OrchestrationContractError("assembly proposal belongs to a different requester scope")
+    if client is not requester_session.client or timeline_id != requester_session.timeline_id:
+        raise OrchestrationContractError("assembly publication requires the original requester client and timeline")
     _string(output_name, "output_name")
     _string(selector, "selector")
     identity = CapabilityIdentity("rendering.render", render_capability_digest)
-
-    tasks = getattr(client, "tasks", None)
-    publish = getattr(tasks, "publish_timeline_render", None)
-    if not callable(publish):
-        raise OrchestrationContractError("Runtime client does not expose tasks.publish_timeline_render")
-    result = publish(
-        context["attempt_id"],
-        {
-            "lease_id": context["lease_id"],
-            "fence": context["fence"],
-            "runtime_epoch": context["runtime_epoch"],
-            "timeline_id": timeline_id,
-            "expected_version": expected_version,
-            "config": dict(timeline),
-            "registry": dict(registry),
-            "render": {
-                "capability_id": identity.capability_id,
-                "capability_digest": identity.capability_digest,
-                "schema_version": "1",
-                "spec": {
-                    "capability_id": identity.capability_id,
-                    "kind": "executor",
-                    "inputs": {"selector": selector, "output_name": output_name},
-                    "outputs": {},
-                },
-            },
-        },
-        idempotency_key=idempotency_key,
+    producer = proposal.get("producer", {})
+    if runtime_attempt is not None and any(
+            runtime_attempt.get(key) != producer.get(key) for key in ("attempt_id", "fence", "runtime_epoch")):
+        raise OrchestrationContractError("assembly publication attempt fence changed")
+    result = client.tasks.publish_timeline_render(
+        producer.get("attempt_id"), proposal, requester_session=requester_session,
+        idempotency_key=idempotency_key, label=label, steps=steps, merge=merge,
+        reads=reads, group_id=group_id, dry_run=dry_run,
     )
-    if hasattr(result, "ok"):
-        if not bool(result.ok):
-            error = getattr(result, "error", None)
-            raise OrchestrationContractError(str(error or "Runtime timeline publication failed"))
-        result = getattr(result, "data", None)
-    if not isinstance(result, Mapping):
-        raise OrchestrationContractError("Runtime timeline publication returned an invalid result")
-    return dict(result)
+    if not result.ok:
+        from astrid.sdk.workspace_client import WorkspaceClientError
 
+        error = result.error
+        raise WorkspaceClientError(0, error.code, error.message, dict(error.details))
+    envelope = result.as_dict()
+    if dry_run:
+        return envelope
+    data = result.data
+    parent = data["canonical_document"]["parent_revision"]
+    render = client.tasks.create(
+        project_id=requester_session.project_id, capability=identity.capability_id,
+        capability_digest=identity.capability_digest, input_manifest=[],
+        spec={"capability_id": identity.capability_id, "kind": "executor", "outputs": {},
+              "params": {"timeline_ref": requester_session.timeline_id,
+                         "canonical_revision": {
+                             "project_id": requester_session.project_id,
+                             "timeline_id": requester_session.timeline_id,
+                             "revision_id": data["accepted_revision_id"],
+                             "publication_id": result.receipt.receipt_id,
+                             "content_digest": parent["content_digest"]},
+                         "selector": selector, "output_name": output_name}},
+        idempotency_key=idempotency_key + ":render",
+    )
+    if not render.ok:
+        from astrid.sdk.workspace_client import WorkspaceClientError
 
-def _runtime_attempt(value: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise OrchestrationContractError("runtime_attempt is required")
-    required = ("attempt_id", "lease_id", "fence", "runtime_epoch")
-    missing = [key for key in required if key not in value]
-    if missing:
-        raise OrchestrationContractError(
-            f"runtime_attempt is missing required fence fields: {', '.join(missing)}"
-        )
-    result = {key: value[key] for key in required}
-    for key in ("attempt_id", "lease_id"):
-        _string(result[key], f"runtime_attempt.{key}")
-    for key in ("fence", "runtime_epoch"):
-        if isinstance(result[key], bool) or not isinstance(result[key], int) or result[key] < 1:
-            raise OrchestrationContractError(f"runtime_attempt.{key} must be a positive integer")
-    return result
+        error = render.error
+        raise WorkspaceClientError(0, error.code, error.message, dict(error.details))
+    return {**envelope, "render": render.as_dict(), "render_task_id": render.data["task_id"]}
 
 
 def _string(value: Any, field: str) -> str:

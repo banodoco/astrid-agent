@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import select
+import signal
 import subprocess
 import sys
 import time
@@ -395,6 +397,53 @@ def _live_members(members: dict[int, str]) -> list[int]:
     ]
 
 
+class _PidfdExitProof:
+    """Keep the bind-time kernel watch, never reconstruct it from fd metadata.
+
+    epoll keys membership by (fd number, open file description). MOD therefore
+    rejects a substituted pidfd even on kernels sharing one anonymous inode.
+    Final file release removes the watch before that file can be recycled.
+    The custody lock serializes capture, proof and close; this private epoll
+    instance must remain owned and its membership must never be extended.
+    """
+
+    def __init__(self, descriptor: int):
+        self._descriptor = descriptor
+        self._watch: Any = None
+        if sys.platform == "darwin":
+            return
+        try:
+            self._watch = select.epoll()
+            self._watch.register(descriptor, select.EPOLLIN)
+        except (OSError, ValueError, AttributeError):
+            self.close()  # Custody still retains the pidfd, without exit proof.
+
+    def exited(self, descriptor: int) -> bool:
+        if sys.platform == "darwin" or self._watch is None or descriptor != self._descriptor:
+            return False
+        try:
+            self._watch.modify(descriptor, select.EPOLLIN)
+            events = self._watch.poll(0)
+            if (len(events) != 1 or events[0][0] != descriptor
+                    or events[0][1] not in (select.EPOLLIN, select.EPOLLIN | select.EPOLLHUP)):
+                return False
+            self._watch.modify(descriptor, select.EPOLLIN)
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def close(self) -> None:
+        if self._watch is not None:
+            self._watch.close()
+            self._watch = None
+
+
+def _retained_incarnation_exited(process: subprocess.Popen, pid: int, birth: str) -> bool:
+    custody = getattr(process, "_astrid_custody", None)
+    proof = getattr(custody, "retained_incarnation_exited", None)
+    return bool(proof(pid, birth)) if callable(proof) else False
+
+
 def _group_members_owned(
     process: subprocess.Popen,
     known: dict[int, str],
@@ -454,13 +503,17 @@ def _tree_members(
     if root_birth is None:
         return {}
     root = snapshot.get(process.pid)
+    reaped_root_reused = False
     if root is not None and root.birth != root_birth:
-        return {}
+        if process.returncode is None:
+            return {}
+        reaped_root_reused = True
     known[process.pid] = root_birth
     children: dict[int, list[_ProcessInfo]] = {}
     for info in snapshot.values():
         children.setdefault(info.ppid, []).append(info)
-    pending = [process.pid, *known]
+    pending = [pid for pid in (process.pid, *known)
+               if not (reaped_root_reused and pid == process.pid)]
     while pending:
         parent = pending.pop()
         # A PID in ``known`` is only an identity, not a permanent process.
@@ -547,6 +600,15 @@ def _observe_tree(process: subprocess.Popen, *, deadline: float | None = None) -
     for pid, birth in tuple(known.items()):
         current = snapshot.get(pid)
         if current is not None and current.birth != birth:
+            # Popen.poll()/wait() positively reaps the original leader before
+            # the final descendant census.  Its numeric PID may then already
+            # belong to another incarnation; that replacement is not part of
+            # the owned tree.  Linux pidfds provide the same positive exit
+            # proof for observed descendants. Unreaped roots and descendants
+            # without an exact retained exit proof still fail closed below.
+            if ((pid == process.pid and process.returncode is not None)
+                    or _retained_incarnation_exited(process, pid, birth)):
+                continue
             raise CleanupUncertainError("owned process identity was reused")
         if current is None and any(
             info.ppid == pid and info.pid not in known for info in snapshot.values()
@@ -639,14 +701,17 @@ def _verify_tree_absent(process: subprocess.Popen, *, deadline: float | None = N
 # over a second, and a 1 s floor turned Ctrl+C into a CustodyError.
 _CLEANUP_FLOOR_SECONDS = 5.0
 
-def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
+def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0,
+                   cleanup_deadline: float | None = None) -> None:
     """Stop a birth/ancestry-fenced tree, descendants before the leader.
 
     Unlike group cleanup this never signals a containing/inherited group.
     Ownership is remembered during execution, not recovered by name/path after
     a parent exits. Success certifies observed identities absent.
     """
-    deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
+    deadline = cleanup_deadline
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
     try:
         _terminate_tree(process, grace_seconds=grace_seconds, cleanup_deadline=deadline)
     except BaseException as exc:
@@ -763,8 +828,12 @@ def _terminate_tree(process: subprocess.Popen, *, grace_seconds: float,
     while time.monotonic() < cleanup_deadline:
         process.poll()  # reap our direct child before its absence check
         live = observe_tree(process, **observation_options)
-        if not live:
+        if not live and process.poll() is not None:
             break
+        if process.pid not in live and process.poll() is None and isinstance(custody, ProcessCustody):
+            # A zombie leader task can still have live threads; use its retained capability.
+            custody.signal(process.pid, known[process.pid], platform.KILL,
+                           cleanup_deadline=cleanup_deadline)
         _signal_valid_tree_members(process, live, platform.KILL,
                                   strict=True, cleanup_deadline=cleanup_deadline)
         time.sleep(0.02)

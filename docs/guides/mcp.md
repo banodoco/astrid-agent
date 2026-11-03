@@ -10,7 +10,10 @@ python -m astrid.mcp_server
 Configure your MCP client to start that command as a stdio server. It exposes
 the product CLI commands generated from Astrid's argparse parsers, an `invoke`
 tool for admitting capability runs, and pack skills as MCP prompts. The skills
-are also available through the `skills_list` and `skill_get` tools.
+are also available through the `skills_list` and `skill_get` tools. Developer
+skills (`fast-iteration`, `releasing`) are served only when the server starts
+with `python -m astrid.mcp_server --developer`, matching
+`astrid skills sync --developer`.
 
 CLI subprocesses run in the directory where the MCP server was started, so
 relative paths refer to that directory. Arguments whose CLI parser type is

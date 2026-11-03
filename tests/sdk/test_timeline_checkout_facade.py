@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -29,7 +32,7 @@ PRE_SPLIT_MODULE_NAMES = ['BASE_KEYS', 'SHOT_BASE_PREFIX', 'DERIVED_PREFIX', 'ED
  '_stage_step', '_write_step', '_discard_half_written', '_read_step', '_redo_dir', '_journaled',
  'LOCK_WAIT_ENV', 'LOCK_WAIT_SECONDS', '_lock_wait', '_lock_holder', '_file_lock', '_acquire_lock',
  '_is_draft', '_history_dir', 'draft_path', 'resolve_ids', 'find_draft', 'current_draft', 'set_current_draft',
- 'fetch_bundle', '_units', 'three_way', 'publish_bundle', 'import_media', 'mo', 'intent', 'bundle_fps',
+ 'fetch_bundle', '_units', 'import_media', 'mo', 'intent', 'bundle_fps',
  'clip_duration', 'occurrences_from_bundle', 'picture_cuts']
 
 # W2: _music_seam is gone (the bed is cut film-wide by _cut_beds, keep_end); it was private, with no caller left.
@@ -107,6 +110,38 @@ def test_public_api_module_reexports_the_facade_objects():
     assert api.describe_changes is tc.describe_changes
 
 
+def test_public_checkout_and_session_imports_work_in_a_fresh_process():
+    from tests.helpers.runtime import runtime_checkout
+
+    repo = PACKAGE.parents[2]
+    runtime = runtime_checkout()
+    script = """
+import sys
+
+class BlockRendererImports:
+    def find_spec(self, fullname, *args):
+        if fullname.startswith(("node", "remotion", "composition", "astrid.packs.rendering",
+                                "astrid.core.rendering")):
+            raise AssertionError("renderer dependency imported: " + fullname)
+
+sys.meta_path.insert(0, BlockRendererImports())
+from astrid.sdk.timeline.api import Checkout
+from astrid.sdk.timeline.sync import TimelineSession
+
+assert Checkout.__module__ == "astrid.sdk.timeline.checkout"
+assert TimelineSession.__module__ == "astrid.sdk.timeline.sync"
+assert "astrid.core.rendering" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(repo), str(runtime)))},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_all_is_unchanged():
     assert "Checkout" in tc.__all__ and "TimelineEditError" in tc.__all__
     assert set(tc.__all__) == {"Checkout", "Clip", "Cut", "Word", "Voice", "TimelineEditError", "EDITABLE_NOTE",
@@ -119,6 +154,10 @@ def test_checkout_keeps_its_members_and_mixins():
     mro_names = [c.__name__ for c in Checkout.__mro__]
     for mixin in MIXINS:
         assert mixin in mro_names, mixin
+    from astrid.sdk.timeline.check import _CheckMixin
+
+    for name in ("check", "_check_core", "_check"):
+        assert getattr(Checkout, name) is getattr(_CheckMixin, name)
 
 
 @pytest.mark.parametrize("owner", sorted(JOURNALED))

@@ -14,7 +14,7 @@ import json
 import os
 import re
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from astrid.core.element.registry import (
@@ -122,7 +122,7 @@ def list_element_descriptors(
     return tuple(_element_descriptor(definition) for definition in definitions)
 
 
-def _element_descriptor(definition: Any) -> dict[str, Any]:
+def _element_descriptor(definition: Any, *, files=None) -> dict[str, Any]:
     metadata = definition.metadata
     pack_id = metadata.get("pack_id")
     if not isinstance(pack_id, str) or not pack_id:
@@ -150,10 +150,10 @@ def _element_descriptor(definition: Any) -> dict[str, Any]:
         # This is a checkout-relative module path, not an absolute filesystem
         # path. Editor hosts can resolve it through their configured Astrid
         # source alias without making machine-local paths part of the catalog.
-        "componentPath": _component_path(definition),
-        "revision": _element_revision(definition),
+        "componentPath": _component_path(definition) if files is None else definition.component.as_posix(),
+        "revision": _element_revision(definition, files=files),
         "runtime": _json_value(definition.runtime),
-        "renderability": _renderability(definition),
+        "renderability": _renderability(definition, files=files),
     }
 
 
@@ -239,7 +239,7 @@ def _humanize(value: str) -> str:
     return spaced.replace("_", " ").replace("-", " ").strip().title()
 
 
-def _element_revision(definition: Any) -> str:
+def _element_revision(definition: Any, *, files=None) -> str:
     """Return a stable revision for the definition and its executable source."""
 
     digest = hashlib.sha256()
@@ -256,33 +256,48 @@ def _element_revision(definition: Any) -> str:
     }
     digest.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     digest.update(b"\0")
-    if definition.component.is_file():
-        digest.update(definition.component.read_bytes())
-    helpers = set(definition.support_files)
-    helpers.update(
-        path.resolve()
-        for path in definition.root.rglob("*")
-        if path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}
-        and path.resolve() != definition.component
-    )
-    for path in sorted(helpers, key=lambda path: path.parts):
-        digest.update(Path(os.path.relpath(path, definition.root)).as_posix().encode("utf-8"))
+    if files is None:
+        component = definition.component.read_bytes() if definition.component.is_file() else None
+        helper_paths = set(definition.support_files)
+        helper_paths.update(
+            path.resolve()
+            for path in definition.root.rglob("*")
+            if path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}
+            and path.resolve() != definition.component
+        )
+        helpers = [(Path(os.path.relpath(path, definition.root)).as_posix(), path.read_bytes())
+                   for path in sorted(helper_paths, key=lambda path: path.parts)]
+        assets = {asset.name: (definition.root / asset.path).read_bytes()
+                  for asset in definition.assets if (definition.root / asset.path).is_file()}
+    else:
+        component = files.get(definition.component.as_posix())
+        helpers = [(path.relative_to(definition.root).as_posix(), value)
+                   for name, value in sorted(files.items(), key=lambda item: PurePosixPath(item[0]))
+                   if (path := PurePosixPath(name)).is_relative_to(definition.root)
+                   and path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}
+                   and path != definition.component]
+        assets = {asset.name: files[(definition.root / asset.path).as_posix()]
+                  for asset in definition.assets}
+    if component is not None:
+        digest.update(component)
+    for relative, value in helpers:
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(value)
         digest.update(b"\0")
     for asset in sorted(definition.assets, key=lambda item: item.name):
-        asset_path = (definition.root / asset.path).resolve()
         digest.update(asset.name.encode("utf-8"))
         digest.update(b"\0")
-        if asset_path.is_file():
-            digest.update(asset_path.read_bytes())
+        if asset.name in assets:
+            digest.update(assets[asset.name])
         digest.update(b"\0")
     return f"sha256:{digest.hexdigest()}"
 
 
-def _renderability(definition: Any) -> dict[str, str]:
+def _renderability(definition: Any, *, files=None) -> dict[str, str]:
     adapter = definition.runtime.get("adapter") if isinstance(definition.runtime, dict) else None
-    supported = adapter == "remotion" and definition.component.is_file()
+    supported = adapter == "remotion" and (definition.component.is_file() if files is None
+                                           else definition.component.as_posix() in files)
     status = "supported" if supported else "unknown"
     return {
         "preview": status,

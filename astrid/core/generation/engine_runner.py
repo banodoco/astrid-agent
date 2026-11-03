@@ -194,6 +194,28 @@ def validate_model_cache_root(model_cache_root, *, engine_root, platform, placem
     return cache_root
 
 
+
+def _disk_anchor(root):
+    """Open the deepest existing directory without following any symlink."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open('/', flags)
+    anchor = ''
+    try:
+        for name in root[1:].split('/'):
+            try:
+                child = os.open(name, flags, dir_fd=fd)
+            except FileNotFoundError:
+                break
+            os.close(fd)
+            fd = child
+            anchor += '/' + name
+        identity = os.fstat(fd)
+        usage = os.fstatvfs(fd)
+        return anchor or '/', identity.st_dev, identity.st_ino, usage.f_bavail * usage.f_frsize
+    finally:
+        os.close(fd)
+
+
 def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement) -> InstallPlan:
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")

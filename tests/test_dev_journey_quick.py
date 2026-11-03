@@ -11,7 +11,6 @@ from astrid.core.dev.journey import (
     _isolate_quick_pack_home,
     _keep_failure_logs,
 )
-from astrid.core.extensions.scopes import contribution_roots
 from astrid.core.pack.source_setup import source_data_root, source_state_path
 
 
@@ -28,10 +27,7 @@ def test_quick_pack_home_keeps_mutable_pack_paths_under_disposable_data(tmp_path
     packhome = root / "data" / "packhome"
     data_root = source_data_root()
     state_path = source_state_path()
-    user_root = next(
-        row.path for row in contribution_roots(cwd=tmp_path, home=tmp_path, env=env, installed=())
-        if row.scope == "user"
-    )
+    user_root = Path(env["ASTRID_USER_PACKS"])
 
     assert data_root == packhome / "data" / "astrid" / "packs"
     assert state_path == packhome / "state" / "astrid" / "pack-sources.json"

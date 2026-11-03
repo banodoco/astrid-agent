@@ -18,6 +18,7 @@ from typing import Any, ClassVar, Literal, NoReturn, TypeAlias
 
 from astrid.core.foundation.hash import canonical_json_digest, sha256_file
 
+from .verified_source import VerifiedTimelineSource, inherited_source, reject_source_keys
 
 SCHEMA_VERSION = 1
 
@@ -730,6 +731,7 @@ def _coerce_namespaced_backend_config(value: Any, label: str) -> BackendConfig:
     mapping = _require_mapping(value, label)
     result: BackendConfig = {}
     for raw_backend, raw_config in mapping.items():
+        reject_source_keys(_require_mapping(raw_config, label))
         backend = _require_qualified_id(raw_backend, f"{label} key")
         result[backend] = _json_safe_mapping(raw_config, label=f"{label}[{backend!r}]")
     return result
@@ -752,6 +754,8 @@ class RenderRequest:
     # they are never authority or durable media locators.
     materialized_root: str | None = None
     materialized_objects: dict[str, str] = field(default_factory=dict)
+    # Python-only authority. The public wire shape intentionally excludes it.
+    verified_source: VerifiedTimelineSource | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
@@ -794,6 +798,12 @@ class RenderRequest:
         if normalized_handoff and self.materialized_root is None:
             raise ValueError("materialized_root is required with materialized_objects")
         object.__setattr__(self, "materialized_objects", normalized_handoff)
+        source = inherited_source(self.timeline_path, self.assets_registry_path)
+        if self.verified_source is not None and (
+            type(self.verified_source) is not VerifiedTimelineSource or self.verified_source != source
+        ):
+            raise ValueError("verified timeline source cannot be caller replaced")
+        object.__setattr__(self, "verified_source", source)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_safe_mapping(

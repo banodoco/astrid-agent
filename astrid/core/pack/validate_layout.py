@@ -7,10 +7,10 @@ validation functions that PackValidator delegates to.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -192,15 +192,27 @@ def validate_pack_layout(
         and documentation.get("kind") == "skill"
         and documentation.get("path") == "docs/SKILL.md"
     )
+    resources = pack_data.get("resources")
+    declared_extras = {
+        resource.get("path")
+        for resource in resources
+        if isinstance(resource, dict)
+        and resource.get("kind") == "skill"
+        and isinstance(resource.get("path"), str)
+        and re.fullmatch(r"docs/[a-z0-9][a-z0-9-]*/SKILL\.md", resource["path"])
+    } if isinstance(resources, list) else set()
     for path in skill_paths:
-        if path != "docs/SKILL.md" or not declared_skill:
-            issues.append(
-                LayoutValidationIssue(
-                    path,
-                    "v3 packs allow one authored skill at docs/SKILL.md declared by pack.yaml; "
-                    "nested or legacy SKILL.md files are not separate metadata authorities",
-                )
+        if path == "docs/SKILL.md" and declared_skill:
+            continue
+        if path in declared_extras:
+            continue
+        issues.append(
+            LayoutValidationIssue(
+                path,
+                "v3 pack skills must be declared as documentation at docs/SKILL.md or "
+                "as a skill resource at docs/<name>/SKILL.md",
             )
+        )
     return issues
 
 

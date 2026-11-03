@@ -30,6 +30,9 @@ For help, see [Troubleshooting](setup/troubleshooting.md).
 Astrid Runtime runs on this computer and owns workspace projects, media,
 timelines, tasks, and run records.
 
+For which model-generation routes run locally, use a provider, or require a
+RunPod worker, see the [platform and execution matrix](reference/where-things-run.md).
+
 ## Run everything on your computer
 
 After the official install above, ask your agent to follow the
@@ -67,4 +70,6 @@ for the Astrid toolkit, capability packs, and Runtime integration. These are
 for building or contributing to Astrid; they are not user installation
 instructions. Start with [AGENTS.md](../AGENTS.md) for repository guidance,
 [creating packs](packs/creating-packs.md) for pack development, and the
-[architecture documentation](architecture/) for system design.
+[architecture documentation](architecture/) for system design. For a
+disposable source Runtime used during CLI development, see the
+[scratch Runtime recipe](development/journeys.md#scratch-runtime-for-cli-work).

@@ -27,7 +27,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import sqlite3
+import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -239,7 +243,13 @@ class _RecordingTimelines:
         )
         key = idempotency_key or "generated-key"
         return DomainResult.success(
-            {"timeline_id": "T-1", "status": "active", "changed": True},
+            {
+                "slug": ref,
+                "timeline_id": "T-1",
+                "archived": False,
+                "head_revision_id": "head-1",
+                "document_digest": "sha256:document",
+            },
             receipt=_receipt("timeline.recover", key),
             idempotency_key=key,
         )
@@ -394,6 +404,18 @@ class _FakeClient:
             manifest_path="/tmp/manifest.json",
             outputs={"artifacts": ["/tmp/manifest.json"]},
         )
+
+
+def _enable_visualize_revision_pin(client: _FakeClient) -> None:
+    def open_bundle(project, ref, **kwargs):
+        client.calls.append((
+            "timelines.open_bundle", {"project": project, "ref": ref, **kwargs},
+        ))
+        return DomainResult.success({
+            "bundle": {"base_parent": {"revision_id": "head-1"}},
+        })
+
+    client.timelines.open_bundle = open_bundle
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +652,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "import",
         "export",
         "checkout",
+        "commit",
         "edit",
         "assets",
         "find",
@@ -638,8 +661,9 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "redo",
         "check",
         "status",
-        "publish",
         "discard",
+        "pending",
+        "retry",
         "duplicate",
         "rename",
         "restructure",
@@ -651,6 +675,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "script",
         "elements",
         "update-element",
+        "place-element",
         "replace-parent-media",
         "archive",
         "recover",
@@ -670,6 +695,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "import",
         "export",
         "checkout",
+        "commit",
         "edit",
         "assets",
         "find",
@@ -678,8 +704,9 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "redo",
         "check",
         "status",
-        "publish",
         "discard",
+        "pending",
+        "retry",
         "duplicate",
         "rename",
         "restructure",
@@ -691,6 +718,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
         "script",
         "elements",
         "update-element",
+        "place-element",
         "replace-parent-media",
         "archive",
         "recover",
@@ -905,7 +933,8 @@ def test_timelines_visualize_help_describes_filmstrip_navigation(
     assert "raw frames (frames/, frame-index.json) to DIR" in normalized
     assert "--include-media" in normalized
     assert "timeline_editing" in normalized
-    assert "checkout" in normalized
+    # c8fb6a027 retired the "document-checkout recipe" wording; the edit pointer is now `timelines edit`.
+    assert "`timelines edit`" in normalized
 
 
 @pytest.mark.parametrize(
@@ -1127,7 +1156,7 @@ def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() ->
     assert "--project astrid-intro" in shown["commands"]["visualize"]
     assert "--timeline-slug main-final" in shown["commands"]["visualize"]
     assert "--revision-id rev-42" in shown["commands"]["visualize"]
-    assert shown["editing"]["workflow"] == ["checkout", "edit", "check", "publish"]
+    assert shown["editing"]["workflow"] == ["checkout", "edit", "check", "commit"]
     assert shown["editing"]["checkout_revision"].startswith("current Runtime head")
     assert Path(shown["editing"]["guide"]).is_file()
     assert Path(shown["editing"]["script"]).is_file()
@@ -1175,6 +1204,265 @@ def test_visualization_human_navigation_footer_is_compact(capsys) -> None:
     assert "exact frame:" not in output
 
 
+@pytest.fixture
+def guidance_source(tmp_path):
+    """Own one trusted-seeded Runtime and use its public exact-pair reader."""
+    import copy
+
+    from tests.helpers.runtime import use_runtime
+
+    use_runtime()
+    from runtime_protocol.service import RuntimeService
+    from runtime_protocol.store import RealmStore
+    from runtime_protocol.timeline_commit_provider import load_timeline_commit_provider
+
+    from astrid.sdk.workspace_client import WorkspaceClient
+    from tests.helpers.trusted_seed import seed_trusted_parent
+    from tests.sdk.test_timeline_restructure import flat_film
+
+    root = tmp_path / "saved-source"
+    RealmStore.initialize(root).close()
+    service = RuntimeService(root)
+    try:
+        project = service.create_project({"slug": "saved", "name": "Saved source"})["id"]
+        service.create_timeline(project, "t", idempotency_key="source")
+        source = flat_film()
+
+        # Reuse the saved-film fixture's trusted setup; this is not edit evidence.
+        def ingest(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "media_id" and isinstance(item, str):
+                        value[key] = service.ingest(
+                            project, item.encode(), original_name=item + ".bin",
+                            media_type="application/octet-stream", idempotency_key="media-" + item,
+                        )["data"]["object_id"]
+                    else:
+                        ingest(item)
+            elif isinstance(value, list):
+                for item in value:
+                    ingest(item)
+
+        ingest(source)
+        shots, internals = [], []
+        for sid, shot in source["shots"].items():
+            internal_id = "internal-" + sid
+            internals.append({"timeline_id": "t", "revision_id": internal_id, "payload": shot["internal_timeline"]})
+            shots.append({"shot_id": sid, "revision_id": "shot-" + sid,
+                          "internal_timeline_revision_id": internal_id, "payload": shot["payload"]})
+        parent = source["parent"]
+        parent["occurrences"] = [{**row, "shot_revision_id": "shot-" + row["shot_id"]} for row in source["placements"]]
+        seed_trusted_parent(service, {
+            "project_id": project, "timeline_id": "t", "parent_revision_id": "saved-parent",
+            "parent_composition": parent, "shot_revisions": shots, "internal_timeline_revisions": internals,
+        }, idempotency_key="saved-source")
+        service.register_timeline_commit_provider(load_timeline_commit_provider("astrid"))
+
+        bodies = []
+
+        def send(p, t, body, *, idempotency_key):
+            assert p == project and t == "t"
+            bodies.append(copy.deepcopy(body))
+            return service.commit_timeline(
+                p, t, body, idempotency_key=idempotency_key, publisher="editor",
+                invocation_path=f"/v1/projects/{p}/timelines/{t}/commit", authorize=lambda: None,
+            )
+
+        generated = SimpleNamespace(
+            commit_timeline=send,
+            list_timeline_commits=lambda p, t, cursor=None, limit=200: service.list_timeline_commits(
+                p, t, cursor=cursor, limit=limit, authorize=lambda: None),
+            get_project_parent_composition_revision=service.get_project_parent_composition_revision,
+            get_project_shot_revision=service.get_project_shot_revision,
+            get_project_timeline_revision=service.get_project_timeline_revision,
+        )
+        transport = WorkspaceClient.__new__(WorkspaceClient)
+        transport._generated = generated
+        transport._last_handshake = {"realm_id": service.realm["id"], "actor_id": "editor"}
+        client = SimpleNamespace(_remote=SimpleNamespace(_transport=transport), timelines=RemoteTimelines(transport))
+        client.timelines._resolve_timeline = lambda p, t: DomainResult.success({"project_id": project, "timeline_id": "t"})
+
+        def inspection(p, t, **kwargs):
+            head = service.get_project_timeline(project, "t")["head_revision_id"]
+            return DomainResult.success({
+                "native_inspection": {"project_id": project, "timeline_id": "t", "head_revision_id": head},
+                "summary": {"head_revision_id": head},
+            })
+
+        client.timelines.open_composition = inspection
+
+        def document(timeline):
+            history = client.timelines.history(project, timeline, limit=100)
+            assert history.ok, history.error
+            opened = client.timelines.open_bundle(project, timeline, **history.data["head"])
+            assert opened.ok, opened.error
+            return opened.data["bundle"]["source_mapping"]["_runtime_document"]
+
+        yield client, project, document, bodies, service
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("damage", [
+    "wrong_publication", "wrong_pair", "receipt_pair", "parent_digest", "shot_digest",
+    "internal_digest", "canonical_document", "media_manifest", "dependency_manifest",
+])
+def test_timeline_guidance_reader_rejects_wrong_authority_without_writes(
+    guidance_source, damage,
+) -> None:
+    import copy
+
+    from astrid.sdk.timeline.commit import _digest
+
+    client, project, document, bodies, service = guidance_source
+    before = document("t")
+    history = client.timelines.history(project, "t", limit=100).data
+    rows = tuple(service.store.conn.iterdump())
+    pin = dict(history["head"])
+    generated = client._remote._transport._generated
+    with pytest.MonkeyPatch.context() as patcher:
+        if damage == "wrong_publication":
+            pin["publication_id"] = "unavailable-publication"
+        elif damage == "wrong_pair":
+            pin["publication_id"] = next(row["publication_id"] for row in history["items"]
+                                         if row["revision_id"] != pin["revision_id"])
+        elif damage in {"receipt_pair", "canonical_document", "media_manifest", "dependency_manifest"}:
+            read_history = generated.list_timeline_commits
+
+            def damaged_history(*args, **kwargs):
+                page = copy.deepcopy(read_history(*args, **kwargs))
+                entry = next(row for row in page["items"] if row["publication_id"] == pin["publication_id"])
+                if damage == "receipt_pair":
+                    entry["receipt"]["receipt_id"] = "wrong-receipt"
+                else:
+                    canonical = entry["receipt"]["result"]["canonical_document"]
+                    if damage == "canonical_document":
+                        canonical["parent_revision"]["payload"]["config"]["wrong"] = True
+                        canonical["parent_revision"]["content_digest"] = _digest(canonical["parent_revision"]["payload"])
+                    elif damage == "media_manifest":
+                        assert canonical["dependency_manifest"]["media"]
+                        canonical["dependency_manifest"]["media"] = []
+                    else:
+                        canonical["dependency_manifest"]["internal_timelines"] = []
+                return page
+
+            patcher.setattr(generated, "list_timeline_commits", damaged_history)
+        else:
+            name = {"parent_digest": "get_project_parent_composition_revision",
+                    "shot_digest": "get_project_shot_revision",
+                    "internal_digest": "get_project_timeline_revision"}[damage]
+            read_revision = getattr(generated, name)
+
+            def damaged_revision(*args, **kwargs):
+                row = copy.deepcopy(read_revision(*args, **kwargs))
+                row["content_digest"] = "sha256:" + "0" * 64
+                return row
+
+            patcher.setattr(generated, name, damaged_revision)
+
+        refused = client.timelines.open_bundle(project, "t", **pin)
+        assert not refused.ok
+        assert refused.error.code == "protocol_error"
+        assert bodies == []
+        assert tuple(service.store.conn.iterdump()) == rows
+    assert client.timelines.history(project, "t", limit=100).data == history
+    assert document("t") == before
+
+
+@pytest.mark.parametrize("mode", ["checkout", "file", "draft"])
+def test_timeline_editing_guidance_consumes_its_json(
+    guidance_source, tmp_path, monkeypatch, capsys, mode,
+) -> None:
+    from contextlib import nullcontext
+
+    from astrid.packs.rendering.docs.scripts import timeline_document as helper
+    from astrid.packs.timeline import cli
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline_checkout import Checkout
+    client, project, document, bodies, _ = guidance_source
+    original = document("t")
+    original_head = client.timelines.history(project, "t", limit=100).data["head"]
+    path = tmp_path / "draft 'with spaces'.json"
+    project_ref, timeline_ref = "project 'with spaces'", "timeline with spaces"
+    client.projects = SimpleNamespace(show=lambda ref: DomainResult.success({"project_id": project}))
+    transport = client._remote._transport
+    monkeypatch.setattr(helper.AstridClient, "open_from_launcher", lambda **kw: nullcontext(client))
+    monkeypatch.setattr(helper, "workspace", lambda: transport)
+
+    def run(command):
+        argv = shlex.split(command)
+        assert argv[:2] == ["python3", "-m"]
+        if argv[2:4] == ["astrid", "timelines"]:
+            parsed = cli.build_parser(client).parse_args([*argv[4:], "--json"])
+            assert parsed.handler(parsed) == 0
+        else:
+            assert argv[2] == "astrid.packs.rendering.docs.scripts.timeline_document"
+            monkeypatch.setattr(sys, "argv", argv[2:])
+            helper.main()
+        return json.loads(capsys.readouterr().out)
+
+    if mode == "checkout":
+        navigation = cli._editing_navigation(project=project_ref, timeline=timeline_ref, file_path=str(path))
+        argv = shlex.split(navigation["commands"]["checkout"])
+        assert argv[argv.index("--project") + 1] == project_ref
+        assert argv[argv.index("--timeline") + 1] == timeline_ref
+        run(navigation["commands"]["checkout"])
+        candidate = json.loads(path.read_text())
+        candidate["parent"]["config"]["opaque_guidance"] = [None, False, "kept"]
+        shot = next(iter(candidate["shots"].values()))
+        shot["payload"]["name"] = "Edited shot"
+        next(row for row in shot["internal_timeline"]["clips"] if row["id"] == "inside")["params"]["x"] = 90
+        path.write_text(json.dumps(candidate))
+        commands = navigation["commands"]
+    else:
+        checkout = Checkout(bundle_from_document(original))
+        checkout.bundle["base_parent"]["publication_id"] = original_head["publication_id"]
+        checkout.save(path, quiet=True)
+        monkeypatch.setattr(cli, "_edit_checkout", lambda parsed: Checkout.load(path))
+        monkeypatch.setattr("astrid.packs.timeline.cli_sweep.auto_sweep_after_edit", lambda *a, **kw: 0)
+        args = (["--file", str(path)] if mode == "file" else [timeline_ref, "--project", project_ref])
+        # --set uses canvas pixels; am-sprite stores x on its six-pixel grid.
+        # Match the checkout branch's stored x=90 with 540 canvas pixels.
+        parsed = cli.build_parser(None).parse_args(["edit", *args, "--clip", "inside", "--set", "x=540"])
+        assert parsed.handler(parsed) == 0
+        output = capsys.readouterr().out
+        lines = output.splitlines()
+        prepare = next(line.split(": ", 2)[2] for line in lines if line.startswith("next: export"))
+        prepared = shlex.split(prepare)
+        assert prepared[-2:] == [str(path), str(path) + ".commit.json"]
+        subprocess.run([sys.executable, *prepared[1:]], check=True)
+        commands = {
+            "check": next(line[6:] for line in lines if line.startswith("next: python3 -m astrid.packs.rendering")),
+            "commit": next(line[6:] for line in lines if line.startswith("next: python3 -m astrid timelines commit ")),
+        }
+        if mode == "draft":
+            shown = shlex.split(next(line[6:].removesuffix(" (your change)") for line in lines if line.startswith("next: python3 -m astrid timelines show")))
+            assert shown[5] == timeline_ref and shown[7] == project_ref
+
+    checked = run(commands["check"])
+    assert checked["validation"]["valid"]
+    committed = run(commands["commit"])
+    result = committed
+    assert result["data"]["status"] == "accepted" and result["receipt"]
+    body = bodies[-1]
+    head = client.timelines.history(project, "t", limit=100).data
+    assert body["base_revision_id"] == original["parent_revision"]["revision_id"]
+    assert body["base_publication_id"] == original_head["publication_id"]
+    assert body["merge"] == "atomic" and body["label"] == "Timeline edit"
+    assert body["steps"][0]["command_ordinals"] == [0]
+    assert body["steps"][0]["patch"] == body["commands"][0]["args"]["changes"]
+    assert body["commands"][0]["op"] == "doc.patch"
+    landed = document("t")
+    inside = next(row for row in landed["internal_timeline_revisions"][0]["payload"]["clips"] if row["id"] == "inside")
+    assert inside["params"]["x"] == 90
+    if mode == "checkout":
+        assert landed["parent_revision"]["payload"]["config"]["opaque_guidance"] == [None, False, "kept"]
+        assert landed["shot_revisions"][0]["payload"]["name"] == "Edited shot"
+    assert run(commands["commit"]) == result
+    assert client.timelines.history(project, "t", limit=100).data == head
+    assert document("t") == landed
+
+
 @pytest.mark.integration
 def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, tmp_path) -> None:
     """Exercise actual Runtime closure -> SDK projection -> human CLI output."""
@@ -1183,6 +1471,8 @@ def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, t
     try:
         from runtime_protocol.service import RuntimeService
         from runtime_protocol.store import RealmStore
+
+        from tests.helpers.trusted_seed import seed_trusted_parent
 
         root = tmp_path / "runtime-realm"
         RealmStore.initialize(root, display_name="Timeline inspection fixture").close()
@@ -1281,10 +1571,11 @@ def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, t
                     ]},
                 }
 
-            service.publish_parent_composition(
-                project_id, "main", publication("parent-before", None,
-                                                  room_internal="internal-room-before",
-                                                  room_shot="shot-room-r1", room_moving=True),
+            seed_trusted_parent(
+                service,
+                publication("parent-before", None,
+                            room_internal="internal-room-before",
+                            room_shot="shot-room-r1", room_moving=True),
                 idempotency_key="publish-before",
             )
 
@@ -1312,10 +1603,11 @@ def test_timelines_show_reads_runtime_motion_and_scoped_friendly_media(capsys, t
             assert '"source_object_id":"' + room["object_id"] + '"' in before
             assert "width 1920 → 4243" in before and "width 1920 → 3840" in before
 
-            service.publish_parent_composition(
-                project_id, "main", publication("parent-after", "parent-before",
-                                                  room_internal="internal-room-after",
-                                                  room_shot="shot-room-r2", room_moving=False),
+            seed_trusted_parent(
+                service,
+                publication("parent-after", "parent-before",
+                            room_internal="internal-room-after",
+                            room_shot="shot-room-r2", room_moving=False),
                 idempotency_key="publish-after",
             )
             after = show("parent-after")
@@ -1759,7 +2051,11 @@ def test_timelines_list_and_recover_are_one_sdk_call(capsys) -> None:
             {"project": "demo", "ref": "main", "idempotency_key": None},
         )
     ]
-    assert json.loads(capsys.readouterr().out)["data"]["status"] == "active"
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["ok"] is True
+    assert envelope["data"]["archived"] is False
+    assert envelope["data"]["head_revision_id"] == "head-1"
+    assert envelope["data"]["document_digest"] == "sha256:document"
 
 
 def test_timelines_history_is_one_sdk_call(capsys) -> None:
@@ -1797,6 +2093,7 @@ def test_timelines_diff_is_one_sdk_call(capsys) -> None:
 
 def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) -> None:
     client = _FakeClient()
+    _enable_visualize_revision_pin(client)
     rc = _run(
         "timelines",
         [
@@ -1810,8 +2107,11 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
         client=client,
     )
     assert rc == 0
-    assert len(client.calls) == 1
-    verb, kwargs = client.calls[0]
+    assert client.calls[0] == (
+        "timelines.open_bundle", {"project": "demo", "ref": "01TIMELINE"},
+    )
+    assert len(client.calls) == 2
+    verb, kwargs = client.calls[1]
     assert verb == "invoke_result"
     assert kwargs["capability_id"] == "rendering.timeline_visualize"
     assert kwargs["kind"] == "executor"
@@ -1823,6 +2123,7 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
         "timeline_slug": "01TIMELINE",
         "view": "contact",
         "resolution": "480x270",
+        "revision_id": "head-1",
     }
     envelope = json.loads(capsys.readouterr().out)
     assert set(envelope) == ENVELOPE_KEYS
@@ -2264,13 +2565,123 @@ def test_dispatch_timelines_shots_routes_through_product_dispatch(
     assert seen["args"] == ["timelines", "shots", "list", "--project", "demo"]
 
 
-def test_projects_list_default_matches_explicit_json(capsys) -> None:
+def test_projects_list_default_is_readable_and_json_remains_available(capsys) -> None:
     client = _FakeClient()
     assert _run("projects", ["list"], client=client) == 0
     default = capsys.readouterr().out
+    assert "Demo" in default and "demo" in default
     assert _run("projects", ["list", "--json"], client=client) == 0
-    assert default == capsys.readouterr().out
-    assert json.loads(default)["ok"] is True
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_projects_create_selects_only_when_requested_and_prints_next_step(capsys) -> None:
+    client = _FakeClient()
+    assert _run("projects", ["create", "demo", "--name", "Demo", "--select"], client=client) == 0
+    assert [name for name, _ in client.calls] == ["projects.create", "projects.select"]
+    output = capsys.readouterr().out
+    assert "Created project Demo (demo)" in output and "selected: yes" in output
+
+
+def test_first_run_timeline_journey_uses_selection_recent_history_and_project_list(real_runtime, tmp_path, capsys) -> None:
+    from astrid.sdk.client import AstridClient
+    from astrid.sdk.timeline import Timeline
+
+    daemon = real_runtime(authoring_profile="astrid")
+    with AstridClient.open(
+        endpoint=daemon.endpoint,
+        credential=daemon.credential_path,
+        realm_id=daemon.service.realm["id"],
+        actor_id="owner",
+        client_name="timeline-first-run-test",
+        client_version="1",
+        protocol_version="workspace.v1",
+    ) as client:
+        assert _run("projects", ["create", "first-run", "--name", "First Run", "--select", "--json"], client=client) == 0
+        assert json.loads(capsys.readouterr().out)["ok"] is True
+        assert _run("timelines", ["create", "--name", "Yesterday Cut", "--json"], client=client) == 0
+        created = json.loads(capsys.readouterr().out)
+        assert created["ok"] is True
+
+        clips = []
+        for index, color in enumerate(("red", "green", "blue"), 1):
+            clip = tmp_path / f"clip-{index}.png"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:s=16x16:r=1",
+                 "-frames:v", "1", "-threads", "1", str(clip)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            clips.append(clip)
+        timeline_id = created["data"]["timeline_id"]
+        timeline = Timeline.open("first-run", timeline_id, client=client, outbox_path=tmp_path / "timeline.json")
+        landed = timeline.commit(
+            lambda t: [t.add(clip, at=(index - 1) * 4, hold=4, track="V1", id="intro" if index == 1 else f"clip-{index}")
+                       for index, clip in enumerate(clips, 1)],
+            label="Add source clips",
+            key="first-run-add-clips",
+        )
+        assert landed["status"] in {"accepted", "merged"}
+
+        # Model an edit that happened yesterday without relying on wall-clock timing.
+        # The history timestamp drives recency; the Runtime updated_at contract stays untouched.
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        with sqlite3.connect(daemon.root / "realm.sqlite3") as connection:
+            connection.execute(
+                "UPDATE parent_composition_revisions SET created_at = ? "
+                "WHERE id = (SELECT revision_id FROM parent_composition_heads WHERE timeline_id = ?)",
+                (yesterday, timeline_id),
+            )
+            connection.execute(
+                "UPDATE command_idempotency SET created_at = ? WHERE idempotency_key = ?",
+                (yesterday, "first-run-add-clips"),
+            )
+
+        assert _run("timelines", ["list", "--recent", "--json"], client=client) == 0
+        recent = json.loads(capsys.readouterr().out)["data"]
+        assert recent[0]["timeline_id"] == timeline_id
+        assert recent[0]["project"] == "first-run"
+        assert recent[0]["created_at"] == yesterday
+        assert _run("timelines", ["history", timeline_id, "--limit", "1", "--json"], client=client) == 0
+        assert json.loads(capsys.readouterr().out)["ok"] is True
+        tightened = timeline.commit(lambda t: t.clip("intro").hold_for(2), label="Tighten intro", key="first-run-tighten-intro")
+        assert tightened["status"] in {"accepted", "merged"}
+        assert _run("projects", ["list"], client=client) == 0
+        project_listing = capsys.readouterr().out
+        assert "* First Run  first-run  1" in project_listing
+
+
+def test_timelines_show_footer_omits_retired_effect_and_checkout_routes(monkeypatch, capsys) -> None:
+    from astrid.packs.timeline import cli, cli_show
+
+    monkeypatch.setattr(cli_show, "print_cut_table", lambda *_args: (print("cuts"), 0)[1])
+    parsed = SimpleNamespace(json=False)
+    assert cli._print_cut_table(parsed, None) == 0
+    output = capsys.readouterr().out
+    assert output == "cuts\n"
+    assert "astrid-tools" not in output and "timeline_document" not in output
+
+
+def test_timelines_show_heading_uses_implicit_project_slug(monkeypatch, capsys) -> None:
+    from astrid.packs.timeline import cli, cli_show
+    from tests.sdk.test_timeline_reflow_golden import film
+
+    bundle = film()
+    opened = DomainResult.success({
+        "bundle": bundle,
+        "project_id": "project-id",
+        "project_slug": "demo-project",
+        "timeline_id": "timeline-id",
+        "revision_id": "revision-id",
+        "head_revision_id": "revision-id",
+    })
+    monkeypatch.setattr(cli_show, "_readback_error", lambda *_args: None)
+    monkeypatch.setattr(cli_show, "_loaded_revision", lambda _data: "revision-id")
+    parsed = cli.build_parser(object()).parse_args(["show", "timeline-id"])
+    parsed.project = None
+
+    assert cli_show.print_cut_table(parsed, lambda *_args, **_kwargs: opened) == 0
+    output = capsys.readouterr().out
+    assert "Timeline timeline-id · project demo-project · current head" in output
+    assert "project project-id" not in output
 
 
 def test_timelines_render_review_is_public_admitted_input(capsys):
@@ -2281,18 +2692,22 @@ def test_timelines_render_review_is_public_admitted_input(capsys):
 
 def test_timelines_visualize_forwards_filmstrip_options(capsys) -> None:
     client = _FakeClient()
+    _enable_visualize_revision_pin(client)
     rc = _run('timelines', [
         'visualize', '--project', 'demo', 'main', '--view', 'filmstrip',
         '--sample', 'cuts', '--render-run', '01EXACT', '--every-frames', '12',
         '--columns', '4', '--page-size', '40', '--range', '10..20', '--json',
     ], client=client)
     assert rc == 0
-    assert len(client.calls) == 1
-    assert client.calls[0][1]["wait"] is True
-    assert client.calls[0][1]['inputs'] == {
+    assert client.calls[0] == (
+        "timelines.open_bundle", {"project": "demo", "ref": "main"},
+    )
+    assert len(client.calls) == 2
+    assert client.calls[1][1]["wait"] is True
+    assert client.calls[1][1]['inputs'] == {
         'formats': ['png', 'md'], 'timeline_slug': 'main', 'view': 'filmstrip',
         'sample': 'cuts', 'render_run': '01EXACT', 'every_frames': 12,
-        'columns': 4, 'page_size': 40, 'range': '10..20',
+        'columns': 4, 'page_size': 40, 'range': '10..20', 'revision_id': 'head-1',
     }
     capsys.readouterr()
 
@@ -2343,3 +2758,15 @@ def test_timelines_transfer_runtime_conflict_is_a_clean_failure_envelope(
     assert error["code"] == "conflict"
     assert error["message"] == "timeline slug already exists"
     assert "Traceback" not in captured.err
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_projects_list_default_matches_explicit_json(capsys) -> None:
+    client = _FakeClient()
+    assert _run("projects", ["list"], client=client) == 0
+    default = capsys.readouterr().out
+    assert "Demo" in default and "demo" in default
+    assert _run("projects", ["list", "--json"], client=client) == 0
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["ok"] is True
+    assert envelope["data"] == [{"slug": "demo", "name": "Demo"}]

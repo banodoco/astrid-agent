@@ -182,7 +182,7 @@ def candidate_preview_snapshot(
             if isinstance(payload.get("text_bindings"), list) else [],
         })
     marker = {
-        "label": "Unpublished candidate preview",
+        "label": str(preview.get("label") or "Unpublished candidate preview"),
         "base_parent": copy.deepcopy(dict(base_head)),
         "candidate_digest": compilation.candidate_digest,
         "publication_digest": preview["publication_digest"],

@@ -243,7 +243,7 @@ class _SkipGuard:
             else:
                 self.unmarked += 1
 
-    def _judge(self, report, where: str) -> None:
+    def _judge(self, report, where: str, item=None) -> None:
         if hasattr(report, "wasxfail"):
             del report.wasxfail  # pytest does not count a failed report that still carries it
             report.outcome = "failed"
@@ -263,17 +263,26 @@ class _SkipGuard:
             )
             return
         name = match.group(1)
+        if item is not None and name not in _lane_names(item):
+            report.outcome = "failed"
+            report.longrepr = f"{where}: copied declared reason for unregistered lane node {name}; mark the test with @{name}."
+            return
+        declared_reason = re.sub(r"^Skipped:\s*", "", reason.replace(match.group(0), "")).strip()
+        if declared_reason != lane.reason:
+            report.outcome = "failed"
+            report.longrepr = f"{where}: declared {name} skip has copied or altered reason {declared_reason!r}; expected {lane.reason!r}."
+            return
         if lane.requires_dependency and (lane.default_off or current_job() in lane.jobs):
             report.outcome = "failed"
             where_lane = "this run selected the lane" if lane.default_off else f"the {current_job()} job provides it"
             report.longrepr = f"{where}: the {name} lane's dependency is missing but {where_lane}: {lane.reason}. A missing dependency here is a failure, not a skip."
             return
-        self.declared.append((where, name, re.sub(r"^Skipped:\s*", "", reason.replace(match.group(0), "")).strip()))
+        self.declared.append((where, name, declared_reason))
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_makereport(self, item, call):
         outcome = yield
-        self._judge(outcome.get_result(), item.nodeid)
+        self._judge(outcome.get_result(), item.nodeid, item)
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_make_collect_report(self, collector):

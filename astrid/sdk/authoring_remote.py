@@ -15,8 +15,8 @@ task-bound authoring capability.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from astrid.core.timeline.authoring_bundle import (
@@ -29,8 +29,8 @@ from astrid.core.timeline.authoring_bundle import (
     validate_authoring_candidate,
 )
 
-from .workspace_client import WorkspaceClientError, validate_runtime_endpoint
 from .pagination import paged_rows
+from .workspace_client import WorkspaceClientError, validate_runtime_endpoint
 
 __all__ = ["AuthoringRemoteError", "TargetBoundAuthoringBundle"]
 
@@ -294,21 +294,9 @@ class TargetBoundAuthoringBundle:
             if isinstance(observed, str) and observed.removeprefix("sha256:") != media_id.removeprefix("sha256:"):
                 raise AuthoringRemoteError(f"destination-owned media digest differs for {media_id}")
 
-        class _Writer:
-            def __init__(self, owner: WorkspaceClient):
-                self.owner = owner
-                self.result: Any = None
-
-            def publish_parent_composition(self, project_id, timeline_id, publication, *, idempotency_key):
-                self.result = self.owner.publish_parent_composition(
-                    project_id, timeline_id, publication, idempotency_key=idempotency_key
-                )
-                return _data(self.result, "publish_parent_composition")
-
-        writer = _Writer(self._client)
         try:
             result = publish_authoring_candidate(
-                candidate, writer, idempotency_key=transport_idempotency_key
+                candidate, self._client, idempotency_key=transport_idempotency_key
             )
         except (AuthoringBundleError, WorkspaceClientError) as exc:
             raise AuthoringRemoteError(f"authoring candidate publication failed: {exc}") from exc

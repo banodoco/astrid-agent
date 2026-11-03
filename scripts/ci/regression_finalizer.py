@@ -190,6 +190,11 @@ def read_complete_status(path, sealed_input):
 
 
 def main(argv=None):
+    # The published handoff lacks a sealed coordinator invocation.  Preserve
+    # the unconditional red aggregate path without executing producer work.
+    raw = list(__import__('sys').argv[1:] if argv is None else argv)
+    if '--sealed-input' not in raw and not any(arg.startswith('--sealed-input=') for arg in raw):
+        return aggregate.main(raw)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sealed-input", required=True)
     parser.add_argument("--invocation-dir", required=True)

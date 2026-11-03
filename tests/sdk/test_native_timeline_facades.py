@@ -4,6 +4,9 @@ import pytest
 
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.remote import RemoteTimelines
+from astrid.sdk.workspace_client import WorkspaceClientError
+
+pytest_plugins = ("tests.sdk.test_scene_save_core",)
 
 
 class _NativeTransport:
@@ -35,8 +38,8 @@ class _NativeTransport:
             }],
         }
 
-    def create_timeline_view(self, project, timeline, *, options):
-        self.view_calls.append((project, timeline, options))
+    def create_timeline_view(self, project, timeline, *, options, idempotency_key):
+        self.view_calls.append((project, timeline, options, idempotency_key))
         return {
             "inspection": {"revision_id": "rev-7", "snapshot_digest": "sha256:snapshot", "selectors": options},
             "evidence_kind": "declared_inputs",
@@ -56,6 +59,34 @@ class _SelectedNativeTransport(_NativeTransport):
             "project_id": "project-1",
             "slug": "demo",
             "metadata": {"default_timeline_id": "main"},
+        }
+
+
+class _CatalogTransport(_SelectedNativeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recover_calls = []
+        self.catalog_version = 7
+
+    def list_timelines(self, project, *, cursor=None, limit=50):
+        assert project == "project-1"
+        return [[{
+            "timeline_id": "tl-1",
+            "slug": "main",
+            "version": self.catalog_version,
+            "archived": True,
+            "head_revision_id": "head-7",
+            "document_digest": "sha256:document",
+        }], None]
+
+    def recover_timeline(self, timeline_id, *, expected_version, version, idempotency_key):
+        self.recover_calls.append((timeline_id, expected_version, version, idempotency_key))
+        return {
+            "timeline_id": timeline_id,
+            "archived": False,
+            "version": 8,
+            "head_revision_id": "head-7",
+            "document_digest": "sha256:document",
         }
 
 
@@ -93,6 +124,103 @@ def test_remote_default_timeline_must_belong_to_selected_project() -> None:
     }
 
 
+def test_catalog_recover_without_version_unarchives_current_entry_preserving_film() -> None:
+    transport = _CatalogTransport()
+    result = RemoteTimelines(transport).recover(
+        "project-1", "main", idempotency_key="catalog-recover"
+    )
+
+    assert result.ok
+    assert transport.recover_calls == [("tl-1", 7, 7, "catalog-recover")]
+    assert result.data == {
+        "timeline_id": "tl-1",
+        "archived": False,
+        "version": 8,
+        "head_revision_id": "head-7",
+        "document_digest": "sha256:document",
+    }
+
+    replay = RemoteTimelines(transport).recover(
+        "project-1", "main", version=7, idempotency_key="catalog-recover"
+    )
+    assert replay.ok
+    assert replay.data == result.data
+    assert transport.recover_calls[-1] == ("tl-1", 7, 7, "catalog-recover")
+
+
+def test_catalog_recover_current_version_unarchives_current_entry() -> None:
+    transport = _CatalogTransport()
+    result = RemoteTimelines(transport).recover(
+        "project-1", "main", version=7, idempotency_key="catalog-current"
+    )
+
+    assert result.ok
+    assert transport.recover_calls == [("tl-1", 7, 7, "catalog-current")]
+    assert result.data["archived"] is False
+    assert result.data["head_revision_id"] == "head-7"
+    assert result.data["document_digest"] == "sha256:document"
+
+
+def test_catalog_recover_exact_retry_forwards_original_version_after_catalog_advance() -> None:
+    transport = _CatalogTransport()
+    first = RemoteTimelines(transport).recover(
+        "project-1", "main", expected_version=7, version=7,
+        idempotency_key="catalog-recover-retry",
+    )
+    transport.catalog_version = 8
+
+    replay = RemoteTimelines(transport).recover(
+        "project-1", "main", expected_version=7, version=7,
+        idempotency_key="catalog-recover-retry",
+    )
+
+    assert first.ok and replay.ok
+    assert replay.data == first.data
+    assert transport.recover_calls == [
+        ("tl-1", 7, 7, "catalog-recover-retry"),
+        ("tl-1", 7, 7, "catalog-recover-retry"),
+    ]
+
+
+def test_legacy_timeline_recover_refuses_non_current_from_runtime_without_writes() -> None:
+    # Forward fresh historical requests too: Runtime's ledger must distinguish
+    # them from an exact accepted replay before refusing without film writes.
+    class RuntimeRefusesHistorical(_CatalogTransport):
+        def recover_timeline(self, timeline_id, *, expected_version, version, idempotency_key):
+            self.recover_calls.append((timeline_id, expected_version, version, idempotency_key))
+            raise WorkspaceClientError(
+                410,
+                "retired_route",
+                "legacy timeline recover cannot restore a historical film version; restore a revision with timeline.restore",
+                {
+                    "status": "refused",
+                    "reason": "timeline_restore_required",
+                    "replacement": "timeline.restore",
+                    "requested_version": version,
+                    "current_version": self.catalog_version,
+                },
+            )
+
+    transport = RuntimeRefusesHistorical()
+    result = RemoteTimelines(transport).recover(
+        "project-1", "main", expected_version=7, version=6,
+        idempotency_key="legacy-recover",
+    )
+    assert not result.ok
+    assert result.idempotency_key == "legacy-recover"
+    assert result.error.code == "retired_route"
+    assert result.error.details == {
+        "status": "refused",
+        "reason": "timeline_restore_required",
+        "replacement": "timeline.restore",
+        "requested_version": 6,
+        "current_version": 7,
+    }
+    assert "timeline.restore" in result.error.message
+    assert "version" in result.error.message
+    assert transport.recover_calls == [("tl-1", 7, 6, "legacy-recover")]
+
+
 def test_remote_open_composition_uses_runtime_inspection_authority() -> None:
     transport = _NativeTransport()
     result = RemoteTimelines(transport).open_composition(
@@ -109,6 +237,59 @@ def test_remote_open_composition_uses_runtime_inspection_authority() -> None:
             "occurrence": "occ-1",
         }
     )]
+
+
+def test_remote_open_composition_raw_projection_is_renderer_free(request) -> None:
+    request.getfixturevalue("no_renderer")
+    result = RemoteTimelines(_NativeTransport()).open_composition(
+        "project-1", "main", _raw_projection=True,
+    )
+
+    assert result.ok
+    assert result.data["summary"]["revision_id"] == "rev-7"
+    assert result.data["clips"] == [{
+        "clip_id": "clip-1",
+        "track_id": "picture",
+        "occurrence_id": "occ-1",
+        "shot_id": "shot-1",
+        "track": "picture",
+    }]
+
+
+def test_remote_open_composition_retains_public_timing_enrichment() -> None:
+    class _TimedNativeTransport(_NativeTransport):
+        def inspect_timeline(self, project, timeline, *, options):
+            data = super().inspect_timeline(project, timeline, options=options)
+            clip = data["selected"][0]["clips"][0]
+            authored = {
+                "id": "clip-1", "clipType": "media", "at": 0, "hold": 1,
+                "track": "picture", "effects": {"fade_in": 0.25},
+                "transition": {"id": "fade"},
+                "params": {"sourceSegments": [{"at": 0, "sourceStart": 0}]},
+            }
+            clip.update(
+                authored_fields=authored,
+                render_timing={key: authored[key] for key in ("id", "clipType", "at", "hold", "track")},
+            )
+            data["render_timing_context"] = {
+                "status": "complete", "fps": 30,
+                "tracks": [{"id": "picture", "kind": "visual"}],
+                "clips": [clip["render_timing"]],
+            }
+            return data
+
+    result = RemoteTimelines(_TimedNativeTransport()).open_composition("project-1", "main")
+
+    assert result.ok
+    clip = result.data["clips"][0]
+    assert clip["compositor_dispatch"]["status"] == "resolved"
+    assert clip["timing_projection"]["mounted"] == {
+        "start_frame": 0, "end_frame": 30, "start": [0, 1], "end": [1, 1],
+    }
+    assert clip["timed_changes"]
+    assert clip["timing_unknowns"] == []
+    assert clip["transition_projection"]["status"] == "unresolved"
+    assert clip["source_clock"] == "source playback segments use a separate media clock"
 
 
 def test_remote_show_is_canonical_current_head_alias() -> None:
@@ -275,6 +456,68 @@ def test_inputs_mode_never_reads_render_history() -> None:
     assert transport.view_calls
 
 
+def test_inputs_mode_reuses_exact_key_and_options_for_a_transport_retry() -> None:
+    transport = _NativeTransport()
+    timelines = RemoteTimelines(transport)
+    options = {"revision_id": "rev-7", "formats": ["md"]}
+
+    first = timelines._typed(
+        "create_timeline_view",
+        "project-1",
+        "tl-1",
+        options=options,
+        key="view-retry-1",
+    )
+    replay = timelines._typed(
+        "create_timeline_view",
+        "project-1",
+        "tl-1",
+        options=options,
+        key="view-retry-1",
+    )
+
+    assert first.ok and replay.ok
+    assert transport.view_calls == [
+        ("project-1", "tl-1", options, "view-retry-1"),
+        ("project-1", "tl-1", options, "view-retry-1"),
+    ]
+
+
+def test_inputs_mode_allocates_a_fresh_key_for_a_new_head_request() -> None:
+    transport = _NativeTransport()
+    timelines = RemoteTimelines(transport)
+
+    first = timelines.visualize("project-1", "main", mode="inputs")
+    refreshed = timelines.visualize("project-1", "main", mode="inputs")
+
+    assert first.ok and refreshed.ok
+    assert first.idempotency_key
+    assert refreshed.idempotency_key
+    assert first.idempotency_key != refreshed.idempotency_key
+    assert transport.view_calls[0][2] == transport.view_calls[1][2]
+    assert transport.view_calls[0][3] == first.idempotency_key
+    assert transport.view_calls[1][3] == refreshed.idempotency_key
+
+
+def test_inputs_mode_surfaces_read_only_refusal_before_view_write() -> None:
+    class ReadOnlyTransport(_NativeTransport):
+        def create_timeline_view(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise WorkspaceClientError(
+                401,
+                "forbidden",
+                "projects:write is required to create a timeline view",
+                {"required_scope": "projects:write"},
+            )
+
+    result = RemoteTimelines(ReadOnlyTransport()).visualize(
+        "project-1", "main", mode="inputs"
+    )
+
+    assert not result.ok
+    assert result.error.code == "forbidden"
+    assert result.error.details == {"required_scope": "projects:write"}
+
+
 def test_composed_mode_fails_closed_when_no_exact_render_reader_exists() -> None:
     result = RemoteTimelines(_NativeTransport()).visualize(
         "project-1", "main", mode="composed", occurrence="occ-1"
@@ -396,3 +639,32 @@ def test_visualize_honors_explicit_revision_for_composed_capture() -> None:
     assert inputs["composed_capture"] is True
     assert inputs["revision_id"] == "saved-revision-2"
     assert "render_run" not in inputs
+
+
+@pytest.mark.parametrize("method", ["show", "inspect"])
+def test_read_paths_never_create_view_artifacts(method) -> None:
+    transport = _NativeTransport()
+    result = getattr(RemoteTimelines(transport), method)("project-1", "main")
+    assert result.ok
+    assert transport.inspect_calls
+    assert transport.view_calls == []
+
+
+def test_view_retry_preserves_original_key_and_input_after_lost_ack() -> None:
+    class LostAckTransport(_NativeTransport):
+        def create_timeline_view(self, project, timeline, *, options, idempotency_key):
+            result = super().create_timeline_view(
+                project, timeline, options=options, idempotency_key=idempotency_key)
+            if len(self.view_calls) == 1:
+                raise WorkspaceClientError(503, "unavailable", "Acknowledgement lost", {})
+            return result
+
+    transport = LostAckTransport()
+    timelines = RemoteTimelines(transport)
+    options = {"revision_id": "rev-7", "formats": ["md"]}
+    first = timelines._typed("create_timeline_view", "project-1", "tl-1", options=options)
+    assert not first.ok and first.idempotency_key
+    recovered = timelines._typed("create_timeline_view", "project-1", "tl-1", options=options,
+                                 key=first.idempotency_key)
+    assert recovered.ok and recovered.idempotency_key == first.idempotency_key
+    assert transport.view_calls[0] == transport.view_calls[1]

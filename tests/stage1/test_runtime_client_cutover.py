@@ -16,6 +16,7 @@ from astrid.core.gateway import main as gateway_main
 from astrid.sdk.client import AstridClient
 from astrid_runtime_client import ApiError, WorkspaceClient
 from tests.helpers.runtime import use_runtime, vendored_runtime_commit
+from tests.helpers.trusted_seed import seed_trusted_parent
 
 pytestmark = pytest.mark.integration  # needs the Runtime from a second checkout (real_runtime fixture)
 # The Runtime as of the commit the vendored workspace client was produced from, so the daemon's schema
@@ -77,6 +78,37 @@ def _open_client(daemon) -> AstridClient:
         client_version="stage1",
         protocol_version="workspace.v1",
     )
+
+
+def _seed_shot(daemon, project, shot_id, *, name="Shot", items=()):
+    """Seed an accepted film-owned shot for refusal and scope assertions."""
+    timeline = "seed-" + shot_id
+    daemon.service.create_timeline(project, timeline, name=timeline, idempotency_key=timeline)
+    internal, revision = shot_id + "-internal", shot_id + "-revision"
+    empty = {"config": {"clips": [], "tracks": []}, "clips": [], "registry": {}}
+    seed_trusted_parent(daemon.service, {
+        "project_id": project, "timeline_id": timeline, "parent_revision_id": shot_id + "-parent",
+        "parent_composition": {**empty, "occurrences": [{
+            "occurrence_id": shot_id + "-occurrence", "shot_id": shot_id,
+            "shot_revision_id": revision, "placement": {"start_ms": 0},
+            "duration_ms": 1000, "track": "picture", "ordinal": 0,
+            "source_offset": 0, "speed": {"numerator": 1, "denominator": 1}, "gain": 1,
+            "muted": False, "transform": {}, "provenance": {},
+        }]},
+        "shot_revisions": [{"shot_id": shot_id, "revision_id": revision,
+                            "internal_timeline_revision_id": internal,
+                            "payload": {"name": name, "items": list(items)}}],
+        "internal_timeline_revisions": [{"timeline_id": timeline, "revision_id": internal, "payload": empty}],
+    }, idempotency_key=timeline + "-publication")
+    return daemon.service.get_project_shot(project, shot_id)
+
+
+def _assert_retired_film_shot_write(result, key):
+    assert not result.ok and result.data is None
+    assert result.error.code == "retired_route"
+    assert result.error.message == "direct shot writes are retired for film-owned shots; use timeline commands"
+    assert result.error.details["reason"] == "shot_in_film_history"
+    assert result.receipt is None and result.idempotency_key == key
 
 
 def _register_render_basic(daemon) -> None:
@@ -408,9 +440,14 @@ def test_documented_project_cli_mutations_return_committed_receipts(tmp_path, mo
         ref_a = client.references.create(project="cli", kind="character", name="A", media_id=first["object_id"], idempotency_key="cli-ref-a").data
         ref_b = client.references.create(project="cli", kind="character", name="B", media_id=second["object_id"], idempotency_key="cli-ref-b").data
         association = client.references.associate("cli", ref_a["reference_id"], media_id=second["object_id"], idempotency_key="cli-association").data
-        shot = client.shots.create(project="cli", name="Shot", idempotency_key="cli-shot").data
-        first_item = client.shots.add_item("cli", shot["shot_id"], media_id=first["object_id"], idempotency_key="cli-item-1").data
-        second_item = client.shots.add_item("cli", shot["shot_id"], media_id=second["object_id"], idempotency_key="cli-item-2").data
+        shot_result = client.shots.create(project="cli", name="Shot", idempotency_key="cli-shot")
+        assert shot_result.ok and shot_result.receipt is not None and shot_result.receipt.result == shot_result.data
+        shot = shot_result.data
+        first_result = client.shots.add_item("cli", shot["shot_id"], media_id=first["object_id"], idempotency_key="cli-item-1")
+        second_result = client.shots.add_item("cli", shot["shot_id"], media_id=second["object_id"], idempotency_key="cli-item-2")
+        assert first_result.ok and first_result.receipt is not None and first_result.receipt.result == first_result.data
+        assert second_result.ok and second_result.receipt is not None and second_result.receipt.result == second_result.data
+        first_item, second_item = first_result.data, second_result.data
         assert association["media_references"]
 
         assert gateway_main(["media", "references", "link", "--project", "cli", "--from", ref_a["reference_id"], "--to", ref_b["reference_id"], "--kind", "related_to", "--idempotency-key", "cli-link", "--json"]) == 0
@@ -423,7 +460,7 @@ def test_documented_project_cli_mutations_return_committed_receipts(tmp_path, mo
 
         assert gateway_main(["timelines", "shots", "reorder", shot["shot_id"], "--project", "cli", "--items", f"{second_item['items'][1]['item_id']},{first_item['items'][0]['item_id']}", "--idempotency-key", "cli-reorder", "--json"]) == 0
         reorder_result = json.loads(capsys.readouterr().out)
-        assert reorder_result["ok"]
+        assert reorder_result["ok"] and reorder_result["receipt"]["result"] == reorder_result["data"]
         assert set(reorder_result) == {"ok", "data", "error", "receipt", "idempotency_key"}
     finally:
         daemon.stop()
@@ -450,6 +487,7 @@ def test_project_shot_scope_stays_with_project_route(tmp_path, monkeypatch, real
         )
         assert legacy.ok
         before = client._remote._transport.get_project_shot(owner["project_id"], "collision")
+        film_owned = _seed_shot(daemon, owner["project_id"], "film-owned", name="Film owned")
 
         # A project-scoped read and every version-resolving mutation must stay
         # in the project route.  The colliding legacy child is not in other.
@@ -459,15 +497,35 @@ def test_project_shot_scope_stays_with_project_route(tmp_path, monkeypatch, real
         assert_not_found(client.shots.recover(other["project_id"], "collision", idempotency_key="wrong-recover"))
         assert client._remote._transport.get_project_shot(owner["project_id"], "collision") == before
 
+        # The same project-scoped operations are still catalog CRUD for an
+        # unplaced shot, but refuse when the shot is owned by accepted film history.
+        _assert_retired_film_shot_write(
+            client.shots.create(project=owner["project_id"], shot={"shot_id": "film-owned", "name": "Film owned"}, idempotency_key="film-create"),
+            "film-create",
+        )
+        _assert_retired_film_shot_write(
+            client.shots.update(owner["project_id"], "film-owned", name="Hacked", idempotency_key="film-update"),
+            "film-update",
+        )
+        _assert_retired_film_shot_write(
+            client.shots.archive(owner["project_id"], "film-owned", idempotency_key="film-archive"),
+            "film-archive",
+        )
+        _assert_retired_film_shot_write(
+            client.shots.recover(owner["project_id"], "film-owned", idempotency_key="film-recover"),
+            "film-recover",
+        )
+        assert client.shots.show(owner["project_id"], "film-owned").data == film_owned
+
         # Project-owned mutations remain receipt-bearing on success.
         owned = client.shots.create(project=other["project_id"], name="Owned", idempotency_key="owned-shot")
-        assert owned.ok
+        assert owned.ok and owned.receipt is not None and owned.receipt.result == owned.data
         updated = client.shots.update(other["project_id"], owned.data["shot_id"], name="Owned 2", idempotency_key="owned-update")
-        assert updated.ok
+        assert updated.ok and updated.receipt is not None and updated.receipt.result == updated.data
         archived = client.shots.archive(other["project_id"], owned.data["shot_id"], idempotency_key="owned-archive")
-        assert archived.ok
+        assert archived.ok and archived.receipt is not None and archived.receipt.result == archived.data
         recovered = client.shots.recover(other["project_id"], owned.data["shot_id"], idempotency_key="owned-recover")
-        assert recovered.ok
+        assert recovered.ok and recovered.receipt is not None and recovered.receipt.result == recovered.data
     finally:
         daemon.stop()
 
@@ -745,8 +803,10 @@ def test_editor_domain_reads_and_media_relations_use_generated_operations(tmp_pa
 
         shot_result = client.shots.create(project=project_id, name="Shot", idempotency_key="shot")
         reference_result = client.references.create(project=project_id, reference_id="reference", kind="character", name="Reference", media_id=first["object_id"], idempotency_key="reference")
-        assert shot_result.ok and reference_result.ok
+        assert shot_result.ok and shot_result.receipt is not None and shot_result.receipt.result == shot_result.data
+        assert reference_result.ok
         shot, reference = shot_result.data, reference_result.data
+        film_shot = _seed_shot(daemon, project_id, "editor-film-shot")
         assert client.shots.list(project_id).data[0][0]["shot_id"] == shot["shot_id"]
         assert client.references.list(project_id).data[0][0]["reference_id"] == reference["reference_id"]
         shown_shot = client.shots.show(project_id, shot["shot_id"])
@@ -758,9 +818,26 @@ def test_editor_domain_reads_and_media_relations_use_generated_operations(tmp_pa
         stale = client.shots.update(project_id, shot["shot_id"], expected_version=shown_shot.data["version"] + 7, name="Stale", idempotency_key="shot-stale-update")
         assert stale.ok is False and stale.error.code == "conflict"
         assert client.shots.show(project_id, shot["shot_id"]).data["name"] == "Shot"
-        assert client.shots.update(project_id, shot["shot_id"], name="Shot 2", idempotency_key="shot-update").ok
-        assert client.shots.archive(project_id, shot["shot_id"], idempotency_key="shot-archive").ok
-        assert client.shots.recover(project_id, shot["shot_id"], idempotency_key="shot-recover").ok
+        updated_shot = client.shots.update(project_id, shot["shot_id"], name="Shot 2", idempotency_key="shot-update")
+        archived_shot = client.shots.archive(project_id, shot["shot_id"], idempotency_key="shot-archive")
+        recovered_shot = client.shots.recover(project_id, shot["shot_id"], idempotency_key="shot-recover")
+        assert updated_shot.ok and updated_shot.receipt is not None and updated_shot.receipt.result == updated_shot.data
+        assert archived_shot.ok and archived_shot.receipt is not None and archived_shot.receipt.result == archived_shot.data
+        assert recovered_shot.ok and recovered_shot.receipt is not None and recovered_shot.receipt.result == recovered_shot.data
+        _assert_retired_film_shot_write(
+            client.shots.update(project_id, film_shot["shot_id"], name="Film hacked", idempotency_key="film-update"),
+            "film-update",
+        )
+        _assert_retired_film_shot_write(
+            client.shots.archive(project_id, film_shot["shot_id"], idempotency_key="film-archive"),
+            "film-archive",
+        )
+        _assert_retired_film_shot_write(
+            client.shots.recover(project_id, film_shot["shot_id"], idempotency_key="film-recover"),
+            "film-recover",
+        )
+        assert client.shots.show(project_id, film_shot["shot_id"]).data == film_shot
+        assert client.shots.show(project_id, shot["shot_id"]).data["name"] == "Shot 2"
         assert client.references.update(project_id, reference["reference_id"], name="Reference 2").ok
         assert client.references.archive(project_id, reference["reference_id"], idempotency_key="reference-archive").ok
         assert client.references.recover(project_id, reference["reference_id"], idempotency_key="reference-recover").ok
@@ -858,7 +935,7 @@ def test_daemon_binds_loopback_only_and_keeps_credentials_private(tmp_path, monk
 
 
 def test_empty_timeline_opens_as_composition_on_real_daemon(tmp_path, monkeypatch, real_runtime):
-    daemon = real_runtime()
+    daemon = real_runtime(authoring_profile="astrid")
     try:
         client = _open_client(daemon)
         project_id = client.projects.create(slug="composition", name="Composition", idempotency_key="project").data["project_id"]
@@ -890,7 +967,8 @@ def test_promote_candidate_receipt_replay_and_foreign_provenance_rejection(tmp_p
         validate_shot_generation_recipe,
     )
 
-    daemon = real_runtime()
+    support = tmp_path / "support"
+    daemon = real_runtime(tmp_path / "realm", support_root=support)
     try:
         astrid = _open_client(daemon)
         project_id = astrid.projects.create(slug="promotion", name="Promotion", idempotency_key="project").data["project_id"]
@@ -992,6 +1070,17 @@ def test_promote_candidate_receipt_replay_and_foreign_provenance_rejection(tmp_p
         unchanged = astrid.shots.show(project_id, shot_id)
         assert unchanged.data["version"] == foreign.data["version"]
         assert next(item for item in unchanged.data["items"] if item["item_id"] == foreign_item["item_id"])["metadata"]["status"] == "candidate"
+
+        daemon.stop()
+        daemon = real_runtime(tmp_path / "realm", support_root=support)
+        astrid = _open_client(daemon)
+        replay_after_restart = astrid.shots.promote_candidate(
+            project_id, shot_id, candidate_item["item_id"],
+            expected_head_seq=candidate.data["version"], timeline_assets=timeline_assets,
+            idempotency_key="promotion-command",
+        )
+        assert replay_after_restart.ok and replay_after_restart.as_dict() == promoted.as_dict()
+        assert astrid.shots.show(project_id, shot_id).data == unchanged.data
     finally:
         daemon.stop()
 
@@ -1203,39 +1292,81 @@ def test_shot_items_and_reference_associations_use_versioned_routes_and_survive_
         shot_args = {"project": project_id, "shot": {"shot_id": "item-shot", "name": "Item Shot"}, "idempotency_key": "shot"}
         created = astrid.shots.create(**shot_args)
         reference = astrid.references.create(project=project_id, reference_id="item-ref", kind="character", name="Item", media_id=first_media, idempotency_key="reference")
-        assert created.ok and reference.ok
+        assert created.ok and created.receipt is not None and created.receipt.result == created.data
+        assert reference.ok and reference.receipt is not None and reference.receipt.result == reference.data
         # Replaying the same idempotency key returns the original result.
         replayed = astrid.shots.create(**shot_args)
-        assert replayed.ok and replayed.data == created.data
+        assert replayed.ok and replayed.data == created.data and replayed.as_dict() == created.as_dict()
         assert [item["shot_id"] for item in astrid.shots.list(project_id).data[0]] == ["item-shot"]
         assert astrid.shots.list(other_id).data[0] == []
 
         added_first = astrid.shots.add_item(project_id, "item-shot", media_id=first_media, position=0, idempotency_key="item-1")
         added_second = astrid.shots.add_item(project_id, "item-shot", media_id=second_media, position=1, idempotency_key="item-2")
-        assert added_first.ok and added_second.ok
+        assert added_first.ok and added_first.receipt is not None and added_first.receipt.result == added_first.data
+        assert added_second.ok and added_second.receipt is not None and added_second.receipt.result == added_second.data
         item_ids = [item["item_id"] for item in added_second.data["items"]]
         assert len(item_ids) == 2
         reordered = astrid.shots.reorder(project_id, "item-shot", item_ids=list(reversed(item_ids)), expected_version=added_second.data["version"], idempotency_key="reorder")
-        assert reordered.ok and [item["item_id"] for item in reordered.data["items"]] == list(reversed(item_ids))
+        assert reordered.ok and reordered.receipt is not None and reordered.receipt.result == reordered.data
+        assert [item["item_id"] for item in reordered.data["items"]] == list(reversed(item_ids))
         removed = astrid.shots.remove_item(project_id, "item-shot", item_ids[0], expected_version=reordered.data["version"], idempotency_key="remove")
-        assert removed.ok and [item["item_id"] for item in removed.data["items"]] == [item_ids[1]]
+        assert removed.ok and removed.receipt is not None and removed.receipt.result == removed.data
+        assert [item["item_id"] for item in removed.data["items"]] == [item_ids[1]]
 
         stale = astrid.shots.update(project_id, "item-shot", expected_version=1, name="Stale", idempotency_key="stale-update")
         assert stale.ok is False and stale.error.code == "conflict"
         updated = astrid.shots.update(project_id, "item-shot", expected_version=removed.data["version"], name="Item Updated", idempotency_key="update")
-        assert updated.ok and updated.data["name"] == "Item Updated"
+        assert updated.ok and updated.receipt is not None and updated.receipt.result == updated.data
+        assert updated.data["name"] == "Item Updated"
         archived = astrid.shots.archive(project_id, "item-shot", expected_version=updated.data["version"], idempotency_key="archive")
         recovered = astrid.shots.recover(project_id, "item-shot", expected_version=archived.data["version"], idempotency_key="recover")
-        assert archived.ok and archived.data["archived"] is True
-        assert recovered.ok and recovered.data["archived"] is False
+        assert archived.ok and archived.receipt is not None and archived.receipt.result == archived.data
+        assert recovered.ok and recovered.receipt is not None and recovered.receipt.result == recovered.data
+        assert archived.data["archived"] is True and recovered.data["archived"] is False
+
+        film_item = {"item_id": "film-item", "media_id": first_media, "metadata": {"role": "source"}}
+        film_shot = _seed_shot(daemon, project_id, "film-item-shot", name="Film item shot", items=[film_item])
+        film_database_before = list(daemon.service.store.conn.iterdump())
+        _assert_retired_film_shot_write(
+            astrid.shots.create(project=project_id, shot={"shot_id": "film-item-shot", "name": "Film item shot"}, idempotency_key="film-shot"),
+            "film-shot",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.add_item(project_id, "film-item-shot", media_id=second_media, idempotency_key="film-item-add"),
+            "film-item-add",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.reorder(project_id, "film-item-shot", item_ids=["film-item"], expected_version=film_shot["version"], idempotency_key="film-item-reorder"),
+            "film-item-reorder",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.remove_item(project_id, "film-item-shot", "film-item", expected_version=film_shot["version"], idempotency_key="film-item-remove"),
+            "film-item-remove",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.update(project_id, "film-item-shot", expected_version=film_shot["version"], name="Hacked", idempotency_key="film-item-update"),
+            "film-item-update",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.archive(project_id, "film-item-shot", expected_version=film_shot["version"], idempotency_key="film-item-archive"),
+            "film-item-archive",
+        )
+        _assert_retired_film_shot_write(
+            astrid.shots.recover(project_id, "film-item-shot", expected_version=film_shot["version"], idempotency_key="film-item-recover"),
+            "film-item-recover",
+        )
+        assert astrid.shots.show(project_id, "film-item-shot").data == film_shot
+        assert list(daemon.service.store.conn.iterdump()) == film_database_before
 
         association = astrid.references.associate(project_id, "item-ref", media_id=second_media, role="depicts", idempotency_key="associate")
-        assert association.ok
+        assert association.ok and association.receipt is not None and association.receipt.result == association.data
         association_id = association.data["media_references"][-1]["association_id"]
         secondary = astrid.references.create(project=project_id, reference_id="item-ref-2", kind="object", name="Prop", media_id=first_media, idempotency_key="reference-2")
         primary = astrid.references.set_primary(project_id, "item-ref", association_id=association_id, expected_version=association.data["version"], idempotency_key="primary")
         link = astrid.references.link(project=project_id, from_reference_id="item-ref", to_reference_id="item-ref-2", kind="associated_with", idempotency_key="link")
-        assert secondary.ok and primary.ok and link.ok
+        assert secondary.ok and secondary.receipt is not None and secondary.receipt.result == secondary.data
+        assert primary.ok and primary.receipt is not None and primary.receipt.result == primary.data
+        assert link.ok and link.receipt is not None and link.receipt.result == link.data
 
         daemon.stop()
         daemon = real_runtime(tmp_path / "realm", support_root=support)

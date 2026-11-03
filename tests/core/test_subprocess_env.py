@@ -103,3 +103,16 @@ def test_parent_marker_survives_executor_and_transport(
     assert report.supported is True
     assert launched["start_new_session"] is (marker != "ASTRID_RENDER_INHERIT_PROCESS_GROUP")
     assert launched["env"][marker] == value
+
+
+def test_remotion_browser_executable_is_parent_owned_and_unlisted_env_is_dropped() -> None:
+    selector = "ASTRID_REMOTION_BROWSER_EXECUTABLE"
+    child = build_child_subprocess_env(
+        base={selector: "/base/browser", "ASTRID_UNLISTED_BASE": "base"},
+        parent={selector: "/parent/browser", "ASTRID_UNLISTED_PARENT": "parent"},
+        explicit_env={selector: "/explicit/browser"},
+    )
+
+    assert child[selector] == "/parent/browser"
+    assert "ASTRID_UNLISTED_BASE" not in child
+    assert "ASTRID_UNLISTED_PARENT" not in child

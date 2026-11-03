@@ -1,0 +1,5070 @@
+{
+  "after_bundle": {
+    "base_parent": {
+      "content_digest": "sha256:0a3faaffebd89df506a4821d9a36be96bc667a430a41c5e5692d5b94076bab98",
+      "revision_id": "parent-1"
+    },
+    "base_parent_payload": {
+      "clips": [
+        {
+          "asset": "f2-app",
+          "at": 0,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-app-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1"
+        },
+        {
+          "asset": "f2-video",
+          "at": 15,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-transition-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1",
+          "transition": {
+            "duration": 0.5,
+            "type": "crossfade"
+          }
+        }
+      ],
+      "config": {
+        "clips": [
+          {
+            "asset": "f2-app",
+            "at": 0,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-app-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1"
+          },
+          {
+            "asset": "f2-video",
+            "at": 15,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-transition-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1",
+            "transition": {
+              "duration": 0.5,
+              "type": "crossfade"
+            }
+          }
+        ],
+        "opaque_parent_config": {
+          "keep": true
+        },
+        "output": {
+          "fps": 30
+        },
+        "tracks": [
+          {
+            "id": "V1",
+            "kind": "visual",
+            "label": "V1"
+          },
+          {
+            "id": "S1",
+            "kind": "visual",
+            "label": "S1"
+          }
+        ],
+        "x_f2_opaque": {
+          "flag": true,
+          "nested": [
+            1,
+            {
+              "k": "v"
+            }
+          ],
+          "owner": "f2"
+        }
+      },
+      "opaque_parent": {
+        "keep": [
+          "all",
+          "fields"
+        ]
+      },
+      "registry": {
+        "assets": {
+          "f2-app": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "file": "f2-app.png",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image/png"
+          },
+          "f2-video": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "duration": 12,
+            "file": "f2-video.mp4",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "video/mp4"
+          }
+        }
+      }
+    },
+    "base_placements": {
+      "f2-occurrence": {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "f2-occurrence",
+        "placement": {
+          "start_ms": 0
+        },
+        "provenance": {
+          "placement": "first"
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      },
+      "shared-sibling": {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "shared-sibling",
+        "placement": {
+          "start_ms": 20000
+        },
+        "provenance": {
+          "placement": "second"
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      }
+    },
+    "parent": {
+      "clips": [
+        {
+          "asset": "f2-app",
+          "at": 0,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-app-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1"
+        },
+        {
+          "asset": "f2-video",
+          "at": 15,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-transition-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1"
+        }
+      ],
+      "config": {
+        "clips": [
+          {
+            "asset": "f2-app",
+            "at": 0,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-app-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1"
+          },
+          {
+            "asset": "f2-video",
+            "at": 15,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-transition-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1"
+          }
+        ],
+        "opaque_parent_config": {
+          "keep": true
+        },
+        "output": {
+          "fps": 30
+        },
+        "tracks": [
+          {
+            "id": "V1",
+            "kind": "visual",
+            "label": "V1"
+          },
+          {
+            "id": "S1",
+            "kind": "visual",
+            "label": "S1"
+          }
+        ],
+        "x_f2_opaque": {
+          "flag": true,
+          "nested": [
+            1,
+            {
+              "k": "v"
+            }
+          ],
+          "owner": "f2"
+        }
+      },
+      "opaque_parent": {
+        "keep": [
+          "all",
+          "fields"
+        ]
+      },
+      "registry": {
+        "assets": {
+          "f2-app": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "file": "f2-app.png",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image/png"
+          },
+          "f2-video": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "duration": 12,
+            "file": "f2-video.mp4",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "video/mp4"
+          }
+        }
+      }
+    },
+    "placements": [
+      {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "f2-occurrence",
+        "placement": {
+          "start_ms": 0
+        },
+        "provenance": {
+          "placement": "first"
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      },
+      {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "shared-sibling",
+        "placement": {
+          "start_ms": 20000
+        },
+        "provenance": {
+          "placement": "second"
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      }
+    ],
+    "project_id": "project-1",
+    "schema_version": 1,
+    "shots": {
+      "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f": {
+        "base_internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "base_payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f"
+      },
+      "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045": {
+        "base_internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "base_payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 4,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045"
+      }
+    },
+    "source_mapping": {
+      "placements": {
+        "f2-occurrence": {
+          "duration_ms": 12000,
+          "future_occurrence": {
+            "round_trip": true
+          },
+          "gain": 1,
+          "muted": false,
+          "occurrence_id": "f2-occurrence",
+          "placement": {
+            "start_ms": 0
+          },
+          "provenance": {
+            "placement": "first"
+          },
+          "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+          "source_offset": 0,
+          "speed": 1,
+          "track": "S1",
+          "transform": {
+            "opaque_transform": [
+              4,
+              5
+            ],
+            "scale": 1
+          }
+        },
+        "shared-sibling": {
+          "duration_ms": 12000,
+          "future_occurrence": {
+            "round_trip": true
+          },
+          "gain": 1,
+          "muted": false,
+          "occurrence_id": "shared-sibling",
+          "placement": {
+            "start_ms": 20000
+          },
+          "provenance": {
+            "placement": "second"
+          },
+          "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+          "source_offset": 0,
+          "speed": 1,
+          "track": "S1",
+          "transform": {
+            "opaque_transform": [
+              4,
+              5
+            ],
+            "scale": 1
+          }
+        }
+      },
+      "shots": {
+        "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f": {
+          "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+          "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+          "internal_timeline_id": "main",
+          "internal_timeline_revision_id": "internal-1",
+          "item_id_map": {
+            "item-1": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+            "item-audio": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422"
+          },
+          "revision_id": "shot-rev-1",
+          "shot_id": "shot-shared"
+        },
+        "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045": {
+          "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+          "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+          "internal_timeline_id": "main",
+          "internal_timeline_revision_id": "internal-1",
+          "item_id_map": {
+            "item-1": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+            "item-audio": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27"
+          },
+          "revision_id": "shot-rev-1",
+          "shot_id": "shot-shared"
+        }
+      }
+    },
+    "timeline_id": "main"
+  },
+  "bundle": {
+    "base_parent": {
+      "content_digest": "sha256:0a3faaffebd89df506a4821d9a36be96bc667a430a41c5e5692d5b94076bab98",
+      "revision_id": "parent-1"
+    },
+    "base_parent_payload": {
+      "clips": [
+        {
+          "asset": "f2-app",
+          "at": 0,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-app-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1"
+        },
+        {
+          "asset": "f2-video",
+          "at": 15,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-transition-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1",
+          "transition": {
+            "duration": 0.5,
+            "type": "crossfade"
+          }
+        }
+      ],
+      "config": {
+        "clips": [
+          {
+            "asset": "f2-app",
+            "at": 0,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-app-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1"
+          },
+          {
+            "asset": "f2-video",
+            "at": 15,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-transition-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1",
+            "transition": {
+              "duration": 0.5,
+              "type": "crossfade"
+            }
+          }
+        ],
+        "opaque_parent_config": {
+          "keep": true
+        },
+        "output": {
+          "fps": 30
+        },
+        "tracks": [
+          {
+            "id": "V1",
+            "kind": "visual",
+            "label": "V1"
+          },
+          {
+            "id": "S1",
+            "kind": "visual",
+            "label": "S1"
+          }
+        ],
+        "x_f2_opaque": {
+          "flag": true,
+          "nested": [
+            1,
+            {
+              "k": "v"
+            }
+          ],
+          "owner": "f2"
+        }
+      },
+      "opaque_parent": {
+        "keep": [
+          "all",
+          "fields"
+        ]
+      },
+      "registry": {
+        "assets": {
+          "f2-app": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "file": "f2-app.png",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image/png"
+          },
+          "f2-video": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "duration": 12,
+            "file": "f2-video.mp4",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "video/mp4"
+          }
+        }
+      }
+    },
+    "base_placements": {
+      "f2-occurrence": {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "f2-occurrence",
+        "placement": {
+          "start_ms": 0
+        },
+        "provenance": {
+          "placement": "first"
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      },
+      "shared-sibling": {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "shared-sibling",
+        "placement": {
+          "start_ms": 20000
+        },
+        "provenance": {
+          "placement": "second"
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      }
+    },
+    "parent": {
+      "clips": [
+        {
+          "asset": "f2-app",
+          "at": 0,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-app-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1"
+        },
+        {
+          "asset": "f2-video",
+          "at": 15,
+          "clipType": "media",
+          "from": 0,
+          "id": "f2-transition-clip",
+          "speed": 1,
+          "to": 3,
+          "track": "V1",
+          "transition": {
+            "duration": 0.5,
+            "type": "crossfade"
+          }
+        }
+      ],
+      "config": {
+        "clips": [
+          {
+            "asset": "f2-app",
+            "at": 0,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-app-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1"
+          },
+          {
+            "asset": "f2-video",
+            "at": 15,
+            "clipType": "media",
+            "from": 0,
+            "id": "f2-transition-clip",
+            "speed": 1,
+            "to": 3,
+            "track": "V1",
+            "transition": {
+              "duration": 0.5,
+              "type": "crossfade"
+            }
+          }
+        ],
+        "opaque_parent_config": {
+          "keep": true
+        },
+        "output": {
+          "fps": 30
+        },
+        "tracks": [
+          {
+            "id": "V1",
+            "kind": "visual",
+            "label": "V1"
+          },
+          {
+            "id": "S1",
+            "kind": "visual",
+            "label": "S1"
+          }
+        ],
+        "x_f2_opaque": {
+          "flag": true,
+          "nested": [
+            1,
+            {
+              "k": "v"
+            }
+          ],
+          "owner": "f2"
+        }
+      },
+      "opaque_parent": {
+        "keep": [
+          "all",
+          "fields"
+        ]
+      },
+      "registry": {
+        "assets": {
+          "f2-app": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "file": "f2-app.png",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image/png"
+          },
+          "f2-video": {
+            "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "duration": 12,
+            "file": "f2-video.mp4",
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "video/mp4"
+          }
+        }
+      }
+    },
+    "placements": [
+      {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "f2-occurrence",
+        "placement": {
+          "start_ms": 0
+        },
+        "provenance": {
+          "placement": "first"
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      },
+      {
+        "duration_ms": 12000,
+        "future_occurrence": {
+          "round_trip": true
+        },
+        "gain": 1,
+        "muted": false,
+        "occurrence_id": "shared-sibling",
+        "placement": {
+          "start_ms": 20000
+        },
+        "provenance": {
+          "placement": "second"
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+        "source_offset": 0,
+        "speed": 1,
+        "track": "S1",
+        "transform": {
+          "opaque_transform": [
+            4,
+            5
+          ],
+          "scale": 1
+        }
+      }
+    ],
+    "project_id": "project-1",
+    "schema_version": 1,
+    "shots": {
+      "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f": {
+        "base_internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "base_payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f"
+      },
+      "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045": {
+        "base_internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "base_payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "internal_timeline": {
+          "assets": [],
+          "audio": [
+            {
+              "gain": 0.8,
+              "track_id": "voice"
+            }
+          ],
+          "clips": [
+            {
+              "asset": "f2-plate",
+              "at": 0,
+              "clipType": "media",
+              "hold": 12,
+              "id": "f2-plate",
+              "track": "plate"
+            },
+            {
+              "app": {
+                "f2Opaque": {
+                  "nested": [
+                    1,
+                    {
+                      "k": "v"
+                    }
+                  ],
+                  "owner": "f2"
+                }
+              },
+              "asset": "f2-placeholder",
+              "at": 3,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clip",
+              "track": "V2"
+            },
+            {
+              "asset": "f2-clear",
+              "at": 6,
+              "clipType": "media",
+              "hold": 3,
+              "id": "f2-agent-clear-clip",
+              "track": "V2"
+            }
+          ],
+          "effects": [
+            {
+              "type": "opacity",
+              "value": 0.75
+            }
+          ],
+          "layout": {
+            "height": 1080,
+            "width": 1920
+          },
+          "opaque_timeline": {
+            "future_schema": 7
+          },
+          "registry": {
+            "assets": {
+              "f2-clear": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-clear.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-placeholder": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-placeholder.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              },
+              "f2-plate": {
+                "content_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "file": "f2-plate.png",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image/png"
+              }
+            },
+            "opaque_registry": {
+              "keep": [
+                1,
+                2,
+                3
+              ]
+            }
+          },
+          "tracks": [
+            {
+              "id": "plate",
+              "kind": "visual",
+              "label": "plate"
+            },
+            {
+              "id": "V2",
+              "kind": "visual",
+              "label": "V2"
+            }
+          ]
+        },
+        "payload": {
+          "audio_bindings": [
+            {
+              "object_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "track_id": "voice"
+            }
+          ],
+          "generation_inputs": {
+            "visual": {
+              "object_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1",
+                "role": "primary_visual",
+                "source_item_id": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b"
+              },
+              "source_frame": null
+            },
+            {
+              "item_id": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27",
+              "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "metadata": {
+                "role": "voiceover"
+              },
+              "source_frame": null
+            }
+          ],
+          "metadata": {
+            "opaque": [
+              "keep"
+            ],
+            "settings": {
+              "look": "warm"
+            }
+          },
+          "name": "Opening",
+          "opaque_shot": {
+            "future_schema": 9
+          },
+          "pools": [
+            {
+              "id": "pool-1",
+              "opaque": "keep"
+            }
+          ],
+          "provenance": {
+            "shot_id_literal": "shot-shared",
+            "source": "fixture"
+          },
+          "selected_variants": {
+            "pool-1": "variant-1"
+          },
+          "text_bindings": [
+            {
+              "slot": "voiceover",
+              "text": "hello"
+            }
+          ]
+        },
+        "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045"
+      }
+    },
+    "source_mapping": {
+      "placements": {
+        "f2-occurrence": {
+          "duration_ms": 12000,
+          "future_occurrence": {
+            "round_trip": true
+          },
+          "gain": 1,
+          "muted": false,
+          "occurrence_id": "f2-occurrence",
+          "placement": {
+            "start_ms": 0
+          },
+          "provenance": {
+            "placement": "first"
+          },
+          "shot_id": "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045",
+          "source_offset": 0,
+          "speed": 1,
+          "track": "S1",
+          "transform": {
+            "opaque_transform": [
+              4,
+              5
+            ],
+            "scale": 1
+          }
+        },
+        "shared-sibling": {
+          "duration_ms": 12000,
+          "future_occurrence": {
+            "round_trip": true
+          },
+          "gain": 1,
+          "muted": false,
+          "occurrence_id": "shared-sibling",
+          "placement": {
+            "start_ms": 20000
+          },
+          "provenance": {
+            "placement": "second"
+          },
+          "shot_id": "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f",
+          "source_offset": 0,
+          "speed": 1,
+          "track": "S1",
+          "transform": {
+            "opaque_transform": [
+              4,
+              5
+            ],
+            "scale": 1
+          }
+        }
+      },
+      "shots": {
+        "shot-placement-579f20133d44bc4fb55ccc34bfaf845a679d63011f7f0b57bad457455930b16f": {
+          "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+          "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+          "internal_timeline_id": "main",
+          "internal_timeline_revision_id": "internal-1",
+          "item_id_map": {
+            "item-1": "shot-item-placement-f32b57312c448bd069d3e0a475a09ab1c333bb3f951b528e8fea088bc7c80205",
+            "item-audio": "shot-item-placement-2ceb5252c1e47a5f5ffaa2105caf1f3e60b797646861921f153207c9e3597422"
+          },
+          "revision_id": "shot-rev-1",
+          "shot_id": "shot-shared"
+        },
+        "shot-placement-ffec80eebf5bd535c267ca65736d74225a9afcdb3b32525777a0ad3ecaaca045": {
+          "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+          "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+          "internal_timeline_id": "main",
+          "internal_timeline_revision_id": "internal-1",
+          "item_id_map": {
+            "item-1": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+            "item-audio": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27"
+          },
+          "revision_id": "shot-rev-1",
+          "shot_id": "shot-shared"
+        }
+      }
+    },
+    "timeline_id": "main"
+  },
+  "commands": [
+    {
+      "args": {
+        "clear": [],
+        "values": {
+          "hold": 4
+        }
+      },
+      "authorship": {
+        "occurrence:f2-occurrence/clip:f2-agent-clip::hold": "direct"
+      },
+      "bindings": {
+        "scalar.owner": "occurrence:f2-occurrence",
+        "scalar.target": "occurrence:f2-occurrence/clip:f2-agent-clip"
+      },
+      "created": [],
+      "expect": {
+        "occurrence:f2-occurrence/clip:f2-agent-clip::hold": {
+          "state": "present",
+          "value": 3
+        }
+      },
+      "intent": {},
+      "op": "clip.set",
+      "reads": [
+        {
+          "path": [
+            "id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-agent-clip"
+          }
+        },
+        {
+          "path": [
+            "occurrence_id"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": "f2-occurrence"
+          }
+        },
+        {
+          "path": [
+            "shot_id"
+          ],
+          "ref": "occurrence:f2-occurrence/shot",
+          "state": {
+            "state": "present",
+            "value": "shot-shared"
+          }
+        },
+        {
+          "path": [
+            "clipType"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": "media"
+          }
+        },
+        {
+          "path": [
+            "clip_type"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "asset"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-placeholder"
+          }
+        },
+        {
+          "path": [
+            "asset_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "media_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "object_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "elementRef"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "element_ref"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-placeholder",
+            "media_id"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-placeholder",
+            "object_id"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-placeholder",
+            "digest"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-placeholder",
+            "content_digest"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-placeholder",
+            "content_sha256"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "path": [
+            "at"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": 3
+          }
+        },
+        {
+          "path": [
+            "at_ms"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "track"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": "V2"
+          }
+        },
+        {
+          "path": [
+            "enabled"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "active"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "disabled"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "hidden"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "deleted"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "from"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "to"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "from_ms"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "to_ms"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "hold"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "present",
+            "value": 3
+          }
+        },
+        {
+          "path": [
+            "duration"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "duration_ms"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "speed"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "time_map"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "timeMap"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "clips"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "children"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "on"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "fixed_start"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "until"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "until_film_end"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "for"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "cut"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "sequence"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "sequence_index"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "sequence_fit"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "orphan"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "formulas"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "on"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "fixed_start"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "until"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "until_film_end"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "for"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "cut"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "sequence"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "sequence_index"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "sequence_fit"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "orphan"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "formulas"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "on"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "fixed_start"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "until"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "until_film_end"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "for"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "cut"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "sequence"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "sequence_index"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "sequence_fit"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "orphan"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "app",
+            "astrid",
+            "formulas"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "ref": "parent",
+          "state": {
+            "state": "present",
+            "value": 30
+          }
+        },
+        {
+          "path": [
+            "output",
+            "fps"
+          ],
+          "ref": "occurrence:f2-occurrence/source",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "placement",
+            "start_ms"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": 0
+          }
+        },
+        {
+          "path": [
+            "at_ms"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "duration_ms"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": 12000
+          }
+        },
+        {
+          "path": [
+            "source_offset"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": 0
+          }
+        },
+        {
+          "path": [
+            "speed"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": 1
+          }
+        },
+        {
+          "path": [
+            "track"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": "S1"
+          }
+        },
+        {
+          "path": [
+            "placement",
+            "track"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "time_map"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "timeMap"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "enabled"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "active"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "disabled"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "hidden"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "deleted"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "placement",
+            "start_ms"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "present",
+            "value": 20000
+          }
+        },
+        {
+          "path": [
+            "at_ms"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "track"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "present",
+            "value": "S1"
+          }
+        },
+        {
+          "path": [
+            "placement",
+            "track"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "enabled"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "active"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "disabled"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "hidden"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "deleted"
+          ],
+          "ref": "occurrence:shared-sibling",
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "resolved": [
+        "occurrence:f2-occurrence/clip:f2-agent-clip"
+      ],
+      "schema_version": 1,
+      "select": "occurrence:f2-occurrence/clip:f2-agent-clip",
+      "selections": [
+        {
+          "boundaries": [
+            "occurrence:f2-occurrence",
+            "occurrence:shared-sibling"
+          ],
+          "key": "move.blockers",
+          "members": [
+            "occurrence:f2-occurrence",
+            "occurrence:shared-sibling"
+          ],
+          "order": [
+            "occurrence:f2-occurrence",
+            "occurrence:shared-sibling"
+          ],
+          "owner": "occurrence:f2-occurrence",
+          "policy": "guard-membership",
+          "query_version": 1
+        }
+      ],
+      "version": "1"
+    },
+    {
+      "args": {
+        "clear": [
+          "asset"
+        ],
+        "values": {}
+      },
+      "authorship": {
+        "occurrence:f2-occurrence/clip:f2-agent-clear-clip::asset": "direct"
+      },
+      "bindings": {
+        "scalar.owner": "occurrence:f2-occurrence",
+        "scalar.target": "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+      },
+      "created": [],
+      "expect": {
+        "occurrence:f2-occurrence/clip:f2-agent-clear-clip::asset": {
+          "state": "present",
+          "value": "f2-clear"
+        }
+      },
+      "intent": {},
+      "op": "clip.set",
+      "reads": [
+        {
+          "path": [
+            "id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-agent-clear-clip"
+          }
+        },
+        {
+          "path": [
+            "occurrence_id"
+          ],
+          "ref": "occurrence:f2-occurrence",
+          "state": {
+            "state": "present",
+            "value": "f2-occurrence"
+          }
+        },
+        {
+          "path": [
+            "shot_id"
+          ],
+          "ref": "occurrence:f2-occurrence/shot",
+          "state": {
+            "state": "present",
+            "value": "shot-shared"
+          }
+        },
+        {
+          "path": [
+            "clipType"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "present",
+            "value": "media"
+          }
+        },
+        {
+          "path": [
+            "clip_type"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "asset"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-clear"
+          }
+        },
+        {
+          "path": [
+            "asset_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "media_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "object_id"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "elementRef"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "element_ref"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-clear",
+            "media_id"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-clear",
+            "object_id"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-clear",
+            "digest"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-clear",
+            "content_digest"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-clear",
+            "content_sha256"
+          ],
+          "ref": "occurrence:f2-occurrence/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ],
+      "resolved": [
+        "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+      ],
+      "schema_version": 1,
+      "select": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+      "selections": [],
+      "version": "1"
+    },
+    {
+      "args": {
+        "clear": [
+          "transition"
+        ],
+        "values": {}
+      },
+      "authorship": {
+        "parent/clip:f2-transition-clip::transition": "direct"
+      },
+      "bindings": {
+        "scalar.target": "parent/clip:f2-transition-clip"
+      },
+      "created": [],
+      "expect": {
+        "parent/clip:f2-transition-clip::transition": {
+          "state": "present",
+          "value": {
+            "duration": 0.5,
+            "type": "crossfade"
+          }
+        }
+      },
+      "intent": {},
+      "op": "clip.set",
+      "reads": [
+        {
+          "path": [
+            "id"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-transition-clip"
+          }
+        },
+        {
+          "path": [
+            "clipType"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "present",
+            "value": "media"
+          }
+        },
+        {
+          "path": [
+            "clip_type"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "asset"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "present",
+            "value": "f2-video"
+          }
+        },
+        {
+          "path": [
+            "asset_id"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "media_id"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "object_id"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "elementRef"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "element_ref"
+          ],
+          "ref": "parent/clip:f2-transition-clip",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-video",
+            "media_id"
+          ],
+          "ref": "parent/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-video",
+            "object_id"
+          ],
+          "ref": "parent/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-video",
+            "digest"
+          ],
+          "ref": "parent/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-video",
+            "content_digest"
+          ],
+          "ref": "parent/registry",
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "path": [
+            "assets",
+            "f2-video",
+            "content_sha256"
+          ],
+          "ref": "parent/registry",
+          "state": {
+            "state": "present",
+            "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ],
+      "resolved": [
+        "parent/clip:f2-transition-clip"
+      ],
+      "schema_version": 1,
+      "select": "parent/clip:f2-transition-clip",
+      "selections": [],
+      "version": "1"
+    }
+  ],
+  "records": [
+    {
+      "bindings": [
+        {
+          "dependencies": [],
+          "key": "scalar.owner",
+          "policy": "fixed",
+          "ref": "occurrence:f2-occurrence"
+        },
+        {
+          "dependencies": [
+            "scalar.images"
+          ],
+          "key": "scalar.target",
+          "policy": "fixed",
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip"
+        }
+      ],
+      "command": {
+        "args": {
+          "clear": [],
+          "values": {
+            "hold": 4
+          }
+        },
+        "authorship": {
+          "occurrence:f2-occurrence/clip:f2-agent-clip::hold": "direct"
+        },
+        "bindings": {
+          "scalar.owner": "occurrence:f2-occurrence",
+          "scalar.target": "occurrence:f2-occurrence/clip:f2-agent-clip"
+        },
+        "created": [],
+        "expect": {
+          "occurrence:f2-occurrence/clip:f2-agent-clip::hold": {
+            "state": "present",
+            "value": 3
+          }
+        },
+        "intent": {},
+        "op": "clip.set",
+        "reads": [
+          {
+            "path": [
+              "id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-agent-clip"
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": "f2-occurrence"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:f2-occurrence/shot",
+            "state": {
+              "state": "present",
+              "value": "shot-shared"
+            }
+          },
+          {
+            "path": [
+              "clipType"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": "media"
+            }
+          },
+          {
+            "path": [
+              "clip_type"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-placeholder"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "media_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "object_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "elementRef"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "element_ref"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-placeholder",
+              "media_id"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-placeholder",
+              "object_id"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-placeholder",
+              "digest"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-placeholder",
+              "content_digest"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-placeholder",
+              "content_sha256"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          {
+            "path": [
+              "at"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": 3
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": "V2"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "from"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "from_ms"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "to_ms"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hold"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "present",
+              "value": 3
+            }
+          },
+          {
+            "path": [
+              "duration"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "clips"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "children"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "on"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "fixed_start"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "until"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "until_film_end"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "for"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "cut"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "sequence"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "sequence_index"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "sequence_fit"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "orphan"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "formulas"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "on"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "fixed_start"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "until"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "until_film_end"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "for"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "cut"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "sequence"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "sequence_index"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "sequence_fit"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "orphan"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "formulas"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "on"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "fixed_start"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "until"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "until_film_end"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "for"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "cut"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "sequence"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "sequence_index"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "sequence_fit"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "orphan"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "app",
+              "astrid",
+              "formulas"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "ref": "parent",
+            "state": {
+              "state": "present",
+              "value": 30
+            }
+          },
+          {
+            "path": [
+              "output",
+              "fps"
+            ],
+            "ref": "occurrence:f2-occurrence/source",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "duration_ms"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": 12000
+            }
+          },
+          {
+            "path": [
+              "source_offset"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": 0
+            }
+          },
+          {
+            "path": [
+              "speed"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": 1
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": "S1"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "time_map"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "timeMap"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "start_ms"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "present",
+              "value": 20000
+            }
+          },
+          {
+            "path": [
+              "at_ms"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "track"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "present",
+              "value": "S1"
+            }
+          },
+          {
+            "path": [
+              "placement",
+              "track"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "enabled"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "active"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "disabled"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "hidden"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "deleted"
+            ],
+            "ref": "occurrence:shared-sibling",
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:f2-occurrence/clip:f2-agent-clip"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:f2-occurrence/clip:f2-agent-clip",
+        "selections": [
+          {
+            "boundaries": [
+              "occurrence:f2-occurrence",
+              "occurrence:shared-sibling"
+            ],
+            "key": "move.blockers",
+            "members": [
+              "occurrence:f2-occurrence",
+              "occurrence:shared-sibling"
+            ],
+            "order": [
+              "occurrence:f2-occurrence",
+              "occurrence:shared-sibling"
+            ],
+            "owner": "occurrence:f2-occurrence",
+            "policy": "guard-membership",
+            "query_version": 1
+          }
+        ],
+        "version": "1"
+      },
+      "dependencies": [
+        {
+          "key": "scalar.images",
+          "kind": "entity",
+          "pin": {
+            "parent": {
+              "content_digest": "sha256:0a3faaffebd89df506a4821d9a36be96bc667a430a41c5e5692d5b94076bab98",
+              "revision_id": "parent-1"
+            },
+            "source": {
+              "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+              "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+              "internal_timeline_id": "main",
+              "internal_timeline_revision_id": "internal-1",
+              "item_id_map": {
+                "item-1": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+                "item-audio": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27"
+              },
+              "revision_id": "shot-rev-1",
+              "shot_id": "shot-shared"
+            }
+          },
+          "policy": "exact"
+        },
+        {
+          "key": "clip.set.quantization",
+          "kind": "time-map",
+          "pin": {
+            "denominator": 1,
+            "numerator": 30,
+            "rounding": "half-toward-positive-infinity"
+          },
+          "policy": "exact"
+        }
+      ],
+      "derived_writes": [],
+      "ordinal": 0,
+      "writes": [
+        {
+          "after": {
+            "state": "present",
+            "value": 4
+          },
+          "before": {
+            "state": "present",
+            "value": 3
+          },
+          "path": [
+            "hold"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clip"
+        }
+      ]
+    },
+    {
+      "bindings": [
+        {
+          "dependencies": [],
+          "key": "scalar.owner",
+          "policy": "fixed",
+          "ref": "occurrence:f2-occurrence"
+        },
+        {
+          "dependencies": [
+            "scalar.images"
+          ],
+          "key": "scalar.target",
+          "policy": "fixed",
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+        }
+      ],
+      "command": {
+        "args": {
+          "clear": [
+            "asset"
+          ],
+          "values": {}
+        },
+        "authorship": {
+          "occurrence:f2-occurrence/clip:f2-agent-clear-clip::asset": "direct"
+        },
+        "bindings": {
+          "scalar.owner": "occurrence:f2-occurrence",
+          "scalar.target": "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+        },
+        "created": [],
+        "expect": {
+          "occurrence:f2-occurrence/clip:f2-agent-clear-clip::asset": {
+            "state": "present",
+            "value": "f2-clear"
+          }
+        },
+        "intent": {},
+        "op": "clip.set",
+        "reads": [
+          {
+            "path": [
+              "id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-agent-clear-clip"
+            }
+          },
+          {
+            "path": [
+              "occurrence_id"
+            ],
+            "ref": "occurrence:f2-occurrence",
+            "state": {
+              "state": "present",
+              "value": "f2-occurrence"
+            }
+          },
+          {
+            "path": [
+              "shot_id"
+            ],
+            "ref": "occurrence:f2-occurrence/shot",
+            "state": {
+              "state": "present",
+              "value": "shot-shared"
+            }
+          },
+          {
+            "path": [
+              "clipType"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "present",
+              "value": "media"
+            }
+          },
+          {
+            "path": [
+              "clip_type"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-clear"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "media_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "object_id"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "elementRef"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "element_ref"
+            ],
+            "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-clear",
+              "media_id"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-clear",
+              "object_id"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-clear",
+              "digest"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-clear",
+              "content_digest"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-clear",
+              "content_sha256"
+            ],
+            "ref": "occurrence:f2-occurrence/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          }
+        ],
+        "resolved": [
+          "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+        ],
+        "schema_version": 1,
+        "select": "occurrence:f2-occurrence/clip:f2-agent-clear-clip",
+        "selections": [],
+        "version": "1"
+      },
+      "dependencies": [
+        {
+          "key": "scalar.images",
+          "kind": "entity",
+          "pin": {
+            "parent": {
+              "content_digest": "sha256:0a3faaffebd89df506a4821d9a36be96bc667a430a41c5e5692d5b94076bab98",
+              "revision_id": "parent-1"
+            },
+            "source": {
+              "content_digest": "sha256:4898c0648cd982adfd3f9dcc5e7ab138499b5cc33186c55639beda5838ecb09b",
+              "internal_timeline_content_digest": "sha256:1ce9fafbc88678b0c8c48cdd2ddf578a8d32f179ada7152fd61ea7d73a6f2b8f",
+              "internal_timeline_id": "main",
+              "internal_timeline_revision_id": "internal-1",
+              "item_id_map": {
+                "item-1": "shot-item-placement-4faaed06cf6c05a8638c08456b119d627da9802c98b14d593c16d7d53dad6d1b",
+                "item-audio": "shot-item-placement-c2a441215668136e97209fde2a6a3cc629169a2dfac5e75f4b155a2a7f582c27"
+              },
+              "revision_id": "shot-rev-1",
+              "shot_id": "shot-shared"
+            }
+          },
+          "policy": "exact"
+        }
+      ],
+      "derived_writes": [],
+      "ordinal": 1,
+      "writes": [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": "f2-clear"
+          },
+          "path": [
+            "asset"
+          ],
+          "ref": "occurrence:f2-occurrence/clip:f2-agent-clear-clip"
+        }
+      ]
+    },
+    {
+      "bindings": [
+        {
+          "dependencies": [
+            "scalar.images"
+          ],
+          "key": "scalar.target",
+          "policy": "fixed",
+          "ref": "parent/clip:f2-transition-clip"
+        }
+      ],
+      "command": {
+        "args": {
+          "clear": [
+            "transition"
+          ],
+          "values": {}
+        },
+        "authorship": {
+          "parent/clip:f2-transition-clip::transition": "direct"
+        },
+        "bindings": {
+          "scalar.target": "parent/clip:f2-transition-clip"
+        },
+        "created": [],
+        "expect": {
+          "parent/clip:f2-transition-clip::transition": {
+            "state": "present",
+            "value": {
+              "duration": 0.5,
+              "type": "crossfade"
+            }
+          }
+        },
+        "intent": {},
+        "op": "clip.set",
+        "reads": [
+          {
+            "path": [
+              "id"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-transition-clip"
+            }
+          },
+          {
+            "path": [
+              "clipType"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "present",
+              "value": "media"
+            }
+          },
+          {
+            "path": [
+              "clip_type"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "asset"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "present",
+              "value": "f2-video"
+            }
+          },
+          {
+            "path": [
+              "asset_id"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "media_id"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "object_id"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "elementRef"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "element_ref"
+            ],
+            "ref": "parent/clip:f2-transition-clip",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-video",
+              "media_id"
+            ],
+            "ref": "parent/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-video",
+              "object_id"
+            ],
+            "ref": "parent/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-video",
+              "digest"
+            ],
+            "ref": "parent/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-video",
+              "content_digest"
+            ],
+            "ref": "parent/registry",
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "path": [
+              "assets",
+              "f2-video",
+              "content_sha256"
+            ],
+            "ref": "parent/registry",
+            "state": {
+              "state": "present",
+              "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          }
+        ],
+        "resolved": [
+          "parent/clip:f2-transition-clip"
+        ],
+        "schema_version": 1,
+        "select": "parent/clip:f2-transition-clip",
+        "selections": [],
+        "version": "1"
+      },
+      "dependencies": [
+        {
+          "key": "scalar.images",
+          "kind": "entity",
+          "pin": {
+            "parent": {
+              "content_digest": "sha256:0a3faaffebd89df506a4821d9a36be96bc667a430a41c5e5692d5b94076bab98",
+              "revision_id": "parent-1"
+            }
+          },
+          "policy": "exact"
+        }
+      ],
+      "derived_writes": [
+        {
+          "after": {
+            "state": "present",
+            "value": [
+              {
+                "asset": "f2-app",
+                "at": 0,
+                "clipType": "media",
+                "from": 0,
+                "id": "f2-app-clip",
+                "speed": 1,
+                "to": 3,
+                "track": "V1"
+              },
+              {
+                "asset": "f2-video",
+                "at": 15,
+                "clipType": "media",
+                "from": 0,
+                "id": "f2-transition-clip",
+                "speed": 1,
+                "to": 3,
+                "track": "V1"
+              }
+            ]
+          },
+          "before": {
+            "state": "present",
+            "value": [
+              {
+                "asset": "f2-app",
+                "at": 0,
+                "clipType": "media",
+                "from": 0,
+                "id": "f2-app-clip",
+                "speed": 1,
+                "to": 3,
+                "track": "V1"
+              },
+              {
+                "asset": "f2-video",
+                "at": 15,
+                "clipType": "media",
+                "from": 0,
+                "id": "f2-transition-clip",
+                "speed": 1,
+                "to": 3,
+                "track": "V1",
+                "transition": {
+                  "duration": 0.5,
+                  "type": "crossfade"
+                }
+              }
+            ]
+          },
+          "cause": 2,
+          "path": [
+            "config",
+            "clips"
+          ],
+          "ref": "parent"
+        }
+      ],
+      "ordinal": 2,
+      "writes": [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": {
+              "duration": 0.5,
+              "type": "crossfade"
+            }
+          },
+          "path": [
+            "transition"
+          ],
+          "ref": "parent/clip:f2-transition-clip"
+        }
+      ]
+    }
+  ]
+}

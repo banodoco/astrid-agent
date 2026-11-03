@@ -7,7 +7,11 @@ import pytest
 
 from astrid.sdk.contracts import DomainResult, ErrorObject
 from astrid.sdk.media_transcript import (
-    NARRATION_SOURCE, build_transcript, read_transcript, transcript_document_id, write_transcript,
+    NARRATION_SOURCE,
+    build_transcript,
+    read_transcript,
+    transcript_document_id,
+    write_transcript,
 )
 from astrid.sdk.timeline_transcripts import plan_narration_transcripts, sync_narration_transcripts
 
@@ -59,6 +63,111 @@ def test_write_create_unchanged_update_with_expected_version():
     assert write_transcript(client, "slug", media, NARRATION_SOURCE, revised) == "updated"
     assert ("update", 1, "canonical-project") in client.documents.calls
     assert sum(call[0] == "create" for call in client.documents.calls) == 1
+
+
+def test_sync_preserves_the_exact_server_pin_from_create_result_without_rereading():
+    from astrid.sdk import media_transcript
+
+    media = "sha256:" + "7" * 64
+    content = build_transcript(media, "line", "Hello", [[0.1, 0.3, "Hello"]])
+    mutation = {
+        "document_id": transcript_document_id("canonical-project", media, NARRATION_SOURCE),
+        "kind": "media.transcript",
+        "content": content,
+        "version": 7,
+        "content_digest": "sha256:" + "7" * 64,
+    }
+
+    class Documents(FakeDocuments):
+        def create(self, *, kind, content, project, document_id):
+            self.calls.append(("create", document_id, project))
+            # A later GET is deliberately a different version. The mutation
+            # result is the only accepted source for this dormant metadata.
+            self.row = {**mutation, "content": content, "version": 8,
+                        "content_digest": "sha256:" + "8" * 64}
+            return DomainResult.success(mutation)
+
+    client = SimpleNamespace(
+        projects=SimpleNamespace(show=lambda project: DomainResult.success({"id": "canonical-project"})),
+        documents=Documents(),
+    )
+    tl = FakeTimeline([{
+        "id": "clip", "asset": "take", "from": 0, "speed": 1,
+        "app": {"astrid": {"segment": "line", "text": "Hello", "words": [[0.1, 0.3, "Hello"]]}},
+    }], {"take": {"media_id": media}})
+
+    report = sync_narration_transcripts(tl, client, "slug")
+    assert report[0]["status"] == "created"
+    assert report[0]["pin"] == {
+        "document_id": mutation["document_id"],
+        "version": 7,
+        "content_digest": mutation["content_digest"],
+    }
+    assert [call[0] for call in client.documents.calls] == ["show", "create"]
+    assert media_transcript.write_transcript(client, "slug", media, NARRATION_SOURCE, content) == "unchanged"
+    dry_run = sync_narration_transcripts(tl, client, "slug", dry_run=True)
+    assert dry_run[0]["pin"] == {
+        "document_id": mutation["document_id"],
+        "version": 8,
+        "content_digest": "sha256:" + "8" * 64,
+    }
+
+
+def test_sync_keeps_legacy_success_when_server_pin_is_missing_or_malformed():
+    media = "sha256:" + "8" * 64
+    content = build_transcript(media, "line", "Hello", [[0.1, 0.3, "Hello"]])
+    tl = FakeTimeline([{
+        "id": "clip", "asset": "take", "from": 0, "speed": 1,
+        "app": {"astrid": {"segment": "line", "text": "Hello", "words": [[0.1, 0.3, "Hello"]]}},
+    }], {"take": {"media_id": media}})
+
+    for digest in (None, "not-a-digest", "sha256:" + "A" * 64):
+        documents = FakeDocuments()
+        documents.row = {
+            "document_id": transcript_document_id("canonical-project", media, NARRATION_SOURCE),
+            "kind": "media.transcript", "content": content, "version": 3,
+            **({} if digest is None else {"content_digest": digest}),
+        }
+        client = SimpleNamespace(
+            projects=SimpleNamespace(show=lambda project: DomainResult.success({"id": "canonical-project"})),
+            documents=documents,
+        )
+        report = sync_narration_transcripts(tl, client, "slug", dry_run=True)
+        assert report[0]["status"] == "unchanged"
+        assert "pin" not in report[0]
+
+
+def test_sync_preserves_the_exact_server_pin_from_update_result():
+    media = "sha256:" + "9" * 64
+    content = build_transcript(media, "line", "Hello", [[0.1, 0.3, "Hello"]])
+    current = {"document_id": transcript_document_id("canonical-project", media, NARRATION_SOURCE),
+               "kind": "media.transcript", "content": {"old": True}, "version": 3}
+    mutation = {**current, "content": content, "version": 4, "content_digest": "sha256:" + "4" * 64}
+
+    class Documents(FakeDocuments):
+        def update(self, document_id, *, content, expected_version, project):
+            self.calls.append(("update", expected_version, project))
+            self.row = {**mutation, "version": 5, "content_digest": "sha256:" + "5" * 64}
+            return DomainResult.success(mutation)
+
+    client = SimpleNamespace(
+        projects=SimpleNamespace(show=lambda project: DomainResult.success({"id": "canonical-project"})),
+        documents=Documents(),
+    )
+    client.documents.row = current
+    tl = FakeTimeline([{
+        "id": "clip", "asset": "take", "from": 0, "speed": 1,
+        "app": {"astrid": {"segment": "line", "text": "Hello", "words": [[0.1, 0.3, "Hello"]]}},
+    }], {"take": {"media_id": media}})
+
+    report = sync_narration_transcripts(tl, client, "slug")
+    assert report[0]["status"] == "updated"
+    assert report[0]["pin"] == {
+        "document_id": mutation["document_id"],
+        "version": 4,
+        "content_digest": "sha256:" + "4" * 64,
+    }
+    assert [call[0] for call in client.documents.calls] == ["show", "update"]
 
 
 def test_word_ids_survive_a_front_trim_of_the_same_recording():
@@ -139,19 +248,19 @@ def test_timelines_transcripts_sync_parser():
 
 
 def test_publish_registers_after_timeline_commit_and_survives_document_failure(monkeypatch, capsys):
-    from astrid.sdk.timeline.checkout import Checkout
-    from astrid.sdk.timeline import store
     from astrid.sdk import timeline_transcripts
+    from astrid.sdk.timeline.checkout import Checkout
 
     bundle = {"project_id": "p", "timeline_id": "t", "placements": [], "shots": {}, "parent": {"clips": []}}
     tl = Checkout(bundle)
     monkeypatch.setattr(tl, "_sync_film_length", lambda: [])
-    monkeypatch.setattr(tl, "check", lambda: SimpleNamespace(valid=True))
+    monkeypatch.setattr(tl, "_check_core", lambda: SimpleNamespace(valid=True))
     monkeypatch.setattr(tl, "edits", lambda: {"changes": ["take"]})
     monkeypatch.setattr(tl, "narration_changes", lambda: {})
     monkeypatch.setattr(tl, "stored_document", lambda **_kwargs: bundle)
     sequence = []
-    monkeypatch.setattr(store, "publish_bundle", lambda *_args, **_kwargs: (
+    monkeypatch.setattr(tl, "_publish_narration", lambda *a, **kw: {})
+    monkeypatch.setattr(tl, "_commit_document", lambda *_args, **_kwargs: (
         sequence.append("publish") or {"new_head": "rev-1"}))
     monkeypatch.setattr(timeline_transcripts, "plan_narration_transcripts", lambda _tl: [
         {"status": "planned"}])

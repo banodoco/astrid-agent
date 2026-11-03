@@ -7,6 +7,25 @@ from astrid.core.timeline.authoring_bundle import AuthoringBundleError, open_aut
 from .contracts import DomainResult, ErrorObject
 
 
+def _authenticated_internal_owners(parent):
+    """Return the exact Runtime-authenticated owner for each internal pin."""
+    manifest = parent.get("dependency_manifest") if isinstance(parent, Mapping) else None
+    rows = manifest.get("internal_timelines") if isinstance(manifest, Mapping) else None
+    if not isinstance(rows, list):
+        raise AuthoringBundleError("parent revision has no complete internal timeline manifest")
+    owners = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise AuthoringBundleError("canonical internal timeline pin is invalid")
+        revision, owner = row.get("revision_id"), row.get("timeline_id")
+        if not isinstance(revision, str) or not revision or not isinstance(owner, str) or not owner:
+            raise AuthoringBundleError("canonical internal timeline pin has no exact owner")
+        previous = owners.setdefault(revision, owner)
+        if previous != owner:
+            raise AuthoringBundleError("canonical internal revision has conflicting owners")
+    return owners
+
+
 def read_authoring_revision(reader, project_id, timeline_id, revision_id):
     """Hydrate only the requested pins; validate scope and immutable bytes."""
     def read(operation, *args, expected):
@@ -34,6 +53,7 @@ def read_authoring_revision(reader, project_id, timeline_id, revision_id):
         payload = parent.data.get("payload")
         if not isinstance(payload, Mapping) or not isinstance(payload.get("occurrences"), list):
             raise AuthoringBundleError("parent revision has no complete occurrences list")
+        owner_by_revision = _authenticated_internal_owners(parent.data)
         for occurrence in payload["occurrences"]:
             if not isinstance(occurrence, Mapping):
                 raise AuthoringBundleError("invalid pinned occurrence")
@@ -57,8 +77,12 @@ def read_authoring_revision(reader, project_id, timeline_id, revision_id):
             if not isinstance(internal_revision, str) or not internal_revision:
                 raise AuthoringBundleError("shot is missing its exact internal timeline pin")
             if internal_revision not in internals:
-                result = read("get_project_timeline_revision", project_id, timeline_id, internal_revision,
-                              expected={"project_id": project_id, "timeline_id": timeline_id, "revision_id": internal_revision})
+                internal_owner = owner_by_revision.get(internal_revision)
+                if not isinstance(internal_owner, str) or not internal_owner:
+                    raise AuthoringBundleError("pinned internal revision has no exact owner timeline")
+                result = read("get_project_timeline_revision", project_id, internal_owner, internal_revision,
+                              expected={"project_id": project_id, "timeline_id": internal_owner,
+                                        "revision_id": internal_revision})
                 if not result.ok:
                     return result
                 internals[internal_revision] = result.data

@@ -164,6 +164,44 @@ class ComposedCaptureClient:
         return [[{'object_id': MANAGED_VIDEO_REFERENCE, 'digest': VIDEO, 'size': 100}], None]
 
 
+class DivergentInputClient:
+    """A current listing whose requested input view is an older exact parent."""
+
+    def get_project(self, project):
+        return {'project_id': 'p', 'id': 'p', 'slug': 'demo'}
+
+    def list_timelines(self, project, **kwargs):
+        return [[{
+            'project_id': 'p', 'timeline_id': 'tl', 'slug': 'cut',
+            'head_revision_id': 'current-revision',
+            'parent_revision_id': 'current-revision',
+            'config_version': 9, 'head_event_id': 'current-event',
+            'head_hash': 'current-head-hash', 'config_hash': 'current-config-hash',
+            'registry_hash': 'current-registry-hash',
+        }], None]
+
+    def get_project_parent_composition_revision(self, project, timeline, revision):
+        assert (project, timeline, revision) == ('p', 'tl', 'historical-revision')
+        return {
+            'project_id': 'p', 'timeline_id': 'tl', 'revision_id': revision,
+            'content_digest': 'sha256:' + 'd' * 64,
+            'payload': {
+                'config': {
+                    'theme_overrides': {'visual': {'canvas': {'fps': 24}}},
+                    'tracks': [{'id': 'picture', 'kind': 'visual'}],
+                    'clips': [{'id': 'historical-clip', 'track': 'picture', 'at': 0, 'hold': 1}],
+                },
+                'registry': {'assets': {}}, 'occurrences': [],
+            },
+        }
+
+    def get_project_shot_revision(self, *_args):
+        raise AssertionError('the flat historical fixture has no child reads')
+
+    def get_project_timeline_revision(self, *_args):
+        raise AssertionError('the flat historical fixture has no child reads')
+
+
 def test_exact_old_render_uses_frozen_script_without_current_binding_reads():
     client = FakeClient(); client.current_version = 9; client.current_head = 7
     value = envelope()
@@ -317,6 +355,22 @@ def test_exact_pinned_input_inspection_does_not_fall_back_to_current_timeline():
     assert result['mode'] == 'input_only'
     assert result['render_run_id'] == DIRECT_RENDER_RUN
     assert result['input_snapshot']['metadata']['selection'] == 'render_pinned_input_only'
+
+
+def test_requested_input_revision_reads_historical_content_when_head_diverges():
+    result = prepare_filmstrip(
+        {
+            'timeline_ref': 'tl', 'revision_id': 'historical-revision',
+            'show': ['inputs'], 'hide': ['output'],
+        },
+        project='p', client=DivergentInputClient(),
+    )
+
+    snapshot = result['input_snapshot']
+    assert snapshot['clips'][0]['id'] == 'historical-clip'
+    assert snapshot['metadata']['parent_revision_id'] == 'historical-revision'
+    assert snapshot['metadata']['parent_revision_id'] != 'current-revision'
+    assert snapshot['metadata']['timeline_identity'] == {'timeline_id': 'tl', 'slug': 'cut'}
 
 
 def _patch_composed_parent(monkeypatch, *, unresolvable=()):

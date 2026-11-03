@@ -574,8 +574,8 @@ editor.
 
 ## Check a world
 
-Before calling a world done (items 2 to 5 render frames: run them only when the
-user asks for frames or a render):
+Before calling a world done (items 2 to 5 capture frames; none needs a video
+render):
 
 1. The declarations the host kept (`events`, `shots`, `explore`) match what
    you wrote. The explorer shows them, and so does `SceneFrameHost.info`.

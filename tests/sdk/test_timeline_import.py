@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.sdk.remote import RemoteMedia
-from astrid.sdk.workspace_client import WorkspaceClient
 from astrid.sdk import timeline_import
+from astrid.sdk.remote import RemoteMedia
 from astrid.sdk.timeline_export import export_timeline
+from astrid.sdk.workspace_client import WorkspaceClient
 
 
 def _archive(path: Path, *, payload: bytes = b"media-content", media_rows=None, transcript_names=(), elements=()):
@@ -82,7 +82,7 @@ def test_import_streams_verified_objects_and_augments_receipt(tmp_path, monkeypa
     assert result["media"]["uploaded"] == 1
     assert result["media"]["uploaded_bytes"] == len(raw)
     assert commits and commits[0][0] == "target"
-    assert commits[0][1] == prepared
+    assert commits[0][1] == {**prepared, "source": {"via": "cli"}}
     assert manifest["media"][0]["sha256"] == digest
 
 
@@ -134,7 +134,7 @@ def test_import_uses_project_object_reference_for_large_commit_body(tmp_path, mo
     assert upload_kwargs["media_type"] == "application/json"
     assert upload_kwargs["filename"] == "prepared-timeline-import.json"
     assert upload_kwargs["expected_digest"] == "sha256:" + digest
-    assert commits[0][1] == {"prepared_object_id": "sha256:" + digest}
+    assert commits[0][1] == {"prepared_object_id": "sha256:" + digest, "source": {"via": "cli"}}
     assert result["media"]["uploaded"] == 1
 
 

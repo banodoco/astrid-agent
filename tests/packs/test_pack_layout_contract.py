@@ -306,6 +306,16 @@ def test_all_shipped_packs_discoverable() -> None:
     )
 
 
+def test_timeline_pack_is_discoverable_without_cli_actions() -> None:
+    """Timeline is a skill pack; its CLI modules are not manifest actions."""
+    timeline = next(pack for pack in discover_packs(_PACKS_ROOT) if pack.id == "timeline")
+
+    assert timeline.documentation == {"kind": "skill", "path": "docs/SKILL.md"}
+    assert timeline.actions == {}
+    assert list((timeline.root).glob("cli*.py"))
+    assert not {path.stem for path in timeline.root.glob("cli*.py")} & set(timeline.actions)
+
+
 def test_no_unexpected_pack_ids_ship() -> None:
     """No pack ids beyond the known shipped set should appear under
     ``astrid/packs/``.  Unexpected packs indicate unclassified additions."""
@@ -368,6 +378,7 @@ def test_skill_discovery_finds_pack_skills() -> None:
         "stream_content",
         "understanding",
         "video_editing",
+        "timeline",
     }
     descriptors = skill_discovery.list_skills()
     discovered_pack_ids = {d.pack_id for d in descriptors}
@@ -376,6 +387,9 @@ def test_skill_discovery_finds_pack_skills() -> None:
         f"Pack skills not discovered: {missing}. "
         f"Discovered pack_ids: {sorted(discovered_pack_ids)}"
     )
+    timeline = next(d for d in descriptors if d.pack_id == "timeline")
+    assert timeline.name == "timeline"
+    assert timeline.skill_md == _PACKS_ROOT / "timeline" / "docs" / "SKILL.md"
 
 
 def test_v2_integration_packs_are_discoverable() -> None:

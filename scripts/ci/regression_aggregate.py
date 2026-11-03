@@ -21,6 +21,80 @@ QUAL_PREDICATE_SHA256 = "6ef495007d3f815eaad52c61d2ec7e86f8abca9e4287a48321c64f1
 TERMINAL = frozenset(("completed", "infrastructure_failed", "unstartable", "skipped", "cancelled", "timed_out", "missing_at_deadline", "collection_failed"))
 
 
+
+# Compatibility for the published CP1 diagnostic interface.
+ROOT = Path(__file__).resolve().parents[2]
+COVERAGE = ROOT / '.github/integration/cp1-coverage.json'
+# This is a reviewed, version-controlled authority, never an evidence-provider input.
+REVIEW = ROOT / '.github/integration/cp1-reviewed-inventory.json'
+CP1 = {
+    'runtime': '3b12fface79a3be029f3b6623765a7f3e1e5e24f',
+    'agent': '0a47bf37e309741ef2a90d18739fa94758cf8f3f',
+    'app': '8a05d31ae702ad83d8e61867d82f0fc2feb52ce3',
+    'pinokio': '8d8e1b46948f6a0cdf8d3f81f4db3f14c21f11b2',
+}
+CUTOFF = '2026-10-31T23:36:50Z'
+
+
+def read(path):
+    return json.loads(Path(path).read_text(encoding='utf-8'))
+
+
+def _evaluate_published(args):
+    # Imports are deliberately deferred: missing evaluator dependencies must still emit red.
+    import local_regression_green as local
+    import regression_green as core
+    tup = read(args.tuple)
+    core.validate_schema(tup, 'tuple.schema.json')
+    if set(tup['repos']) != set(CP1):
+        raise ValueError('CP1 requires exactly four repositories')
+    for repo, sha in CP1.items():
+        if tup['repos'][repo]['sha'] != sha or tup['repos'][repo]['url'] != 'https://github.com/banodoco/astrid-' + repo:
+            raise ValueError('wrong CP1 repository or SHA: ' + repo)
+    if local.timestamp(args.not_before) < local.timestamp(CUTOFF):
+        raise ValueError('cutoff predates CP1 publication')
+    receipt = read(args.collection)
+    if receipt != {'collection': 'success', 'prerequisites': 'success'}:
+        raise ValueError('collection or prerequisite did not succeed')
+    coverage = read(COVERAGE)
+    reviewed = read(REVIEW)
+    if reviewed.get('complete') is not True:
+        raise ValueError('CP1 test-node and source inventory is not reviewed and complete')
+    identity = core.digest({k: v for k, v in tup.items() if k != 'digest'})
+    if reviewed.get('tuple_digest') != identity:
+        raise ValueError('reviewed inventory tuple mismatch')
+    features = reviewed.get('features')
+    required_features = coverage.get('features')
+    if reviewed.get('features_complete') is not True or not isinstance(features, list) or not features or not isinstance(required_features, list) or not required_features:
+        raise ValueError('feature coverage and reviewed feature inventory are missing or incomplete')
+    feature_key = lambda x: tuple(x[k] for k in ('repo', 'lane', 'platform', 'scenario', 'slot_id'))
+    if (len({feature_key(x) for x in features}) != len(features) or
+            len({feature_key(x) for x in required_features}) != len(required_features) or
+            {feature_key(x) for x in features} != {feature_key(x) for x in required_features}):
+        raise ValueError('reviewed feature inventory does not match required coverage')
+    lanes = reviewed['lanes']
+    key = lambda x: (x['repo'], x['lane'], x['platform'])
+    required = coverage['lanes']
+    if (len({key(x) for x in required}) != len(required) or
+            len({key(x) for x in lanes}) != len(lanes) or
+            {key(x) for x in required} != {key(x) for x in lanes}):
+        raise ValueError('reviewed inventory does not match fixed G3 coverage')
+    by_key = {key(x): x for x in lanes}
+    for row in required:
+        lane = by_key[key(row)]
+        if lane['source']['kind'] != row['kind']:
+            raise ValueError('wrong evidence transport: ' + str(key(row)))
+        if row['protected'] and not all(t.get('protected') is True for t in lane['tests']):
+            raise ValueError('protected lane contains waivable tests: ' + str(key(row)))
+    with tempfile.TemporaryDirectory(prefix='regression-aggregate-') as tmp:
+        inventory = Path(tmp) / 'inventory.json'
+        inventory.write_text(json.dumps({'tuple_digest': identity, 'lanes': lanes}), encoding='utf-8')
+        return local.local_evaluate(args.tuple, inventory, COVERAGE, args.ledger,
+                                    args.broker_root, args.hosted_root, args.freshness,
+                                    args.not_before, features=features)
+
+
+
 def _sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -147,7 +221,9 @@ def evaluate_sealed(sealed_input: object, evaluator=None) -> dict[str, object]:
 
 
 def evaluate(args: argparse.Namespace) -> tuple[list[str], list[str]]:
-    """Evaluate all sealed terminal results.  Any non-completed result is red."""
+    """Evaluate sealed results, or the published CP1 diagnostic arguments."""
+    if not hasattr(args, "sealed_results"):
+        return _evaluate_published(args)
     sealed = ledger.read_json(args.sealed_results)
     if not isinstance(sealed, dict):
         raise ValueError("sealed result set is not an object")

@@ -7,65 +7,39 @@ metadata:
 
 # Pack Builder
 
-Use this skill when a maker wants to turn a repeatable capability into an
-Astrid extension. Start from the existing catalog and compose what is already
-available. One pack is the distribution and namespace unit: `pack.yaml`
-declares its public actions, UI, rendering, and resources. A pack is not a
-database schema, a separate project database, or a new gateway command. For
-small mutable settings owned by one pack in one project, use the Runtime
-project Documents API described in the pack data contract.
+Package a repeatable capability as an Astrid extension. Start with the
+catalog and reuse what already exists. For a new pack, follow the
+[authoring guide](../../../../../docs/guides/create-a-pack.md) and
+[manifest reference](../../../../../docs/packs/creating-packs.md).
 
-The detailed contracts are maintained in these authoritative guides:
+## Choose what to build
 
-- [When and how to create a pack](../../../../../docs/guides/create-a-pack.md) —
-  the current v3 authoring route, starter journeys, roles, documentation
-  pointer, validation, and inspect commands.
-- [Creating Astrid Packs](../../../../../docs/packs/creating-packs.md) — the
-  layout and `pack.yaml` field reference: the `actions`, `ui`, `rendering` and
-  `documents` sections, the role folders they point into, the rules
-  `validate` enforces, permissions, secrets and aliases.
-- [Pack data storage](../../../../../docs/packs/data-storage.md) — the shared
-  Runtime project-document convention for mutable pack settings, source files,
-  Runtime versions, schema migrations, and conflict handling.
-- [Creating Tools](../../../../../docs/guides/creating-tools.md) — the decision
-  rule for composing existing capabilities and choosing an executor,
-  orchestrator, element, library, or rendering extension.
-- [Pack Contract](../../../../../docs/packs/contract.md) and
-  [Pack Taxonomy](../../../../../docs/packs/pack-taxonomy.md) — identity,
-  ownership, enablement, maturity, and trust metadata.
-- [Discovery for Agents](../../../../../docs/guides/discovery-for-agents.md) —
-  the manifest-backed SDK discovery surface.
-- [SDK reference](../../../../../docs/reference/sdk.md) — invocation and
-  rendering APIs.
-- [Capability reference](../references/capabilities.md) — generated inventory
-  for quick orientation; when a pack manifest changes, regenerate it with
-  `python scripts/gen_capability_index.py`
-  ([source](../../../../../scripts/gen_capability_index.py)). `make doc-refs`
-  fails on a stale catalog.
-- [Pack testing](../pack-testing/SKILL.md) — where a pack's tests go, which
-  lane they run in, how to test an action (unit, real Runtime daemon, editing
-  scenario), and the known-failures rules.
-- [Video editing skill](../../../video_editing/docs/SKILL.md) — existing timeline
-  editing route; the [rendering skill](../../../rendering/docs/SKILL.md) is the
-  downstream render/evidence compatibility layer.
+1. **Existing capability:** inspect `astrid.sdk.discover()` and
+   `astrid.sdk.get_capability(...)`; compose what fits.
+2. **Action or UI:** declare the public contribution in `pack.yaml` and put
+   its implementation under the matching role folder.
+3. **Rendering:** declare it under `rendering:` and follow the authoring guide.
+4. **Shared code:** put private support used by contributions under `shared/`.
+5. **No new pack:** keep one-off work in a run directory.
 
-The runnable starter source is
-[`astrid/core/pack/cli_basic.py`](../../../../../astrid/core/pack/cli_basic.py);
-its focused contract tests are
-[`tests/core/pack/test_cli_scaffold_f08.py`](../../../../../tests/core/pack/test_cli_scaffold_f08.py).
-Link to those sources rather than maintaining another template or schema here.
+Reuse capabilities with `astrid.sdk.invoke(...)`. Do not open the Runtime
+database or invoke `run.py` directly. See [creating tools](../../../../../docs/guides/creating-tools.md)
+for contribution choices and [pack data storage](../../../../../docs/packs/data-storage.md)
+for mutable project settings.
 
-Read only the linked guide needed for the current choice. Do not copy its
-schemas or command catalog into this skill; those documents are the source of
-truth.
+## Give the pack useful skills
 
-Use the contribution roles narrowly: `action` exposes callable functions,
-`ui` binds a contribution to a receiving host, `rendering` declares renderer
-or rendering support, and `shared` holds support reused by the pack's own
-contributions. Declare the public surface in `pack.yaml`; implementation and
-private helpers belong under only the applicable role folders.
+Give the pack one main skill for its common workflow. Add an extra when a
+distinct workflow needs separate instructions or should load only on demand.
+Move details that crowd the normal path into extra skills or ordinary
+references. Declare the main skill under `documentation`; declare each extra
+as a `kind: skill` resource. References are files linked from a skill, not
+skill resources. See the [skill-writing guide](references/writing-skills.md).
 
-## Choose the contribution shape
+The [Timeline pack](../../../timeline/pack.yaml) shows this layout: its main
+skill is `docs/SKILL.md`, its extras are `timeline-series`,
+`timeline-narrated`, `timeline-review`, and `timeline-shots`, and its helper
+guides live in `docs/references/`.
 
 Use this decision map when an idea is underspecified:
 

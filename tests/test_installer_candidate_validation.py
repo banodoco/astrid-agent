@@ -265,6 +265,8 @@ def test_candidate_schema_inspector_is_read_only_and_accepts_migration_source(tm
     RealmStore.initialize(realm_root, realm_id="realm-1").close()
     database = realm_root / "realm.sqlite3"
     with sqlite3.connect(database) as connection:
+        from tests.installer_schema_fixtures import remove_round1b_schema_objects
+        remove_round1b_schema_objects(connection)
         connection.execute("ALTER TABLE timelines DROP COLUMN name")
         connection.execute("DROP TABLE user_app_state")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
@@ -373,7 +375,8 @@ def test_real_preparation_failure_leaves_old_owner_pointer_and_workspace(candida
         getattr(backend, name).assert_not_called()
 
 
-def test_regular_update_admits_supported_older_schema_and_reaches_migration(candidate, monkeypatch):
+def test_regular_update_admits_supported_older_schema_and_reaches_migration(
+        candidate, monkeypatch, current_schema=False):
     from runtime_protocol.store import RealmStore
 
     backend, candidate_version, data, realm = candidate
@@ -391,10 +394,13 @@ def test_regular_update_admits_supported_older_schema_and_reaches_migration(cand
     realm_root = Path(realm["realm_root"])
     RealmStore.initialize(realm_root, realm_id=realm["realm_id"]).close()
     database = realm_root / "realm.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("ALTER TABLE timelines DROP COLUMN name")
-        connection.execute("DROP TABLE user_app_state")
-        connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
+    if not current_schema:
+        with sqlite3.connect(database) as connection:
+            from tests.installer_schema_fixtures import remove_round1b_schema_objects
+            remove_round1b_schema_objects(connection)
+            connection.execute("ALTER TABLE timelines DROP COLUMN name")
+            connection.execute("DROP TABLE user_app_state")
+            connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
     realm_before = database.read_bytes()
     calls = []
 
@@ -417,10 +423,19 @@ def test_regular_update_admits_supported_older_schema_and_reaches_migration(cand
 
     core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert ("upgrade", candidate_version) in calls
+    if current_schema:
+        assert not any(call[0] in {"backup", "upgrade"} for call in calls)
+    else:
+        assert ("upgrade", candidate_version) in calls
     assert core.current(backend.root).root == candidate_version.root
     assert (data / "work.bin").read_bytes() == original_workspace
     assert database.read_bytes() == realm_before
+
+
+def test_regular_update_on_current_schema_preserves_workspace_without_backup_or_migration(
+        candidate, monkeypatch):
+    test_regular_update_admits_supported_older_schema_and_reaches_migration(
+        candidate, monkeypatch, current_schema=True)
 
 
 def test_journal_uses_durable_lf_writer_with_windows_translation_and_missing_home(tmp_path, monkeypatch):

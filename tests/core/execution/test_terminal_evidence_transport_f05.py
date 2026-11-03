@@ -123,3 +123,43 @@ def test_failure_retries_same_idempotent_write_if_readback_is_not_yet_visible():
 
     assert len(client.generated.calls) == 2
     assert client.generated.calls[0][2]["idempotency_key"] == client.generated.calls[1][2]["idempotency_key"]
+
+
+def test_published_generated_signature_preserves_failure_and_cancellation_wire_evidence():
+    """Exercise the actual vendored methods, rather than a **kwargs test double."""
+    import json
+
+    from astrid_runtime_client import WorkspaceClient
+
+    for status in ("failed", "cancelled"):
+        result = {"status": status, "manifest_ref": {
+            "object_id": "sha256:" + "e" * 64, "size": 12}}
+        outputs = [{"name": "result_manifest", "output_port": "result_manifest", "role": "manifest"}]
+        calls = []
+
+        def transport(method, path, headers, body):
+            calls.append((method, path, headers, json.loads(body)))
+            return 200, {}, json.dumps({"data": {"task": {
+                "id": "task-1", "result": result}}, "receipt": {"committed": True}}).encode()
+
+        client = RuntimeProtocolClient.__new__(RuntimeProtocolClient)
+        client.generated = WorkspaceClient("http://offline.invalid", transport=transport)
+        client.generated.get_task = lambda _task_id: {"id": "task-1", "attempt_id": "attempt-1", "version": 4, "result": None}
+        client._attempt_runtime_epochs = {"attempt-1": 9}
+        if status == "failed":
+            client.fail("task-1", "lease-1", "producer failed", attempt_id="attempt-1", fence=3,
+                        outputs=outputs, result=result)
+        else:
+            client.cancel("task-1", attempt_id="attempt-1", fence=3, lease_id="lease-1",
+                          outputs=outputs, result=result, stop_observed=False)
+        assert len(calls) == 1
+        method, path, headers, body = calls[0]
+        assert method == "POST"
+        assert path == ("/v1/attempts/attempt-1/fail" if status == "failed" else "/v1/tasks/task-1/cancel")
+        assert body["lease_id"] == "lease-1" and body["fence"] == 3 and body["runtime_epoch"] == 9
+        assert body["outputs"] == outputs and body["result"] == result
+        assert headers["Idempotency-Key"] == (
+            "fail-attempt-1-3" if status == "failed" else "cancel-task-1-attempt-1-3-stop-0")
+        if status == "cancelled":
+            assert body["attempt_id"] == "attempt-1" and body["expected_version"] == 4
+            assert body["stop_observed"] is False

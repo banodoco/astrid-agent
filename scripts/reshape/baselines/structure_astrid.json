@@ -5,7 +5,6 @@
     "astrid/core/execution/generic_host.py imports forbidden module 'astrid.packs.vibecomfy.shared.bundle_inputs'",
     "astrid/core/execution/generic_host.py imports forbidden module 'astrid.packs.wan2gp.src.driver'",
     "astrid/core/execution/generic_host_worker.py: sys.modules injection remains outside tests",
-    "astrid/core/extensions/registry.py: sys.modules injection remains outside tests",
     "astrid/core/foundation/paths.py: sys.modules injection remains outside tests",
     "top-level astrid directory is not a canonical concept: astrid/agent_profiles",
     "top-level astrid directory is not a canonical concept: astrid/omp_extensions",

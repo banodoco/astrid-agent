@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -32,16 +33,259 @@ RELEASE0_REQUIRED = frozenset({
     "provenance.json", "served/install", "served/install.ps1", "served/install-manifest.json",
 })
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
+DIAGNOSTIC_START_STAGE = "release0-api-seed"
+DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
 
 
-def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict) -> dict:
+def _bytes_sha256(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"Diagnostic {label} must be a regular file")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _target_tuple(manifest: dict) -> dict:
+    """Return the source identity that a retained release-0 state is bound to."""
+    try:
+        agent = manifest["agent"]["sha"]
+        runtime = manifest["runtime"]["sha"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("Release-1 manifest does not contain an Agent/Runtime tuple") from exc
+    if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+               for value in (agent, runtime)):
+        raise RuntimeError("Release-1 manifest has an invalid Agent/Runtime tuple")
+    tools = manifest.get("tools", {})
+    if not isinstance(tools, dict):
+        raise RuntimeError("Release-1 manifest tools must be an object")
+    return {
+        "agent": agent,
+        "runtime": runtime,
+        "schema_digest": manifest["runtime"].get("schema_digest"),
+        "tools": {name: row.get("version") for name, row in tools.items()
+                  if isinstance(row, dict) and row.get("version")},
+    }
+
+
+def _candidate_sources(checkouts: dict | None) -> dict:
+    if not isinstance(checkouts, dict) or set(checkouts) != {"app", "agent", "runtime", "pinokio"}:
+        raise RuntimeError("Diagnostic start requires all four verified candidate checkouts")
+    sources = {}
+    for name, row in checkouts.items():
+        sha = row.get("sha") if isinstance(row, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise RuntimeError(f"Diagnostic candidate {name} checkout has no immutable commit")
+        sources[name] = sha
+    return sources
+
+
+def _diagnostic_state_path(args, root: Path) -> Path:
+    supplied = getattr(args, "diagnostic_state", None)
+    expected = root.parent / DIAGNOSTIC_STATE_NAME
+    if supplied is None:
+        raise ValueError("--diagnostic-state is required for a diagnostic stage start")
+    path = Path(supplied)
+    if path.is_symlink() or path != expected:
+        raise ValueError("--diagnostic-state must be the exact run-owned release-0 precondition file")
+    return path
+
+
+def _preseed_workspace_state(data: Path) -> dict:
+    """Return a fail-closed fingerprint of the selected release-0 realm.
+
+    The diagnostic seed starts after the normal lifecycle has retained the
+    release-0 installation.  Its checkpoint must therefore bind the actual
+    workspace bytes as well as the selected program version.  The journey owns
+    this realm and no API operation is in flight at either call site; if it is
+    nevertheless changing while it is read, decline the diagnostic rather than
+    treating an uncertain state as the original pre-seed realm.
+    """
+    realm = journey.workspace_root(data)
+
+    def entries() -> list[dict[str, str]]:
+        found = []
+        for path in sorted(realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()):
+            relative = path.relative_to(realm).as_posix()
+            if path.is_symlink():
+                raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
+            if path.is_dir():
+                found.append({"path": relative, "kind": "directory"})
+            elif path.is_file():
+                found.append({"path": relative, "kind": "file",
+                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+            else:
+                raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+        return found
+
+    first = entries()
+    second = entries()
+    if first != second:
+        raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    return {
+        "realm_root": str(realm),
+        "entry_count": len(first),
+        "tree_sha256": semantic_digest({"entries": first}),
+    }
+
+
+def diagnostic_release0_identity(args, root: Path, data: Path, *, fixture_receipt: dict,
+                                 release0_manifest: Path, target_manifest: dict,
+                                 candidate: dict, candidate_checkouts: dict,
+                                 version_path: Path, version: dict) -> dict:
+    """Build the minimum identity required to resume the release-0 seed stage.
+
+    It intentionally binds both sides of the transition: the live selected
+    release-0 version and the immutable release-1 candidate it was prepared
+    to update to.  The identity is re-derived before every diagnostic action;
+    the file is therefore a checkpoint, not a substitute for live validation.
+    """
+    owner_path = root.parent / journey.OWNER_FILE
+    if owner_path.is_symlink() or not owner_path.is_file():
+        raise RuntimeError("Diagnostic start has no run-owned journey identity")
+    owner = journey.read_json(owner_path)
+    if (owner.get("schema_version") != 1 or not isinstance(owner.get("run_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", owner["run_id"])
+            or owner.get("root") != str(root) or owner.get("data_root") != str(data)):
+        raise RuntimeError("Diagnostic start journey identity is invalid")
+    current_path = root / "current"
+    if current_path.is_symlink() or not current_path.is_file():
+        raise RuntimeError("Diagnostic start has no selected version")
+    current = current_path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", current):
+        raise RuntimeError("Diagnostic start selected version is invalid")
+    installed_manifest = Path(version["root"]) / "manifest.json"
+    release0_tuple = journey.selected_tuple(journey.read_json(release0_manifest), version)
+    return {
+        "schema_version": 2,
+        "kind": "release0-api-seed-diagnostic-preconditions",
+        "stage": DIAGNOSTIC_START_STAGE,
+        "run_id": owner["run_id"],
+        "roots": {"program": str(root), "data": str(data)},
+        "release0_fixture": fixture_receipt,
+        "release0_version": {
+            "current": current,
+            "version_sha256": _bytes_sha256(version_path, "version record"),
+            "manifest_sha256": _bytes_sha256(installed_manifest, "installed manifest"),
+            "tuple": release0_tuple,
+        },
+        "preseed_workspace": _preseed_workspace_state(data),
+        "release1_candidate": {
+            "candidate_sha256": semantic_digest(candidate),
+            "manifest_sha256": candidate.get("manifest_sha256"),
+            "tuple": _target_tuple(target_manifest),
+            "checkouts": _candidate_sources(candidate_checkouts),
+        },
+    }
+
+
+def write_diagnostic_release0_preconditions(args, root: Path, data: Path, *, fixture_receipt: dict,
+                                            release0_manifest: Path, target_manifest: dict,
+                                            candidate: dict, version_path: Path,
+                                            version: dict) -> Path:
+    """Checkpoint a fully validated release-0 state before the seed stage."""
+    path = root.parent / DIAGNOSTIC_STATE_NAME
+    if path.exists() or path.is_symlink():
+        raise RuntimeError("Diagnostic release-0 precondition file already exists")
+    identity = diagnostic_release0_identity(
+        args, root, data, fixture_receipt=fixture_receipt,
+        release0_manifest=release0_manifest, target_manifest=target_manifest,
+        candidate=candidate, candidate_checkouts=getattr(args, "candidate_checkouts", None),
+        version_path=version_path, version=version,
+    )
+    journey.write_json(path, identity)
+    return path
+
+
+def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -> tuple[dict, dict]:
+    """Validate the exact retained state without invoking a lifecycle command."""
+    if (getattr(args, "diagnostic_start_at", None) != DIAGNOSTIC_START_STAGE
+            or args.leg != "release0-to-release1" or args.mode != "direct"
+            or getattr(args, "job_id", None) or getattr(args, "source_override", False)):
+        raise ValueError("Diagnostic start is only admitted for the direct release-0 seed stage")
+    fixture, release0_manifest, fixture_receipt = release0_admission(args)
+    del fixture  # Fixture bytes were authenticated by release0_admission above.
+    app = args.app_checkout.resolve(strict=True)
+    candidate_path, target_manifest = journey.selected_manifest(
+        app, source_override=False, agent=None, runtime=None, evidence=evidence)
+    candidate = journey.read_json(args.candidate)
+    if (evidence_gate.validate_tuple(candidate, app, candidate_path) != target_manifest
+            or target_manifest.get("release") != 1):
+        raise RuntimeError("Diagnostic start requires a frozen release-1 candidate manifest")
+    checkouts = journey.candidate_checkouts(args)
+    version_path, selected_data, version = journey.installation(root, data)
+    if selected_data != data or installed_release(version) != 0:
+        raise RuntimeError("Diagnostic start requires the retained release-0 installation")
+    identity = diagnostic_release0_identity(
+        args, root, data, fixture_receipt=fixture_receipt,
+        release0_manifest=release0_manifest, target_manifest=target_manifest,
+        candidate=candidate, candidate_checkouts=checkouts, version_path=version_path, version=version,
+    )
+    state_path = _diagnostic_state_path(args, root)
+    if state_path.is_symlink() or not state_path.is_file():
+        raise RuntimeError("Diagnostic start precondition file is absent")
+    checkpoint = journey.read_json(state_path)
+    if checkpoint != identity:
+        if checkpoint.get("preseed_workspace") != identity["preseed_workspace"]:
+            raise RuntimeError("Diagnostic start refuses a workspace changed after its pre-seed checkpoint")
+        raise RuntimeError("Diagnostic start preconditions are stale or do not match the live version/tuple")
+    service = journey.assert_direct_service_ownership(root, data)
+    health = journey.healthy(data)
+    journey.assert_one_runtime(data)
+    return version, {"state_path": state_path, "identity": identity,
+                     "service": service, "health": health}
+
+
+def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Path) -> dict:
+    """Run only the retained release-0 seed block; this is never qualification evidence."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1,
+        "receipt_kind": "release1-diagnostic-stage",
+        "evidence_class": "diagnostic-only",
+        "qualification": {"eligible": False,
+                            "reason": "stage-start diagnostics do not execute the complete lifecycle"},
+        "scenario": args.leg,
+        "start_at": DIAGNOSTIC_START_STAGE,
+        "status": "not-run",
+        "checks": {"preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        version, context = _diagnostic_release0_context(args, root, data, evidence)
+        result["preconditions"] = {
+            "state_path": str(context["state_path"]),
+            "state_sha256": _bytes_sha256(context["state_path"], "precondition file"),
+            "release0_tuple": context["identity"]["release0_version"]["tuple"],
+            "release1_tuple": context["identity"]["release1_candidate"]["tuple"],
+            "preseed_workspace": context["identity"]["preseed_workspace"],
+        }
+        result["checks"]["preconditions"] = "pass"
+        baseline = evidence / DIAGNOSTIC_START_STAGE
+        journey.verify("observe", journey.installation(root, data)[0], data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = direct_workspace(root, version, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        result["checks"]["seed"] = "pass"
+        keys["task_id"] = task_after_update(version, baseline / "release0-task", project)
+        direct_workspace(root, version, data, baseline, "snapshot", keys)
+        result["checks"]["snapshot"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
+def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict,
+              *, realm: Path | None = None) -> dict:
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
     journey.write_json(request_path, request)
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
     output = journey.run([version["python"], "-I", journey.ROOT / "scripts/journey_workspace.py",
-                          action, "--run-root", data.parent, "--realm", journey.workspace_root(data),
+                          action, "--run-root", data.parent, "--realm", realm or journey.workspace_root(data),
                           "--request", request_path], evidence / (action + ".json"), env=env, timeout=120)
     return json.loads(output)
 
@@ -176,6 +420,51 @@ def start_direct_runtime(evidence: Path) -> None:
                                    "start-scheduled-task.log", show=False, timeout=30)
 
 
+def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
+                     action: str, request: dict) -> dict:
+    """Temporarily release the installed owner for the local workspace helper."""
+    service = journey.assert_direct_service_ownership(root, data)
+    journey.assert_one_runtime(data)
+    # Shutdown can remove discovery.json, so resolve and validate its realm while live.
+    realm = journey.workspace_root(data)
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager = service["manager"]
+    if manager == "systemd-user":
+        stop = ["systemctl", "--user", "stop", "astrid.service"]
+        start = ["systemctl", "--user", "start", "astrid.service"]
+    elif manager == "launchd":
+        domain = f"gui/{os.getuid()}"
+        stop = ["launchctl", "bootout", f"{domain}/haus.astrid.runtime"]
+        start = ["launchctl", "bootstrap", domain, service["service_path"]]
+    elif manager != "task-scheduler":
+        raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    try:
+        if manager == "task-scheduler":
+            journey.windows.EVIDENCE = evidence
+            journey.windows.powershell("$ErrorActionPreference='Stop'; Stop-ScheduledTask "
+                                       "-TaskName 'Astrid Runtime' -TaskPath '\\'",
+                                       f"{action}-stop-service.log", show=False, timeout=30)
+        else:
+            journey.run(stop, evidence / f"{action}-stop-service.log", timeout=120)
+        deadline = time.monotonic() + 120
+        while journey.runtime_processes(data):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Installed Runtime did not stop for workspace access")
+            time.sleep(1)
+        return workspace(version, data, evidence, action, request, realm=realm)
+    finally:
+        if manager == "task-scheduler":
+            journey.windows.EVIDENCE = evidence
+            journey.windows.powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask "
+                                       "-TaskName 'Astrid Runtime' -TaskPath '\\'",
+                                       f"{action}-start-service.log", show=False, timeout=30)
+        else:
+            journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
+        journey.wait_ready(data)
+        journey.assert_direct_service_ownership(root, data)
+        journey.assert_one_runtime(data)
+
+
 def installed_release(version: dict) -> int:
     release = journey.read_json(Path(version["root"]) / "manifest.json").get("release", 0)
     if type(release) is not int:
@@ -198,7 +487,8 @@ def task_after_update(version: dict, evidence: Path, project: str) -> str:
 
 def release0_admission(args) -> tuple[Path, Path, dict]:
     """Make the harness exception uncallable outside its exact direct scope."""
-    if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
+    diagnostic = getattr(args, "diagnostic_start_at", None) == DIAGNOSTIC_START_STAGE
+    if (getattr(args, "mode", None) != "direct" or (not getattr(args, "job_id", None) and not diagnostic)
             or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
             or getattr(args, "release0_fixture", None) is None):
         raise ValueError("release0-to-release1 requires its scoped frozen-fixture direct admission")
@@ -253,19 +543,29 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
+        journey.assert_one_runtime(data)
+        # A retained run may be used to isolate this one block for diagnostics,
+        # but only after this authentic bootstrap has established the complete
+        # release-0 and release-1 tuple binding.
+        write_diagnostic_release0_preconditions(
+            args, root, data, fixture_receipt=fixture_receipt,
+            release0_manifest=release0_manifest, target_manifest=manifest,
+            candidate=candidate, version_path=old_path, version=old,
+        )
+        baseline = evidence / "release0-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = direct_workspace(root, old, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
+        before = direct_workspace(root, old, data, baseline, "snapshot", keys)
+        # The helper temporarily stops the service, so identify the actual R0
+        # owner that the update must replace after the last offline observation.
         old_health = journey.healthy(data)
         old_pid = int(old_health["pid"])
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
-        journey.assert_one_runtime(data)
-        baseline = evidence / "release0-api-seed"
-        journey.verify("observe", old_path, data, baseline)
-        project = "tst-m4-3b-release0"
-        keys = workspace(old, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
-        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = workspace(old, data, baseline, "snapshot", keys)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
@@ -293,7 +593,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = workspace(version, data, evidence / "release1-api-observe", "snapshot", keys)
+        after = direct_workspace(root, version, data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
         before_sha, after_sha = semantic_digest(before), semantic_digest(after)
         if before_sha != after_sha:

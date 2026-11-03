@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 
 from .engine_platforms import platform_adapter
 from .engine_recipe import load_model_lock, load_recipe
-from .engine_runner import plan_install
+from .engine_runner import _disk_anchor, plan_install
 
 
 def tracked_install_route(*_args, **_kwargs):
@@ -52,26 +52,6 @@ class DiskObservation:
     def as_dict(self):
         return asdict(self)
 
-
-def _disk_anchor(root):
-    """Open the deepest existing directory without following any symlink."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    fd = os.open('/', flags)
-    anchor = ''
-    try:
-        for name in root[1:].split('/'):
-            try:
-                child = os.open(name, flags, dir_fd=fd)
-            except FileNotFoundError:
-                break
-            os.close(fd)
-            fd = child
-            anchor += '/' + name
-        identity = os.fstat(fd)
-        usage = os.fstatvfs(fd)
-        return anchor or '/', identity.st_dev, identity.st_ino, usage.f_bavail * usage.f_frsize
-    finally:
-        os.close(fd)
 
 
 def prepare_install(*, root: str, engine: str = 'vibecomfy-h3',

@@ -155,11 +155,6 @@
         "notes": "Task event definitions — close to threshold."
       },
       {
-        "file": "astrid/core/timeline/inverses.py",
-        "lines": 979,
-        "notes": "Timeline inverse operations — close to threshold."
-      },
-      {
         "file": "astrid/core/executor/cli.py",
         "lines": 965,
         "notes": "Executor CLI — close to threshold."

@@ -2853,7 +2853,8 @@ def test_unavailable_reason_reports_the_gpu_gate_not_the_task_gated_remotion_che
 REMOTION_FAULT = "fixture Remotion install is broken"
 
 
-def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit: int = 0, stderr: str = "") -> SimpleNamespace:
+def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit: int = 0, stderr: str = "",
+                          remotion_reason: str = REMOTION_FAULT) -> SimpleNamespace:
     """A leased ``remotion == 'selected'`` render fake whose child records its argv."""
     from astrid.core.rendering import remotion_runtime
 
@@ -2881,7 +2882,7 @@ def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit
 
     def status(*, require_explicit_project=False):
         return remotion_runtime.RemotionRuntimeStatus(
-            remotion_ok, tmp_path, reason=None if remotion_ok else REMOTION_FAULT)
+            remotion_ok, tmp_path, reason=None if remotion_ok else remotion_reason)
 
     monkeypatch.setattr(remotion_runtime, "remotion_runtime_status", status)
     runtime = FakeRuntime()
@@ -2968,6 +2969,50 @@ def test_a_timeline_ffmpeg_refuses_still_fails_with_both_reasons_when_the_host_c
     assert refusal in error
     assert "chose rendering.ffmpeg because rendering.remotion is unavailable on this host: " + REMOTION_FAULT in error
     assert not world.runtime.settlements
+
+
+@pytest.mark.parametrize("install_kind", ["source", "installer", "pinokio"])
+def test_missing_remotion_is_the_headline_and_recovery_matches_the_install(tmp_path, monkeypatch, install_kind):
+    from astrid.core.rendering import node_pin, remotion_runtime
+
+    project = tmp_path / "checkout with spaces" / "remotion"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text('{"engines":{"node":"=20.19.4"}}')
+    node = tmp_path / "tools" / "node-v20.19.4" / "bin" / "node"
+    monkeypatch.setattr(node_pin, "resolve_pinned_node", lambda *a, **kw: SimpleNamespace(path=node))
+    monkeypatch.setattr(remotion_runtime, "REPO_ROOT", project.parent)
+    monkeypatch.delenv("ASTRID_REMOTION_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_PROGRAM_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_MANAGED_BY", raising=False)
+    if install_kind != "source":
+        monkeypatch.setenv("ASTRID_INSTALL_PROGRAM_ROOT", str(tmp_path / "program"))
+    if install_kind == "pinokio":
+        monkeypatch.setenv("ASTRID_INSTALL_MANAGED_BY", "pinokio")
+    fault = ("ASTRID_REMOTION_PROJECT_DIR must point to the server-owned Remotion project; "
+             f"Remotion node_modules is missing: {project / 'node_modules'}; "
+             f"run `npm ci` in {project} with Node v20.19.4 on PATH")
+    refusal = ("rendering.ffmpeg does not support this render request reason: "
+               "Clip 'clip-0' has unsupported clip kind 'hold' reason: "
+               "rendering.ffmpeg requires exactly one visual track carrying media clips")
+    world = _selected_render_host(tmp_path, monkeypatch, remotion_ok=False, argv_exit=1,
+                                 stderr=refusal, remotion_reason=fault)
+
+    with pytest.raises(HostError):
+        world.run()
+
+    message = world.runtime.failures[0][2]
+    headline, rest = message.split("\nDetail: ", 1)
+    detail, fix = rest.split("\nFix: ", 1)
+    assert headline == "Headline: Remotion isn't installed on this machine"
+    assert refusal in detail and "Remotion node_modules is missing" in detail
+    if install_kind == "source":
+        assert "npm ci" in fix and str(node.parent) in fix and str(project) in fix
+        assert "v20.19.4" in fix
+    else:
+        assert "https://astrid.haus/install" in fix and str(tmp_path / "program") in fix
+        assert "npm ci" not in message
+        if install_kind == "pinokio":
+            assert "Stop Astrid in Pinokio" in fix and "--managed-by pinokio" in fix and "choose Start" in fix
 
 
 @pytest.mark.parametrize(("remotion_ok", "selector"), [(True, None), (False, "rendering.ffmpeg")])
@@ -4170,6 +4215,26 @@ def test_fake_listener_exit_v2_conflicting_replay_cannot_replace_persisted_wait(
 
 
 
+def test_installed_worker_registry_projection_matches_host_without_second_root(tmp_path, monkeypatch):
+    from astrid.core.execution.generic_host import _launch_worker_probe_environments
+    from astrid.core.rendering import remotion_runtime
+
+    manifest = _write_manifest(tmp_path / 'installed-worker')
+    environment = {
+        'HOME': str(tmp_path), 'LANG': 'C', 'PATH': '/usr/bin',
+        'ASTRID_HOST_EXECUTION_PROFILE': 'installed',
+    }
+    monkeypatch.setenv('ASTRID_HOST_EXECUTION_PROFILE', 'installed')
+    candidates = _launch_worker_probe_environments((tmp_path,), environment)
+
+    contexts = [remotion_runtime._registry_context(candidate, generator=False)
+                for candidate in candidates]
+    assert all('ASTRID_PACKS_PATH' not in candidate for candidate in candidates)
+    assert all('PYTHONPATH' not in candidate for candidate in candidates)
+    assert contexts[1:] == [contexts[0]] * (len(contexts) - 1)
+    assert manifest.is_file()
+
+
 def test_readiness_preserves_network_guard_in_final_command_popen_environment(tmp_path, monkeypatch):
     _write_manifest(tmp_path / 'guarded-command')
     host = GenericPackHost(pack_roots=[tmp_path])
@@ -4275,17 +4340,26 @@ class _IdleReadinessRuntime(FakeRuntime):
 @pytest.fixture
 def idle_remotion_host(tmp_path, monkeypatch):
     from astrid.core.rendering import remotion_runtime as runtime
+    from runtime_protocol import platform
+
     project, schema = tmp_path / "native-project", tmp_path / "schema"
     project.mkdir(); schema.mkdir()
     node = tmp_path / "node"
     node.write_bytes(b"fixture node identity")
     node.chmod(0o700)
+    # The merged host binds idle reuse to the successful launch reference as
+    # well as these tool paths. Native validation itself is faked below.
+    reference = tmp_path / "launch-validation.json"
+    reference.write_bytes(b'{"fixture":"idle-readiness-launch"}')
+    platform.owner_only(reference)
     values = {
         "HOME": str(tmp_path), "TMPDIR": str(tmp_path),
         "ASTRID_REMOTION_PROJECT_DIR": str(project), "ASTRID_NODE_EXECUTABLE": str(node),
         "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": str(schema),
         "ASTRID_SOURCE_STATE": str(tmp_path / "source-state"),
         "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        **dict(zip(runtime._REF_ENV_KEYS, (str(reference), hashlib.sha256(reference.read_bytes()).hexdigest(),
+                                          "idle-launch", "host"))),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
