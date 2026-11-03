@@ -1,0 +1,173 @@
+name: Venue U2 owner-lock and marker-cleanup runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_sha:
+        description: Full immutable astrid-runtime commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: U2 owner-lock and marker-cleanup (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Validate Runtime SHA
+        id: runtime
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ inputs.runtime_sha }}
+        run: |
+          if [[ ! "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "runtime_sha must be a full lowercase 40-character commit SHA" >&2
+            exit 2
+          fi
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout venue workflow head
+        uses: actions/checkout@v4
+
+      - name: Checkout exact Runtime candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime.outputs.sha }}
+          path: astrid-runtime
+
+      - name: Checkout authentic R0 fixture source
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          path: astrid-runtime-r0
+
+      - name: Create evidence directory and record hosted identity
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "whoami=$(whoami)"
+            id || true
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              test "$(id -u)" -ne 0
+            fi
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              powershell.exe -NoProfile -Command '$p=[Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent(); $admin=$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "is_admin=$admin"; if ($admin) { exit 3 }'
+              whoami.exe /groups
+            fi
+          } > "$GITHUB_WORKSPACE/evidence/identity.txt" 2>&1
+          cat "$GITHUB_WORKSPACE/evidence/identity.txt"
+
+      - name: Verify exact Runtime and clean authentic R0 checkouts
+        shell: bash
+        env:
+          REQUESTED_SHA: ${{ steps.runtime.outputs.sha }}
+        run: |
+          actual=$(git -C astrid-runtime rev-parse HEAD)
+          test "$actual" = "$REQUESTED_SHA"
+          test "$(git -C astrid-runtime-r0 rev-parse HEAD)" = 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          test -z "$(git -C astrid-runtime-r0 status --porcelain)"
+          echo "Runtime checkout: $actual"
+          echo "Authentic R0 checkout: $(git -C astrid-runtime-r0 rev-parse HEAD)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Runtime test dependencies
+        shell: bash
+        working-directory: astrid-runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]' -e packages/python
+
+      - name: Run requested selectors and preserve individual exits
+        id: selectors
+        shell: bash
+        working-directory: astrid-runtime
+        env:
+          ASTRID_R0_SOURCE: ${{ github.workspace }}/astrid-runtime-r0
+          REQUESTED_SHA: ${{ steps.runtime.outputs.sha }}
+        run: |
+          set +e
+          selectors=(
+            'tests/test_owner_lock_u2.py::test_authentic_r0_owner_busy_then_r1_starts'
+            'tests/test_owner_lock_u2.py::test_authentic_r0_interrupted_render_reconciles_on_r1_start'
+            'tests/test_marker_cleanup_race.py'
+          )
+          commands=()
+          exits=()
+          overall=0
+          for selector in "${selectors[@]}"; do
+            if [[ "$selector" == *::* ]]; then
+              logbase="${selector##*::}"
+            else
+              logbase="$(basename "$selector" .py)"
+            fi
+            logfile="$GITHUB_WORKSPACE/evidence/$logbase.log"
+            command="python -m pytest -q -ra --tb=short -p no:cacheprovider --timeout=180 $selector"
+            echo "+ $command" | tee "$logfile"
+            python -m pytest -q -ra --tb=short -p no:cacheprovider --timeout=180 "$selector" >> "$logfile" 2>&1
+            rc=$?
+            cat "$logfile"
+            commands+=("$command")
+            exits+=("$rc")
+            if [[ "$rc" -ne 0 ]]; then overall=1; fi
+          done
+          printf '%s\n' "${exits[@]}" > "$GITHUB_WORKSPACE/evidence/inner-exits.txt"
+          python - "$GITHUB_WORKSPACE/evidence/receipt.json" <<'PY'
+          import json, os, platform, subprocess, sys
+          out = sys.argv[1]
+          selectors = [
+              'tests/test_owner_lock_u2.py::test_authentic_r0_owner_busy_then_r1_starts',
+              'tests/test_owner_lock_u2.py::test_authentic_r0_interrupted_render_reconciles_on_r1_start',
+              'tests/test_marker_cleanup_race.py',
+          ]
+          exits = [int(x) for x in open(os.path.join(os.path.dirname(out), 'inner-exits.txt')).read().splitlines()]
+          identity = subprocess.run(['whoami'], text=True, capture_output=True).stdout.strip()
+          try:
+              uid = os.getuid()
+          except AttributeError:
+              uid = None
+          is_admin = None
+          if os.name == 'nt':
+              import ctypes
+              is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+          receipt = {
+              'agent_repository': os.environ['GITHUB_REPOSITORY'],
+              'agent_workflow_sha': os.environ['GITHUB_SHA'],
+              'runtime_repository': 'banodoco/astrid-runtime',
+              'runtime_requested_sha': os.environ['REQUESTED_SHA'],
+              'runtime_checkout_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'r0_repository': 'banodoco/astrid-runtime',
+              'r0_sha': '6d53a19070faf63fc15ae1f81417722edc2c8a5f',
+              'runner_os': os.environ.get('RUNNER_OS'),
+              'platform': platform.platform(),
+              'identity': identity,
+              'uid': uid,
+              'is_admin': is_admin,
+              'commands': [f'python -m pytest -q -ra --tb=short -p no:cacheprovider --timeout=180 {s}' for s in selectors],
+              'selectors': [{'selector': s, 'inner_exit': rc} for s, rc in zip(selectors, exits)],
+              'result': 'success' if all(rc == 0 for rc in exits) else 'failure',
+          }
+          with open(out, 'w') as f:
+              json.dump(receipt, f, indent=2)
+              f.write('\n')
+          PY
+          exit "$overall"
+      - name: Upload per-OS receipt and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: u2-ownerlock-runtime-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/evidence/
+          if-no-files-found: error
