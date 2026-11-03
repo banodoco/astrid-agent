@@ -1,0 +1,154 @@
+name: M46 Linux protected principal experiment (unqualified)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  m46_boundary_probe_linux:
+    name: m46-boundary-probe-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the reviewed probe only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: banodoco/astrid-agent
+          ref: b694db2488f6457128cbf50914a169f971c209e2
+          persist-credentials: false
+      - name: Provision a disposable non-admin candidate
+        id: provision
+        shell: bash
+        run: |
+          set -euo pipefail
+          # An existing account must never be adopted or deleted by this probe.
+          if getent passwd m46candidate || getent group m46candidate; then exit 20; fi
+          if [ -e /home/m46candidate ] || [ -L /home/m46candidate ]; then exit 20; fi
+          mkdir -m 700 "$RUNNER_TEMP/m46-boundary-probe"
+          sudo useradd --create-home --home-dir /home/m46candidate --user-group --shell /usr/sbin/nologin m46candidate
+          id -u m46candidate > "$RUNNER_TEMP/m46-boundary-probe/created-uid"
+          sudo loginctl enable-linger m46candidate
+          sudo systemctl start "user@$(id -u m46candidate).service"
+      - name: Attempt export and uploader interference under the separate UID
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The real cached uploader is opened for write WITHOUT writing bytes.
+          # No environment or credential values are inspected by the candidate.
+          action_root="$(dirname "$(dirname "$GITHUB_WORKSPACE")")/_actions"
+          uploader="$action_root/actions/upload-artifact/ea165f8d65b6e75b540449e92b4886f43607fa02/dist/upload/index.js"
+          test -f "$uploader"
+          sudo /usr/bin/python3 - "$(id -u m46candidate)" "$(id -g m46candidate)" \
+            "$uploader" "$GITHUB_WORKSPACE/scripts/m4_6_protected_boundary_probe.py" \
+            "$RUNNER_TEMP/m46-boundary-probe/boundary.json" <<'PY'
+          import json, sys, traceback
+          from pathlib import Path
+          from scripts import m4_6_protected_boundary_probe as probe
+          output = Path(sys.argv[5])
+          evidence = {'admitted': False, 'child_observations': []}
+          original_run = probe.subprocess.run
+          def record_run(*args, **kwargs):
+              completed = original_run(*args, **kwargs)
+              # Only the pinned probe's synthetic child output is captured.
+              evidence['child_observations'].append(dict(
+                  exit=completed.returncode, stdout=completed.stdout, stderr=completed.stderr))
+              output.write_text(json.dumps(evidence, indent=2) + '\n')
+              return completed
+          probe.subprocess.run = record_run
+          try:
+              evidence['result'] = probe.run_probe(int(sys.argv[1]), int(sys.argv[2]),
+                                                    [Path(sys.argv[3]), Path(sys.argv[4])])
+          except Exception as exc:
+              evidence['error'] = f'{type(exc).__name__}: {exc}'
+              traceback.print_exc()
+              raise
+          finally:
+              output.write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+      - name: Observe a synthetic candidate-owned user service from the protected collector
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/python3 - "$RUNNER_TEMP/m46-boundary-probe/lifecycle.json" <<'PY'
+          import json, os, pwd, subprocess, sys, time
+          from pathlib import Path
+          account = pwd.getpwnam('m46candidate')
+          uid, gid = account.pw_uid, account.pw_gid
+          rows = []
+          def call(argv, allowed=(0,), **kwargs):
+              p = subprocess.run(argv, capture_output=True, text=True, timeout=30, **kwargs)
+              rows.append(dict(argv=argv, inner_exit=p.returncode, stdout=p.stdout, stderr=p.stderr))
+              if p.returncode not in allowed:
+                  raise RuntimeError('command failed: ' + repr(argv))
+              return p.stdout
+          result = dict(admitted=False, native_product_observed=False, candidate_uid=uid, commands=rows)
+          try:
+              script = '''set -eu
+          mkdir -p "$HOME/.config/systemd/user"
+          cat > "$HOME/.config/systemd/user/m46-boundary.service" <<'UNIT'
+          [Unit]
+          Description=M46 synthetic boundary experiment
+          [Service]
+          ExecStart=/usr/bin/sleep 300
+          NoNewPrivileges=yes
+          CapabilityBoundingSet=
+          UNIT
+          systemctl --user daemon-reload
+          systemctl --user start m46-boundary.service
+          '''
+              call(['/usr/bin/setpriv', f'--reuid={uid}', f'--regid={gid}', '--clear-groups',
+                    '--no-new-privs', '--inh-caps=-all', '--ambient-caps=-all', '--bounding-set=-all',
+                    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'HOME=' + account.pw_dir,
+                    f'XDG_RUNTIME_DIR=/run/user/{uid}', f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus',
+                    '/bin/sh', '-eu', '-c', script])
+              query = ['/usr/bin/systemctl', '--user', '--machine=m46candidate@.host']
+              before = call(query + ['show', 'm46-boundary.service', '-p', 'MainPID', '-p', 'InvocationID', '-p', 'ActiveState', '-p', 'FragmentPath'])
+              fields = dict(line.split('=', 1) for line in before.splitlines() if '=' in line)
+              pid = int(fields['MainPID'])
+              if pid <= 0 or fields['ActiveState'] != 'active' or not fields['InvocationID']:
+                  raise RuntimeError('candidate user-manager observation incomplete')
+              status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
+              executable = str(Path(f'/proc/{pid}/exe').resolve(strict=True))
+              if (set(map(int, status['Uid'].split())) != {uid} or executable != '/usr/bin/sleep'
+                  or status['NoNewPrivs'].strip() != '1' or int(status['CapEff'].strip(), 16) != 0):
+                  raise RuntimeError('service token or executable differs')
+              result.update(service_pid=pid, service_executable=executable, service_uid=uid,
+                            service_birth_stat=Path(f'/proc/{pid}/stat').read_text(), manager=fields)
+              call(query + ['stop', 'm46-boundary.service'])
+              for _ in range(100):
+                  if not Path(f'/proc/{pid}').exists(): break
+                  time.sleep(.05)
+              if Path(f'/proc/{pid}').exists():
+                  raise RuntimeError('synthetic service remains')
+              after = call(query + ['show', 'm46-boundary.service', '-p', 'MainPID', '-p', 'ActiveState'])
+              result.update(after=after, synthetic_service_lifecycle=True)
+          finally:
+              Path(sys.argv[1]).write_text(json.dumps(result, indent=2) + '\n')
+          PY
+      - name: Remove the exact disposable principal and all its processes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="$RUNNER_TEMP/m46-boundary-probe/created-uid"
+          if [ ! -f "$marker" ]; then exit 0; fi
+          expected_uid="$(cat "$marker")"
+          test "$(id -u m46candidate)" = "$expected_uid"
+          test "$(getent passwd m46candidate | cut -d: -f6)" = /home/m46candidate
+          cleanup_failed=0
+          sudo loginctl disable-linger m46candidate || cleanup_failed=1
+          sudo systemctl stop "user@${expected_uid}.service" || cleanup_failed=1
+          # pkill exit 1 means no remaining process. Every other failure is fatal.
+          if sudo pkill -KILL -u "$expected_uid"; then :; else test "$?" = 1; fi
+          test -z "$(ps -u "$expected_uid" -o pid=)"
+          sudo userdel --remove m46candidate
+          exit "$cleanup_failed"
+      - name: Retain unqualified experiment outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m46-boundary-probe-${{ github.run_id }}-${{ github.run_attempt }}-linux
+          path: ${{ runner.temp }}/m46-boundary-probe/*.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 7
