@@ -757,7 +757,7 @@ def test_task_observer_requires_running_claimed_current_session(monkeypatch, tmp
         lease_fence=1, lease_expires_at="later",
     )
     client = SimpleNamespace(get_task=lambda unused: task)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"runtime_instance_id": "instance"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
     monkeypatch.setattr(task_boundary, "_task_projection", lambda value: vars(value))
@@ -776,7 +776,7 @@ def test_task_observer_rejects_terminal_before_provider(monkeypatch, tmp_path):
     task = SimpleNamespace(state="succeeded", version=2, execution_binding=None)
     client = SimpleNamespace(get_task=lambda unused: task)
     health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"runtime_instance_id": "instance"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, None))
     with pytest.raises(task_boundary.TaskBoundaryError, match="terminal before provider"):
@@ -791,7 +791,7 @@ def test_worker_start_accepts_only_exact_generation_not_found(monkeypatch, tmp_p
         get_local_worker_generation=lambda: (_ for _ in ()).throw(ApiError(status, code, "missing")),
         start_local_worker=lambda *unused: pytest.fail("must not start for an inexact error"),
     )
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"active_realm": "realm"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (None, None))
     with pytest.raises(ApiError):
@@ -818,7 +818,7 @@ def test_worker_start_is_observed_with_get_start_get(monkeypatch, tmp_path):
     health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
     handshake = SimpleNamespace(realm_id="realm")
     client = SimpleNamespace(get_local_worker_generation=get_generation, start_local_worker=start)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"active_realm": "realm"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
     result = task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
