@@ -1,0 +1,56 @@
+name: R18 native Intel crypto probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-crypto:
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run native dependency discriminator
+        shell: bash
+        run: |
+          set -uo pipefail
+          EVIDENCE="$RUNNER_TEMP/r18-native-crypto-evidence"
+          mkdir -p "$EVIDENCE"
+          {
+            printf 'run_id=%s\nrun_attempt=%s\njob=%s\nsha=%s\nref=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" "$GITHUB_SHA" "$GITHUB_REF"
+            printf 'runner_os=%s\nrunner_arch=%s\nimage_os=%s\nimage_version=%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            date -u
+            sw_vers
+            uname -a
+            xcode-select -p
+            xcrun clang --version
+          } > "$EVIDENCE/runner-metadata.txt" 2>&1
+          SCRIPT="$GITHUB_WORKSPACE/.github/venue/r18-native-crypto-probe.sh"
+          PROBE="$RUNNER_TEMP/r18-native-crypto-probe"
+          LOG="$RUNNER_TEMP/r18-native-crypto-probe.log"
+          shasum -a 256 "$SCRIPT" > "$EVIDENCE/script-sha256.txt"
+          rc=0
+          if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != x86_64 ]; then
+            printf 'Requires native Darwin x86_64\n' > "$LOG"
+            rc=2
+          elif [ "$(shasum -a 256 "$SCRIPT" | cut -d ' ' -f 1)" != 3ee417fb62a6f4005060899124493545279e1cdc791981b94e9fd25b3173032d ]; then
+            printf 'Probe script hash mismatch\n' > "$LOG"
+            rc=2
+          else
+            env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" \
+              /bin/sh "$SCRIPT" "$PROBE" >"$LOG" 2>&1 || rc=$?
+          fi
+          printf 'native_probe_exit=%s\n' "$rc" | tee "$EVIDENCE/inner-exit.txt"
+          shasum -a 256 "$SCRIPT" "$LOG" | tee "$EVIDENCE/probe-sha256.txt"
+          cp "$LOG" "$EVIDENCE/native-crypto-probe.log"
+          exit "$rc"
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r18-native-crypto-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r18-native-crypto-evidence/
+          if-no-files-found: error
+          retention-days: 90
