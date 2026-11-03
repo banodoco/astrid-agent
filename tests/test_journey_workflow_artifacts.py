@@ -5,6 +5,7 @@ import re
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "journey.yml"
+AUTHENTIC_R0_CAPTURE_WORKFLOW = REPO / ".github" / "workflows" / "authentic-r0-capture.yml"
 COLLECTOR = REPO / "scripts" / "ci_journey.py"
 
 
@@ -33,6 +34,7 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     names_block = guard.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
     staged_names = set(re.findall(r"'([^']+)'", names_block))
     assert "release0-bootstrap.log" in staged_names
+    assert "runtime-owner-assertion.json" in staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'^\s*"([^\"]+)"\s*,?\s*$', collector_block, re.M))
     assert collector_names <= staged_names
@@ -42,3 +44,19 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert "No staged journey-result.json receipt" in guard
     assert "Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force" in guard
     assert "-ge $maxArtifactBytes" in guard
+
+
+def test_authentic_r0_capture_workflow_is_manual_single_os_and_never_calls_r1_update():
+    workflow = AUTHENTIC_R0_CAPTURE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "capture_os:" in workflow
+    assert "options: [linux, macos, windows]" in workflow
+    assert "3204bb00135bec8ee2d2d3fb21eed5abfceca649" in workflow
+    assert "6d53a19070faf63fc15ae1f81417722edc2c8a5f" in workflow
+    assert workflow.count("--shared-executor authentic-r0-capture") == 3
+    assert "capture-upload" in workflow
+    assert "authentic-r0-capture-linux" in workflow
+    assert "authentic-r0-capture-macos" in workflow
+    assert "authentic-r0-capture-windows" in workflow
+    assert "--update" not in workflow

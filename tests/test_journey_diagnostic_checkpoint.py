@@ -1,7 +1,10 @@
 """Focused F2 coverage for retained release-0 diagnostic checkpoint fidelity."""
 
 import argparse
+import os
+import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,7 @@ def _retained_preseed_state(tmp_path, monkeypatch):
     realm.mkdir(parents=True)
     (realm / "attachments").mkdir()
     (realm / "realm.sqlite3").write_bytes(b"empty release-0 realm")
+    (realm / "owner.lock").touch()
     (realm / "preferences.json").write_text('{"theme":"system"}\n', encoding="utf-8")
     journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
     journey.write_json(root / "install.json", {"data_root": str(data)})
@@ -166,3 +170,103 @@ def test_diagnostic_checkpoint_refuses_each_changed_retained_realm_before_seed(
     assert receipt["status"] == "fail"
     assert receipt["checks"] == {"preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}
     assert receipt["qualification"]["eligible"] is False
+
+
+@pytest.mark.windows_native
+def test_windows_empty_owner_lock_preserves_full_preseed_checkpoint(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    marker = realm / "owner.lock"
+    lock_code = r'''
+import ctypes, msvcrt, sys
+from ctypes import wintypes
+f = open(sys.argv[1], "r+b", buffering=0)
+kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                              wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+kernel.LockFileEx.restype = wintypes.BOOL
+overlap = ctypes.create_string_buffer(32)
+if not kernel.LockFileEx(msvcrt.get_osfhandle(f.fileno()), 3, 0, 1, 0, overlap):
+    raise ctypes.WinError(ctypes.get_last_error())
+print("locked", flush=True)
+sys.stdin.readline()
+'''
+    owner = subprocess.Popen([sys.executable, "-c", lock_code, str(marker)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    try:
+        assert owner.stdout.readline().strip() == "locked", owner.stderr.read()
+        try:
+            marker.read_bytes()
+        except PermissionError as exc:
+            print(f"native denied path: {marker}")
+            traceback.print_exc(file=sys.stdout)
+            assert exc.errno == 13
+        else:
+            pytest.fail(f"expected raw read to be denied by the live lock: {marker}")
+        saved = journey.read_json(args.diagnostic_state)["preseed_workspace"]
+        assert jumps._preseed_workspace_state(data) == saved
+        assert marker.stat().st_size == 0
+        (realm / "preferences.json").write_text("changed", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="workspace changed after its pre-seed checkpoint"):
+            jumps._diagnostic_release0_context(args, root, data, evidence)
+    finally:
+        owner.communicate("release\n", timeout=10)
+    assert owner.returncode == 0
+
+
+@pytest.mark.posix_native
+def test_checkpoint_refuses_symlinks_and_non_regular_entries(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    if hasattr(os, "mkfifo"):
+        fifo = realm / "pipe"
+        os.mkfifo(fifo)
+        with pytest.raises(RuntimeError, match="non-regular entry"):
+            jumps._preseed_workspace_state(data)
+        fifo.unlink()
+    link = realm / "link"
+    link.symlink_to(realm / "preferences.json")
+    with pytest.raises(RuntimeError, match="symlink"):
+        jumps._preseed_workspace_state(data)
+
+
+def test_checkpoint_refuses_capture_time_mutation(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    original = jumps._preseed_file_sha256
+    changed = False
+
+    def mutate(path):
+        nonlocal changed
+        result = original(path)
+        if path.name == "preferences.json" and not changed:
+            changed = True
+            path.write_text("changed during capture", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(jumps, "_preseed_file_sha256", mutate)
+    with pytest.raises(RuntimeError, match="changed while checkpointing"):
+        jumps._preseed_workspace_state(data)
+
+
+def test_checkpoint_hashes_empty_and_nonempty_files(tmp_path):
+    import hashlib
+
+    path = tmp_path / "file"
+    for contents in (b"", b"nonempty bytes"):
+        path.write_bytes(contents)
+        assert jumps._preseed_file_sha256(path) == hashlib.sha256(contents).hexdigest()
+
+
+def test_checkpoint_does_not_ignore_denied_nonempty_file(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    target = realm / "realm.sqlite3"
+    real_open = Path.open
+
+    def denied(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError(13, "denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    with pytest.raises(PermissionError) as caught:
+        jumps._preseed_workspace_state(data)
+    assert caught.value.filename == str(target)

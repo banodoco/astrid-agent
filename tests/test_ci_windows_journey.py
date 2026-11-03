@@ -44,6 +44,123 @@ def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
     assert "pwsh" not in command[0].lower()
 
 
+@pytest.mark.parametrize("action", sorted(journey.OFFLINE_WORKSPACE_ACTIONS))
+def test_offline_workspace_stop_disables_repeating_task_before_stop(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(
+        (argv, name, kwargs)) or "")
+
+    journey.powershell(journey.OFFLINE_WORKSPACE_STOP, f"{action}-stop-service.log",
+                       show=False, timeout=30)
+
+    argv, name, kwargs = calls.pop()
+    script = argv[-1]
+    assert name == f"{action}-stop-service.log"
+    assert kwargs == {"show": False, "timeout": 30}
+    assert script.count("Disable-ScheduledTask") == 1
+    assert script.count("Stop-ScheduledTask") == 1
+    assert script.index("Disable-ScheduledTask") < script.index("Stop-ScheduledTask")
+    assert script.count("-TaskName 'Astrid Runtime' -TaskPath '\\'") == 2
+
+
+@pytest.mark.parametrize("action", sorted(journey.OFFLINE_WORKSPACE_ACTIONS))
+def test_offline_workspace_start_enables_task_before_restart(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(
+        (argv, name, kwargs)) or "")
+
+    journey.powershell(journey.OFFLINE_WORKSPACE_START, f"{action}-start-service.log",
+                       show=False, timeout=30)
+
+    argv, name, kwargs = calls.pop()
+    script = argv[-1]
+    assert name == f"{action}-start-service.log"
+    assert kwargs == {"show": False, "timeout": 30}
+    assert script.count("Enable-ScheduledTask") == 1
+    assert script.count("Start-ScheduledTask") == 1
+    assert script.index("Enable-ScheduledTask") < script.index("Start-ScheduledTask")
+    assert script.count("-TaskName 'Astrid Runtime' -TaskPath '\\'") == 2
+
+
+def test_offline_workspace_task_command_rejects_custody_drift(monkeypatch):
+    monkeypatch.setattr(journey, "run", lambda *args, **kwargs: pytest.fail(
+        "a changed protected task command must not execute"))
+    with pytest.raises(RuntimeError, match="differs from the protected task action"):
+        journey.powershell("Stop-ScheduledTask -TaskName 'Other'", "seed-stop-service.log")
+
+
+def test_non_workspace_task_command_is_unchanged(monkeypatch):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(argv) or "")
+    code = "Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+    journey.powershell(code, "start.log")
+    assert calls[0][-1].endswith(code)
+    assert "Enable-ScheduledTask" not in calls[0][-1]
+
+
+@pytest.mark.parametrize("helper_fails", [False, True], ids=["success", "helper-failure"])
+def test_release0_offline_workspace_blocks_repetition_reacquisition(
+        tmp_path, monkeypatch, helper_fails):
+    from scripts import journey_version_jumps as jumps
+
+    state = {"enabled": True, "running": True, "workspace_opened": False}
+    calls = []
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+
+    def ownership(*unused):
+        assert state["running"]
+        return {"manager": "task-scheduler"}
+
+    monkeypatch.setattr(shared_journey, "assert_direct_service_ownership", ownership)
+    monkeypatch.setattr(shared_journey, "assert_one_runtime",
+                        lambda *unused: state["running"] or pytest.fail("owner is absent"))
+    monkeypatch.setattr(shared_journey, "workspace_root", lambda unused: tmp_path / "realm")
+    monkeypatch.setattr(shared_journey, "runtime_processes",
+                        lambda unused: [41] if state["running"] else [])
+    monkeypatch.setattr(shared_journey, "wait_ready",
+                        lambda unused: state["running"] or pytest.fail("owner was not restored"))
+
+    def run(argv, name, **unused):
+        script = argv[-1]
+        calls.append(name)
+        if name == "seed-stop-service.log":
+            assert script.index("Disable-ScheduledTask") < script.index("Stop-ScheduledTask")
+            state.update(enabled=False, running=False)
+            # Model the one-minute trigger that landed inside the failing run's
+            # stop-to-seed window. A still-enabled task would reacquire here.
+            if state["enabled"]:
+                state["running"] = True
+        elif name == "seed-start-service.log":
+            assert script.index("Enable-ScheduledTask") < script.index("Start-ScheduledTask")
+            state.update(enabled=True, running=True)
+        else:
+            pytest.fail(f"unexpected manager command {name}")
+        return ""
+
+    monkeypatch.setattr(journey, "run", run)
+
+    def workspace(*unused, **kwargs):
+        assert not state["running"]
+        assert kwargs["realm"] == tmp_path / "realm"
+        state["workspace_opened"] = True
+        if helper_fails:
+            raise ValueError("simulated helper failure")
+        return {"seeded": True}
+
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    def call():
+        return jumps.direct_workspace(
+            tmp_path / "program", {}, tmp_path / "data", tmp_path / "evidence", "seed", {})
+    if helper_fails:
+        with pytest.raises(ValueError, match="simulated helper failure"):
+            call()
+    else:
+        assert call() == {"seeded": True}
+    assert calls == ["seed-stop-service.log", "seed-start-service.log"]
+    assert state == {"enabled": True, "running": True, "workspace_opened": True}
+
+
 @pytest.fixture
 def stub_installed_profile_binding(monkeypatch):
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
@@ -154,6 +271,113 @@ def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state,
         "status": "ok", "runtime_instance_id": "current", "services": [{"name": "pack-host", "state": state}],
     })
     assert journey.host_ready() is expected
+
+
+def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    logs = tmp_path / "logs"
+    runtime = tmp_path / "runtime"
+    logs.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    (logs / "service-pack-host.log").write_text(
+        "x" * (journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES + 10) +
+        "\napi_key=not-for-receipt\nAuthorization: Bearer also-not-for-receipt\n"
+        "-----BEGIN PRIVATE KEY-----\nnot-for-receipt-key\n-----END PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    # A directory must not be followed or silently treated as an absent log.
+    (logs / "runtime-service.log").mkdir()
+    (runtime / "generic-host.log").write_text("startup failed\n", encoding="utf-8")
+    (runtime / "generic-host.ready.json").write_text(json.dumps({
+        "status": "starting", "access_token": "not-for-receipt", "detail": "not registered",
+    }), encoding="utf-8")
+    health = {
+        "status": "ok", "runtime_instance_id": "current",
+        "services": [{"name": "pack-host", "state": "starting", "last_exit": None,
+                      "restart_count": 0}],
+    }
+    monkeypatch.setattr(journey, "health", lambda: health)
+
+    assert journey.host_ready() is False
+
+    captured = json.loads((evidence / "pack-host-readiness-first-failed-poll.json").read_text())
+    assert captured["health"] == {
+        "status": "ok", "runtime_instance_id": "current",
+        "pack_host": {"name": "pack-host", "state": "starting", "last_exit": None,
+                      "restart_count": 0},
+    }
+    assert captured["logs"][0]["status"] == "captured"
+    assert captured["logs"][0]["truncated"] is True
+    assert captured["logs"][0]["captured_bytes"] <= journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES
+    assert captured["logs"][1] == {
+        "source": "runtime-service.log", "search_root": "data-root-logs", "status": "unsafe_type", "type": "directory",
+    }
+    assert captured["logs"][3]["status"] == "captured"
+    assert captured["markers"][0]["content"]["access_token"] == "<redacted>"
+    assert captured["markers"][1] == {"source": "generic-host.json", "status": "missing"}
+    copied = (evidence / "pack-host-readiness-first-failed-poll-service-pack-host.log").read_text()
+    assert "not-for-receipt" not in copied
+    assert "api_key=<redacted>" in copied
+    assert "Authorization: <redacted>" in copied
+    assert "<redacted private key>" in copied
+    assert journey._redact_pack_host_text("not-for-receipt\n-----END PRIVATE KEY-----\n") == (
+        "<redacted truncated private key>\n"
+    )
+
+
+def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostics(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "health", lambda: None)
+
+    assert journey.host_ready() is False
+
+    captured = json.loads((evidence / "pack-host-readiness-first-failed-poll.json").read_text())
+    assert captured["health"] == {"status": "unavailable"}
+    assert captured["logs"] == [
+        {"source": "service-pack-host.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "runtime-service.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "runtime.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "generic-host.log", "search_root": "runtime-support-root", "status": "missing"},
+    ]
+    assert captured["markers"] == [
+        {"source": "generic-host.ready.json", "status": "missing"},
+        {"source": "generic-host.json", "status": "missing"},
+    ]
+
+
+def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    logs = tmp_path / "logs"
+    runtime = tmp_path / "runtime"
+    logs.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    (logs / "service-pack-host.log").write_text("launch failed\n", encoding="utf-8")
+    health = {
+        "status": "ok", "runtime_instance_id": "current",
+        "services": [{"name": "pack-host", "state": "failed", "last_exit": 23,
+                      "restart_count": 4, "reason": "launch_failed"}],
+    }
+    monkeypatch.setattr(journey, "health", lambda: health)
+
+    with pytest.raises(RuntimeError, match="terminal failed state"):
+        journey.host_ready()
+
+    for observation in journey.PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+        assert (evidence / f"pack-host-readiness-{observation}.json").is_file()
+    exited = json.loads((evidence / "pack-host-readiness-first-service-exit.json").read_text())
+    assert exited["health"]["pack_host"] == {
+        "name": "pack-host", "state": "failed", "last_exit": 23,
+        "restart_count": 4, "reason": "launch_failed",
+    }
+    assert (evidence / "pack-host-readiness-definitive-failure-service-pack-host.log").read_text() == (
+        "launch failed\n"
+    )
 
 
 @pytest.mark.parametrize("state,outputs,expected", [
@@ -767,7 +991,7 @@ def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, 
     assert calls == ["origin", "query"]
 
 
-def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(tmp_path, monkeypatch):
+def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics_expanded(tmp_path, monkeypatch):
     evidence = tmp_path / "evidence"
     logs = tmp_path / "logs"
     runtime = tmp_path / "runtime"
@@ -860,7 +1084,7 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
     )
 
 
-def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostics(tmp_path, monkeypatch):
+def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostics_expanded(tmp_path, monkeypatch):
     evidence = tmp_path / "evidence"
     monkeypatch.setattr(journey, "EVIDENCE", evidence)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
@@ -949,7 +1173,7 @@ def test_failed_host_poll_uses_scheduler_native_child_log_root(tmp_path, monkeyp
     assert "wrong data-root" not in child + wrapper
 
 
-def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast(tmp_path, monkeypatch):
+def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast_expanded(tmp_path, monkeypatch):
     evidence = tmp_path / "evidence"
     logs = tmp_path / "logs"
     runtime = tmp_path / "runtime"

@@ -36,6 +36,16 @@ PACK_HOST_DIAGNOSTIC_OBSERVATIONS = (
     "first-service-exit",
     "definitive-failure",
 )
+OFFLINE_WORKSPACE_ACTIONS = frozenset({"seed", "snapshot", "busy", "release"})
+OFFLINE_WORKSPACE_STOP = (
+    "$ErrorActionPreference='Stop'; Stop-ScheduledTask "
+    "-TaskName 'Astrid Runtime' -TaskPath '\\'"
+)
+OFFLINE_WORKSPACE_START = (
+    "$ErrorActionPreference='Stop'; Start-ScheduledTask "
+    "-TaskName 'Astrid Runtime' -TaskPath '\\'"
+)
+
 
 _PACK_HOST_SECRET_FIELD = re.compile(
     r"(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|"
@@ -51,8 +61,6 @@ _PACK_HOST_BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PACK_HOST_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
 _PACK_HOST_PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
 _PACK_HOST_PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
-
-
 
 
 def _powershell_quote(value):
@@ -94,7 +102,33 @@ def run(argv, name, *, env=None, timeout=300, show=True):
     return (EVIDENCE / name).read_text(encoding="utf-8-sig", errors="replace")
 
 
+def _offline_workspace_task_command(code, name):
+    """Keep a custody-verified task stopped across repeating triggers."""
+    matched = re.fullmatch(
+        rf"({'|'.join(sorted(OFFLINE_WORKSPACE_ACTIONS))})-(stop|start)-service\.log",
+        name,
+    )
+    if matched is None:
+        return code
+    _action, operation = matched.groups()
+    expected = OFFLINE_WORKSPACE_STOP if operation == "stop" else OFFLINE_WORKSPACE_START
+    if code != expected:
+        raise RuntimeError("Offline workspace service command differs from the protected task action")
+    if operation == "stop":
+        return (
+            "$ErrorActionPreference='Stop'; Disable-ScheduledTask "
+            "-TaskName 'Astrid Runtime' -TaskPath '\\' | Out-Null; "
+            "Stop-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+        )
+    return (
+        "$ErrorActionPreference='Stop'; Enable-ScheduledTask "
+        "-TaskName 'Astrid Runtime' -TaskPath '\\' | Out-Null; "
+        "Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+    )
+
+
 def powershell(code, name, *, show=True, timeout=300):
+    code = _offline_workspace_task_command(code, name)
     return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                 "$ErrorActionPreference='Stop'; "
                 "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code], name,
@@ -659,9 +693,9 @@ def _pack_host_readiness_predicates(value, service, ready_file_is_file, ready, a
     }
 
 
-def capture_pack_host_readiness_diagnostics(observation, health_value, predicates):
+def capture_pack_host_readiness_diagnostics(observation, health_value, predicates=None):
     """Capture one bounded readiness snapshot without following untrusted paths."""
-    if observation not in PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+    if observation not in {*PACK_HOST_DIAGNOSTIC_OBSERVATIONS, "post-seed-state"}:
         raise ValueError(f"Unknown pack-host diagnostic observation: {observation}")
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     manifest = EVIDENCE / f"pack-host-readiness-{observation}.json"

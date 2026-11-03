@@ -29,6 +29,21 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      mac_stop_capture:
+        description: Enable the diagnostic installer stop capture on the direct macOS row only
+        required: false
+        default: false
+        type: boolean
+      linux_lock_capture:
+        description: Enable diagnostic parent lock capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
+      linux_identity_capture:
+        description: Enable same-call installer identity capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -91,6 +106,21 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      mac_stop_capture:
+        description: Enable the diagnostic installer stop capture on the direct macOS row only
+        required: false
+        default: false
+        type: boolean
+      linux_lock_capture:
+        description: Enable diagnostic parent lock capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
+      linux_identity_capture:
+        description: Enable same-call installer identity capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -642,8 +672,14 @@ jobs:
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_INSTALLER_MAC_STOP_CAPTURE: ${{ matrix.job_id == 'direct-macos' && inputs.mac_stop_capture && '1' || '0' }}
+          ASTRID_LINUX_LOCK_CAPTURE: ${{ matrix.job_id == 'direct-linux' && inputs.linux_lock_capture && '1' || '0' }}
+          ASTRID_LINUX_IDENTITY_CAPTURE: ${{ matrix.job_id == 'direct-linux' && inputs.linux_identity_capture && '1' || '0' }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
+          if ('${{ matrix.job_id }}' -eq 'direct-windows') {
+            $env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition
+          }
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
           $release0Args = @()
           $oldLauncherArgs = @()
@@ -682,12 +718,14 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'install.log', 'mac-stop-capture.jsonl', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
-            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'windows-bootstrap-environment.log',
+            'runtime-owner-processes.json', 'runtime-owner-assertion.json',
+            'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
