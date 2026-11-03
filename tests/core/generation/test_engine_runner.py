@@ -70,7 +70,8 @@ class FakeAdapter:
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
                   "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": self.join(root, "models"),
                   "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
-                  "host": recipe.start.bind_host, "port": str(recipe.start.port)}
+                  "host": recipe.start.bind_host, "port": str(recipe.start.port),
+                  "native_launcher": str(Path(runner.__file__).with_name("engine_native_launcher.py"))}
         return CommandRequest(tuple(a.format_map(values) for a in recipe.start.argv),
                               recipe.start.cwd.format_map(values),
                               {k: v.format_map(values) for k, v in recipe.start.env.items()}, deadline)

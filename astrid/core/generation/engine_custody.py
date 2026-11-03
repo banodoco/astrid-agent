@@ -373,7 +373,7 @@ class _Output:
 
 
 class _Owned:
-    def __init__(self, request, *, secrets=()):
+    def __init__(self, request, *, secrets=(), native_control=None):
         from astrid.core.execution.process_group import popen_owned_group
         # The caller's library path is never inherited; request.env (built by
         # engine_child_env) is the only source.
@@ -384,6 +384,9 @@ class _Owned:
             else:
                 env[key] = value
         self.cleanup_failure = None
+        self.native_control = native_control
+        if native_control is not None:
+            env.update(native_control.child_environment())
         self._cleanup_secrets = tuple(secrets) + tuple(v for k, v in env.items() if _SECRET_KEY.search(k))
         for index, arg in enumerate(request.argv):
             if arg.startswith("-") and _SECRET_KEY.search(arg.partition("=")[0]):
@@ -395,7 +398,9 @@ class _Owned:
         try:
             self.process = popen_owned_group(list(request.argv), cwd=request.cwd, env=env,
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE, bufsize=0, _delegate_inventory=False)
+                                            stderr=subprocess.PIPE, bufsize=0, _delegate_inventory=False,
+                                            **({"pass_fds": (native_control.child.fileno(),)}
+                                               if native_control is not None else {}))
         except BaseException as exc:
             self.process = getattr(exc, "process", None)
             raise
@@ -576,6 +581,7 @@ class _Supervisor:
         request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1)
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
         self.engine = None
+        self.native_control = None
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
         self.finished = threading.Event()
@@ -605,14 +611,14 @@ class _Supervisor:
         venv = self.adapter.join(self.root, primary.relative_path)
         return replace(request, env=engine_child_env(venv, request.env))
 
-    def spawn(self, request):
+    def spawn(self, request, *, native_control=None):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
         # Retain even a failed-launch handle before propagating its error.
         owned = _Owned.__new__(_Owned)
         self.commands.append(owned)
         try:
-            owned.__init__(self.child_request(request), secrets=(self.token,))
+            owned.__init__(self.child_request(request), secrets=(self.token,), native_control=native_control)
         except BaseException as exc:
             if getattr(owned, "process", None) is not None:
                 self.unresolved = True
@@ -710,9 +716,12 @@ class _Supervisor:
     def stop_engine(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)
         self.release_authority.revoke()
+        if self.native_control is not None:
+            self.native_control.close()  # Native dispatch observes EOF before any further admission.
         if self.engine is not None:
             self.drain(self.engine, deadline)
             self.engine = None
+        self.native_control = None
         self.clear_registry()
 
     def source_identity(self, deadline, channel):
@@ -806,8 +815,20 @@ class _Supervisor:
                 return self.facts("absent")
             source = self.source_identity(deadline, channel)
             request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
-            self.engine = self.spawn(request)
+            if (self.recipe.engine == "comfyui" and self.recipe.platform == "linux-x86_64-cu130"
+                    and request.argv[1] == str(Path(__file__).with_name("engine_native_launcher.py"))):
+                from .engine_native_control import NativeController
+                self.native_control = NativeController(self)
             try:
+                self.engine = self.spawn(request, native_control=self.native_control)
+                if self.native_control is not None:
+                    self.native_control.spawned(self.engine)
+                    # The launcher does not start its listener until the root
+                    # dispatch fence and worker adapter are installed. Enroll
+                    # that original retained process before public readiness.
+                    reply = self.native_control.request("enroll", {}, deadline)
+                    if reply["state"] != "OPEN" or reply["bound"] is not None:
+                        raise CustodyUnresolved("native enrollment did not open")
                 facts = self.health(channel, deadline)
                 self.publish_registry(source)
                 self.check(channel, deadline)
@@ -820,7 +841,7 @@ class _Supervisor:
         return self.facts("owned")
 
     def release(self, payload, deadline, channel):
-        if self.release_authority.occupied:
+        if self.release_authority.occupied or self.native_control is not None:
             raise EndpointOwnershipError("enrolled engine requires its bound release capability")
         if payload != {} or self.unresolved or self.engine is None:
             raise EndpointOwnershipError("live engine custody is required")
@@ -854,14 +875,27 @@ class _Supervisor:
                 "vram_total_bytes": total, "vram_free_before_bytes": before,
                 "vram_free_after_bytes": after}
 
-    def release_admission_supported(self, peer, admission):
-        """No canonical engine currently enforces exclusive HTTP admission.
+    def release_admission_supported(self, peer, admission, deadline):
+        """Only the retained inherited-channel attestation can authorize bind.
 
-        A host-supplied boolean, empty queue, or kernel listener ownership is
-        insufficient. Enrolling an ingress-fenced topology needs its own proof
-        and review; until then bind fails while the issuer retains custody.
+        admission is deliberately ignored: no host dictionary or boolean can
+        manufacture enrollment, including on older direct-main.py topologies.
         """
-        return False
+        native = self.native_control
+        if native is None or native.failed or native.engine is not self.engine:
+            return False
+        try:
+            reply = native.request("status", {}, deadline)
+            return ((reply["state"] == "OPEN" and reply["bound"] is None)
+                    or (reply["state"] == "RETIRED" and isinstance(reply["record"], dict)
+                        and reply["record"].get("status") == "completed"))
+        except EngineError:
+            return False
+
+    def bind_release_native(self, association, binding, generation, deadline):
+        if self.native_control is None:
+            raise EndpointOwnershipError("native enrollment is absent")
+        self.native_control.bind(association, binding, generation, deadline)
 
     def release_identity(self, channel, deadline):
         """Final work-locked comparison against genuine retained native handles."""
@@ -911,50 +945,32 @@ class _Supervisor:
 
     def release_bound_native(self, channel, deadline, result):
         """One bounded native unload, with memory observations kept independent."""
-        engine = self.engine
-        check = lambda: self.check(channel, deadline)
-        def request(path, payload=None):
-            check()
-            return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
-                             owned=engine, payload=payload)
-        def sample():
-            try:
-                stats = request("/system_stats")
-                device = stats["devices"][0]
-                total, free = device["vram_total"], device["vram_free"]
-                name = device.get("name")
-                if (type(total) is not int or type(free) is not int or not 0 <= free <= total < 2**63):
-                    raise ValueError("invalid VRAM range")
-                if name is not None and (not isinstance(name, str) or len(name) > 128):
-                    raise ValueError("invalid VRAM device")
-                return {"available": True, "total_bytes": total, "free_bytes": free,
-                        "device": name, "sample_ns": time.monotonic_ns()}
-            except (OSError, ValueError, KeyError, IndexError, TypeError):
-                return {"available": False, "error": "vram_unavailable", "sample_ns": time.monotonic_ns()}
-        before = sample()
-        queue = request("/queue")
-        running, pending = queue.get("queue_running"), queue.get("queue_pending")
-        if not isinstance(running, list) or not isinstance(pending, list):
-            raise IntegrityError("release queue observation malformed")
-        facts = {"queue_running": len(running), "queue_pending": len(pending),
-                 "vram_before": before, "memory_observed_returned": False}
-        if running or pending:
-            return {**facts, "status": "busy", "effect_sent": False, "unload_ack": None, "error": None}
-        check()
-        # Record before transport: a lost HTTP response can never mean no effect.
-        with self.release_authority.table_lock:
-            result["effect_sent"] = True
-        reply = request("/api/free", {"unload_models": True, "free_memory": True})
-        ack = reply.get("models_unloaded")
-        if type(ack) is not bool:
-            ack = None
-        after = sample()
-        if (before.get("available") and after.get("available")
-                and (before["total_bytes"] != after["total_bytes"] or before["device"] != after["device"])):
-            after = {"available": False, "error": "vram_device_changed", "sample_ns": time.monotonic_ns()}
-        return {**facts, "vram_after": after, "effect_sent": True, "unload_ack": ack,
-                "engine_alive": engine.live(), "status": "completed" if ack is True else
-                "failed" if ack is False else "unresolved", "error": None if ack is True else "unload_unacknowledged"}
+        native = self.native_control
+        if native is None or native.engine is not self.engine:
+            raise EndpointOwnershipError("native release enrollment is absent")
+        request = result["request"]
+        record = native.release(request, deadline)
+        while record["status"] in {"draining", "settled", "ready_unload", "unloading"}:
+            with self.release_authority.table_lock:
+                result["effect_sent"] = result["effect_sent"] or record["effect_sent"]
+            self.check(channel, deadline)
+            if record["status"] == "settled":
+                # Only a correlated close+whole-worker barrier ACK permits
+                # sending the separate owner unload command. Record first so
+                # an uncertain command/result cannot be mistaken for no effect.
+                with self.release_authority.table_lock:
+                    result["effect_sent"] = True
+                record = native.release(request, deadline, unload=True)
+                continue
+            time.sleep(min(.01, _remaining(deadline)))
+            record = native.release(request, deadline, observe=True)
+        # Native completion is emitted after the worker's actual operations.
+        # VRAM return is never inferred from the acknowledgement.
+        counts = {k: record[k] for k in ("queue_running", "queue_pending") if k in record}
+        return {**counts, "status": record["status"], "effect_sent": record["effect_sent"],
+                "unload_ack": record["unload_ack"], "error": record["error"],
+                "engine_alive": self.engine.live(),
+                "memory_observed_returned": False}
 
     def stop(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)

@@ -80,7 +80,10 @@ _CODE_PATHS = (
 # A2 must extend this list with its transitive custody/helper imports when landing.
 _A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py",
              "core/generation/_engine_target_files.py", "core/generation/engine_custody.py",
-             "core/generation/engine_release_authority.py", "core/execution/managed_tool_session.py",
+             "core/generation/engine_release_authority.py",
+             "core/generation/engine_native_launcher.py", "core/generation/engine_native_fence.py",
+             "core/generation/engine_native_control.py", "core/generation/engine_native_policy.json",
+             "core/execution/managed_tool_session.py",
              "core/execution/__init__.py", "core/execution/process_group.py",
              "core/execution/custody_broker.py", "core/execution/platform_helpers.py")
 
@@ -270,6 +273,8 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / relative
         if path.is_file():
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif "native_launcher" in " ".join(recipe.start.argv) and "/engine_native_" in relative:
+            raise IntegrityError("native launch helper closure is incomplete")
     result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
     entry = next(e for e in recipes.load_recipe_index().entries
                  if (e.engine, e.platform) == (recipe.engine, recipe.platform))

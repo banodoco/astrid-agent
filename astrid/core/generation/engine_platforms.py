@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import math
 import os
+from pathlib import Path
 import stat
 import string
 import sys
@@ -15,7 +16,7 @@ from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidatio
 from .engine_runner import _root
 
 _LINUX = frozenset({"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130"})
-_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port"})
+_FIELDS = frozenset({"install_root", "python", "comfy_root", "models_root", "models_config", "host", "port", "native_launcher"})
 
 
 def _deadline(deadline):
@@ -103,7 +104,8 @@ class LinuxPlatformAdapter:
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
                   "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models"),
                   "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
-                  "host": recipe.start.bind_host, "port": str(recipe.start.port)}
+                  "host": recipe.start.bind_host, "port": str(recipe.start.port),
+                  "native_launcher": str(Path(__file__).resolve().with_name("engine_native_launcher.py"))}
         return CommandRequest(tuple(_expand(v, values) for v in recipe.start.argv),
                               _expand(recipe.start.cwd, values),
                               {k: _expand(v, values) for k, v in recipe.start.env.items()}, deadline)

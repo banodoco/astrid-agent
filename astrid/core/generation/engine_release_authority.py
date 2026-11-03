@@ -320,6 +320,11 @@ class ReleaseAuthority:
         if record["engine"] != self.owner.release_identity(channel, deadline):
             record["revoked"] = True
             raise EndpointOwnershipError("original engine incarnation changed")
+        if record.get("native") is not None:
+            native = self.owner.native_control
+            if native is None or native.attest(deadline) != record["native"]:
+                record["revoked"] = True
+                raise EndpointOwnershipError("original native enrollment changed")
 
     def dispatch(self, value, peer, channel, deadline):
         if value.get("version") != VERSION or value.get("issuer") != self.issuer:
@@ -335,7 +340,9 @@ class ReleaseAuthority:
             if not isinstance(profile_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", profile_digest):
                 raise EndpointOwnershipError("private readiness digest is absent")
             issuance_id, secret = secrets.token_hex(16), secrets.token_hex(32)
-            self.records[issuance_id] = {"engine": engine, "secret": secret, "producer": peer,
+            native = self.owner.native_control
+            attestation = native.attest(deadline) if native is not None else None
+            self.records[issuance_id] = {"engine": engine, "native": attestation, "secret": secret, "producer": peer,
                 "profile_digest": profile_digest, "expires": time.monotonic() + 60,
                 "issued": time.monotonic(),
                 "revoked": False, "state": "offered", "requests": {}, "target": None,
@@ -393,15 +400,15 @@ class ReleaseAuthority:
                     or (binding["runtime_epoch"] is not None and type(binding["runtime_epoch"]) is not int)
                     or type(generation) is not int or generation < 1):
                 raise EndpointOwnershipError("complete session association differs from ready evidence")
-            # The current canonical engine has unauthenticated mutation ingress.
-            # Neither a host assertion nor queue-empty observation establishes
-            # exclusive admission. No production topology is enrolled yet.
-            if not self.owner.release_admission_supported(peer, value.get("admission")):
+            # An original, privately enrolled native dispatch fence is required.
+            # Host assertions and queue observations carry no authority.
+            if not self.owner.release_admission_supported(peer, value.get("admission"), deadline):
                 raise EndpointOwnershipError("exclusive engine admission is unverified")
             association = {"status": "bound", "association_id": secrets.token_hex(16),
                 "engine_digest": digest(engine), "target_digest": digest(target),
                 "runtime_digest": digest(record["runtime"]), "binding_digest": digest(binding),
                 "generation": generation}
+            self.owner.bind_release_native(association["association_id"], binding, generation, deadline)
             record.update(state="bound", binding=binding, generation=generation,
                           association=association, expires=record["issued"] + 86400)
             return association
