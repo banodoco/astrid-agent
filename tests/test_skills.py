@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import unittest
 from pathlib import Path
@@ -879,15 +880,25 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
 _ADAPTER_TYPES = (ClaudeAdapter, CodexAdapter, HermesAdapter)
 
 
+@pytest.fixture
+def foreign_root():
+    # The task-local TMPDIR may itself contain an "astrid" component. These
+    # tiny protected inputs must distinguish that heuristic's two branches.
+    root = os.environ.get("TEMP") if os.name == "nt" else "/tmp"
+    with TemporaryDirectory(prefix="skill-foreign-", dir=root) as directory:
+        yield Path(directory)
+
+
 @pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
 @pytest.mark.parametrize("mechanism", ["symlink", "copy"])
 @pytest.mark.parametrize("foreign_name", ["notes", "projects/astrid/notes"])
-def test_replacement_and_uninstall_preserve_foreign_links(tmp_path, adapter_type, mechanism, foreign_name):
+def test_replacement_and_uninstall_preserve_foreign_links(tmp_path, foreign_root, adapter_type, mechanism, foreign_name):
     descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
     adapter = adapter_type(home=tmp_path / "harness")
     target = adapter.target_for(descriptor)
-    foreign = tmp_path / foreign_name
+    foreign = foreign_root / foreign_name
     foreign.mkdir(parents=True)
+    assert ("astrid" in foreign.resolve().parts) == ("astrid" in Path(foreign_name).parts)
     protected = foreign / "SKILL.md"
     protected.write_bytes(b"user bytes\r\n  \n")
     target.parent.mkdir(parents=True)
@@ -939,7 +950,7 @@ def test_adapter_uninstall_distinguishes_broken_declared_link(tmp_path, adapter_
 @pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
 @pytest.mark.parametrize("boundary", ["sync", "off", "uninstall"])
 @pytest.mark.parametrize("foreign_name", ["notes", "projects/astrid/_core/notes"])
-def test_public_boundaries_preserve_retargeted_record(tmp_path, adapter_type, boundary, foreign_name):
+def test_public_boundaries_preserve_retargeted_record(tmp_path, foreign_root, adapter_type, boundary, foreign_name):
     fx = _Tmp()
     try:
         harness = adapter_type.name
@@ -948,8 +959,9 @@ def test_public_boundaries_preserve_retargeted_record(tmp_path, adapter_type, bo
         target = adapter.skills_dir / "astrid"
         before = state.load(fx.state_path)["installs"][harness]["_core"]
         target.unlink()
-        foreign = tmp_path / foreign_name
+        foreign = foreign_root / foreign_name
         foreign.mkdir(parents=True)
+        assert ("astrid" in foreign.resolve().parts) == ("astrid" in Path(foreign_name).parts)
         protected = foreign / "note"
         protected.write_bytes(b"protected\r\n  ")
         target.symlink_to(foreign)
