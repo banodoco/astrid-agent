@@ -1,7 +1,6 @@
 """Interim refusal while the offline transaction capability is unavailable."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
