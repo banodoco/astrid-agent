@@ -502,6 +502,7 @@ class PinokioBackendExecutor:
     """Run a fully supplied Pinokio lifecycle through real process boundaries."""
 
     def __init__(self, config: Mapping[str, Any], output: Path):
+        _refuse_keepgoing_diagnostic(config)
         self.data = _validate_config(config)
         self.output = _absolute_path(output, "output")
         if self.output.exists() and (not self.output.is_dir() or any(self.output.iterdir())):
@@ -828,10 +829,22 @@ class PinokioBackendExecutor:
         return receipt
 
 
+def _refuse_keepgoing_diagnostic(value: Mapping[str, Any]) -> None:
+    """Keep harness continuations outside the Pinokio qualification boundary."""
+    for record in (value, value.get("pinokio_backend")):
+        if isinstance(record, Mapping) and (
+            record.get("proof_mode") == "keep-going-diagnostic"
+            or record.get("diagnostic_keep_going") is True
+            or record.get("qualification_eligible") is False
+        ):
+            raise ValidationError("keep-going diagnostic output cannot satisfy Pinokio proof")
+
+
 def admit_hosted_receipt(receipt: Mapping[str, Any]) -> None:
     """Raise unless a receipt is authentic hosted-lifecycle evidence."""
     if not isinstance(receipt, Mapping):
         raise ValidationError("hosted receipt must be an object")
+    _refuse_keepgoing_diagnostic(receipt)
     if receipt.get("evidence_class") != "hosted-lifecycle":
         raise ValidationError("source_fake/fixture/executable-boundary evidence cannot satisfy hosted receipt gate")
     if receipt.get("source_override_test_mode") is not False:
