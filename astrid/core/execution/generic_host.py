@@ -11949,7 +11949,7 @@ class GenericPackHost:
                 session_id = str(vibe_session.get("session_dir") or "")
                 session_birth = str(vibe_session.get("process_birth_id") or "")
                 session_endpoint = str(vibe_session.get("server_url") or "")
-                session_source = str(vibe_session.get("source_revision") or "")
+                session_source = str(vibe_session.get("source_content_digest") or "")
                 session_config = str(vibe_session.get("config_digest") or "")
                 runtime_profile = readiness_profile.get("runtime")
                 if (not isinstance(runtime_profile, Mapping)
@@ -11970,8 +11970,7 @@ class GenericPackHost:
                     endpoint=session_endpoint,
                     source_digest=session_source,
                     config_digest=session_config,
-                    execution_identity=stable_session_identity,
-                    runtime_epoch=claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None,
+                    execution_identity=readiness_profile.get("residency_digest"),
                     launch_generation=str(vibe_session["launch_generation"]),
                     engine_birth_id=str(vibe_session["comfy_process_birth_id"]),
                 )

@@ -210,7 +210,7 @@ def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
     # The attested revision must be the one the selected VibeComfy checkout is pinned to
     # (ASTRID_VIBECOMFY_CHECKOUT is set in CI), so use the product's pin rather than a made-up one.
     from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-    revision, content = VIBECOMFY_ENGINE_REVISION, "sha256:" + hashlib.sha256(b"unit source fixture").hexdigest()
+    revision, content = VIBECOMFY_ENGINE_REVISION, "sha256:" + hashlib.sha256(b"changed unit source fixture").hexdigest()
     config = json.dumps({"output_directory": str(output)}, sort_keys=True).encode()
     marker = {"pid": daemon, "comfy_pid": child, "process_start_identity": birth,
               "comfy_process_start_identity": child_birth, "url": url, "launch_token": token}
@@ -225,13 +225,14 @@ def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
              "root": "sha256:" + "4" * 64, "port": 18188}
     facts = {"exact": exact, "minimum": {"vram_bytes": 0, "scratch_bytes": 8192}}
     profile = {"schema_version": "hc03-worker-readiness.v1", "status": "ready", "verified_facts": facts,
+               "residency_digest": "sha256:" + "5" * 64,
                "verified_facts_digest": backend_module._canonical_sha256(facts),
                "runtime": {"runtime_instance_id": "00000000-0000-4000-8000-000000000001"},
                "launch": {"output_root": str(output), "model_root": {"schema_version": 1, "path": str(models),
                           "inventory": inventory, "inventory_digest": canonical_model_inventory_digest(inventory)}},
                "vibecomfy_session": {"session_dir": str(session), "server_url": url, "pid": daemon,
                    "comfy_pid": child, "launch_token": token, "process_birth_id": birth,
-                   "comfy_process_birth_id": child_birth, "source_revision": revision,
+                   "comfy_process_birth_id": child_birth, "launch_generation": child_birth, "source_revision": revision,
                    "source_content_digest": content, "config_digest": "sha256:" + hashlib.sha256(config).hexdigest()}}
     observations = {"listener": child, "parent": daemon, "birth": birth, "child_birth": child_birth}
     ownership_reads, controls, signals = [], [], []
@@ -285,20 +286,25 @@ def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
                            signals=signals, identity_reads=identity_reads, http=http, root=root)
 
 
+def _sdk_cpu_session_binding(profile):
+    from astrid.core.execution.managed_tool_session import SessionBinding
+    s = profile["vibecomfy_session"]
+    return SessionBinding(s["session_dir"], profile["runtime"]["runtime_instance_id"],
+                          s["process_birth_id"], s["server_url"], s["source_content_digest"], s["config_digest"],
+                          execution_identity=profile["residency_digest"],
+                          launch_generation=s["launch_generation"], engine_birth_id=s["comfy_process_birth_id"])
+
+
 def _sdk_cpu_handoff_fixture(tmp_path, monkeypatch):
     import threading
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    from astrid.core.execution.managed_tool_session import CapabilityDescriptor, SessionBinding
+    from astrid.core.execution.managed_tool_session import CapabilityDescriptor
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
     f.threading = threading
     f.host = GenericPackHost(pack_roots=[tmp_path])
     f.host._native_engine_graph = None
-    f.bridge = _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-        model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
-    s = f.profile["vibecomfy_session"]
-    binding = SessionBinding(s["session_dir"], f.profile["runtime"]["runtime_instance_id"],
-                             s["process_birth_id"], s["server_url"], s["source_revision"], s["config_digest"],
-                             engine_birth_id=s["comfy_process_birth_id"])
+    binding = _sdk_cpu_session_binding(f.profile)
+    f.bridge = _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile, binding=binding)
     manager = f.host.managed_tool_session
     manager.open(capability=CapabilityDescriptor("vibecomfy.run"), binding=binding, adapter=f.bridge)
     f.token = manager.admit(capability_id="vibecomfy.run", invocation_id="unit-task")
@@ -362,7 +368,7 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
     assert all(record.ready for record in host.capabilities.values())
     before = {p.name: p.read_bytes() for p in f.session.iterdir()}
     native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
-        "attempt_id": "vibe-attempt", "fence": 1, "input_object_ids": list(objects),
+        "attempt_id": "vibe-attempt", "fence": 1, "runtime_epoch": 1, "input_object_ids": list(objects),
         "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
     runtime.tasks["vibe"] = native
     assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
@@ -488,10 +494,10 @@ def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeyp
 def test_sdk_cpu_handoff_factory_rejects_registry_drift(tmp_path, monkeypatch, field):
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+    binding = _sdk_cpu_session_binding(f.profile)
     (f.session / field).write_text("different")
     with pytest.raises(Exception):
-        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
+        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile, binding=binding)
     assert not f.controls
 
 
@@ -515,10 +521,10 @@ def test_sdk_cpu_handoff_first_chain_is_redacted_before_secondary_cleanup(tmp_pa
 def test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile(tmp_path, monkeypatch, invalid):
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+    binding = _sdk_cpu_session_binding(f.profile)
     profile = None if invalid == "absent" else {"schema_version": "hc03-worker-readiness.v1"} if invalid == "partial" else dict(f.profile, status="not-ready")
     with pytest.raises(ValueError):
-        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
+        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=profile, binding=binding)
     assert not f.controls
 
 
