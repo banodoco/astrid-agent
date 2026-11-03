@@ -112,12 +112,13 @@ def main():
         record(command=['/bin/launchctl', 'bootout', target], elapsed_seconds=round(time.monotonic()-start, 3), **bootout)
         (out / 'observations.json').write_text(json.dumps(observations, indent=2) + '\n')
         summary['bootout'] = bootout
-        post = run(['/bin/launchctl', 'print', target]); disabled = run(['/bin/launchctl', 'print-disabled', domain], redact=True); record(disabled_target_lines=[line for line in disabled.get('stdout', '').splitlines() if label in line], disabled_exit=disabled['exit']); run(['/bin/launchctl', 'print', domain], redact=True)
+        post = run(['/bin/launchctl', 'print', target]); disabled = run(['/bin/launchctl', 'print-disabled', domain], redact=True); record(disabled_target_lines=[line for line in disabled.get('stdout', '').splitlines() if label in line], disabled_exit=disabled['exit']); domain_after = run(['/bin/launchctl', 'print', domain], redact=True)
+        summary['post_domain_exit'] = domain_after['exit']
         summary['post_target_print_exit'] = post['exit']
         raw_after = plist.read_bytes(); st = plist.stat()
         summary['definition_after'] = {'sha256': hashlib.sha256(raw_after).hexdigest(), 'mode': oct(st.st_mode & 0o7777), 'uid': st.st_uid, 'gid': st.st_gid, 'size': st.st_size}
         last = observations[-1] if observations else None
-        if bootout['exit'] != 0 or not last or last['group'] is None or last['tracked_pid_rows'] is None:
+        if bootout['exit'] != 0 or domain_after['exit'] != 0 or post['exit'] == 0 or post['exit'] is None or not last or last['group'] is None or last['tracked_pid_rows'] is None:
             summary['status'] = 'unknown'
         elif last['group'] or last['tracked_pid_rows']:
             summary['status'] = 'still-live-or-reused-pid-or-group'
