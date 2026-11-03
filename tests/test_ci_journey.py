@@ -923,6 +923,10 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     rows = matrix("true")
     assert len(rows) == 3
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
+    diagnostic_rows = matrix("true", DIAGNOSTIC_KEEP_GOING="true")
+    assert diagnostic_rows == rows
+    rejected = config("false", DIAGNOSTIC_KEEP_GOING="true")
+    assert rejected.returncode != 0 and "diagnostic_keep_going requires direct_only" in rejected.stderr
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
 
