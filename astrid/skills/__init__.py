@@ -354,8 +354,14 @@ def install(
             # A selected developer-only extra was withheld from its pack's copy,
             # so refresh the pack too: its links to the extra become live again.
             refresh_ids = {d.skill_id for d in descriptors} | {d.pack_id for d in descriptors if d.developer_only}
-            return sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
-                                    state_path=state_path, refresh_ids=refresh_ids)
+            resynced = sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
+                                          state_path=state_path, refresh_ids=refresh_ids)
+            # An unselected extra with a conflict is not revisited by sync.
+            # Keep the preservation result from the initial replacement attempt.
+            for conflict in report.get("conflicts", []):
+                if conflict not in resynced.setdefault("conflicts", []):
+                    resynced["conflicts"].append(conflict)
+            return resynced
     return report
 
 

@@ -1129,3 +1129,37 @@ def test_recorded_source_is_not_re_resolved_through_later_foreign_symlink(tmp_pa
         assert any(row["path"] == str(target) for row in report["conflicts"])
     finally:
         fx.close()
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("mechanism", ["copy", "symlink"])
+def test_extra_install_keeps_preservation_conflict_after_followup_sync(tmp_path, monkeypatch, adapter_type, mechanism):
+    fx = _Tmp()
+    try:
+        pack = tmp_path / "external/demo_pack"
+        extra = pack / "docs/extra"
+        extra.mkdir(parents=True)
+        (pack / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "id": "demo_pack", "name": "Demo Pack", "version": "0.1.0",
+            "documentation": {"kind": "skill", "path": "docs/SKILL.md"},
+            "resources": [{"kind": "skill", "path": "docs/extra/SKILL.md"}],
+        }), encoding="utf-8")
+        (pack / "docs/SKILL.md").write_text("---\nname: demo\ndescription: Main skill.\n---\nMain.\n", encoding="utf-8")
+        (extra / "SKILL.md").write_text("---\nname: extra\ndescription: Extra skill.\n---\nExtra.\n", encoding="utf-8")
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(pack.parent))
+        assert any(d.skill_id == "demo_pack-extra" for d in discovery.list_extras(skills.list_skills()))
+        adapter = adapter_type()
+        target = adapter.skills_dir / "astrid-demo_pack-extra"
+        target.parent.mkdir()
+        foreign = tmp_path / "projects/astrid/demo_pack-extra/notes"
+        foreign.mkdir(parents=True)
+        (foreign / "note").write_bytes(b"protected extra target\r\n")
+        target.symlink_to(foreign)
+        report = skills.install(["demo_pack"], [adapter.name], skill_names=["extra"],
+                                mechanism=mechanism, state_path=fx.state_path)
+        assert target.is_symlink() and target.readlink() == foreign
+        assert (foreign / "note").read_bytes() == b"protected extra target\r\n"
+        assert any(row["path"] == str(target) for row in report["conflicts"])
+        assert "demo_pack-extra" not in state.load(fx.state_path)["installs"][adapter.name]
+    finally:
+        fx.close()
