@@ -21,6 +21,56 @@ def test_all_nine_os_mode_slots_admit_complete_machine_observations(slot_id: str
     assert not failure.validate_receipt(receipt, PROVISIONAL_CANDIDATE, slot_id)
 
 
+@pytest.mark.parametrize("slot_id", ("direct-macos", "pinokio-backend-macos", "pinokio-fully-local-macos"))
+def test_macos15_exact_hosted_provenance(slot_id: str) -> None:
+    observation = valid_observation(slot_id)
+    observation.update(os="macos", runner_image="macos-15", os_build="macOS-15.8.2-arm64")
+    observation["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos15", "ImageVersion": "20261028.0489.1"
+    }
+    assert failure.create_receipt(slot_id, PROVISIONAL_CANDIDATE, observation)["status"] == "pass"
+
+
+@pytest.mark.parametrize("slot_id", ("direct-macos", "pinokio-backend-macos", "pinokio-fully-local-macos"))
+@pytest.mark.parametrize(
+    "path, value, message",
+    (
+        (("runner_image",), "macos-14", "runner_image"),
+        (("os",), "linux", "os:"),
+        (("os_build",), "Linux-foreign", "os_build"),
+        (("runner_provenance", "RUNNER_OS"), "Linux", "runner_provenance"),
+        (("runner_provenance", "ImageOS"), "macos14", "runner_provenance"),
+        (("runner_provenance", "ImageVersion"), "", "runner_provenance"),
+    ),
+)
+def test_macos15_wrong_runner_or_image_is_rejected(
+    slot_id: str, path: tuple[str, ...], value: str, message: str
+) -> None:
+    observation = valid_observation(slot_id)
+    observation["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos15", "ImageVersion": "20261028.0489.1"
+    }
+    target = observation
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    receipt = failure.create_receipt(slot_id, PROVISIONAL_CANDIDATE, observation)
+    assert receipt["status"] == "fail"
+    assert any(message in error for error in receipt["verification"]["failed_assertions"])
+
+
+def test_legacy_macos14_runner_provenance_remains_exact() -> None:
+    contract = dict(failure.SLOT_CONTRACTS["direct-macos"], runner="macos-14")
+    observation = valid_observation("direct-macos")
+    observation["runner_image"] = "macos-14"
+    observation["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos14", "ImageVersion": "20261028.0489.1"
+    }
+    assert failure._runner_errors(observation, contract) == []
+    observation["runner_provenance"]["ImageOS"] = "macos15"
+    assert failure._runner_errors(observation, contract)
+
+
 @pytest.mark.parametrize("slot_id", ("direct-macos", "direct-linux", "direct-windows"))
 def test_interruption_recovery_is_explicit_per_os(slot_id: str) -> None:
     observation = valid_observation(slot_id)

@@ -42,10 +42,13 @@ def receipt(index):
     return index["files"][0]["json"]
 
 
-@pytest.mark.parametrize("slot", failure.REQUIRED_SLOT_IDS)
-def test_m4_6_each_slot_stays_closed_without_independent_proofs(slot):
+@pytest.mark.parametrize("slot", ["direct-linux", "direct-windows", "pinokio-backend-linux", "pinokio-backend-windows"])
+def test_m4_6_each_slot_stays_closed_without_required_direct_join(slot):
     reasons = reasons_for(index_for(slot))
-    assert any("independent section 5" in reason for reason in reasons)
+    if slot.startswith("direct-"):
+        assert any("external run/job/artifact join is required" in reason for reason in reasons)
+    else:
+        assert any("Pinokio custody remains outside" in reason for reason in reasons)
     assert not any("parsed observation differs" in reason for reason in reasons)
     assert not any("index SHA-256 differs" in reason for reason in reasons)
 
@@ -121,6 +124,14 @@ def test_m4_6_rejects_disposable_scope():
     index = index_for()
     receipt(index)["execution_scope"] = native.FIXTURE_SCOPE
     assert any("hosted native-service" in reason for reason in reasons_for(index))
+
+
+@pytest.mark.parametrize("claim", ["containment", "continuous_history", "gap_free_custody"])
+def test_direct_checkpoint_rejects_deferred_claims_even_when_they_are_marked_success(claim):
+    index = index_for()
+    receipt(index)["native_service"]["checkpoint_evidence"] = {claim: "pass"}
+    reasons = reasons_for(index)
+    assert any(f"deferred {claim}" in reason for reason in reasons)
 
 
 @pytest.mark.parametrize("value", [None, {}, {"slot_id": []}, {"slot_id": "direct-linux", "candidate": [], "files": [None, {"path": []}]}])
