@@ -1330,3 +1330,161 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_windows_isolation_preserves_native_runtime_log_root_for_diagnostics(tmp_path, monkeypatch):
+    native_local = tmp_path / "login-local"
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(native_local))
+    monkeypatch.delenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, raising=False)
+
+    with journey.isolated_environment(run_root, root, data):
+        assert os.environ["LOCALAPPDATA"] == str(run_root / "localappdata")
+        assert os.environ[journey.NATIVE_RUNTIME_LOG_DIR_ENV] == str(
+            native_local / "Astrid Runtime" / "logs"
+        )
+
+    assert os.environ["LOCALAPPDATA"] == str(native_local)
+    assert journey.NATIVE_RUNTIME_LOG_DIR_ENV not in os.environ
+
+
+def test_windows_release0_task_failure_retains_nested_pack_host_readiness_diagnostics(tmp_path, monkeypatch):
+    """Exercise the nested Release-0 task path where the hosted row stopped."""
+    from scripts import journey_version_jumps as jumps
+
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+    })
+    data = run_root / "data"
+    (data / "logs").mkdir(parents=True)
+    (data / "logs" / "service-pack-host.log").write_text(
+        "api_key=not-for-receipt\nlaunch failed\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+    monkeypatch.setattr(journey.windows, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 23,
+            "restart_count": 4, "reason": "launch_failed",
+        }],
+    })
+    monkeypatch.setattr(journey.windows, "wait_for", lambda _label, probe, **_kwargs: probe())
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+
+    nested = evidence / "release0-api-seed" / "release0-task"
+    with pytest.raises(RuntimeError, match="pack-host reached terminal failed state"):
+        jumps.task_after_update({}, nested, "tst-m4-3b-release0")
+    assert (nested / "pack-host-readiness-first-failed-poll.json").is_file()
+    (nested / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log").is_file()
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
+        "api_key=<redacted>\nlaunch failed\n")
+    assert not (staged / "unrelated-secret.txt").exists()
+    receipt = journey.read_json(staged / "journey-result.json")
+    captured = receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"]
+    assert [(row["observation"], row["status"], row["capture_status"]) for row in captured] == [
+        ("first-failed-poll", "captured", "observed"),
+        ("first-service-exit", "captured", "observed"),
+        ("definitive-failure", "captured", "observed"),
+    ]
+    first = captured[0]
+    assert first["path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log")
+    assert first["source_path"] == (
+        "release0-api-seed/release0-task/pack-host-readiness-first-failed-poll.json"
+    )
+    assert first["capture"]["health"]["pack_host"]["last_exit"] == 23
+    assert first["capture"]["logs"][0]["retained_evidence_path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log")
+
+
+@pytest.mark.parametrize("relative_root", [
+    "release0-api-seed/release0-task", "release1-working-task",
+])
+def test_windows_nested_readiness_survives_source_cleanup(tmp_path, monkeypatch, relative_root):
+    """Use real capture and staging, including the scheduler's separate log root."""
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    nested = evidence / relative_root
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+    })
+    native_local = tmp_path / "native-local"
+    native_logs = native_local / "Astrid Runtime" / "logs"
+    native_logs.mkdir(parents=True)
+    (native_logs / "service-pack-host.log").write_text("child first error\ntoken=private\n")
+    (native_logs / "runtime.log").write_text("supervisor first error\n")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(native_local))
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+    monkeypatch.setattr(journey.windows, "EVIDENCE", nested)
+    monkeypatch.setattr(journey.windows, "version", lambda: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(journey.windows, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 1,
+            "reason": "exited", "restart_count": 2,
+        }],
+    })
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *_: None)
+    with journey.isolated_environment(run_root, root, data):
+        with pytest.raises(RuntimeError, match="terminal failed state"):
+            journey.windows.host_ready()
+        (nested / "unrelated-secret.json").write_text("not allowlisted")
+        journey.snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+        shutil.rmtree(nested)
+        shutil.rmtree(native_logs)
+        journey.snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+
+    receipt = journey.read_json(evidence / "journey-result.json")
+    for phase in ("before-cleanup", "after-cleanup"):
+        captures = receipt["failure_diagnostics"][phase]["pack_host_readiness"]
+        assert len(captures) == 3
+        for capture in captures:
+            assert capture["status"] == "captured"
+            assert capture["source_path"] == (
+                f"{relative_root}/pack-host-readiness-{capture['observation']}.json")
+            assert capture["retention_origin"] == (
+                "current-source" if phase == "before-cleanup" else "before-cleanup")
+            assert capture["capture"]["predicates"]["accepted"] is False
+            assert capture["capture"]["log_roots"]["child_and_supervisor"] == {
+                "path": str(native_logs), "selection": "native-runtime-logs",
+            }
+            logs = {row["source"]: row for row in capture["capture"]["logs"]}
+            for name, text in (("service-pack-host.log", "child first error\ntoken=<redacted>\n"),
+                               ("runtime.log", "supervisor first error\n")):
+                row = logs[name]
+                assert row["search_root"] == "native-runtime-logs"
+                assert row["retention_status"] == "captured"
+                assert (run_root / row["retained_evidence_path"]).read_text() == text
+        staged = run_root / "evidence-upload" / phase
+        assert not any("secret" in p.name for p in staged.iterdir())
+        assert all(p.name == "journey-result.json" or
+                   p.name.startswith("runtime-service-service-") and p.name.endswith(".log")
+                   for p in staged.iterdir())
+
+
+def test_windows_readiness_retention_does_not_follow_nested_symlink(tmp_path):
+    evidence = tmp_path / "run/evidence/release0-to-release1"
+    evidence.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "release0-task").mkdir()
+    (outside / "release0-task/pack-host-readiness-definitive-failure.json").write_text("secret")
+    (evidence / "release0-api-seed").symlink_to(outside, target_is_directory=True)
+    assert journey.retain_named_evidence(evidence, "before-cleanup") == {}
+    staged = tmp_path / "run/evidence-upload/before-cleanup"
+    assert list(staged.iterdir()) == []

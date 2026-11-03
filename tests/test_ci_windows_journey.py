@@ -765,3 +765,258 @@ def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, 
     with pytest.raises(RuntimeError, match="origin exit 1" if failure == "origin" else "Scheduled Task preflight failed"):
         shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
     assert calls == ["origin", "query"]
+
+
+def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    logs = tmp_path / "logs"
+    runtime = tmp_path / "runtime"
+    logs.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    profile = tmp_path / "profile.json"
+    declaration = tmp_path / "services.json"
+    profile.write_text(json.dumps({"service_declaration": str(declaration)}), encoding="utf-8")
+    declaration.write_text(json.dumps({"services": [{
+        "name": "pack-host",
+        "argv": ["python.exe", "-m", "astrid.core.execution.generic_host", "--api-key", "secret"],
+        "restart": "on-failure",
+        "ready": {"kind": "file", "path": "generic-host.ready.json"},
+        "env": {"API_KEY": "must-not-be-captured"},
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(journey, "version", lambda: {"profile": str(profile)})
+    (logs / "service-pack-host.log").write_text(
+        "x" * (journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES + 10) +
+        "\napi_key=not-for-receipt\nAuthorization: Bearer also-not-for-receipt\n"
+        "-----BEGIN PRIVATE KEY-----\nnot-for-receipt-key\n-----END PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    # A directory must not be followed or silently treated as an absent log.
+    (logs / "runtime-service.log").mkdir()
+    (runtime / "generic-host.log").write_text("startup failed\n", encoding="utf-8")
+    (runtime / "generic-host.ready.json").write_text(json.dumps({
+        "status": "starting", "access_token": "not-for-receipt", "detail": "not registered",
+    }), encoding="utf-8")
+    health = {
+        "status": "ok", "runtime_instance_id": "current",
+        "services": [{"name": "pack-host", "state": "starting", "last_exit": None,
+                      "restart_count": 0}],
+    }
+    monkeypatch.setattr(journey, "health", lambda: health)
+
+    assert journey.host_ready() is False
+
+    captured = json.loads((evidence / "pack-host-readiness-first-failed-poll.json").read_text())
+    assert captured["health"] == {
+        "status": "ok", "runtime_instance_id": "current",
+        "pack_host": {"name": "pack-host", "state": "starting", "last_exit": None,
+                      "restart_count": 0},
+    }
+    assert captured["predicates"] == {
+        "health_object": True,
+        "health_status_ok": True,
+        "pack_host_present": True,
+        "pack_host_running": False,
+        "ready_file_is_file": True,
+        "ready_json_object": True,
+        "ready_status_ready": False,
+        "runtime_instance_present": True,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
+    }
+    assert captured["service_action"] == {
+        "status": "observed",
+        "action": {
+            "name": "pack-host",
+            "restart": "on-failure",
+            "ready": {"kind": "file", "path": "generic-host.ready.json"},
+            "argv": ["python.exe", "-m", "astrid.core.execution.generic_host", "--api-key", "<redacted>"],
+        },
+        "child_output": {
+            "stdout": "service-pack-host.log",
+            "stderr": "redirected_to_stdout",
+        },
+    }
+    assert "env" not in captured["service_action"]["action"]
+    assert "secret" not in json.dumps(captured["service_action"])
+    assert captured["logs"][0]["status"] == "captured"
+    assert captured["logs"][0]["truncated"] is True
+    assert captured["logs"][0]["captured_bytes"] <= journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES
+    assert captured["logs"][1] == {
+        "source": "runtime-service.log", "search_root": "data-root-logs",
+        "status": "unsafe_type", "type": "directory",
+    }
+    assert captured["logs"][3]["status"] == "captured"
+    assert captured["markers"][0]["content"]["access_token"] == "<redacted>"
+    assert captured["markers"][1] == {"source": "generic-host.json", "status": "missing"}
+    copied = (evidence / "pack-host-readiness-first-failed-poll-service-pack-host.log").read_text()
+    assert "not-for-receipt" not in copied
+    assert "api_key=<redacted>" in copied
+    assert "Authorization: <redacted>" in copied
+    assert "<redacted private key>" in copied
+    assert journey._redact_pack_host_text("not-for-receipt\n-----END PRIVATE KEY-----\n") == (
+        "<redacted truncated private key>\n"
+    )
+
+
+def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostics(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "health", lambda: None)
+    monkeypatch.setattr(journey, "version", lambda: (_ for _ in ()).throw(OSError("absent")))
+
+    assert journey.host_ready() is False
+
+    captured = json.loads((evidence / "pack-host-readiness-first-failed-poll.json").read_text())
+    assert captured["health"] == {"status": "unavailable"}
+    assert captured["predicates"] == {
+        "health_object": False,
+        "health_status_ok": False,
+        "pack_host_present": False,
+        "pack_host_running": False,
+        "ready_file_is_file": False,
+        "ready_json_object": False,
+        "ready_status_ready": False,
+        "runtime_instance_present": False,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
+    }
+    assert captured["service_action"] == {
+        "status": "unavailable", "stage": "version", "error": "OSError",
+    }
+    assert captured["logs"] == [
+        {"source": "service-pack-host.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "runtime-service.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "runtime.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "generic-host.log", "search_root": "runtime-support-root", "status": "missing"},
+    ]
+    assert captured["markers"] == [
+        {"source": "generic-host.ready.json", "status": "missing"},
+        {"source": "generic-host.json", "status": "missing"},
+    ]
+
+
+def test_failed_host_poll_uses_scheduler_native_child_log_root(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    data = tmp_path / "data"
+    native_logs = tmp_path / "login-local" / "Astrid Runtime" / "logs"
+    isolated_local = tmp_path / "isolated-local"
+    isolated_logs = isolated_local / "Astrid Runtime" / "logs"
+    wrong_logs = data / "logs"
+    for directory in (native_logs, isolated_logs, wrong_logs, data / "runtime"):
+        directory.mkdir(parents=True)
+    (native_logs / "service-pack-host.log").write_text(
+        "Traceback: current child first error\napi_key=not-for-receipt\n", encoding="utf-8",
+    )
+    (isolated_logs / "runtime-service.log").write_text(
+        "current task wrapper output\n", encoding="utf-8",
+    )
+    (wrong_logs / "service-pack-host.log").write_text(
+        "wrong data-root child log\n", encoding="utf-8",
+    )
+    (wrong_logs / "runtime-service.log").write_text(
+        "wrong data-root wrapper log\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: data)
+    monkeypatch.setenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, str(native_logs))
+    monkeypatch.setenv("LOCALAPPDATA", str(isolated_local))
+    monkeypatch.setattr(journey, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 1,
+            "restart_count": 2, "reason": "exited",
+        }],
+    })
+
+    with pytest.raises(RuntimeError, match="terminal failed state"):
+        journey.host_ready()
+
+    manifest = json.loads(
+        (evidence / "pack-host-readiness-definitive-failure.json").read_text(encoding="utf-8")
+    )
+    assert [(row["source"], row["search_root"], row["status"]) for row in manifest["logs"]] == [
+        ("service-pack-host.log", "native-runtime-logs", "captured"),
+        ("runtime-service.log", "isolated-service-logs", "captured"),
+        ("runtime.log", "native-runtime-logs", "missing"),
+        ("generic-host.log", "runtime-support-root", "missing"),
+    ]
+    child = (evidence / "pack-host-readiness-definitive-failure-service-pack-host.log").read_text()
+    wrapper = (evidence / "pack-host-readiness-definitive-failure-runtime-service.log").read_text()
+    assert child == "Traceback: current child first error\napi_key=<redacted>\n"
+    assert wrapper == "current task wrapper output\n"
+    assert "wrong data-root" not in child + wrapper
+
+
+def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    logs = tmp_path / "logs"
+    runtime = tmp_path / "runtime"
+    logs.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    (logs / "service-pack-host.log").write_text("launch failed\n", encoding="utf-8")
+    health = {
+        "status": "ok", "runtime_instance_id": "current",
+        "services": [{"name": "pack-host", "state": "failed", "last_exit": 23,
+                      "restart_count": 4, "reason": "launch_failed"}],
+    }
+    monkeypatch.setattr(journey, "health", lambda: health)
+
+    with pytest.raises(RuntimeError, match="terminal failed state"):
+        journey.host_ready()
+
+    for observation in journey.PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+        assert (evidence / f"pack-host-readiness-{observation}.json").is_file()
+    exited = json.loads((evidence / "pack-host-readiness-first-service-exit.json").read_text())
+    assert exited["health"]["pack_host"] == {
+        "name": "pack-host", "state": "failed", "last_exit": 23,
+        "restart_count": 4, "reason": "launch_failed",
+    }
+    assert exited["predicates"] == {
+        "health_object": True,
+        "health_status_ok": True,
+        "pack_host_present": True,
+        "pack_host_running": False,
+        "ready_file_is_file": False,
+        "ready_json_object": False,
+        "ready_status_ready": False,
+        "runtime_instance_present": True,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
+    }
+    assert (evidence / "pack-host-readiness-definitive-failure-service-pack-host.log").read_text() == (
+        "launch failed\n"
+    )
+
+
+@pytest.mark.parametrize("health_status,instance,state,marker,expected", [
+    ("ok", "current", "running", '{"status":"ready","runtime_instance_id":"current"}', True),
+    ("error", "current", "running", '{"status":"ready","runtime_instance_id":"current"}', False),
+    ("ok", "", "running", '{"status":"ready","runtime_instance_id":""}', False),
+    ("ok", "current", "starting", '{"status":"ready","runtime_instance_id":"current"}', False),
+    ("ok", "current", "running", None, False),
+    ("ok", "current", "running", 'malformed', False),
+    ("ok", "current", "running", '[]', False),
+    ("ok", "current", "running", '{"status":"starting","runtime_instance_id":"current"}', False),
+    ("ok", "current", "running", '{"status":"ready","runtime_instance_id":"old"}', False),
+])
+def test_readiness_capture_keeps_each_admission_predicate(
+        tmp_path, monkeypatch, health_status, instance, state, marker, expected):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "version", lambda: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(journey, "health", lambda: {
+        "status": health_status, "runtime_instance_id": instance,
+        "services": [{"name": "pack-host", "state": state}],
+    })
+    if marker is not None:
+        (tmp_path / "runtime").mkdir()
+        (tmp_path / "runtime/generic-host.ready.json").write_text(marker)
+    assert journey.host_ready() is expected
+    if not expected:
+        captured = json.loads((tmp_path / "evidence/pack-host-readiness-first-failed-poll.json").read_text())
+        assert captured["predicates"]["accepted"] is False
+        assert not all(value for name, value in captured["predicates"].items() if name != "accepted")

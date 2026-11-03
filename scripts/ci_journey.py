@@ -58,6 +58,21 @@ RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
+PACK_HOST_READINESS_OBSERVATIONS = (
+    "first-failed-poll",
+    "first-service-exit",
+    "definitive-failure",
+)
+PACK_HOST_READINESS_EVIDENCE_NAMES = frozenset(
+    f"pack-host-readiness-{observation}{suffix}"
+    for observation in PACK_HOST_READINESS_OBSERVATIONS
+    for suffix in (".json", "-service-pack-host.log", "-runtime-service.log", "-generic-host.log", "-runtime.log")
+)
+PACK_HOST_READINESS_NESTED_EVIDENCE_ROOTS = (
+    Path("release0-api-seed") / "release0-task",
+    Path("release1-working-task"),
+)
+
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
@@ -71,6 +86,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
 
 
 def journey_os_label() -> str:
@@ -571,7 +587,16 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
-def retain_named_evidence(evidence: Path, phase: str) -> None:
+def retained_pack_host_evidence_name(name: str) -> str:
+    """Map a finite pack-host diagnostic source to the existing hosted pattern."""
+    if name not in PACK_HOST_READINESS_EVIDENCE_NAMES:
+        raise ValueError(f"Unexpected pack-host readiness evidence name: {name}")
+    if name.endswith(".json"):
+        name = f"{name.removesuffix('.json')}-manifest.log"
+    return f"runtime-service-service-{name}"
+
+
+def retain_named_evidence(evidence: Path, phase: str) -> dict[str, tuple[str, str]]:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
     try:
@@ -579,15 +604,28 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     except Exception as exc:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
-        return
-    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+        return {}
+    sources = sorted(evidence.iterdir(), key=lambda path: path.name)
+    for relative_root in PACK_HOST_READINESS_NESTED_EVIDENCE_ROOTS:
+        if any(evidence.joinpath(*relative_root.parts[:index]).is_symlink()
+               for index in range(1, len(relative_root.parts) + 1)):
+            continue
+        source_root = evidence / relative_root
+        if source_root.is_dir():
+            sources.extend(source_root / name for name in sorted(PACK_HOST_READINESS_EVIDENCE_NAMES))
+    retained_sources = {}
+    for source in sources:
         name = source.name
-        if (name not in JOURNEY_EVIDENCE_NAMES and
+        is_pack_host_diagnostic = name in PACK_HOST_READINESS_EVIDENCE_NAMES
+        if (name not in JOURNEY_EVIDENCE_NAMES and not is_pack_host_diagnostic and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
             continue
         if not source.is_file() or source.is_symlink():
             continue
-        target = destination / name
+        target_name = retained_pack_host_evidence_name(name) if is_pack_host_diagnostic else name
+        if is_pack_host_diagnostic and name in retained_sources:
+            continue
+        target = destination / target_name
         try:
             if source.suffix == ".log":
                 with source.open("rb") as stream:
@@ -595,6 +633,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                     target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
             else:
                 shutil.copyfile(source, target)
+            if is_pack_host_diagnostic:
+                retained_sources[name] = (target_name, source.relative_to(evidence).as_posix())
         except Exception as exc:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -617,6 +657,16 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 except Exception as exc:
                     print(f"Journey seed evidence copy ({phase}) failed for {source}: "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    # Cleanup can remove nested task evidence. Carry the bounded first capture
+    # forward, retaining its original source binding in the receipt below.
+    if phase == "after-cleanup":
+        before = destination.parent / "before-cleanup"
+        for name in sorted(PACK_HOST_READINESS_EVIDENCE_NAMES):
+            target_name = retained_pack_host_evidence_name(name)
+            source, target = before / target_name, destination / target_name
+            if not target.exists() and source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, target)
+    return retained_sources
 
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
@@ -625,7 +675,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     try:
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
-        retain_named_evidence(evidence, phase)
+        retained_sources = retain_named_evidence(evidence, phase)
         destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
@@ -640,6 +690,45 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
+        if sys.platform == "win32":
+            pack_host = []
+            previous_captures = {
+                row["observation"]: row for row in recorded.get("failure_diagnostics", {}).get(
+                    "before-cleanup", {}).get("pack_host_readiness", [])
+            }
+            for observation in PACK_HOST_READINESS_OBSERVATIONS:
+                source_name = f"pack-host-readiness-{observation}.json"
+                retained = retained_sources.get(source_name)
+                target_name = retained[0] if retained is not None else retained_pack_host_evidence_name(source_name)
+                path = destination / target_name
+                item = {
+                    "observation": observation,
+                    "status": "captured" if path.is_file() else "unavailable",
+                    "path": path.relative_to(run_root).as_posix() if path.is_file() else None,
+                }
+                if path.is_file():
+                    previous = previous_captures.get(observation, {}) if phase == "after-cleanup" else {}
+                    item["source_path"] = retained[1] if retained is not None else previous.get("source_path")
+                    item["retention_origin"] = "current-source" if retained is not None else "before-cleanup"
+                    try:
+                        captured = read_json(path)
+                        item["capture_status"] = ("observed" if captured.get("schema_version") == 1
+                                                  else "malformed")
+                        for log in captured.get("logs", []):
+                            source = log.get("evidence") if isinstance(log, dict) else None
+                            log_retention = retained_sources.get(source)
+                            if source in PACK_HOST_READINESS_EVIDENCE_NAMES:
+                                log_name = (log_retention[0] if log_retention is not None
+                                            else retained_pack_host_evidence_name(source))
+                                log_path = destination / log_name
+                                log["retention_status"] = "captured" if log_path.is_file() else "unavailable"
+                            if source in PACK_HOST_READINESS_EVIDENCE_NAMES and log_path.is_file():
+                                log["retained_evidence_path"] = log_path.relative_to(run_root).as_posix()
+                        item["capture"] = captured
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        item["capture_status"] = "malformed"
+                pack_host.append(item)
+            diagnostic["pack_host_readiness"] = pack_host
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
@@ -747,6 +836,16 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                "XDG_CONFIG_HOME": str(home / ".config"),
                "ASTRID_RUNTIME_DATA_ROOT": str(data),
                "ASTRID_CI_PROGRAM_ROOT": str(root), "ASTRID_CI_DATA_ROOT": str(data)}
+    if sys.platform == "win32":
+        # Task Scheduler builds the service process environment from the login
+        # session, not from these process-local isolation overrides. Preserve
+        # that native Runtime log root so failure diagnostics read the same
+        # service-pack-host.log that frozen R0 actually writes.
+        native_local = os.environ.get("LOCALAPPDATA")
+        if native_local:
+            changes[NATIVE_RUNTIME_LOG_DIR_ENV] = str(
+                Path(native_local) / "Astrid Runtime" / "logs"
+            )
     prior = {key: os.environ.get(key) for key in changes}
     os.environ.update(changes)
     try:
