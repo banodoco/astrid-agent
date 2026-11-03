@@ -214,6 +214,8 @@ def _release1_row_errors(candidate, contract, row):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
     errors = []
+    if "proof_mode" in row and row["proof_mode"] != "proof":
+        errors.append(f"{job_id}: explicit proof mode is not proof")
     if row.get("receipt_kind") != "release1-installed-lifecycle":
         errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
     if row.get("status") != "pass":

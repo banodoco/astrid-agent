@@ -195,6 +195,25 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
+def test_release1_proof_mode_fails_closed_for_every_row(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    # The otherwise-passing legacy receipts have no proof_mode.
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for contract in gate.RELEASE1_MATRIX:
+        job_id = contract["job_id"]
+        receipt = tmp_path / job_id / "journey-result.json"
+        original = json.loads(receipt.read_text())
+        for proof_mode in ("proof", "keep-going-diagnostic", "unknown", "", None, False, 1, [], {}):
+            row = {**original, "proof_mode": proof_mode}
+            receipt.write_text(json.dumps(row), encoding="utf-8")
+            errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+            if proof_mode == "proof":
+                assert not errors, job_id
+            else:
+                assert errors == [f"{job_id}: explicit proof mode is not proof"], (job_id, proof_mode)
+        receipt.write_text(json.dumps(original), encoding="utf-8")
+
+
 def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
     candidate = release1_receipts(tmp_path)
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)
