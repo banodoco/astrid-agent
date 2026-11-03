@@ -514,8 +514,10 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
         if sys.platform in {"linux", "darwin"} and completed.returncode:
             missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
                                and completed.returncode == 113
-                               and completed.stderr.strip() ==
-                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+                               and completed.stderr.strip() in {
+                                   f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}',
+                                   f'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}',
+                               })
             if missing_service:
                 manager["service_state"] = "absent"
             else:

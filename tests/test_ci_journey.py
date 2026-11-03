@@ -403,6 +403,8 @@ def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
 
 @pytest.mark.parametrize("phase,returncode,stderr,absent", [
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
+    ("after-cleanup", 113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
+    ("after-cleanup", 113, 'Bad request.\nCould not find service "other" in domain for user gui: 501\n', False),
     ("before-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
     ("after-cleanup", 113, "launchctl unavailable\n", False),
     ("after-cleanup", 1, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
