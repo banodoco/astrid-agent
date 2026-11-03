@@ -37,6 +37,7 @@ from .core import (
     read_json,
     write_json,
 )
+from . import legacy_identity
 from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
@@ -1525,13 +1526,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                             and value.get("managed_by") in (None, "pinokio")
                             and value == managed_identity)
 
+                identity_matches = (matches_managed_identity(health.get("identity"))
+                                    and matches_managed_identity(discovery.get("identity")))
+                if (managed_identity is not None and not identity_matches
+                        and "identity" not in health and "identity" not in discovery):
+                    # Release-0 did not publish startup identity.  Admit that
+                    # wire shape only through the frozen predecessor proof;
+                    # null or any present/partial identity stays refused.
+                    identity_matches = legacy_identity.admitted(
+                        version, health, discovery, program_root=self.root,
+                    )
+
                 if (health.get("status") != "ok" or realm.get("realm_id") != realm_id
                         or discovery.get("active_realm") != realm_id
                         or health.get("runtime_instance_id") != discovery.get("runtime_instance_id")
                         or (status.get("discovery") or {}).get("runtime_instance_id") != discovery.get("runtime_instance_id")
-                        or (managed_identity is not None and
-                            (not matches_managed_identity(health.get("identity"))
-                             or not matches_managed_identity(discovery.get("identity"))))
+                        or (managed_identity is not None and not identity_matches)
                         or status.get("support", {}).get("pid_alive") is not True):
                     raise ValueError("The browser door belongs to a different Runtime, release, or workspace.")
                 identity_ok = True
