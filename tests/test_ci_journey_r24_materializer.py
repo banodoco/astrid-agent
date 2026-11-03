@@ -739,24 +739,43 @@ def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
     profile.write_text("{}")
     manifest = tmp_path / "candidate.json"
     manifest.write_text('{"candidate": true}')
+    agent = tmp_path / "agent"
+    pins = agent / "astrid/packs/runpod/pins.json"
+    pins.parent.mkdir(parents=True)
+    pins.write_text(json.dumps({"vibecomfy": {
+        "revision": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+    }}))
     (backend / "current").write_text("v1")
     (backend / "install.json").write_text(json.dumps({
         "owner": "haus.astrid.runtime", "managed_by": "pinokio",
         "data_root": str(data.resolve()),
     }))
-    (version_root / "manifest.json").write_bytes(manifest.read_bytes())
+    resolved_manifest = {
+        "candidate": True,
+        "vibecomfy": {"sha": "e2905d068d5851b9c32856d32b8251852a01d6dd"},
+    }
+    (version_root / "manifest.json").write_text(json.dumps(resolved_manifest))
     (version_root / "version.json").write_text(json.dumps({
         "root": str(version_root.resolve()), "python": str(python),
         "profile": str(profile.resolve()),
         "identity": {"release": 1, "managed_by": "pinokio"}, "env": {},
     }))
-    selected, selected_data = materializer._installed(backend, manifest)
+    selected, selected_data = materializer._installed(backend, manifest, agent)
     assert selected["python"] == str(python)
     assert python.is_symlink()
     assert selected_data == data.resolve()
-    (version_root / "manifest.json").write_text('{"candidate": false}')
+    (version_root / "manifest.json").write_text(json.dumps({
+        "candidate": True,
+        "vibecomfy": {"sha": "f" * 40},
+    }))
     with pytest.raises(materializer.MaterializerError, match="candidate identity"):
-        materializer._installed(backend, manifest)
+        materializer._installed(backend, manifest, agent)
+    (version_root / "manifest.json").write_text(json.dumps({
+        **resolved_manifest,
+        "unexpected": {"sha": "a" * 40},
+    }))
+    with pytest.raises(materializer.MaterializerError, match="candidate identity"):
+        materializer._installed(backend, manifest, agent)
 
 
 def test_installed_agent_client_source_must_match_checkout(tmp_path):

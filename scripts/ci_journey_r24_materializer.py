@@ -278,7 +278,8 @@ def _engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
 
 def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Path,
                        home: Path, env: dict[str, str], evidence: Path,
-                       receipt: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+                       receipt: dict[str, Any],
+                       agent_checkout: Path | None = None) -> tuple[dict[str, Any], Path]:
     """Run the real PTerm route and require its genuine installer result.
 
     PTerm's terminal disconnect is a transport completion and can return zero
@@ -290,7 +291,7 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
          log=evidence / "install.log", receipt=receipt, label="pinokio-install",
          env=env, cwd=home, timeout=3600)
     try:
-        return _installed(resource / "app/astrid", manifest)
+        return _installed(resource / "app/astrid", manifest, agent_checkout)
     except MaterializerError as exc:
         diagnostic_path = evidence / "installed-identity.json"
         try:
@@ -530,7 +531,24 @@ def _installed_identity_diagnostic(backend: Path, candidate_manifest: Path) -> d
     return result
 
 
-def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any], Path]:
+def _expected_installed_manifest(candidate_manifest: Path,
+                                 agent_checkout: Path | None = None) -> dict[str, Any]:
+    """Bind the installer-resolved VibeComfy default while keeping all pins exact."""
+    candidate = _read(candidate_manifest)
+    if not isinstance(candidate, dict):
+        raise MaterializerError("candidate manifest identity mismatch")
+    if "vibecomfy" in candidate or agent_checkout is None:
+        return candidate
+    pins = _read(agent_checkout / "astrid/packs/runpod/pins.json")
+    selected = pins.get("vibecomfy") if isinstance(pins, dict) else None
+    revision = selected.get("revision") if isinstance(selected, dict) else None
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise MaterializerError("installed default VibeComfy pin is unavailable")
+    return {**candidate, "vibecomfy": {"sha": revision}}
+
+
+def _installed(backend: Path, candidate_manifest: Path,
+               agent_checkout: Path | None = None) -> tuple[dict[str, Any], Path]:
     install = _read(backend / "install.json")
     if (install.get("owner") != "haus.astrid.runtime"
             or install.get("managed_by") != "pinokio"):
@@ -572,7 +590,8 @@ def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any],
         raise MaterializerError("installed profile mismatch")
     if version_root not in profile.resolve(strict=True).parents:
         raise MaterializerError("installed profile escapes version root")
-    if _read(version_root / "manifest.json") != _read(candidate_manifest):
+    if _read(version_root / "manifest.json") != _expected_installed_manifest(
+            candidate_manifest, agent_checkout):
         raise MaterializerError(
             "installed candidate identity mismatch: manifest differs from candidate"
         )
@@ -868,7 +887,8 @@ def execute(args: argparse.Namespace) -> int:
         _write(receipt_path, receipt)
         version, data = _install_candidate(
             node=node, pterm=pterm, resource=resource, manifest=manifest,
-            home=home, env=engine_env, evidence=evidence, receipt=receipt,
+            agent_checkout=checkouts["agent"], home=home, env=engine_env,
+            evidence=evidence, receipt=receipt,
         )
         mode_path = resource / "app/install-mode.json"
         receipt["pinokio_install_mode_receipt"] = _pinokio_install_mode_receipt(
