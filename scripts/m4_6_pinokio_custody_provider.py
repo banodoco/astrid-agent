@@ -223,6 +223,153 @@ class ImmutableActionFile:
             raise ValueError("immutable action file is malformed")
 
 
+# This is an exact-source inventory, not a general JS import allowlist. The
+# generic action graph below deliberately retains its dynamic-import refusal.
+U2_PINOKIO_COMMIT: Final = "f8605a3877ac76c0d7f65e4b013bc112b8c96992"
+U2_AGENT_MAPPING_COMMIT: Final = "583a7f3fd6c8034d317d69bba5383f4b2298b6f1"
+_U2_SOURCE_SHA256: Final = {
+    "pinokio/install.js": "60f4473e91b769af0480098b96a36500f3c1628ac33a7617f68df4de1fe436e2",
+    "pinokio/install-local.js": "6f1cf8c070263689571eadbcfabd6d30efd4ae9a011ec1d3bc8c87657cb197a8",
+    "pinokio/start.js": "442ff8fb73d65047bc4dd34de997bd36920efab16733aeb6ddd967afe291c037",
+    "pinokio/stop.js": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48",
+    "pinokio/update.js": "1be13ca4d415d1693e0493a0d81d7aecf616f27ab3875a94ea5d9ebb69aba9e5",
+    "pinokio/uninstall.js": "f54ccc8221ec3c6fed9a61d2f67aeab4bb2b2c08f8f7522c81399b483b57a471",
+    "pinokio/lib.js": "59bb0a556b425dafb4d986aaab54f0dbd23a988814a0d64a6cb4437c52d3d998",
+    "pinokio/platforms/posix.js": "20cf174da5668607f2ab0d8f7856475e1d7bd0363bd7c86512658130ce73279b",
+    "pinokio/platforms/windows.js": "bfcce0736bdff41afae7cbb36c579b2ea49420b4d91bc40c5e7263ada509c519",
+    "pinokio/environment.js": "0da2a9d2186e7ce28d40a17d9943c973aa6edd79613caaf31328722d92db0a41",
+    "pinokio/session.mjs": "460ff77a8cda2b711c785a607e4a399f8c33ddc903496e4c769b717d010aad99",
+    "pinokio/lifecycle.mjs": "0ddc6a5596dc02a2f33afba799495c7834ebb193df33fe15c376c2b60859a3ad",
+    "pinokio/update-stage.mjs": "e563c3d3fb8e5a3d11ddc3ba84f9f15d146eac0ccb359a3f403bb3c68dbda551",
+    "pinokio/shell.mjs": "d8c2dfa774c0bda07d29f923f8b84d06055e76a8f4c5b6192980be2dffa8a7e9",
+    "pinokio/installer-lock.py": "809937b3e6a4f2b48ef1cc75cd262f3acd828f9252cbbb4825a144dabb59fa2f",
+}
+# Exact reviewed sites, including the foreign runtime edge, never executed here.
+U2_DYNAMIC_IMPORT_SITES: Final = (
+    ("pinokio/lib.js", 159, "./session.mjs"),
+    ("pinokio/lib.js", 276, "./session.mjs"),
+    ("pinokio/lib.js", 303, "./session.mjs"),
+    ("pinokio/lib.js", 310, "./session.mjs"),
+    ("pinokio/lib.js", 394, "./lifecycle.mjs"),
+    ("pinokio/lib.js", 438, "./lifecycle.mjs"),
+    ("pinokio/lib.js", 450, "./update-stage.mjs"),
+    ("pinokio/lib.js", 451, "./session.mjs"),
+    ("pinokio/lifecycle.mjs", 53, "./session.mjs"),
+    ("pinokio/lifecycle.mjs", 171, "./session.mjs"),
+    ("pinokio/update-stage.mjs", 14, "./session.mjs"),
+    ("pinokio/update-stage.mjs", 137, "node:fs/promises"),
+)
+U2_NODE_BUILTINS: Final = (
+    "node:child_process", "node:crypto", "node:fs", "node:fs/promises", "node:http",
+    "node:net", "node:os", "node:path", "node:url", "node:util",
+)
+
+
+@dataclass(frozen=True)
+class PinokioNativeServiceProfile:
+    """Inspect the reviewed six-row source predicate, without native authority.
+
+    All listed bytes (including path-executed helpers and both install roots)
+    must match the selected source. This neither authenticates an installed app
+    nor closes its external execution dependencies. It cannot be used as a
+    PinokioActionGraph or a request dispatcher. No caller identity is admitted.
+    """
+
+    slot_id: str
+    mode: str
+    os_name: str
+    app_root: str
+    files: tuple[ImmutableActionFile, ...]
+
+    @classmethod
+    def bind_source(
+        cls, *, slot_id: str, contract: Mapping[str, object], app_root: Path,
+        source_commit: str,
+    ) -> "PinokioNativeServiceProfile":
+        mode, os_name = validate_pinokio_session_row(slot_id, contract)
+        if source_commit != U2_PINOKIO_COMMIT:
+            raise PinokioSourceMismatch("U2 profile requires the exact selected Pinokio source commit")
+        try:
+            root = app_root.absolute()
+            if root.is_symlink() or not root.is_dir():
+                raise PinokioSourceMismatch("U2 source root is unavailable or a symlink")
+            root = root.resolve(strict=True)
+        except OSError as exc:
+            raise PinokioSourceMismatch("U2 source root is unavailable") from exc
+        files = []
+        for relative, expected in sorted(_U2_SOURCE_SHA256.items()):
+            candidate = root
+            for part in Path(relative).parts:
+                candidate = candidate / part
+                if candidate.is_symlink():
+                    raise PinokioSourceMismatch(f"U2 source symlink is refused: {relative}")
+            resolved, _, digest = _resolved_regular_file(candidate, root=root)
+            if digest != expected:
+                raise PinokioSourceMismatch(f"U2 selected source bytes differ: {relative}")
+            files.append(ImmutableActionFile(relative, str(resolved), digest))
+        return cls(slot_id, mode, os_name, str(root), tuple(files))
+
+    @property
+    def pinokio_mode(self) -> str:
+        return "local" if self.mode == "pinokio-fully-local" else "backend"
+
+    @property
+    def action_roles(self) -> dict[str, str]:
+        return {
+            "install": "pinokio/install-local.js" if self.pinokio_mode == "local" else "pinokio/install.js",
+            **_ROLE_BY_OPERATION,
+        }
+
+    @property
+    def source_owner_mapping(self) -> dict[str, str]:
+        # backend.py:1102-1117,1302-1312 at U2_AGENT_MAPPING_COMMIT.
+        # The bypass is source behavior, never an observed empty OS inventory.
+        return {"managed_by": "pinokio", "agent_os_registration": "bypassed"}
+
+    @property
+    def runtime_command_shape(self) -> tuple[str, ...]:
+        """Source templates only; installed argv/cwd/environment remain unbound."""
+        off = " --hosted-origin off" if self.pinokio_mode == "local" else ""
+        if self.os_name == "windows":
+            return ("<environmentCmd(installed.env)>", "/d", "/s", "/c",
+                    f'""<program-root>\\run.cmd"{off}"')
+        return ("<program-root>/run", *(('--hosted-origin', 'off') if off else ()))
+
+    @property
+    def unbound_identities(self) -> dict[str, None]:
+        """Unavailable facts, not writable identity inputs or absence claims."""
+        roles = (
+            "installed_app_and_mode", "engine_incarnation", "selected_principal",
+            "node_runtime_and_builtin_closure", "python_runtime_and_libraries",
+            "installed_agent_runtime_packages", "installed_launchers_and_profile",
+            "shell_git_and_loader_environment", "installer_and_manifest_payloads",
+            "resolved_runtime_argv_and_cwd", "controller_descendant_ancestry",
+            "native_manager_target_inventory", "canonical_native_definitions",
+            "protected_collector_request_plan_upload_binding",
+            "independent_initial_active_final_census", "program_data_roots_and_sentinel",
+            "actual_installer_child_exit", "authoritative_engine_terminal_readback",
+        )
+        if self.pinokio_mode == "local":
+            roles += ("editor_script_and_dependency_closure", "npm_npx_package_closure")
+        return dict.fromkeys(roles)
+
+    def verify_current_bytes(self) -> None:
+        refreshed = type(self).bind_source(
+            slot_id=self.slot_id,
+            contract={"job_id": self.slot_id, **_PINOKIO_SESSION_ROWS[self.slot_id]},
+            app_root=Path(self.app_root), source_commit=U2_PINOKIO_COMMIT,
+        )
+        if refreshed != self:
+            raise PinokioSourceMismatch("U2 profile binding changed")
+
+    def require_native_binding(self) -> None:
+        self.verify_current_bytes()
+        raise PinokioCustodyRefused(
+            "U2 source profile has unbound native/external identities: "
+            + ", ".join(self.unbound_identities)
+        )
+
+
 @dataclass(frozen=True)
 class PinokioActionGraph:
     """Four operation descriptors plus all statically resolvable helpers.
