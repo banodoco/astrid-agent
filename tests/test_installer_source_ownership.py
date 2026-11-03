@@ -63,6 +63,26 @@ def test_live_b1_source_identity_refuses_after_process_and_instance_validation(t
     assert _backend(tmp_path).source_checkout_ownership(data)
 
 
+@pytest.mark.parametrize("match", [True, False, None])
+def test_discovery_owner_uses_runtime_birth_compatibility_matcher(tmp_path, monkeypatch, match):
+    from runtime_protocol import platform
+
+    expected = "proc-start-ticks:42;boot:boot;pidns:7"
+    observed = "legacy-compatible-birth"
+    calls = []
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": observed})
+    monkeypatch.setattr(platform, "process_birth_matches",
+                        lambda left, right: calls.append((left, right)) or match)
+    discovery = {"pid": 4242, "process_birth_id": expected}
+
+    if match is True:
+        assert Backend._discovery_owner_state(discovery) == "live"
+    else:
+        with pytest.raises(RuntimeError, match="identity changed"):
+            Backend._discovery_owner_state(discovery)
+    assert calls == [(expected, observed)]
+
+
 @pytest.mark.parametrize("reason", ["malformed", "stale"])
 def test_unverifiable_discovery_fails_closed(tmp_path, reason):
     from astrid_runtime.paths import RuntimePaths

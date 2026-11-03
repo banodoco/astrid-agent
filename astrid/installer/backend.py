@@ -438,7 +438,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity could not be observed; refusing to change it.") from exc
         if identity is None:
             return "stale"  # Proven absent; Runtime startup owns reconciliation.
-        if identity.get("pid") != pid or identity.get("birth_id") != birth:
+        if identity.get("pid") != pid or platform.process_birth_matches(
+                birth, str(identity.get("birth_id") or "")) is not True:
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
