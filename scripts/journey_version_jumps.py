@@ -13,6 +13,7 @@ import platform
 import re
 import sys
 import time
+from collections import deque
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -40,7 +41,46 @@ DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
 def _bytes_sha256(path: Path, label: str) -> str:
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"Diagnostic {label} must be a regular file")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except PermissionError as exc:
+        # Static roles only: workspace filenames and contents can be sensitive.
+        exc.journey_hash_target = (
+            "realm-owner-lock" if label == "pre-seed workspace file" and path.name == "owner.lock"
+            else "workspace-entry" if label == "pre-seed workspace file"
+            else "installed-version-record" if label == "version record"
+            else "installed-manifest" if label == "installed manifest"
+            else "other-checkpoint-input")
+        raise
+
+
+def _permission_failure_site(exc: PermissionError) -> dict:
+    """Bounded frame metadata, without source lines, locals, paths or messages."""
+    frames = deque(maxlen=24)
+    count = 0
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        # Name only checked-in harness files; external paths are never copied.
+        source = "external"
+        for name in ("journey_version_jumps.py", "ci_journey.py", "ci_windows_journey.py"):
+            if code.co_filename == str(journey.ROOT / "scripts" / name):
+                source = "scripts/" + name
+                break
+        function = code.co_name
+        frames.append({"source": source, "function": (
+            function if len(function) <= 96 and re.fullmatch(r"[A-Za-z0-9_.<>]+", function)
+            else "redacted"), "line": tb.tb_lineno})
+        count += 1
+        tb = tb.tb_next
+    role = getattr(exc, "journey_hash_target", None)
+    return {"schema_version": 1, "status": "captured", "exception_type": "PermissionError",
+            "errno": exc.errno if type(exc.errno) is int else None,
+            "winerror": getattr(exc, "winerror", None) if type(getattr(exc, "winerror", None)) is int else None,
+            "hash_target_role": role if role in {
+                "realm-owner-lock", "workspace-entry", "installed-version-record",
+                "installed-manifest", "other-checkpoint-input"} else None,
+            "frames": list(frames), "frames_omitted": max(0, count - len(frames))}
 
 
 def _target_tuple(manifest: dict) -> dict:
@@ -625,6 +665,12 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        if sys.platform == "win32" and isinstance(exc, PermissionError):
+            try:
+                result["permission_failure_site"] = _permission_failure_site(exc)
+            except Exception:
+                # Evidence collection cannot replace the original failure.
+                result["permission_failure_site"] = {"status": "unavailable"}
         raise
     finally:
         journey.write_json(result_path, result)
