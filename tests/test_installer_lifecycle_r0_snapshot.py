@@ -54,9 +54,11 @@ def test_exact_binding_is_stable_and_non_authoritative(snapshot):
 
 def test_foreign_and_replaced_definition(snapshot, monkeypatch):
     manager, version, data, fields = snapshot
+    original_binding = manager._snapshot_linux_r0(version, data).binding_digest
     manager.path.write_text("[Service]\nExecStart=/foreign\n")
     fields["FragmentPath"] = "/foreign/astrid.service"
     result = manager._snapshot_linux_r0(version, data)
+    assert result.binding_digest != original_binding
     assert values(result)["fragment"] == values(result)["unit_target"] == "mismatch"
     original = service._transfer_systemctl_show
     calls = 0
