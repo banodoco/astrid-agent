@@ -402,3 +402,52 @@ def test_windows_changed_lock_refuses_diagnostic_before_seed(tmp_path, monkeypat
             jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
     assert journey.read_json(evidence / "journey-result.json")["checks"] == {
         "preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}
+
+
+def test_windows_empty_nested_lock_still_requires_read(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    nested = realm / "attachments" / "owner.lock"
+    nested.touch()
+    original_read = Path.read_bytes
+
+    def denied(path):
+        if path == nested:
+            raise PermissionError(13, "denied")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        with pytest.raises(PermissionError):
+            jumps._preseed_workspace_state(data)
+
+
+def test_preseed_rejects_changes_between_census_passes(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    lock = realm / "owner.lock"
+    lock.touch()
+    original_scandir = jumps.os.scandir
+    root_scans = 0
+
+    def changing(path):
+        nonlocal root_scans
+        if Path(path) == realm:
+            root_scans += 1
+            if root_scans == 2:
+                lock.write_bytes(b"changed")
+        return original_scandir(path)
+
+    monkeypatch.setattr(jumps.os, "scandir", changing)
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        with pytest.raises(RuntimeError, match="changed while checkpointing"):
+            jumps._preseed_workspace_state(data)
+
+
+def test_windows_owner_lock_symlink_is_rejected(tmp_path, monkeypatch):
+    _, _, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    (realm / "owner.lock").symlink_to(realm / "realm.sqlite3")
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        with pytest.raises(RuntimeError, match="contains a symlink"):
+            jumps._preseed_workspace_state(data)
