@@ -1330,3 +1330,31 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_macos_bootstrap_source_capture_records_observed_and_expected_hash(tmp_path, monkeypatch):
+    source = tmp_path / "candidate/astrid/installer/service.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"candidate source\n")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "import_path": "/bootstrap/site-packages/astrid/installer/service.py", "sha256": digest}))
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    journey.capture_macos_bootstrap_source(tmp_path / "app/public/install-manifest.json",
+                                           tmp_path / "candidate", tmp_path / "evidence")
+    result = journey.read_json(tmp_path / "evidence/macos-bootstrap-source.json")
+    assert calls[0][0] == str(tmp_path / "app/public/bootstrap-venv/bin/python")
+    assert calls[0][1:3] == ["-I", "-c"]
+    assert result["status"] == "observed" and result["matches_candidate"] is True
+    assert result["installed_source_sha256"] == digest
+    assert "macos-bootstrap-source.json" in journey.JOURNEY_EVIDENCE_NAMES
+
+
+def test_macos_bootstrap_source_capture_missing_is_nonfatal(tmp_path):
+    journey.capture_macos_bootstrap_source(tmp_path / "manifest.json", tmp_path / "missing", tmp_path / "evidence")
+    result = journey.read_json(tmp_path / "evidence/macos-bootstrap-source.json")
+    assert result["status"] == "unavailable"
+    assert result["error_type"] == "FileNotFoundError"

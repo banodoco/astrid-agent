@@ -69,6 +69,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    "macos-bootstrap-source.json",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 
@@ -1138,6 +1139,36 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
     return output
+
+
+def capture_macos_bootstrap_source(manifest_path: Path, agent_checkout: Path, evidence: Path) -> None:
+    """Observe the bootstrap venv after update; never change the update result.
+
+    The install script creates this venv beside the selected manifest and uses
+    its Python with -I. This later import is not an in-process admission trace.
+    """
+    output = {"status": "unavailable", "observation": "post-bootstrap isolated import"}
+    try:
+        expected = agent_checkout / "astrid" / "installer" / "service.py"
+        output["candidate_source_sha256"] = hashlib.sha256(expected.read_bytes()).hexdigest()
+        python = manifest_path.parent / "bootstrap-venv" / "bin" / "python"
+        code = ("import hashlib,json,pathlib,astrid.installer.service as s; "
+                "p=pathlib.Path(s.__file__).resolve(); "
+                "print(json.dumps({'import_path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))")
+        completed = subprocess.run([str(python), "-I", "-c", code], capture_output=True,
+                                   text=True, timeout=30, check=False)
+        output["import_exit"] = completed.returncode
+        if completed.returncode == 0:
+            observed = json.loads(completed.stdout)
+            output.update(status="observed", import_path=observed["import_path"],
+                          installed_source_sha256=observed["sha256"],
+                          matches_candidate=observed["sha256"] == output["candidate_source_sha256"])
+    except Exception as exc:
+        output["error_type"] = type(exc).__name__
+    try:
+        write_json(evidence / "macos-bootstrap-source.json", output)
+    except Exception as exc:
+        print(f"Journey source capture failed: {type(exc).__name__}", file=sys.stderr, flush=True)
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
