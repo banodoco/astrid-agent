@@ -20,7 +20,7 @@ class TrustedHostedDownloadTests(unittest.TestCase):
         self.sha = "a" * 40
         self.repos = {"agent": {"url": "https://github.com/banodoco/astrid-agent", "sha": self.sha}}
         self.source = {"kind": "hosted", "repo": "agent", "workflow_path": ".github/workflows/synthetic.yml", "workflow_revision": "b" * 40,
-                       "run_id": 11, "run_attempt": 2, "job_id": 12, "artifact_id": 13, "artifact_name": "agent-linux", "head_sha": self.sha}
+                       "run_id": 11, "run_attempt": 1, "job_id": 12, "artifact_id": 13, "artifact_name": "agent-linux", "head_sha": self.sha}
         self.archive = self.zip_bytes({"manifest.json": b"{}", "junit.xml": b"<testsuite><testcase/></testsuite>"})
 
     @staticmethod
@@ -34,11 +34,11 @@ class TrustedHostedDownloadTests(unittest.TestCase):
     def fetch(self, path, binary=False):
         base = "/repos/banodoco/astrid-agent/actions"
         responses = {
-            f"{base}/runs/11": {"id": 11, "run_attempt": 2, "head_sha": self.sha, "status": "completed", "conclusion": "success",
+            f"{base}/runs/11": {"id": 11, "run_attempt": 1, "head_sha": self.sha, "status": "completed", "conclusion": "success",
                                   "path": self.source["workflow_path"], "repository": {"html_url": self.repos["agent"]["url"]}},
-            f"{base}/runs/11/attempts/2/jobs?per_page=100": {"total_count": 1, "jobs": [{"id": 12, "run_id": 11, "run_attempt": 2, "status": "completed", "conclusion": "success"}]},
+            f"{base}/runs/11/attempts/1/jobs?per_page=100": {"total_count": 1, "jobs": [{"id": 12, "run_id": 11, "run_attempt": 1, "status": "completed", "conclusion": "success", "started_at": "2026-01-01T00:02:00Z", "completed_at": "2026-01-01T00:04:00Z"}]},
             f"{base}/runs/11/artifacts?per_page=100": {"total_count": 1, "artifacts": [{"id": 13, "name": "agent-linux", "expired": False,
-                                                                                    "workflow_run": {"id": 11}, "digest": "sha256:" + hashlib.sha256(self.archive).hexdigest()}]},
+                                                                                    "workflow_run": {"id": 11}, "created_at": "2026-01-01T00:03:00Z", "digest": "sha256:" + hashlib.sha256(self.archive).hexdigest()}]},
             f"{base}/artifacts/13/zip": self.archive,
         }
         return responses[path]
@@ -47,6 +47,31 @@ class TrustedHostedDownloadTests(unittest.TestCase):
         receipt = hosted.download(self.source, self.repos, self.root / "artifact", self.fetch)
         self.assertEqual(receipt["run"]["head_sha"], self.sha)
         self.assertEqual({entry["path"] for entry in receipt["files"]}, {"manifest.json", "junit.xml"})
+
+    def test_attempt_one_artifact_cannot_be_credited_to_attempt_two(self):
+        source = dict(self.source, run_attempt=2)
+        def rerun(path, binary=False):
+            if "/attempts/2/jobs" in path:
+                value = self.fetch(path.replace("attempts/2/", "attempts/1/"), binary)
+                value["jobs"][0]["run_attempt"] = 2
+                return value
+            value = self.fetch(path, binary)
+            if path.endswith("/runs/11"):
+                value["run_attempt"] = 2
+            return value
+        with self.assertRaisesRegex(ValueError, "cannot authenticate.*rerun"):
+            hosted.download(source, self.repos, self.root / "old-attempt", rerun)
+        self.assertFalse((self.root / "old-attempt").exists())
+
+    def test_missing_or_wrong_artifact_window_is_rejected(self):
+        for timestamp in (None, "2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z"):
+            def wrong_time(path, binary=False):
+                value = self.fetch(path, binary)
+                if "/runs/11/artifacts?" in path:
+                    value["artifacts"][0]["created_at"] = timestamp
+                return value
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                hosted.download(self.source, self.repos, self.root / "wrong-time", wrong_time)
 
     def test_wrong_tuple_digest_wrong_run_and_archive_digest_are_rejected(self):
         wrong = dict(self.source, head_sha="f" * 40)

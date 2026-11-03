@@ -43,6 +43,67 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(output["result"], "fail")
         self.assertTrue(output["host_verdict"])
 
+    def test_sealed_cli_rejects_incomplete_reviewed_inputs_and_unauthenticated_index(self):
+        from unittest import mock
+        identity, target = "a" * 64, "b" * 40
+        coverage = aggregate.read(aggregate.COVERAGE)
+        lanes = []
+        for row in coverage["lanes"]:
+            lanes.append({**{k: row[k] for k in ("repo", "lane", "platform")},
+                          "source": {"kind": row["kind"]},
+                          "tests": [{"node_id": "synthetic", "protected": row["protected"]}]})
+        feature = {**{k: lanes[0][k] for k in ("repo", "lane", "platform")},
+                   "scenario": "synthetic", "slot_id": "slot", "candidate": "fixture", "files": ["fixture.json"]}
+        coverage["features"] = [{k: feature[k] for k in ("repo", "lane", "platform", "scenario", "slot_id")}]
+        review = {"complete": True, "features_complete": True, "tuple_digest": identity,
+                  "lanes": lanes, "features": [feature]}
+        inventory = {"tuple_digest": identity, "lanes": lanes}
+        sealed = {"batch_id": "batch", "generation": 1, "tuple_digest": identity,
+                  "results": [{"producer_id": "producer", "state": "completed"}], "artifact_index": ["synthetic"]}
+        def write(name, value):
+            path = self.root / name
+            path.write_text(json.dumps(value))
+            return path
+        coverage_path, review_path = write("coverage.json", coverage), write("review.json", review)
+        tuple_path = write("tuple.json", {"repos": {"agent": {"sha": target}}})
+        inventory_path = write("inventory.json", inventory)
+        features_path = write("features.json", [feature])
+        sealed_path = self.root / "sealed.json"
+        status = self.root / "status.json"
+        def run():
+            write("sealed.json", sealed)
+            args = ["--status", str(status)]
+            values = {"sealed-results": sealed_path, "tuple": tuple_path, "inventory": inventory_path,
+                      "ledger": self.root / "ledger", "evidence-root": self.root, "freshness": self.root / "freshness",
+                      "tuple-schema": self.root / "tuple-schema", "ledger-schema": self.root / "ledger-schema",
+                      "features": features_path, "predicate-path": self.root / "predicate", "predicate-sha256": "0" * 64,
+                      "batch-id": "batch", "generation": "1", "invocation-id": "invocation", "tuple-digest": identity,
+                      "target-sha": target, "sealed-input-digest": aggregate._canonical(sealed),
+                      "artifact-index-digest": aggregate._canonical(sealed["artifact_index"])}
+            for key, value in values.items():
+                args.extend(["--" + key, str(value)])
+            self.assertEqual(aggregate.main(args), 1)
+            result = json.loads(status.read_text())
+            self.assertEqual(result["result"], "fail")
+            return " ".join(result["reasons"])
+        with mock.patch.object(aggregate, "COVERAGE", coverage_path), mock.patch.object(aggregate, "REVIEW", review_path), \
+             mock.patch.object(aggregate.ledger, "tuple_identity", return_value=(identity, {})):
+            self.assertIn("not authenticated", run())
+            write("inventory.json", {"tuple_digest": identity, "lanes": lanes[:-1]})
+            self.assertIn("inventory differs", run())
+            write("inventory.json", inventory)
+            for bad in (None, [], [feature, feature], [dict(feature, slot_id="wrong")]):
+                write("features.json", bad)
+                self.assertRegex(run(), "feature")
+            write("features.json", [feature])
+            for bad in (None, [], {}):
+                sealed["artifact_index"] = bad
+                self.assertIn("artifact index", run())
+            sealed["artifact_index"] = ["synthetic"]
+            review["tuple_digest"] = "c" * 64
+            write("review.json", review)
+            self.assertIn("wrong tuple", run())
+
     def test_unapproved_qual_bytes_are_red(self):
         predicate = self.root / "predicate.py"
         predicate.write_text("def check_m4_6(evidence):\n    return True, []\n", encoding="utf-8")

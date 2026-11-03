@@ -126,10 +126,8 @@ def _validate_features(path: str | Path, predicate_path: str | Path, predicate_s
     if _sha256(predicate_path) != predicate_sha256:
         return ["predicate SHA-256 mismatch"]
     features = ledger.read_json(path)
-    if features is None:
-        return []
-    if not isinstance(features, list):
-        return ["feature bindings are malformed"]
+    if not isinstance(features, list) or not features:
+        return ["required feature bindings are missing or malformed"]
     try:
         spec = importlib.util.spec_from_file_location("c06_qual_predicates", predicate_path)
         if spec is None or spec.loader is None:
@@ -220,6 +218,43 @@ def evaluate_sealed(sealed_input: object, evaluator=None) -> dict[str, object]:
     return outcome
 
 
+def _reviewed_requirements(inventory_path: str | Path, features_path: str | Path, identity: str) -> None:
+    """Require the fixed coverage and the independent reviewed authority, not caller assertions."""
+    coverage, review = ledger.read_json(COVERAGE), ledger.read_json(REVIEW)
+    inventory, features = ledger.read_json(inventory_path), ledger.read_json(features_path)
+    ledger.require(isinstance(coverage, dict) and isinstance(review, dict), "missing reviewed authority")
+    ledger.require(review.get("complete") is True and review.get("features_complete") is True and
+                   review.get("tuple_digest") == identity, "reviewed authority incomplete or wrong tuple")
+    lane_key = lambda row: tuple(row[k] for k in ("repo", "lane", "platform"))
+    feature_key = lambda row: tuple(row[k] for k in ("repo", "lane", "platform", "scenario", "slot_id"))
+    def unique_rows(rows, key, label):
+        ledger.require(isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows),
+                       "missing " + label)
+        mapped = {key(row): row for row in rows}
+        ledger.require(len(mapped) == len(rows) and all(all(isinstance(v, str) and v.strip() for v in k) for k in mapped),
+                       "duplicate or malformed " + label)
+        return mapped
+    required = unique_rows(coverage.get("lanes"), lane_key, "coverage lanes")
+    reviewed = unique_rows(review.get("lanes"), lane_key, "reviewed lanes")
+    ledger.require(len(required) == 71 and set(required) == set(reviewed), "reviewed inventory differs from 71-lane coverage")
+    ledger.require(isinstance(inventory, dict) and inventory.get("tuple_digest") == identity, "inventory tuple mismatch")
+    supplied = unique_rows(inventory.get("lanes"), lane_key, "inventory lanes")
+    ledger.require(supplied == reviewed, "inventory differs from reviewed lanes")
+    for key, row in required.items():
+        lane = reviewed[key]
+        ledger.require(isinstance(lane.get("source"), dict) and lane["source"].get("kind") == row.get("kind"), "reviewed source mismatch")
+        tests = lane.get("tests")
+        ledger.require(isinstance(tests, list) and tests and all(isinstance(t, dict) and isinstance(t.get("node_id"), str) and t["node_id"].strip() and type(t.get("protected")) is bool for t in tests), "invalid reviewed tests")
+        ledger.require(len({t["node_id"] for t in tests}) == len(tests), "duplicate reviewed test")
+        ledger.require(not row.get("protected") or all(t["protected"] for t in tests), "unprotected reviewed test")
+    required_features = unique_rows(coverage.get("features"), feature_key, "feature coverage")
+    reviewed_features = unique_rows(review.get("features"), feature_key, "reviewed features")
+    supplied_features = unique_rows(features, feature_key, "feature bindings")
+    ledger.require(set(required_features) == set(reviewed_features) and supplied_features == reviewed_features,
+                   "feature bindings differ from reviewed coverage")
+    ledger.require(all(k[:3] in reviewed for k in reviewed_features), "feature references unknown lane")
+
+
 def evaluate(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     """Evaluate sealed results, or the published CP1 diagnostic arguments."""
     if not hasattr(args, "sealed_results"):
@@ -240,6 +275,8 @@ def evaluate(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     results = sealed["results"]
     if not isinstance(results, list) or not results:
         raise ValueError("sealed result set is incomplete")
+    if not isinstance(sealed["artifact_index"], (list, dict)) or not sealed["artifact_index"]:
+        raise ValueError("required artifact index is missing or empty")
     if _canonical(sealed["artifact_index"]) != args.artifact_index_digest:
         raise ValueError("artifact index digest mismatch")
     errors: list[str] = []
@@ -255,13 +292,19 @@ def evaluate(args: argparse.Namespace) -> tuple[list[str], list[str]]:
             errors.append(f"producer {result['producer_id']}: {state}")
     if errors:
         return errors, []
+    _reviewed_requirements(args.inventory, args.features, actual_digest)
     p04_errors, retirement = ledger.evaluate(args.tuple, args.inventory, args.ledger, args.evidence_root,
                                               args.freshness, args.tuple_schema, args.ledger_schema)
     errors.extend(p04_errors)
-    # A predicate hash is always verified, even when an empty reviewed feature
-    # binding list means no predicate function is selected for this batch.
-    errors.extend(_validate_features(args.features, args.predicate_path, args.predicate_sha256, tup))
+    try:
+        errors.extend(_validate_features(args.features, args.predicate_path, args.predicate_sha256, tup))
+    except (OSError, ValueError, TypeError) as exc:
+        errors.append(f"feature validation failed: {type(exc).__name__}: {exc}")
+    # No authenticated bridge currently binds this CLI index to the coordinator's
+    # source receipts and the bytes passed to predicates. Never credit it as proof.
+    errors.append("sealed artifact index is not authenticated to reviewed sources and feature bytes")
     return errors, retirement
+
 
 
 def _output_path(raw: list[str]) -> str:

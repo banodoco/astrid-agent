@@ -8,6 +8,7 @@ artifact, checksum, and member identity has been checked.
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import io
 import json
 import os
@@ -79,6 +80,12 @@ def validate_source(source: object, tuple_repos: object) -> dict[str, object]:
     return dict(source)
 
 
+def _timestamp(value: object) -> dt.datetime:
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value),
+            "missing or invalid hosted timestamp")
+    return dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
 def _safe_member(name: str) -> str:
     path = PurePosixPath(name)
     require(bool(name) and not path.is_absolute() and ".." not in path.parts and "\\" not in name and str(path) == name,
@@ -118,6 +125,13 @@ def download(source: object, tuple_repos: object, destination: str | Path, fetch
     artifact = matching[0]
     require(artifact.get("name") == binding["artifact_name"] and artifact.get("expired") is False and
             artifact.get("workflow_run", {}).get("id") == run_id, "wrong hosted artifact association")
+    # GitHub's run artifact listing does not identify an attempt or job. A
+    # rerun can include old artifacts even when the latest job succeeded, so no
+    # artifact from a rerun is attributable without an independent attestation.
+    require(attempt == 1, "cannot authenticate artifact association for rerun attempt")
+    created = _timestamp(artifact.get("created_at"))
+    start, end = _timestamp(job.get("started_at")), _timestamp(job.get("completed_at"))
+    require(start < created < end, "artifact is outside selected attempt job window")
     digest = artifact.get("digest")
     require(isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest), "missing hosted artifact digest")
     raw = fetch(f"{base}/artifacts/{artifact_id}/zip", True)
