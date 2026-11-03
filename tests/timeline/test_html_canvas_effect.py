@@ -1,9 +1,11 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from astrid.core.contracts.errors import AstridError
 from astrid.core.element.schema import load_element_definition
@@ -20,23 +22,29 @@ class HtmlCanvasEffectExecutorTest(unittest.TestCase):
         self.assertEqual(executor.metadata["runtime_module"], "astrid.packs.rendering.actions.html_canvas_effect.run")
         self.assertIn("HtmlInCanvas", executor.description)
 
-    def test_scaffold_writes_local_effect_and_report(self) -> None:
+    def test_scaffold_writes_discoverable_personal_effect_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
+            home = Path(tmp) / "home"
+            packs_root = home / "Astrid" / "packs"
             report_path = project / "runs" / "effect" / "report.json"
 
-            report = scaffold(
-                effect_id="glass-product-card",
-                label="Glass Product Card",
-                description="A test effect.",
-                project_root=project,
-                out_path=report_path,
-            )
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                os.environ.pop("ASTRID_PACKS_PATH", None)
+                report = scaffold(
+                    effect_id="glass-product-card",
+                    label="Glass Product Card",
+                    description="A test effect.",
+                    project_root=project,
+                    out_path=report_path,
+                )
 
-            element_root = project / "astrid" / "packs" / "local" / "rendering" / "elements" / "effects" / "glass-product-card"
-            local_pack_manifest = project / "astrid" / "packs" / "local" / "pack.yaml"
+            personal_pack = packs_root / "personal"
+            element_root = personal_pack / "rendering" / "elements" / "effects" / "glass-product-card"
+            personal_pack_manifest = personal_pack / "pack.yaml"
             self.assertEqual(Path(report["element_root"]), element_root)
-            self.assertTrue(local_pack_manifest.is_file())
+            self.assertTrue(personal_pack_manifest.is_file())
+            self.assertFalse((project / "astrid" / "packs" / "local").exists())
             self.assertTrue((element_root / "component.tsx").is_file())
             self.assertTrue((element_root / "element.yaml").is_file())
             self.assertTrue(report_path.is_file())
@@ -47,24 +55,43 @@ class HtmlCanvasEffectExecutorTest(unittest.TestCase):
 
             manifest = json.loads((element_root / "element.yaml").read_text(encoding="utf-8"))
             self.assertEqual(manifest["id"], "glass-product-card")
-            self.assertEqual(manifest["pack_id"], "local")
+            self.assertEqual(manifest["pack_id"], "personal")
             self.assertTrue(manifest["metadata"]["render_requirements"]["uses_html_in_canvas"])
             self.assertEqual(manifest["metadata"]["render_requirements"]["final_renderer"], "rendering.render")
 
-            element = load_element_definition(element_root, kind="effects", source="pack:local", editable=True, priority=10)
+            from astrid.packs.rendering.rendering.renderers.remotion import run as renderer
+
+            # Exercise the same registry and staging path used by normal render
+            # admission; no extra root is passed by the test.
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                os.environ.pop("ASTRID_PACKS_PATH", None)
+                registry = renderer._load_render_element_registry()
+                self.assertIn("glass-product-card", {item.id for item in registry.list(kind="effects")})
+                staged = renderer._stage_effect_assets_for_timeline(
+                    {"clips": [report["timeline_clip"]]},
+                    project_dir=project,
+                    theme_path=None,
+                    render_hash="scaffold-test",
+                    registry=registry,
+                )
+            self.assertEqual(staged["effects"][0]["effect_id"], "glass-product-card")
+            self.assertEqual(Path(staged["effects"][0]["element_root"]), element_root)
+            element = load_element_definition(element_root, kind="effects", source="pack:personal", editable=True, priority=10)
             self.assertEqual(element.id, "glass-product-card")
-            self.assertEqual(element.metadata["pack_id"], "local")
+            self.assertEqual(element.metadata["pack_id"], "personal")
 
     def test_scaffold_refuses_overwrite_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
+            packs_root = Path(tmp) / "packs"
             report_path = project / "report.json"
-            scaffold(effect_id="canvas-card", label=None, description=None, project_root=project, out_path=report_path)
-
-            with self.assertRaisesRegex(FileExistsError, "already exists"):
+            with patch.dict(os.environ, {"ASTRID_PACKS_PATH": str(packs_root)}):
                 scaffold(effect_id="canvas-card", label=None, description=None, project_root=project, out_path=report_path)
 
-            scaffold(effect_id="canvas-card", label=None, description=None, project_root=project, out_path=report_path, force=True)
+                with self.assertRaisesRegex(FileExistsError, "already exists"):
+                    scaffold(effect_id="canvas-card", label=None, description=None, project_root=project, out_path=report_path)
+
+                scaffold(effect_id="canvas-card", label=None, description=None, project_root=project, out_path=report_path, force=True)
 
     def test_main_validates_effect_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,20 +102,22 @@ class HtmlCanvasEffectExecutorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
             report_path = project / "runs" / "effect" / "report.json"
+            packs_root = Path(tmp) / "packs"
             timeline_path = project / "runs" / "effect" / "timeline.json"
             assets_path = project / "runs" / "effect" / "assets.json"
 
-            result = main(
-                [
-                    "--effect-id", "glass-product-card",
-                    "--label", "Glass Product Card",
-                    "--description", "A test effect.",
-                    "--project-root", str(project),
-                    "--out", str(report_path),
-                    "--timeline", str(timeline_path),
-                    "--assets", str(assets_path),
-                ]
-            )
+            with patch.dict(os.environ, {"ASTRID_PACKS_PATH": str(packs_root)}):
+                result = main(
+                    [
+                        "--effect-id", "glass-product-card",
+                        "--label", "Glass Product Card",
+                        "--description", "A test effect.",
+                        "--project-root", str(project),
+                        "--out", str(report_path),
+                        "--timeline", str(timeline_path),
+                        "--assets", str(assets_path),
+                    ]
+                )
 
             self.assertEqual(result, 0)
             manifest_path = report_path.parent / "manifest.json"

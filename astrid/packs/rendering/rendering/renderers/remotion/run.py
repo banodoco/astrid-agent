@@ -28,6 +28,7 @@ from typing import Any, Callable, Mapping, Sequence
 from astrid.core import timeline
 from astrid.core.element.registry import load_default_registry
 from astrid.core.element.schema import ElementDefinition
+from astrid.core.pack.personal import PERSONAL_PACK_ID, resolve_personal_packs_root
 from astrid.core.foundation.atomic_io import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import assets as _rendering_assets
@@ -98,6 +99,20 @@ _RangeHTTPRequestHandler = _rendering_assets.RangeHTTPRequestHandler
 def _active_pack_order_for_provenance() -> list[dict[str, Any]]:
     """Pack order bound to THIS module's REPO_ROOT (patchable in tests)."""
     return _shared._active_pack_order_for_provenance(project_root=REPO_ROOT)
+
+
+def _load_render_element_registry():
+    """Load the normal render registry with the selected personal pack root."""
+    personal_root = resolve_personal_packs_root()
+    if personal_root is None:
+        return load_default_registry(project_root=REPO_ROOT)
+    personal_pack = personal_root / PERSONAL_PACK_ID
+    if personal_pack.is_dir() and (personal_pack / "pack.yaml").is_file():
+        return load_default_registry(
+            project_root=REPO_ROOT,
+            extra_pack_roots=(str(personal_pack),),
+        )
+    return load_default_registry(project_root=REPO_ROOT)
 
 
 _active_theme_for_provenance = _shared._active_theme_for_provenance
@@ -598,7 +613,7 @@ def _effect_registry_for_assets(
     # visual/generation props and cannot alter the executable registry.
     del theme_path
     if registry is None:
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = _load_render_element_registry()
     effects = {element.id: element for element in registry.list(kind="effects")}
     aliases: dict[str, str] = {}
     if "text-card" in effects:
@@ -642,7 +657,7 @@ def _resolve_timeline_element_references(
     """
     if registry is None:
         del theme_path
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = _load_render_element_registry()
     clips = timeline_data.get("clips")
     if not isinstance(clips, list):
         return {"animations": [], "transitions": []}
@@ -778,7 +793,7 @@ def _stage_effect_assets_for_timeline(
     # registry twice here also made the combined render path needlessly
     # discover every local pack twice.
     if registry is None:
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = _load_render_element_registry()
     effects, aliases = _effect_registry_for_assets(theme_path, registry=registry)
     resolved_elements = _resolve_timeline_element_references(
         timeline_data,
@@ -1601,7 +1616,7 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
                 try:
                     temporary = selected_lifecycle.enter_context(TemporaryDirectory(prefix="project-elements-support-"))
                     selected_registry, _ = stage_project_elements(
-                        timeline_data, Path(temporary), registry=load_default_registry(project_root=REPO_ROOT),
+                        timeline_data, Path(temporary), registry=_load_render_element_registry(),
                     )
                     registry_options["registry"] = selected_registry
                 except ValueError as exc:
