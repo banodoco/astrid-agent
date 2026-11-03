@@ -249,3 +249,16 @@ def test_interrupted_partial_recovery_keeps_durable_recovery_stage(monkeypatch):
     assert saved[-1]['stage'] == 'recovery-killing'
     assert saved[-1]['recovery_killed'] == []
     assert all(row['state'] == 'T' for row in rows.values())
+
+
+def test_cancel_silencing_restores_original_signal_mask(monkeypatch):
+    calls = []
+    previous = {stop.signal.SIGUSR1}
+    def mask(how, values):
+        calls.append((how, values))
+        return previous
+    monkeypatch.setattr(stop.signal, 'pthread_sigmask', mask)
+    monkeypatch.setattr(stop.signal, 'signal', lambda sig, handler: None)
+    stop.silence_cancel()
+    assert calls[0][0] == stop.signal.SIG_BLOCK
+    assert calls[-1] == (stop.signal.SIG_SETMASK, previous)

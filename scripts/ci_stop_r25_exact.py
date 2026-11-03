@@ -111,11 +111,11 @@ def cancel_handler(signum, frame):
 def silence_cancel():
     # Block delivery while switching handlers, then discard pending cancellations.
     signals = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
-    signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
     try:
         for sig in signals: signal.signal(sig, signal.SIG_IGN)
     finally:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def guard_fingerprint():
