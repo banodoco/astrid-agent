@@ -1,0 +1,41 @@
+
+████
+██ Starting Shell b25550e7-8cd2-4f97-bd11-bb830f3ec16b
+[?2004h<<PINOKIO_SHELL>>eval "$(conda shell.bash hook)" ; conda deactivate ; conda deactivate ; conda deactivate ; conda activate base && node '/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/pinokio/shell.mjs' '/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid' 'set -eu
+[?2004l[?2004h> version=$(cat '\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid/current'\'')
+[?2004l[?2004h> case "$version" in '\'''\''|*[!A-Za-z0-9._-]*) echo '\''Invalid Astrid version pointer.'\'' >&2; exit 2 ;; esac
+[?2004l[?2004h> version_root='\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid/versions'\''/"$version"
+[?2004l[?2004h> node=$("$version_root/py/bin/python" -I -c '\''import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["env"]["ASTRID_NODE_EXECUTABLE"])'\'' "$version_root/version.json")
+[?2004l[?2004h> case "$node" in "$version_root"/*) ;; *) echo "Pinned Node is outside the installed version." >&2; exit 2 ;; esac
+[?2004l[?2004h> exec "$node" '\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/pinokio/session.mjs'\'' '\''serve'\'' '\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid'\'' '\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/editor'\'' '\''backend'\''' '{"ASTRID_INSTALL_MANAGED_BY":"pinokio"}'
+[?2004l
+
+██ Detached from Shell b25550e7-8cd2-4f97-bd11-bb830f3ec16b
+
+ASTRID_PINOKIO_READY
+
+
+===================================================
+# input.event
+[
+  "ASTRID_PINOKIO_READY"
+]
+===================================================
+
+
+
+===================================================
+# local variables
+{
+  "url": "https://astrid.haus/?connect=1",
+  "mode": "backend"
+}
+===================================================
+
+[?2004h(base) <<PINOKIO_SHELL>>status=$?
+[?2004l[?2004h(base) <<PINOKIO_SHELL>>if [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\n' FAILURE; fi
+[?2004l[?2004h(base) <<PINOKIO_SHELL>>(exit "$status")
+[?2004l[?2004h(base) <<PINOKIO_SHELL>>
+
+██ Terminated Shell b25550e7-8cd2-4f97-bd11-bb830f3ec16b
+████

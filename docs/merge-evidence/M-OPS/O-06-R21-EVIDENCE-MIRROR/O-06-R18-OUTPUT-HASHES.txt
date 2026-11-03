@@ -1,0 +1,9 @@
+# O-06-R18 output hashes
+
+SHA-256; sizes in bytes. REPORT.md and this file are excluded to avoid recursive self-hashing.
+
+SHA-256  bytes  path
+
+a1f5f9eac9f03cab160ef624e364546b90868d0f465c64086cf4dd3b7d747bca  192631  SR-PROJ.md
+14bc35ab88737649df2f97a5a3b6e3cf9494fa8f6b3143173d8fc0bcac261309  3106  INPUT-HASHES.txt
+62c8d73de0e7287484705ce3b4f6c1a60ea1be18091fc007c6fb32fc8539b925  2930  VALIDATION.txt

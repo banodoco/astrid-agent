@@ -1,0 +1,13 @@
+{
+  "canonical_endpoint": "http://127.0.0.1:41187",
+  "discovery_credential_file": "/home/runner/work/_temp/r24-live-run/installer-home/.local/share/astrid-runtime/credentials/astrid.json",
+  "discovery_credential_path_equals_expected": false,
+  "discovery_endpoint": "http://127.0.0.1:41187",
+  "endpoint_equals_canonical": true,
+  "endpoint_parse_succeeded": true,
+  "endpoint_redacted": false,
+  "expected_owner_token_regular_nonsymlink": true,
+  "resolved_expected_owner_token_path": "/home/runner/work/_temp/r24-live-run/installer-home/.local/share/astrid-runtime/runtime/credentials/owner.token",
+  "schema": "astrid.r24.owner-discovery-diagnostic.v1",
+  "selected_data_root": "/home/runner/work/_temp/r24-live-run/installer-home/.local/share/astrid-runtime"
+}

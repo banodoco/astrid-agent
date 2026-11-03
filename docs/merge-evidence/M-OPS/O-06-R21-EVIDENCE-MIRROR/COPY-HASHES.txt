@@ -1,0 +1,20 @@
+# O-06-R21 evidence mirror copy verification
+
+All files below were byte-compared with their named sources. SHA-256 and byte counts are for the copied files.
+The accepted packet hash/size are also recorded in O-06-R20/OUTPUT-HASHES.txt; the raw evidence hash/size values are checked against O-06-R18/INPUT-HASHES.txt.
+
+SHA-256	bytes	branch-relative-path
+11b64e06f61cfe832df4e41452caf91174e17b2b9574341ab0edfed854556278	198269	accepted-SR-PROJ.md
+ea6408e660d022d20e2fa2e99d785180fd49543dd8f26d16f0289296b01bc0f9	7731	O-06-R18-REPORT.md
+14bc35ab88737649df2f97a5a3b6e3cf9494fa8f6b3143173d8fc0bcac261309	3106	O-06-R18-INPUT-HASHES.txt
+5d1603a23eddeec2c4603db822a9b68d7fce00371e352d211d3193ba3d9c2fd3	405	O-06-R18-OUTPUT-HASHES.txt
+5834b9c1045c3be86e1b59ffa5c0aeba81acdb41c73ca837f66738ac4cabe188	37857	raw-actions-41560168557/logs/r24-live-125668636161.log
+af91c4d46e48287c137f630c15d7eaa486761d1eef2ea6395848cfb5c60e1446	17	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/failure-stop.log
+6a8322ee959ba6bda74e4783eaeb650d7d9478333e556e90776ddfcdf8f6bc62	1664	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/install.log
+16ef983510b4cf52b249eb28d01abbddf5f6937dc628cac4788d4d02a3c6c61e	767	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json
+6a8a5e65cbb9d7c72cec75a8d55acfb41765ce74444922d2c63233fcc16f09ae	2343	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/pinokiod.log
+1c2cd6a9c8fda7393f7a34d2e69473f26c065162e68c1b8f3ecd80e285e59cfb	6520	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/r24-materializer.json
+9520d045cd6d43b58304e0c279ea77fbed0dcceafb0fdb4b81f6503b15ef1f2e	2253	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/start.log
+1c79d47109f39370fb694845c5b07f14cb0d83911e07fe77192346ef74e63883	52	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/worker-ready.log
+eeff478593f6465f75f5d429bbae254c1d4c078424ba3981b292c0708c55b762	257	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/tst-b1-owner.json
+5ec06a891a7dab7a530503fdd75f7a2fe9df810a28ea5ced6d06650825cb8547	516	raw-actions-41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-push-route-request.json

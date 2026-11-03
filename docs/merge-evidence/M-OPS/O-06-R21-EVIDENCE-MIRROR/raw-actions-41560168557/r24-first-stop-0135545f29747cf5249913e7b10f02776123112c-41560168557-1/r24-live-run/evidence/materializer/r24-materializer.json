@@ -1,0 +1,165 @@
+{
+  "candidate": {
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+    "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/runner/work/astrid-agent/astrid-agent/pinokio",
+        "archive",
+        "--format=tar",
+        "--output",
+        "/home/runner/work/_temp/r24-live-run/scratch/candidate-pinokio.tar",
+        "3a6a98ae251ca126505245286e2d3e760f4348e9"
+      ],
+      "elapsed_seconds": 0.008,
+      "exit": 0,
+      "label": "materialize-archive",
+      "log": "/home/runner/work/_temp/r24-live-run/scratch/git-archive.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "tar",
+        "-xf",
+        "/home/runner/work/_temp/r24-live-run/scratch/candidate-pinokio.tar",
+        "-C",
+        "/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid"
+      ],
+      "elapsed_seconds": 0.008,
+      "exit": 0,
+      "label": "materialize-extract",
+      "log": "/home/runner/work/_temp/r24-live-run/scratch/tar-extract.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/opt/hostedtoolcache/node/20.19.4/x64/bin/node",
+        "/home/runner/work/astrid-agent/astrid-agent/pinokiod/script/index.js"
+      ],
+      "elapsed_seconds": 120.162,
+      "exit": -9,
+      "label": "start-pinokiod",
+      "log": "/home/runner/work/_temp/r24-live-run/evidence/materializer/pinokiod.log",
+      "log_sha256": "6a8a5e65cbb9d7c72cec75a8d55acfb41765ce74444922d2c63233fcc16f09ae",
+      "pid": 4371,
+      "status": "exited"
+    },
+    {
+      "argv": [
+        "/opt/hostedtoolcache/node/20.19.4/x64/bin/node",
+        "/home/runner/work/astrid-agent/astrid-agent/pterm/index.js",
+        "start",
+        "pinokio/install.js",
+        "--ref",
+        "pinokio://127.0.0.1:42000/api/astrid"
+      ],
+      "elapsed_seconds": 103.721,
+      "exit": 0,
+      "label": "pinokio-install",
+      "log": "/home/runner/work/_temp/r24-live-run/evidence/materializer/install.log",
+      "log_sha256": "6a8322ee959ba6bda74e4783eaeb650d7d9478333e556e90776ddfcdf8f6bc62"
+    },
+    {
+      "argv": [
+        "/opt/hostedtoolcache/node/20.19.4/x64/bin/node",
+        "/home/runner/work/astrid-agent/astrid-agent/pterm/index.js",
+        "start",
+        "pinokio/start.js",
+        "--ref",
+        "pinokio://127.0.0.1:42000/api/astrid"
+      ],
+      "elapsed_seconds": 14.371,
+      "exit": 0,
+      "label": "start-installed-runtime",
+      "log": "/home/runner/work/_temp/r24-live-run/evidence/materializer/start.log",
+      "log_sha256": "9520d045cd6d43b58304e0c279ea77fbed0dcceafb0fdb4b81f6503b15ef1f2e",
+      "pid": 5021,
+      "status": "exited"
+    },
+    {
+      "argv": [
+        "/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid/versions/ab43bad8-2776ba97-e39bee20/py/bin/python",
+        "-I",
+        "/home/runner/work/astrid-agent/astrid-agent/runner/scripts/ci_journey_r24_task.py",
+        "ensure-worker",
+        "--backend",
+        "/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid",
+        "--agent-client",
+        "/home/runner/work/astrid-agent/astrid-agent/installed-agent/astrid_runtime_client/generated.py",
+        "--output",
+        "/home/runner/work/_temp/r24-live-run/evidence/materializer/worker-ready.json",
+        "--owner-diagnostic",
+        "/home/runner/work/_temp/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json"
+      ],
+      "elapsed_seconds": 0.166,
+      "exit": 1,
+      "label": "authenticate-health-start-local-worker",
+      "log": "/home/runner/work/_temp/r24-live-run/evidence/materializer/worker-ready.log",
+      "log_sha256": "1c79d47109f39370fb694845c5b07f14cb0d83911e07fe77192346ef74e63883"
+    },
+    {
+      "argv": [
+        "/opt/hostedtoolcache/node/20.19.4/x64/bin/node",
+        "/home/runner/work/astrid-agent/astrid-agent/pterm/index.js",
+        "start",
+        "pinokio/stop.js",
+        "--ref",
+        "pinokio://127.0.0.1:42000/api/astrid"
+      ],
+      "elapsed_seconds": 10.196,
+      "exit": 0,
+      "label": "failure-cleanup-pinokio-stop",
+      "log": "/home/runner/work/_temp/r24-live-run/evidence/materializer/failure-stop.log",
+      "log_sha256": "af91c4d46e48287c137f630c15d7eaa486761d1eef2ea6395848cfb5c60e1446"
+    }
+  ],
+  "environment_boundary": {
+    "installer_home": "/home/runner/work/_temp/r24-live-run/installer-home",
+    "installer_home_inside_pinokio_home": false,
+    "pinokio_home": "/home/runner/work/_temp/r24-live-run/pinokio-home"
+  },
+  "error": "MaterializerError: authenticate-health-start-local-worker exited 1",
+  "first_stop": "authenticate-and-start-worker",
+  "hosted": {
+    "GITHUB_JOB": "r24-live",
+    "GITHUB_REPOSITORY": "banodoco/astrid-agent",
+    "GITHUB_RUN_ATTEMPT": "1",
+    "GITHUB_RUN_ID": "41560168557",
+    "GITHUB_SHA": "0135545f29747cf5249913e7b10f02776123112c",
+    "GITHUB_WORKFLOW_REF": "banodoco/astrid-agent/.github/workflows/r24-linux-live.yml@refs/heads/lane/M-PIN/R-PIN-OWNER-PREDICATE-CAPTURE",
+    "GITHUB_WORKFLOW_SHA": "0135545f29747cf5249913e7b10f02776123112c"
+  },
+  "mode": "backend",
+  "owner_discovery_diagnostic": {
+    "path": "owner-discovery-diagnostic.json",
+    "same_invocation_command": "authenticate-health-start-local-worker",
+    "sha256": "16ef983510b4cf52b249eb28d01abbddf5f6937dc628cac4788d4d02a3c6c61e"
+  },
+  "pinokio_install_mode_binding": {
+    "candidate": {
+      "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+      "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+      "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+      "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+    },
+    "sha256": "0dcac324d5dba4695b8110833d08d71f12350f80885b2ce352147b589b0e0143",
+    "slot_id": "pinokio-backend-linux",
+    "source": "installed-app/install-mode.json"
+  },
+  "pinokio_install_mode_receipt": {
+    "mode": "backend",
+    "schema_version": 1
+  },
+  "provider_ref": "70636d1833164dad84a3551606b61ba2634565ba",
+  "schema": "astrid.r24.materializer.v1",
+  "stage": "authenticate-and-start-worker",
+  "status": "blocked"
+}

@@ -1,0 +1,400 @@
+2026-11-03T01:36:48.3349772Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:36:48.3350188Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:36:48.3350518Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:36:48.3350862Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:36:48.3351313Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:48.3351634Z ##[endgroup]
+2026-11-03T01:36:48.4196106Z Syncing repository: pinokiocomputer/pterm
+2026-11-03T01:36:48.4203685Z ##[group]Getting Git version info
+2026-11-03T01:36:48.4204605Z Working directory is '/home/runner/work/astrid-agent/astrid-agent/pterm'
+2026-11-03T01:36:48.4249584Z [command]/usr/bin/git version
+2026-11-03T01:36:48.4297911Z git version 2.56.0
+2026-11-03T01:36:48.4358221Z ##[endgroup]
+2026-11-03T01:36:48.4359834Z Temporarily overriding HOME='/home/runner/work/_temp/ae20a7ec-01ec-4d4a-a651-58124516a232' before making global git config changes
+2026-11-03T01:36:48.4361107Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:36:48.4362234Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/pterm
+2026-11-03T01:36:48.4408697Z ##[group]Initializing the repository
+2026-11-03T01:36:48.4414618Z [command]/usr/bin/git init /home/runner/work/astrid-agent/astrid-agent/pterm
+2026-11-03T01:36:48.4490384Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-03T01:36:48.4491813Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-03T01:36:48.4493336Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-03T01:36:48.4494572Z hint: call:
+2026-11-03T01:36:48.4495616Z hint:
+2026-11-03T01:36:48.4496425Z hint: 	git config --global init.defaultBranch <name>
+2026-11-03T01:36:48.4497599Z hint:
+2026-11-03T01:36:48.4498407Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-03T01:36:48.4499605Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-03T01:36:48.4501020Z hint:
+2026-11-03T01:36:48.4501871Z hint: 	git branch -m <name>
+2026-11-03T01:36:48.4502822Z hint:
+2026-11-03T01:36:48.4514558Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-03T01:36:48.4516794Z Initialized empty Git repository in /home/runner/work/astrid-agent/astrid-agent/pterm/.git/
+2026-11-03T01:36:48.4520249Z [command]/usr/bin/git remote add origin https://github.com/pinokiocomputer/pterm
+2026-11-03T01:36:48.4580250Z ##[endgroup]
+2026-11-03T01:36:48.4581159Z ##[group]Disabling automatic garbage collection
+2026-11-03T01:36:48.4585799Z [command]/usr/bin/git config --local gc.auto 0
+2026-11-03T01:36:48.4641577Z ##[endgroup]
+2026-11-03T01:36:48.4642501Z ##[group]Setting up auth
+2026-11-03T01:36:48.4643405Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:36:48.4683972Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:36:48.5060486Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:36:48.5122231Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:36:48.5405539Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:36:48.5453181Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:36:48.5698252Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-03T01:36:48.5747052Z ##[endgroup]
+2026-11-03T01:36:48.5747473Z ##[group]Fetching the repository
+2026-11-03T01:36:48.5757382Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 5be43718701c448b43daf0ce51d8935f170065bb
+2026-11-03T01:36:48.7947625Z From https://github.com/pinokiocomputer/pterm
+2026-11-03T01:36:48.7948885Z  * branch            5be43718701c448b43daf0ce51d8935f170065bb -> FETCH_HEAD
+2026-11-03T01:36:48.7953244Z ##[endgroup]
+2026-11-03T01:36:48.7953891Z ##[group]Determining the checkout info
+2026-11-03T01:36:48.7956659Z ##[endgroup]
+2026-11-03T01:36:48.7962878Z [command]/usr/bin/git sparse-checkout disable
+2026-11-03T01:36:48.8014892Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-03T01:36:48.8057017Z ##[group]Checking out the ref
+2026-11-03T01:36:48.8061484Z [command]/usr/bin/git checkout --progress --force 5be43718701c448b43daf0ce51d8935f170065bb
+2026-11-03T01:36:48.8111940Z Note: switching to '5be43718701c448b43daf0ce51d8935f170065bb'.
+2026-11-03T01:36:48.8112681Z 
+2026-11-03T01:36:48.8113422Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-11-03T01:36:48.8114518Z changes and commit them, and you can discard any commits you make in this
+2026-11-03T01:36:48.8115620Z state without impacting any branches by switching back to a branch.
+2026-11-03T01:36:48.8116502Z 
+2026-11-03T01:36:48.8117058Z If you want to create a new branch to retain commits you create, you may
+2026-11-03T01:36:48.8118027Z do so (now or later) by using -c with the switch command. Example:
+2026-11-03T01:36:48.8118613Z 
+2026-11-03T01:36:48.8118987Z   git switch -c <new-branch-name>
+2026-11-03T01:36:48.8119334Z 
+2026-11-03T01:36:48.8119513Z Or undo this operation with:
+2026-11-03T01:36:48.8119787Z 
+2026-11-03T01:36:48.8119940Z   git switch -
+2026-11-03T01:36:48.8120139Z 
+2026-11-03T01:36:48.8120518Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-11-03T01:36:48.8121053Z 
+2026-11-03T01:36:48.8121250Z HEAD is now at 5be4371 0.0.25
+2026-11-03T01:36:48.8122393Z ##[endgroup]
+2026-11-03T01:36:48.8167023Z [command]/usr/bin/git log -1 --format=%H
+2026-11-03T01:36:48.8201084Z 5be43718701c448b43daf0ce51d8935f170065bb
+2026-11-03T01:36:48.8210699Z ##[group]Removing auth
+2026-11-03T01:36:48.8215029Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:36:48.8255924Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:36:48.8502884Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:36:48.8538034Z http.https://github.com/.extraheader
+2026-11-03T01:36:48.8545824Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-11-03T01:36:48.8589498Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:36:48.8827124Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:36:48.8867474Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:36:48.9102329Z ##[endgroup]
+2026-11-03T01:36:48.9298393Z ##[group]Run actions/setup-node@v4
+2026-11-03T01:36:48.9298902Z with:
+2026-11-03T01:36:48.9299255Z   node-version: 20.19.4
+2026-11-03T01:36:48.9299675Z   always-auth: false
+2026-11-03T01:36:48.9300070Z   check-latest: false
+2026-11-03T01:36:48.9305406Z   token: ***
+2026-11-03T01:36:48.9305764Z env:
+2026-11-03T01:36:48.9306220Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:36:48.9307221Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:48.9308023Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:36:48.9308798Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:36:48.9309418Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:36:48.9310252Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:36:48.9311073Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:48.9311686Z ##[endgroup]
+2026-11-03T01:36:49.0857257Z Attempting to download 20.19.4...
+2026-11-03T01:36:49.1020344Z (node:3988) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-03T01:36:49.1021605Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-03T01:36:49.6439998Z Acquiring 20.19.4 - x64 from https://github.com/actions/node-versions/releases/download/20.19.4-16309772647/node-20.19.4-linux-x64.tar.gz
+2026-11-03T01:36:50.1376240Z Extracting ...
+2026-11-03T01:36:50.1523388Z [command]/usr/bin/tar xz --strip 1 --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/33e90fa5-4a42-401b-ac13-13e2737f7c42 -f /home/runner/work/_temp/719bd17a-d302-4350-a81f-401544b4ef6f
+2026-11-03T01:36:51.1692817Z Adding to the cache ...
+2026-11-03T01:36:52.8231744Z ##[group]Environment details
+2026-11-03T01:36:53.0731568Z node: v20.19.4
+2026-11-03T01:36:53.0732028Z npm: 10.8.2
+2026-11-03T01:36:53.0732353Z yarn: 1.22.22
+2026-11-03T01:36:53.0732923Z ##[endgroup]
+2026-11-03T01:36:53.0980774Z ##[group]Run actions/setup-python@v5
+2026-11-03T01:36:53.0981082Z with:
+2026-11-03T01:36:53.0981289Z   python-version: 3.11
+2026-11-03T01:36:53.0981528Z   check-latest: false
+2026-11-03T01:36:53.0984109Z   token: ***
+2026-11-03T01:36:53.0984332Z   update-environment: true
+2026-11-03T01:36:53.0984583Z   allow-prereleases: false
+2026-11-03T01:36:53.0984825Z   freethreaded: false
+2026-11-03T01:36:53.0985041Z env:
+2026-11-03T01:36:53.0985310Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:36:53.0985728Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:53.0986167Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:36:53.0986899Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:36:53.0987249Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:36:53.0987601Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:36:53.0988285Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:53.0988616Z ##[endgroup]
+2026-11-03T01:36:53.2379167Z ##[group]Installed versions
+2026-11-03T01:36:53.2490394Z (node:4022) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-03T01:36:53.2491806Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-03T01:36:53.2492734Z Successfully set up CPython (3.11.17)
+2026-11-03T01:36:53.2493562Z ##[endgroup]
+2026-11-03T01:36:53.2604735Z ##[group]Run set -euo pipefail
+2026-11-03T01:36:53.2605074Z [36;1mset -euo pipefail[0m
+2026-11-03T01:36:53.2605424Z [36;1mnpm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pinokiod"[0m
+2026-11-03T01:36:53.2605865Z [36;1mnpm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pterm"[0m
+2026-11-03T01:36:53.2719390Z shell: /usr/bin/bash -e {0}
+2026-11-03T01:36:53.2719904Z env:
+2026-11-03T01:36:53.2720477Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:36:53.2721277Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:53.2722076Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:36:53.2722827Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:36:53.2723504Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:36:53.2724269Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:36:53.2725315Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:36:53.2726228Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:36:53.2727187Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+2026-11-03T01:36:53.2727913Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:36:53.2728591Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:36:53.2729250Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:36:53.2729899Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+2026-11-03T01:36:53.2730434Z ##[endgroup]
+2026-11-03T01:38:27.2403566Z ##[group]Run set +e
+2026-11-03T01:38:27.2403867Z [36;1mset +e[0m
+2026-11-03T01:38:27.2404088Z [36;1mmaterializer_args=([0m
+2026-11-03T01:38:27.2404359Z [36;1m  --runner "$R24_CHECKOUTS/runner"[0m
+2026-11-03T01:38:27.2404682Z [36;1m  --runner-ref "$REQUESTED_RUNNER_REF"[0m
+2026-11-03T01:38:27.2405022Z [36;1m  --producer "$R24_CHECKOUTS/producer"[0m
+2026-11-03T01:38:27.2405657Z [36;1m  --producer-ref "$REQUESTED_PRODUCER_REF"[0m
+2026-11-03T01:38:27.2406232Z [36;1m  --app "$R24_CHECKOUTS/app"[0m
+2026-11-03T01:38:27.2406949Z [36;1m  --agent "$R24_CHECKOUTS/installed-agent"[0m
+2026-11-03T01:38:27.2407343Z [36;1m  --runtime "$R24_CHECKOUTS/runtime"[0m
+2026-11-03T01:38:27.2407676Z [36;1m  --pinokio "$R24_CHECKOUTS/pinokio"[0m
+2026-11-03T01:38:27.2407976Z [36;1m  --pterm "$R24_CHECKOUTS/pterm"[0m
+2026-11-03T01:38:27.2408294Z [36;1m  --pinokiod "$R24_CHECKOUTS/pinokiod"[0m
+2026-11-03T01:38:27.2408605Z [36;1m  --run-root "$RUNNER_TEMP/r24-live-run"[0m
+2026-11-03T01:38:27.2408958Z [36;1m  --confirmation "$REQUESTED_CONFIRMATION"[0m
+2026-11-03T01:38:27.2409268Z [36;1m  --mode "$REQUESTED_MODE"[0m
+2026-11-03T01:38:27.2409518Z [36;1m)[0m
+2026-11-03T01:38:27.2409744Z [36;1mif [ "$REQUESTED_MODE" = backend ]; then[0m
+2026-11-03T01:38:27.2410037Z [36;1m  materializer_args+=([0m
+2026-11-03T01:38:27.2410348Z [36;1m    --mode-producer "$R24_CHECKOUTS/mode-producer"[0m
+2026-11-03T01:38:27.2410734Z [36;1m    --mode-producer-ref "$REQUESTED_MODE_PRODUCER_REF"[0m
+2026-11-03T01:38:27.2411057Z [36;1m  )[0m
+2026-11-03T01:38:27.2411249Z [36;1mfi[0m
+2026-11-03T01:38:27.2411584Z [36;1mpython3 -B scripts/ci_journey_r24_materializer.py "${materializer_args[@]}"[0m
+2026-11-03T01:38:27.2412016Z [36;1minner_exit=$?[0m
+2026-11-03T01:38:27.2412305Z [36;1mecho "inner_exit=$inner_exit" >> "$GITHUB_OUTPUT"[0m
+2026-11-03T01:38:27.2412812Z [36;1mexit 0[0m
+2026-11-03T01:38:27.2433764Z shell: /usr/bin/bash -e {0}
+2026-11-03T01:38:27.2434018Z env:
+2026-11-03T01:38:27.2434300Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:38:27.2434735Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:38:27.2435195Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:38:27.2435631Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:38:27.2435971Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:38:27.2436512Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:38:27.2436990Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:38:27.2437397Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:38:27.2437825Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+2026-11-03T01:38:27.2438265Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:38:27.2438647Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:38:27.2439035Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:38:27.2439430Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+2026-11-03T01:38:27.2439822Z   REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:38:27.2440220Z   REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:38:27.2440613Z   REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:38:27.2440935Z   REQUESTED_MODE: backend
+2026-11-03T01:38:27.2441263Z   REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:38:27.2441626Z ##[endgroup]
+2026-11-03T01:40:28.4884107Z ##[group]Run actions/upload-artifact@v4
+2026-11-03T01:40:28.4884426Z with:
+2026-11-03T01:40:28.4884765Z   name: r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1
+2026-11-03T01:40:28.4885197Z   retention-days: 30
+2026-11-03T01:40:28.4885431Z   if-no-files-found: warn
+2026-11-03T01:40:28.4892398Z   path: /home/runner/work/_temp/r24-live-run/candidate.json
+/home/runner/work/_temp/r24-live-run/config.json
+/home/runner/work/_temp/r24-live-run/tst-b1-owner.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/r24-materializer.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/installed-identity.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/pinokiod.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/install.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/start.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/worker-ready.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/worker-ready.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/project.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/omp-invocation.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/omp-invocation.stderr.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-running.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-running.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-settled.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-settled.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-cleanup.json
+/home/runner/work/_temp/r24-live-run/evidence/materializer/task-cleanup.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/r24-live-route.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/stop.log
+/home/runner/work/_temp/r24-live-run/evidence/materializer/failure-stop.log
+/home/runner/work/_temp/r24-live-run/evidence/r24-live
+/home/runner/work/_temp/r24-live-run/evidence/r25-linux-mode-actions
+/home/runner/work/_temp/r24-push-route-request.json
+
+2026-11-03T01:40:28.4899556Z   compression-level: 6
+2026-11-03T01:40:28.4900001Z   overwrite: false
+2026-11-03T01:40:28.4900224Z   include-hidden-files: false
+2026-11-03T01:40:28.4900462Z env:
+2026-11-03T01:40:28.4900717Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:40:28.4901130Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:40:28.4901557Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:40:28.4901978Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:40:28.4902313Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:40:28.4902654Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:40:28.4903092Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:40:28.4903486Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:28.4903910Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+2026-11-03T01:40:28.4904329Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:28.4904713Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:28.4905096Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:28.4905476Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+2026-11-03T01:40:28.4905797Z ##[endgroup]
+2026-11-03T01:40:28.6727445Z (node:5312) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-03T01:40:28.6729010Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-03T01:40:28.6893554Z Multiple search paths detected. Calculating the least common ancestor of all paths
+2026-11-03T01:40:28.6909076Z The least common ancestor is /home/runner/work/_temp. This will be the root directory of the artifact
+2026-11-03T01:40:28.6910222Z With the provided path, there will be 9 files uploaded
+2026-11-03T01:40:28.6911137Z Artifact name is valid!
+2026-11-03T01:40:28.6911663Z Root directory input is valid!
+2026-11-03T01:40:28.8880677Z Beginning upload of artifact content to blob storage
+2026-11-03T01:40:28.9412647Z (node:5312) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-03T01:40:29.0015599Z Uploaded bytes 6387
+2026-11-03T01:40:29.0264684Z Finished uploading artifact content to blob storage!
+2026-11-03T01:40:29.0266199Z SHA256 digest of uploaded artifact zip is 949fd8e5d32f7a5f8c82ed5109edf31afe77f81f60f342eafba4c8f28599f551
+2026-11-03T01:40:29.0277247Z Finalizing artifact upload
+2026-11-03T01:40:29.4449451Z Artifact r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1.zip successfully finalized. Artifact ID 13195489975
+2026-11-03T01:40:29.4451923Z Artifact r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1 has been successfully uploaded! Final size is 6387 bytes. Artifact ID is 13195489975
+2026-11-03T01:40:29.4456939Z Artifact download URL: https://github.com/banodoco/astrid-agent/actions/runs/41560168557/artifacts/13195489975
+2026-11-03T01:40:29.4808023Z ##[group]Run test "$INNER_EXIT" = 0
+2026-11-03T01:40:29.4808591Z [36;1mtest "$INNER_EXIT" = 0[0m
+2026-11-03T01:40:29.4838506Z shell: /usr/bin/bash -e {0}
+2026-11-03T01:40:29.4838938Z env:
+2026-11-03T01:40:29.4839407Z   R24_CHECKOUTS: /home/runner/work/astrid-agent/astrid-agent
+2026-11-03T01:40:29.4840153Z   R24_REQUESTED_RUNNER_REF: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:40:29.4840948Z   R24_REQUESTED_PRODUCER_REF: 70636d1833164dad84a3551606b61ba2634565ba
+2026-11-03T01:40:29.4841711Z   R24_REQUESTED_CONFIRMATION: R24_LIVE_PIN_MANIFEST_CANDIDATE
+2026-11-03T01:40:29.4842315Z   R25_REQUESTED_MODE: backend
+2026-11-03T01:40:29.4842946Z   R25_REQUESTED_MODE_PRODUCER_REF: 13cb31104c8aae655d0ee04efdb9537aa111e340
+2026-11-03T01:40:29.4843755Z   GITHUB_WORKFLOW_SHA: 0135545f29747cf5249913e7b10f02776123112c
+2026-11-03T01:40:29.4844688Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:29.4845484Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib/pkgconfig
+2026-11-03T01:40:29.4846241Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:29.4847157Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:29.4847860Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.17/x64
+2026-11-03T01:40:29.4848570Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.17/x64/lib
+2026-11-03T01:40:29.4849155Z   INNER_EXIT: 1
+2026-11-03T01:40:29.4849513Z ##[endgroup]
+2026-11-03T01:40:29.4925004Z ##[error]Process completed with exit code 1.
+2026-11-03T01:40:29.5080607Z Post job cleanup.
+2026-11-03T01:40:29.6041408Z [command]/usr/bin/git version
+2026-11-03T01:40:29.6090524Z git version 2.56.0
+2026-11-03T01:40:29.6136553Z Temporarily overriding HOME='/home/runner/work/_temp/2ae2a277-8a94-4462-b068-797a0df742d9' before making global git config changes
+2026-11-03T01:40:29.6138355Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:29.6143021Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/pterm
+2026-11-03T01:40:29.6387287Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:29.6456247Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:29.6824724Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:29.6881837Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:29.7195124Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:29.7242272Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:29.7815221Z Post job cleanup.
+2026-11-03T01:40:29.8789225Z [command]/usr/bin/git version
+2026-11-03T01:40:29.8838601Z git version 2.56.0
+2026-11-03T01:40:29.8879644Z Temporarily overriding HOME='/home/runner/work/_temp/c5e212ce-490c-4635-8a92-079a725c7037' before making global git config changes
+2026-11-03T01:40:29.8881242Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:29.8886587Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/pinokiod
+2026-11-03T01:40:29.8931018Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:29.8972481Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:29.9254984Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:29.9312247Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:29.9659963Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:29.9708526Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:30.0166548Z Post job cleanup.
+2026-11-03T01:40:30.1225798Z [command]/usr/bin/git version
+2026-11-03T01:40:30.1297804Z git version 2.56.0
+2026-11-03T01:40:30.1338034Z Temporarily overriding HOME='/home/runner/work/_temp/f9bb8458-8773-4c7e-9cf1-7028af8e8f47' before making global git config changes
+2026-11-03T01:40:30.1348964Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:30.1360778Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/mode-producer
+2026-11-03T01:40:30.1427615Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:30.1478926Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:30.1804595Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:30.1853366Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:30.2151615Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:30.2202812Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:30.2675593Z Post job cleanup.
+2026-11-03T01:40:30.3634656Z [command]/usr/bin/git version
+2026-11-03T01:40:30.3685037Z git version 2.56.0
+2026-11-03T01:40:30.3731324Z Temporarily overriding HOME='/home/runner/work/_temp/4aa83b22-86cb-455a-994e-ee18d34daa9e' before making global git config changes
+2026-11-03T01:40:30.3732952Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:30.3738384Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/producer
+2026-11-03T01:40:30.3789674Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:30.3835358Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:30.4121374Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:30.4170282Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:30.4454732Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:30.4505748Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:30.4972664Z Post job cleanup.
+2026-11-03T01:40:30.5889136Z [command]/usr/bin/git version
+2026-11-03T01:40:30.5972641Z git version 2.56.0
+2026-11-03T01:40:30.6021680Z Temporarily overriding HOME='/home/runner/work/_temp/fbab5f37-c1be-42b5-9f73-105ad2ca8175' before making global git config changes
+2026-11-03T01:40:30.6023294Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:30.6028404Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/pinokio
+2026-11-03T01:40:30.6077313Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:30.6121998Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:30.6426641Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:30.6477838Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:30.6788391Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:30.6844006Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:30.7269542Z Post job cleanup.
+2026-11-03T01:40:30.8210256Z [command]/usr/bin/git version
+2026-11-03T01:40:30.8242665Z git version 2.56.0
+2026-11-03T01:40:30.8282979Z Temporarily overriding HOME='/home/runner/work/_temp/e4bc4c4f-9e55-4683-82a8-3ba6560a9aa9' before making global git config changes
+2026-11-03T01:40:30.8284590Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:30.8289472Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/runtime
+2026-11-03T01:40:30.8332006Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:30.8371566Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:30.8637133Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:30.8748872Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:30.9023292Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:30.9071500Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:30.9497598Z Post job cleanup.
+2026-11-03T01:40:31.0435975Z [command]/usr/bin/git version
+2026-11-03T01:40:31.0486938Z git version 2.56.0
+2026-11-03T01:40:31.0534719Z Temporarily overriding HOME='/home/runner/work/_temp/a32a3ead-812b-4b94-91ba-58707785def4' before making global git config changes
+2026-11-03T01:40:31.0536678Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:31.0541569Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/installed-agent
+2026-11-03T01:40:31.0589874Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:31.0634031Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:31.0975241Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:31.1027027Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:31.1325658Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:31.1375464Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:31.1818123Z Post job cleanup.
+2026-11-03T01:40:31.2721360Z [command]/usr/bin/git version
+2026-11-03T01:40:31.2769761Z git version 2.56.0
+2026-11-03T01:40:31.2820103Z Temporarily overriding HOME='/home/runner/work/_temp/e9ea8d79-d1b8-43c9-9084-0ea442fe4e16' before making global git config changes
+2026-11-03T01:40:31.2821842Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:31.2824382Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/app
+2026-11-03T01:40:31.2870519Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:31.2912506Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:31.3276911Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:31.3320843Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:31.3661930Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:31.3744156Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:31.4188151Z Post job cleanup.
+2026-11-03T01:40:31.5190404Z [command]/usr/bin/git version
+2026-11-03T01:40:31.5246707Z git version 2.56.0
+2026-11-03T01:40:31.5295794Z Temporarily overriding HOME='/home/runner/work/_temp/45cee7c5-0509-40f6-a10b-f59e429c748c' before making global git config changes
+2026-11-03T01:40:31.5299127Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-03T01:40:31.5304080Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/astrid-agent/astrid-agent/runner
+2026-11-03T01:40:31.5370799Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-03T01:40:31.5415677Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-03T01:40:31.5757064Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-03T01:40:31.5800459Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-03T01:40:31.6121293Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-03T01:40:31.6177304Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-03T01:40:31.6589944Z Cleaning up orphan processes
+2026-11-03T01:40:31.7014720Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, actions/setup-python@v5, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

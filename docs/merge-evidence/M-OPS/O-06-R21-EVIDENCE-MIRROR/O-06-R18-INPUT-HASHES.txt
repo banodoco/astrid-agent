@@ -1,0 +1,22 @@
+# O-06-R18 input hashes
+
+SHA-256 and byte counts recorded before copying/citing the source artifacts.
+The complete Actions evidence-root inventory is listed; materializer paths
+resolve under the named workflow-attempt directory.
+
+SHA-256  bytes  path
+
+c30f5bc86bd2d70282d5c6d945c97afd920ce33109c581eb4a90da8e538cf1e6  189268  /home/user/merge/ws/M-OPS/queue/done/O-06-R17/SR-PROJ.md
+5834b9c1045c3be86e1b59ffa5c0aeba81acdb41c73ca837f66738ac4cabe188  37857  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/logs/r24-live-125668636161.log
+
+af91c4d46e48287c137f630c15d7eaa486761d1eef2ea6395848cfb5c60e1446  17  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/failure-stop.log
+6a8322ee959ba6bda74e4783eaeb650d7d9478333e556e90776ddfcdf8f6bc62  1664  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/install.log
+16ef983510b4cf52b249eb28d01abbddf5f6937dc628cac4788d4d02a3c6c61e  767  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json
+6a8a5e65cbb9d7c72cec75a8d55acfb41765ce74444922d2c63233fcc16f09ae  2343  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/pinokiod.log
+1c2cd6a9c8fda7393f7a34d2e69473f26c065162e68c1b8f3ecd80e285e59cfb  6520  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/r24-materializer.json
+9520d045cd6d43b58304e0c279ea77fbed0dcceafb0fdb4b81f6503b15ef1f2e  2253  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/start.log
+1c79d47109f39370fb694845c5b07f14cb0d83911e07fe77192346ef74e63883  52  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/evidence/materializer/worker-ready.log
+eeff478593f6465f75f5d429bbae254c1d4c078424ba3981b292c0708c55b762  257  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-live-run/tst-b1-owner.json
+5ec06a891a7dab7a530503fdd75f7a2fe9df810a28ea5ced6d06650825cb8547  516  /home/user/repo/docs/merge-plan/evidence/actions/41560168557/r24-first-stop-0135545f29747cf5249913e7b10f02776123112c-41560168557-1/r24-push-route-request.json
+
+Command/result: `sha256sum` and `wc -c` were run for the accepted packet and every regular file under the Actions evidence root before the append/citation. All observed root files and their full hashes/sizes are listed above. The hosted job log is context only; the materializer JSON supplies the inner exit.

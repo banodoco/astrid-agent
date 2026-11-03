@@ -1,0 +1,59 @@
+clone {
+  theme: 'light',
+  version: '3.86.0',
+  HTTP_PROXY: '',
+  HTTPS_PROXY: '',
+  NO_PROXY: ''
+}
+[WARN] Managed home refresh deferred until Miniforge is installed
+[Pinokio cache preflight] start root=/home/runner/work/_temp/r24-live-run/pinokio-home
+[Pinokio cache preflight] ENVIRONMENT updated keys=TMP,TEMP,TMPDIR,PIP_TMPDIR,UV_CACHE_DIR,PIP_CACHE_DIR
+[Pinokio cache preflight] cache root mkdir ok path=/home/runner/work/_temp/r24-live-run/pinokio-home/cache
+[Pinokio cache preflight] TMP: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/TMP
+[Pinokio cache preflight] TMP: mkdir ok
+[Pinokio cache preflight] TMP: probe ok
+[Pinokio cache preflight] TEMP: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/TEMP
+[Pinokio cache preflight] TEMP: mkdir ok
+[Pinokio cache preflight] TEMP: probe ok
+[Pinokio cache preflight] TMPDIR: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/TMPDIR
+[Pinokio cache preflight] TMPDIR: mkdir ok
+[Pinokio cache preflight] TMPDIR: probe ok
+[Pinokio cache preflight] PIP_TMPDIR: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/PIP_TMPDIR
+[Pinokio cache preflight] PIP_TMPDIR: mkdir ok
+[Pinokio cache preflight] PIP_TMPDIR: probe ok
+[Pinokio cache preflight] UV_CACHE_DIR: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/UV_CACHE_DIR
+[Pinokio cache preflight] UV_CACHE_DIR: mkdir ok
+[Pinokio cache preflight] UV_CACHE_DIR: probe ok
+[Pinokio cache preflight] PIP_CACHE_DIR: target=/home/runner/work/_temp/r24-live-run/pinokio-home/cache/PIP_CACHE_DIR
+[Pinokio cache preflight] PIP_CACHE_DIR: mkdir ok
+[Pinokio cache preflight] PIP_CACHE_DIR: probe ok
+[Pinokio cache preflight] complete ok checked=6 repaired=0
+git.loadCheckpoints: 0.649ms
+Server listening on http://localhost:42000
+condarc init
+https_active false
+SETTING launch complete true
+[checkpoints.restore] {
+  ts: 1793670013997,
+  step: 'sub-checkout',
+  workspace: 'astrid',
+  status: 'skip',
+  reason: 'no active snapshot id'
+}
+[checkpoints.restore] {
+  ts: 1793670018498,
+  step: 'sub-checkout',
+  workspace: 'astrid',
+  status: 'skip',
+  reason: 'no active snapshot id'
+}
+[checkpoints.restore] {
+  ts: 1793670028281,
+  step: 'sub-checkout',
+  workspace: 'astrid',
+  status: 'skip',
+  reason: 'no active snapshot id'
+}
+[SigTerm event] Kill 4371
+no shells running
+kill self 4371

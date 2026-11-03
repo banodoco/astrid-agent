@@ -1,0 +1,24 @@
+
+████
+██ Starting Shell fc64a955-accd-4036-9e22-6a223ca2a2e2
+[?2004h<<PINOKIO_SHELL>>eval "$(conda shell.bash hook)" ; conda deactivate ; conda deactivate ; conda deactivate ; conda activate base && node '/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/pinokio/shell.mjs' '/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid' 'set -eu
+[?2004l[?2004h> tmp=$(mktemp -d)
+[?2004l[?2004h> trap '\''rm -rf "$tmp"'\'' EXIT
+[?2004l[?2004h> trap '\''exit 129'\'' HUP
+[?2004l[?2004h> trap '\''exit 130'\'' INT
+[?2004l[?2004h> trap '\''exit 143'\'' TERM
+[?2004l[?2004h> curl -fsSL '\''https://raw.githubusercontent.com/banodoco/astrid-app/a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a/public/install'\'' -o "$tmp/install"
+[?2004l[?2004h> curl -fsSL '\''https://raw.githubusercontent.com/banodoco/astrid-app/a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a/public/install-manifest.json'\'' -o "$tmp/install-manifest.json"
+[?2004l[?2004h> sh "$tmp/install" '\''--root'\'' '\''/home/runner/work/_temp/r24-live-run/pinokio-home/api/astrid/app/astrid'\'' '\''--managed-by'\'' '\''pinokio'\'' --manifest "$tmp/install-manifest.json"' '{}'
+[?2004lGetting Astrid ready. The first time takes a few minutes.
+Using your workspace at /home/runner/work/_temp/r24-live-run/installer-home/.local/share/astrid-runtime.
+Installing Astrid.
+Finishing up.
+Couldn't add Astrid's skill to your agents; see the log.
+Astrid is installed. Choose Pinokio's Start button.
+[?2004h(base) <<PINOKIO_SHELL>>
+
+██ Terminated Shell fc64a955-accd-4036-9e22-6a223ca2a2e2
+████
+status=$?
+[?2004l[?2004h(base) <<PINOKIO_SHELL>>

@@ -1,0 +1,10 @@
+{
+  "confirmation": "R24_LIVE_PIN_MANIFEST_CANDIDATE",
+  "event": "workflow_dispatch",
+  "producer_ref": "70636d1833164dad84a3551606b61ba2634565ba",
+  "ref": "refs/heads/lane/M-PIN/R-PIN-OWNER-PREDICATE-CAPTURE",
+  "runner_ref": "0135545f29747cf5249913e7b10f02776123112c",
+  "schema": "astrid.r24.push-route-request.v1",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/r24-linux-live.yml@refs/heads/lane/M-PIN/R-PIN-OWNER-PREDICATE-CAPTURE",
+  "workflow_sha": "0135545f29747cf5249913e7b10f02776123112c"
+}
