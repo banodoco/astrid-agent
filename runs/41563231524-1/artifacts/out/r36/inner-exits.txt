@@ -1,0 +1,3 @@
+verifier=4
+native=4
+self_hosted=4

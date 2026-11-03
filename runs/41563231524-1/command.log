@@ -1,0 +1,47 @@
+Collecting pytest==9.0.2
+  Downloading pytest-9.0.2-py3-none-any.whl.metadata (7.6 kB)
+Collecting iniconfig>=1.0.1 (from pytest==9.0.2)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=22 (from pytest==9.0.2)
+  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==9.0.2)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Collecting pygments>=2.7.2 (from pytest==9.0.2)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Downloading pytest-9.0.2-py3-none-any.whl (374 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 374.8/374.8 kB 6.5 MB/s eta 0:00:00
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading packaging-26.3-py3-none-any.whl (129 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 42.6 MB/s eta 0:00:00
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 33.9 MB/s eta 0:00:00
+Installing collected packages: pygments, pluggy, packaging, iniconfig, pytest
+Successfully installed iniconfig-2.3.1 packaging-26.3 pluggy-1.7.0 pygments-2.21.0 pytest-9.0.2
+verifier=4
+native=4
+self_hosted=4
+ImportError while loading conftest '/home/runner/work/astrid-agent/astrid-agent/agent/tests/conftest.py'.
+tests/conftest.py:22: in <module>
+    from astrid.core.pack import source_setup
+astrid/core/pack/__init__.py:44: in <module>
+    from astrid.core.pack.canonical import (
+astrid/core/pack/canonical.py:20: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'
+ImportError while loading conftest '/home/runner/work/astrid-agent/astrid-agent/agent/tests/conftest.py'.
+tests/conftest.py:22: in <module>
+    from astrid.core.pack import source_setup
+astrid/core/pack/__init__.py:44: in <module>
+    from astrid.core.pack.canonical import (
+astrid/core/pack/canonical.py:20: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'
+ImportError while loading conftest '/home/runner/work/astrid-agent/astrid-agent/agent/tests/conftest.py'.
+tests/conftest.py:22: in <module>
+    from astrid.core.pack import source_setup
+astrid/core/pack/__init__.py:44: in <module>
+    from astrid.core.pack.canonical import (
+astrid/core/pack/canonical.py:20: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'

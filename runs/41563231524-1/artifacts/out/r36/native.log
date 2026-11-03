@@ -1,0 +1,8 @@
+ImportError while loading conftest '/home/runner/work/astrid-agent/astrid-agent/agent/tests/conftest.py'.
+tests/conftest.py:22: in <module>
+    from astrid.core.pack import source_setup
+astrid/core/pack/__init__.py:44: in <module>
+    from astrid.core.pack.canonical import (
+astrid/core/pack/canonical.py:20: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'

@@ -1,0 +1,9 @@
+{
+  "agent_ref": "5522523355063679ffb5c4db4e14e45d377410d4",
+  "app_ref": "7302b2992976ce7ed016738f7fe1086937f99384",
+  "artifact_paths": "out/r36/**",
+  "command": "mkdir -p out/r36\npython3 -m venv \"$RUNNER_TEMP/r36-venv\"\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pip install 'pytest==9.0.2'\nexport PYTEST_DISABLE_PLUGIN_AUTOLOAD=1\nexport PYTHONPATH=\"$GITHUB_WORKSPACE/runtime\"\ncd agent\nset +e\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q tests/test_journey_failure_modes.py --junitxml=\"$GITHUB_WORKSPACE/out/r36/verifier.xml\" > \"$GITHUB_WORKSPACE/out/r36/verifier.log\" 2>&1\nverifier=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_product_canonical_native_lifecycle_is_collected_but_fixture_is_inadmissible' 'tests/test_native_service_adapter.py::test_fixture_cannot_be_promoted_by_editing_scope_and_authentication' --junitxml=\"$GITHUB_WORKSPACE/out/r36/native.xml\" > \"$GITHUB_WORKSPACE/out/r36/native.log\" 2>&1\nnative=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_structural_validator_rejects_mutated_native_fields[path14-self-hosted-RUNNER_ENVIRONMENT]' --junitxml=\"$GITHUB_WORKSPACE/out/r36/self-hosted.xml\" > \"$GITHUB_WORKSPACE/out/r36/self-hosted.log\" 2>&1\nself_hosted=$?\nprintf 'verifier=%s\\nnative=%s\\nself_hosted=%s\\n' \"$verifier\" \"$native\" \"$self_hosted\" | tee \"$GITHUB_WORKSPACE/out/r36/inner-exits.txt\"\ncat \"$GITHUB_WORKSPACE/out/r36/\"*.log\n[ \"$verifier\" -eq 0 ] && [ \"$native\" -eq 0 ] && [ \"$self_hosted\" -eq 0 ]",
+  "pinokio_ref": "c5b42701641889ecb916c60cde09a717f83d62ff",
+  "runtime_ref": "8d208074669a31eed7efc4d964a602d6cd27e425",
+  "slot": "6"
+}

@@ -1,0 +1,9 @@
+agent 5522523355063679ffb5c4db4e14e45d377410d4
+runtime 8d208074669a31eed7efc4d964a602d6cd27e425
+app 7302b2992976ce7ed016738f7fe1086937f99384
+pinokio c5b42701641889ecb916c60cde09a717f83d62ff
+workflow_repository banodoco/astrid-agent
+workflow_ref banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-QUAL-R-36-MACOS15-HOSTED-PROOF-R1
+workflow_sha 85ad3be62296fe107e0e07ba5b2e8584222b9464
+run_id 41563231524
+run_attempt 1
