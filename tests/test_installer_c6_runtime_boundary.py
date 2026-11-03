@@ -27,6 +27,40 @@ def test_published_runtime_refuses_installer_owned_lifetime_mutex(tmp_path, monk
         os.close(descriptor)
 
 
+@pytest.mark.parametrize("failed_step", ["stop", "wait"])
+def test_uncertain_stop_never_starts_old_service_on_failure_or_recovery(tmp_path, monkeypatch, failed_step):
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    old = core.Version(root / "old", root / "old-python", root / "old-profile", {})
+    candidate = core.Version(root / "new", root / "new-python", root / "new-profile", {})
+    realm = {"realm_id": "r", "realm_root": str(data / "realm")}
+    events = []
+    monkeypatch.setattr(core, "install_runtime", lambda *_: None)
+
+    def step(name):
+        def run(*_args):
+            events.append(name)
+            if name == failed_step:
+                raise RuntimeError(name)
+        return run
+
+    backend = SimpleNamespace(wait_for_realm_owner=step("wait"))
+    with pytest.raises(RuntimeError, match=failed_step):
+        core.Installer(root, data, backend)._run_update_transaction(
+            old, realm, prepare=lambda: candidate, stop=step("stop"),
+            migrate=step("upgrade"), runtime_upgrade=True,
+            switch_candidate=step("switch"), switch_old=step("old-selection"),
+            activate=step("activate"), activate_old=step("old-start"))
+    assert events == (["stop"] if failed_step == "stop" else ["stop", "wait"])
+    saved = core.read_json(root / "update-transaction.json")
+    assert saved["original_service_state_unverified"] is True
+    with pytest.raises(RuntimeError, match="original service state is unknown"):
+        core.recover_transaction(root, data, backend, stop=step("recovery-stop"),
+                                 switch_old=step("old-selection"), activate_old=step("old-start"))
+    assert core.read_json(root / "update-transaction.json") == saved
+    assert "old-start" not in events and "recovery-stop" not in events
+
+
 @pytest.mark.parametrize("failure", [None, "upgrade", "switch", "activate"])
 def test_runtime_handoff_journals_before_call_and_never_restores_after_it(tmp_path, monkeypatch, failure):
     root, data = tmp_path / "program", tmp_path / "data"

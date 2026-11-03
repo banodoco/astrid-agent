@@ -308,6 +308,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("runtime_upgrade_started"):
         raise RuntimeError("The Runtime upgrade may have changed the workspace; preserve the current selection for recovery and reconciliation.")
+    if transaction.get("original_service_state_unverified") and transaction.get("step") != "staged":
+        raise RuntimeError("The original service state is unknown; preserve the current selection for recovery and reconciliation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save
@@ -452,6 +454,10 @@ class Installer:
                 # Adapter-owned recovery context lives in the shared journal,
                 # and is durable before any owner stop or checkout movement.
                 transaction["transaction_context"] = transaction_context
+            if runtime_upgrade:
+                # Until manager state is captured durably, restarting the old
+                # service after an uncertain stop can change the user's state.
+                transaction["original_service_state_unverified"] = True
             self._save_update(transaction, "staged")
             authority.enter_context(update_context(self.backend, transaction))
             install_runtime(self.root)
@@ -489,7 +495,8 @@ class Installer:
                         failure.add_note(
                             f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
                 else:
-                    rollback_after(failure)
+                    if not transaction.get("original_service_state_unverified"):
+                        rollback_after(failure)
                 raise
 
             backup_image = None
@@ -521,7 +528,8 @@ class Installer:
                 self._save_update(transaction, "complete")
                 return candidate
             except (Exception, KeyboardInterrupt) as failure:
-                if transaction.get("runtime_upgrade_started"):
+                if (transaction.get("runtime_upgrade_started")
+                        or transaction.get("original_service_state_unverified")):
                     raise
                 rollback_after(failure)
                 raise
