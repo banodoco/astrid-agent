@@ -1,9 +1,9 @@
 {
-  "agent_ref": "ddd5d278796641901bd11508863a8ea21e6c9697",
-  "runtime_ref": "1a275bb339ae897e52a5be5e1da99e846e402037",
-  "app_ref": "7f6f99208100e895efebf39c70bc30af6cee0884",
-  "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
-  "slot": "1",
-  "command": "mkdir -p suite-proof; printf \"venue smoke\\n\" > suite-proof/result.txt; exit 7",
-  "artifact_paths": "suite-proof/result.txt"
+  "agent_ref": "a36c7d0cd4d0ffdbff508cc6e8eb6adc9e1b8e5c",
+  "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+  "app_ref": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+  "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+  "command": "mkdir -p agent/hosted-proof\ncd agent\npython3 -m venv \"$RUNNER_TEMP/agent-test-venv\"\n\"$RUNNER_TEMP/agent-test-venv/bin/python\" -m pip install -e '.[dev]' > hosted-proof/setup.log 2>&1\n\"$RUNNER_TEMP/agent-test-venv/bin/python\" scripts/ci_install_runtime.py >> hosted-proof/setup.log 2>&1\nset +e\n\"$RUNNER_TEMP/agent-test-venv/bin/python\" -m pytest -s -v tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_cpu_host_readiness_identity_reaches_real_installed_guard > hosted-proof/selector.log 2>&1\nrc=$?\nprintf '%s\\n' \"$rc\" > hosted-proof/selector.exit\nexit \"$rc\"",
+  "artifact_paths": "agent/hosted-proof/",
+  "slot": "1"
 }
