@@ -45,6 +45,10 @@ class Step:
     per_brief: bool = False
     always_run: bool = False
     invoke: Callable[[argparse.Namespace], Path] | None = None
+    # Sequence-local policy for actions whose public graph is independent of Hype.
+    action_id: str | None = None
+    pipeline_requirements: tuple[str, ...] = ()
+    pipeline_provides: tuple[str, ...] = ()
 
 def step_argv(action_id: str, python_exec: str) -> list[str]:
     """Argv tokens for invoking a qualified public child action."""
@@ -347,6 +351,9 @@ def build_pool_steps() -> list[Step]:
             ("hype.mp4", "hype.mp4.provenance.json"),
             build_hype_render_cmd,
             per_brief=True,
+            action_id="rendering.render",
+            pipeline_requirements=("timeline", "assets", "theme"),
+            pipeline_provides=("rendered_video",),
         ),
         Step(
             "editor_review",
@@ -402,9 +409,9 @@ def build_pool_steps() -> list[Step]:
 def _initial_facts(args: argparse.Namespace) -> set[str]:
     """Compute the set of pipeline facts available before any step runs.
 
-    Facts are matched against each executor's `pipeline_requirements`; a step
-    runs when its requirements are a subset of the running facts, where
-    each step that runs adds its `graph.provides` to the set.
+    Facts are matched against sequence-owned or executor requirements; a step
+    runs when its requirements are a subset of the running facts and then
+    adds its declared provided facts to the set.
     """
     facts: set[str] = {"brief", "theme"}
     if args.video is not None:
@@ -422,20 +429,22 @@ def _initial_facts(args: argparse.Namespace) -> set[str]:
     return facts
 
 def select_steps(args: argparse.Namespace) -> list[Step]:
-    """Select pipeline steps via manifest-declared requirements.
+    """Select pipeline steps using sequence and manifest requirements.
 
     Walks STEP_ORDER (used as the topological hint) and includes each step
-    whose executor's `pipeline_requirements` are satisfied by the running
-    facts set. Each step that runs contributes its `graph.provides` for
+    whose sequence-owned or executor `pipeline_requirements` are satisfied
+    by the running facts set. Each step contributes its declared facts for
     downstream steps. Replaces the old mode-fork logic; equivalent for
     source-video, audio-only, and pure-generative briefs.
     """
     from astrid.core.execution.executor.registry import load_default_registry
 
     registry = load_default_registry()
+    executors = registry.list()
+    executor_ids = {executor.id for executor in executors}
     executors_by_step = {
         executor.metadata.get("pipeline_step"): executor
-        for executor in registry.list()
+        for executor in executors
         if executor.metadata.get("pipeline_step")
     }
     facts = _initial_facts(args)
@@ -444,6 +453,12 @@ def select_steps(args: argparse.Namespace) -> list[Step]:
     for name in STEP_ORDER:
         step = all_steps.get(name)
         if step is None:
+            continue
+        if step.action_id is not None:
+            if step.action_id not in executor_ids or not set(step.pipeline_requirements).issubset(facts):
+                continue
+            selected.append(step)
+            facts.update(step.pipeline_provides)
             continue
         executor = executors_by_step.get(name)
         if executor is None:

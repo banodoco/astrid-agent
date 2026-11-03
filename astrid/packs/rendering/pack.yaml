@@ -999,19 +999,6 @@ actions:
       defaults to MP4; explicitly alpha-stamped layers may publish ProRes 4444 MOV.
     graph:
       consumes: []
-      depends_on:
-      - editorial.transcribe
-      - editorial.scenes
-      - editorial.quality_zones
-      - editorial.shots
-      - editorial.triage
-      - understanding.scene_describe
-      - editorial.quote_scout
-      - training.pool_build
-      - training.pool_merge
-      - editorial.arrange
-      - video_editing.cut
-      - editorial.refine
       provides:
       - rendered_video
     inputs:
@@ -1167,9 +1154,6 @@ actions:
       - speech_coverage
       requires_remotion: selected
       requires_timeline: false
-      command_builder: astrid.packs.video_editing.actions.hype.run.build_pool_steps
-      pipeline_step: render
-      pipeline_step_order: 12
       runtime_entrypoint: main
       runtime_file: actions/render/run.py
       runtime_module: astrid.packs.rendering.actions.render.run
@@ -1187,10 +1171,6 @@ actions:
       path_template: '{out}/{output_name}.provenance.json'
       type: file
       artifact_type: metadata/provenance
-    pipeline_requirements:
-    - timeline
-    - assets
-    - theme
     short_description: Render a hype timeline to opaque MP4 or explicitly stamped
       alpha MOV through the selected backend.
     version: '1.0'
