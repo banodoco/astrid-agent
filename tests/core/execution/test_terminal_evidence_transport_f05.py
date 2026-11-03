@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from astrid.core.execution.generic_host import RuntimeProtocolClient
+from tests.core.execution.test_bug14_settlement_liveness import settlement_case  # noqa: F401
+from tests.test_generic_host_result_json import host_case  # noqa: F401
 
 
 class Generated:
@@ -170,3 +172,34 @@ def test_published_generated_signature_preserves_failure_and_cancellation_wire_e
         if status == "cancelled":
             assert body["attempt_id"] == "attempt-1" and body["expected_version"] == 4
             assert body["stop_observed"] is False
+
+
+def test_reconciliation_cancel_does_not_invent_stop_evidence(settlement_case, monkeypatch):
+    """A returned producer and local cleanup cannot prove an executor stopped."""
+    import pytest
+
+    from astrid.core.execution import generic_host
+
+    case = settlement_case
+    case.mode = "outage"
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_SECONDS", 0.1)
+    with pytest.raises(OSError, match="ACK unavailable"):
+        case.host.run_task(case.task, lease_token=case.attempt["lease_id"])
+
+    owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
+    owner.join(timeout=3)
+    assert not owner.is_alive()
+    assert len(case.executions) == 1
+    assert len(case.cancels) == 1
+    task_id, body, _ = case.cancels[0]
+    assert task_id == case.task_id
+    assert {key: body[key] for key in ("attempt_id", "lease_id", "fence", "runtime_epoch")} == {
+        key: case.attempt[key] for key in ("attempt_id", "lease_id", "fence", "runtime_epoch")
+    }
+    assert body["stop_observed"] is False
+    assert body["outputs"] == []
+    assert body["result"] == {"status": "cancelled", "error": {
+        "code": "reconciliation_required",
+        "message": "terminal publication acknowledgement remained unresolved",
+    }}
+    assert case.service.task(case.task_id)["task"]["status"] == "cancel_requested"

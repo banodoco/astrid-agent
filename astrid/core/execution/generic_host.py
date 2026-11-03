@@ -10912,8 +10912,8 @@ class GenericPackHost:
                     if (terminal.get("reconcile_cancel") or self._shutdown.is_set()
                             or time.monotonic() >= reconcile_deadline):
                         # The producer has returned and its task scope has
-                        # finished cleanup before this owner is installed.
-                        # Cancellation is the explicit Runtime custody handoff.
+                        # finished cleanup, but neither establishes executor stop.
+                        # Runtime decides custody from the cancellation evidence.
                         cancel = getattr(self.client, "cancel", None)
                         operation, args, kwargs = terminal["publication_call"]
                         if operation == self.client.fail:
@@ -10945,7 +10945,7 @@ class GenericPackHost:
                                 result={"status": "cancelled", "error": {
                                     "code": "reconciliation_required",
                                     "message": "terminal publication acknowledgement remained unresolved"}},
-                                stop_observed=True,
+                                stop_observed=False,
                                 **({"request_path": terminal["root"] / "cancel-request.json"}
                                    if isinstance(self.client, RuntimeProtocolClient) else {}))
                             terminal.update(recorded=True, completion=response, status="cancelled")
