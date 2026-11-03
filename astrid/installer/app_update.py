@@ -467,7 +467,7 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
                 raise ValueError("Another operation selected a different app; refusing recovery.")
             # A prior recovery may have published the old pointer and
             # crashed before updating its selection identity.
-            backend.persist_identity(previous)
+            backend.persist_identity(previous, persist_choices=False)
 
     original_custody = getattr(backend, "_pinokio_custody", None)
     with contextlib.ExitStack() as recovery_authority:

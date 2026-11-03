@@ -2053,8 +2053,6 @@ def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migratio
                      "--skill-copies", "on" if requested["skill_copies"] else "off"])
     assert cli.main(args) == 0
     output = capsys.readouterr().out
-    assert "Astrid setup summary:" in output and "Startup: running and ready" in output
-    assert "Astrid is updated and running." in output
     assert env.events.index("ready:new") < env.events.index("skills:new")
     assert env.events.count("skills:new") == 1
     assert current(env.root) == env.candidate
@@ -2068,6 +2066,8 @@ def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migratio
     else:
         assert not owned.exists() and not owned.is_symlink()
         assert "Astrid skill targets removed:" in output
+    assert "Astrid setup summary:" in output and "Startup: running and ready" in output
+    assert "Astrid is updated and running." in output
     assert f"Skill target preserved: {edited.parent}" in output
     assert f"Skill target preserved: {foreign}" in output
     assert "edited Astrid managed copy preserved" in output
@@ -2133,3 +2133,30 @@ def test_strict_app_update_reports_skill_process_failure_after_successful_restar
     assert current(env.root) == env.candidate
     assert all(target.exists() for target in env.targets.values())
     assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+def test_strict_app_recovery_keeps_saved_policy_without_applying_new_request(tmp_path, monkeypatch):
+    from astrid.skills import state
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    saved = env.backend.service.recorded()["choices"]
+    state_before = state.state_path().read_bytes()
+    switch(env.root, env.candidate)
+    # Model a strict selection interrupted after publishing the new identity.
+    # The choices remain those of the previous successful setup.
+    record = env.backend.service.recorded()
+    write_json(env.backend.service.selection, {**record, "identity": env.candidate.document()["identity"]})
+    write_json(env.root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "transaction_kind": "app", "step": "switched", "data_root": str(env.data),
+        "old": env.old.document(), "candidate": env.candidate.document(),
+        "realm": {"realm_id": "realm", "realm_root": str(env.realm)}, "backup": None,
+    })
+    env.backend.service.choices = {**saved, "skills": False, "skill_copies": False}
+    assert update.recover_app(env.root, env.backend, say=lambda _: None)
+    assert current(env.root) == env.old
+    assert env.backend.service.recorded()["choices"] == saved
+    assert state.state_path().read_bytes() == state_before
+    assert all(target.exists() for target in env.targets.values())
+    assert not any(event.startswith("skills:") for event in env.events)
+    assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"

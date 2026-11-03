@@ -1,5 +1,4 @@
 """Real installer/skill composition with only external lifecycle edges controlled."""
-import json
 import sys
 import sysconfig
 import venv
@@ -67,6 +66,11 @@ def skill_installation(tmp_path, monkeypatch, *, manager=None):
     # removal execute through their real production implementations.
     monkeypatch.setattr(backend, "workspace", lambda *_args: {
         "realm_id": "realm", "realm_root": str(realm)})
+    def inspect_workspace(_version, _data, *args, **_kwargs):
+        assert args[:2] == ("workspace", "inspect")
+        return {"realm_id": "realm", "realm_root": str(realm)}
+
+    monkeypatch.setattr(backend, "runtime", inspect_workspace)
     seeded = backend.sync_skills(old)
     assert seeded["ok"], backend.log.read_text()
     targets = {name: home / f".{name}/skills/astrid" for name in ("claude", "codex", "hermes")}
