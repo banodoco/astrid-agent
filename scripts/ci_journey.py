@@ -624,6 +624,8 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
     try:
+        if sys.platform == "win32" and phase == "before-cleanup":
+            capture_windows_schema_acl(evidence, run_root)
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
         retain_named_evidence(evidence, phase)
@@ -672,6 +674,36 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     except Exception as exc:
         print(f"Journey evidence snapshot ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
+
+
+def capture_windows_schema_acl(evidence: Path, run_root: Path) -> None:
+    """Record installed schema ACLs while the failed candidate still exists."""
+    log = evidence / "runtime-service-service-schema-acl.log"
+    versions = run_root / "program" / "versions"
+    pattern = "*/py/Lib/site-packages/astrid/core/timeline/schema/timeline-config.schema.json"
+    schemas = sorted(versions.glob(pattern))
+    with log.open("w", encoding="utf-8") as stream:
+        stream.write(f"Schema candidates: {len(schemas)}\n")
+        for schema in schemas:
+            for path in (schema, *schema.parents):
+                stream.write(f"\n--- {path} ---\n")
+                stream.flush()
+                try:
+                    env = os.environ.copy()
+                    env["ASTRID_ACL_DIAGNOSTIC_PATH"] = str(path)
+                    owner = subprocess.run(
+                        ["powershell.exe", "-NoProfile", "-Command",
+                         "(Get-Acl -LiteralPath $env:ASTRID_ACL_DIAGNOSTIC_PATH).Owner"],
+                        env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=30, check=False)
+                    stream.write(f"owner exit: {owner.returncode}\n")
+                    stream.flush()
+                    result = subprocess.run(["icacls", str(path)], stdout=stream,
+                                            stderr=subprocess.STDOUT, timeout=30, check=False)
+                    stream.write(f"icacls exit: {result.returncode}\n")
+                except (OSError, subprocess.SubprocessError) as exc:
+                    stream.write(f"icacls error: {exc}\n")
+                if path == run_root:
+                    break
 
 
 def _under(path: Path, parent: Path) -> bool:
