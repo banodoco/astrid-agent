@@ -145,6 +145,15 @@ on:
           - direct-windows
           - direct
 
+      mac_runner:
+        description: Runner for a single direct-macos diagnostic (strict runs use hosted)
+        required: false
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - astrid-mac
+
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
@@ -256,6 +265,7 @@ jobs:
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
+          MAC_RUNNER: ${{ inputs.mac_runner || 'hosted' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -305,6 +315,11 @@ jobs:
           valid_rows = {"", "direct-linux", "direct-macos", "direct-windows", "direct"}
           if journey_row not in valid_rows:
               raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
+          mac_runner = os.environ["MAC_RUNNER"]
+          if mac_runner not in {"hosted", "astrid-mac"}:
+              raise SystemExit("mac_runner must be hosted or astrid-mac")
+          if mac_runner == "astrid-mac" and journey_row != "direct-macos":
+              raise SystemExit("astrid-mac is only available for a single direct-macos diagnostic")
           if journey_row:
               direct_only = True
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
@@ -356,6 +371,8 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
+          if mac_runner == "astrid-mac":
+              matrix[0]["runner"] = ["self-hosted", "astrid-mac"]
           if direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
