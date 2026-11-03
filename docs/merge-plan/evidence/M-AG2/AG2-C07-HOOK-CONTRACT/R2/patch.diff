@@ -1,0 +1,49 @@
+diff --git a/tests/core/execution/test_generic_host_actions_v3.py b/tests/core/execution/test_generic_host_actions_v3.py
+index c3744b32c36..2e384be5485 100644
+--- a/tests/core/execution/test_generic_host_actions_v3.py
++++ b/tests/core/execution/test_generic_host_actions_v3.py
+@@ -292,7 +292,7 @@ def _sdk_cpu_session_binding(profile):
+     return SessionBinding(s["session_dir"], profile["runtime"]["runtime_instance_id"],
+                           s["process_birth_id"], s["server_url"], s["source_content_digest"], s["config_digest"],
+                           execution_identity=profile["residency_digest"],
+-                          launch_generation=s["comfy_process_birth_id"], engine_birth_id=s["comfy_process_birth_id"])
++                          launch_generation=s["launch_generation"], engine_birth_id=s["comfy_process_birth_id"])
+ 
+ 
+ def _sdk_cpu_handoff_fixture(tmp_path, monkeypatch):
+@@ -393,7 +393,7 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
+ 
+ @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+ @pytest.mark.parametrize("field", ["session_id", "runtime_instance_id", "process_birth_id", "endpoint",
+-                                  "source_digest", "config_digest", "execution_identity", "engine_birth_id",
++                                  "source_digest", "config_digest", "execution_identity", "launch_generation", "engine_birth_id",
+                                   "backend"])
+ def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+     from dataclasses import replace
+@@ -413,6 +413,26 @@ def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, fie
+     assert f.host.managed_tool_session.occupied and not f.host.managed_tool_session._active.fenced
+ 
+ 
++@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
++@pytest.mark.parametrize("field,value,reason", [
++    ("source_digest", "revision", "binding source_digest does not match verified evidence"),
++    ("execution_identity", "different", "binding execution_identity does not match the residency digest"),
++    ("launch_generation", "different", "binding launch_generation does not match verified evidence"),
++    ("runtime_epoch", 1, "runtime_epoch is not verifiable on the attached path"),
++])
++def test_sdk_cpu_handoff_factory_rejects_unverified_binding_fields(tmp_path, monkeypatch, field, value, reason):
++    from dataclasses import replace
++    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter, ComfyHostHooks
++    f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
++    binding = _sdk_cpu_session_binding(f.profile)
++    hook = CheckoutServerAdapter.open_host_session(binding=binding, hc03_profile=f.profile)
++    assert isinstance(hook, ComfyHostHooks)
++    assert hook.observe(binding=binding) == {"ok": True, "observed": True, "fenced": False}
++    with pytest.raises(ValueError, match=reason):
++        CheckoutServerAdapter.open_host_session(binding=replace(binding, **{field: value}), hc03_profile=f.profile)
++    assert f.controls == []
++
++
+ @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+ @pytest.mark.parametrize("fault", ["listener", "parent", "birth", "child_birth", "cancel_transport", "release_transport", "completion"])
+ def test_sdk_cpu_handoff_canonical_ownership_and_control_fail_closed(tmp_path, monkeypatch, fault):

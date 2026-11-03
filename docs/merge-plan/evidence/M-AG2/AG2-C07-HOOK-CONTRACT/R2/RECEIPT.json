@@ -1,0 +1,126 @@
+{
+  "task": "AG2-C07-HOOK-CONTRACT-R2",
+  "status": "incomplete_exact_head_module_red",
+  "integration_handoff": "not made: exact-head proof is not green",
+  "repository": "https://github.com/banodoco/astrid-agent",
+  "base": "63016d096441aa33d6fc1905ecaf969b7a5f9931",
+  "head": "e3dfe8e90e56916c928ab83babb4be6eab417989",
+  "branch": "lane/M-AG2/AG2-C07-HOOK-CONTRACT-R2",
+  "remote_verified_head": "e3dfe8e90e56916c928ab83babb4be6eab417989",
+  "published_tuple": {
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247"
+  },
+  "input_sha256": {
+    "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/brief.md": "0d98210a7790b5ec71948156cf246a0fe05d3de606b67b41d3077ffa77266b71",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R1/REPORT.md": "97f7cfc79b04ce2517194aa3d8ecb390616c312c80850c4d80330f92d35e091c",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R1/RECEIPT.json": "05382f8835657ca8d5982c9b0cd089d6175080fdb6214aa612c865aeedcb04c3",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R1/binding-diagnostic.log": "fa6809e4131310498a62ef22d4389fc3aa9578f47f7744727b05f65b9b208bf2",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R1/NODE-OUTCOMES.json": "eeed8951690204cb98f976150af5c16523e4c54b14e788c7dc74a8df83e2ef7c",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R1/patch.diff": "08c634e33a7dd415744187878c782b7bcf53965e8e1f61eee64b79e53230d798"
+  },
+  "owner_disposition": "M-AG 2026-11-03T00:07:20Z: current ComfyHostHooks contract is correct; update test bindings to residency_digest, source_content_digest, execution_identity, and launch_generation; remove retired model/template/invocation arguments.",
+  "scope": {
+    "changed_paths": [
+      "tests/core/execution/test_generic_host_actions_v3.py"
+    ],
+    "diff_stat": "1 file changed, 22 insertions(+), 2 deletions(-)",
+    "diff_check_exit": 0,
+    "working_tree_clean": true,
+    "test_file_sha256": "aeff23e90ddc3e66a553e6511d66be7db1aaeb68fc77b272a3b12f803f2bad71"
+  },
+  "environment": {
+    "python": "3.13.18",
+    "pytest": "9.0.2",
+    "runtime_checkout": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "vibecomfy_checkout": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+    "runtime_and_vibecomfy": "editable installations in task-local venv",
+    "package_inventory": "environment-freeze.txt",
+    "exports": {
+      "PATH": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/venv/bin:$PATH",
+      "ASTRID_RUNTIME_CHECKOUT": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/runtime",
+      "ASTRID_VIBECOMFY_CHECKOUT": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/vibecomfy",
+      "TMPDIR": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2"
+    }
+  },
+  "commands": [
+    {
+      "command": "/home/user/merge/kit/codex/task-clone.sh astrid-agent /home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/agent 63016d096441aa33d6fc1905ecaf969b7a5f9931",
+      "exit": 0
+    },
+    {
+      "command": "/home/user/merge/kit/codex/task-clone.sh astrid-runtime /home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R2/runtime 2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+      "exit": 0
+    },
+    {
+      "command": "git clone https://github.com/banodoco/VibeComfy.git <task-folder>/vibecomfy; git checkout --detach e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "exit": 0
+    },
+    {
+      "command": "python -m pytest --collect-only -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "inner_exit": 0,
+      "collected": 273,
+      "log": "pytest-collect.log"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "head": "e3dfe8e90e56916c928ab83babb4be6eab417989",
+      "inner_exit": 1,
+      "result": "1 failed, 272 passed in 297.44s",
+      "log": "pytest-focused.log",
+      "no_maxfail_or_x": true
+    },
+    {
+      "command": "python -m pytest -s -q -o addopts= -p binding_probe tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph",
+      "inner_exit": 1,
+      "log": "binding-probe.log",
+      "note": "diagnostic plugin observes actual factory arguments and forwards them unmodified; PYTHONPATH includes task folder"
+    },
+    {
+      "command": "git diff --check 63016d096441aa33d6fc1905ecaf969b7a5f9931 HEAD",
+      "exit": 0
+    },
+    {
+      "command": "git push -u origin lane/M-AG2/AG2-C07-HOOK-CONTRACT-R2",
+      "exit": 0
+    },
+    {
+      "command": "git ls-remote --heads origin refs/heads/lane/M-AG2/AG2-C07-HOOK-CONTRACT-R2",
+      "exit": 0,
+      "result": "e3dfe8e90e56916c928ab83babb4be6eab417989"
+    }
+  ],
+  "outcomes": {
+    "count": 273,
+    "passed": 272,
+    "failed": 1,
+    "skipped": 0,
+    "deselected": 0,
+    "node_inventory": "NODE-OUTCOMES.json",
+    "method": "Collection node IDs matched against full-run failure summary; all remaining cases passed according to the 272-pass summary.",
+    "failed_node_ids": [
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph"
+    ]
+  },
+  "artifacts_sha256": {
+    "pytest-focused.log": "ad2d942e94367c955355485899b8a492d4bd0887acaaa422887ef36db633af6a",
+    "pytest-focused.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "pytest-collect.log": "56e270aa26f67219042e40fa23899ddf8b6d9432517181ac6e06bae0f696f422",
+    "pytest-collect.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "NODE-OUTCOMES.json": "e2c257dc1f09ba520ecbf93ca3a649bba25d0e1534c8b7b8b2796d2030194efd",
+    "binding_probe.py": "d90171dbaa59b0e84846a131acd1c88095ad3d1c8ca767396538d12e81b0798f",
+    "binding-probe.log": "33590ebec048374bb82bd3e77cd3fbbbeabdc87abfa8e48218e523253909e5b3",
+    "binding-probe.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "patch.diff": "eca4e9eff3472c20f6f45eb03162267dfe795b4e0c864b869e61f9ef5f902262",
+    "SCOPE-AUDIT.md": "e595e1372407322e4af8dd11d99634168da0e1856f9f1e61ef269b31d466c1a9",
+    "environment-freeze.txt": "e3baa976f6677d3dcb91a1430e6ac04b60fbde1de969a9c900c3165cf5dc9c66"
+  },
+  "limitations": [
+    "Exact-head full module is red; no handoff or integration claim.",
+    "The real host constructs source_digest from source_revision, a workflow-derived execution identity rather than the profile residency digest, and a positive claim epoch; the attached hook verifies content digest, residency digest, and no epoch. Probe passes the real binding unchanged.",
+    "The host creates the attached hook without a managed host handle; its current release returns an unsuccessful typed result, so the existing successful CPU replacement expectation also conflicts with fail-closed behavior after any binding repair.",
+    "Some existing transport-fault cases may fail closed before reaching injected HTTP faults.",
+    "No hosted shards or other modules were run. Python 3.13.18 differs from hosted Python 3.11."
+  ]
+}

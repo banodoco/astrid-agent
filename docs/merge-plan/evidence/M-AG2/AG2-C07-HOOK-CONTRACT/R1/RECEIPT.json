@@ -1,0 +1,106 @@
+{
+  "task": "AG2-C07-HOOK-CONTRACT-R1",
+  "status": "incomplete_exact_head_module_red",
+  "integration_handoff": "not made: exact-head proof is not green",
+  "repository": "https://github.com/banodoco/astrid-agent",
+  "base": "80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+  "head": "63016d096441aa33d6fc1905ecaf969b7a5f9931",
+  "branch": "lane/M-AG2/AG2-C07-HOOK-CONTRACT-R1",
+  "remote_verified_head": "63016d096441aa33d6fc1905ecaf969b7a5f9931",
+  "published_tuple": {
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247"
+  },
+  "input_sha256": {
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-SHARD-FIX-R1/REPORT.md": "f7eb3c1d19850bb3e25213cb5f2ed2646d3a4815c8f9dab5c8899da22384c065",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-SHARD-FIX-R1/pytest-editable.log": "aab16fa2acd57e06f457b157823ba87b6c323bcff9db1e3a4f568a07c69abb4d",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-SHARD-FIX-R1/FAILED-NODE-IDS.txt": "a1da96a55e662032a27c64c03a1e23e57165851d9e2ed7bf657e38c22e5a3b67",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-SHARD-FAILURE-DIAG/REPORT.md": "2c71eb3e8dee9593e92b5abcd54202a6ec55c7071ee1f64bd38f1522f0dd8dec"
+  },
+  "scope": {
+    "changed_paths": [
+      "tests/core/execution/test_generic_host_actions_v3.py"
+    ],
+    "diff_stat": "1 file changed, 61 insertions(+), 33 deletions(-)",
+    "diff_check_exit": 0,
+    "working_tree_clean": true,
+    "test_file_sha256": "0ad8db3527f1d874e15ee30129b8b014b8984355b83741bbee805c901ef32075"
+  },
+  "environment": {
+    "python": "3.13.18",
+    "pytest": "9.0.2",
+    "runtime_checkout": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "vibecomfy_checkout": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+    "runtime_and_vibecomfy": "editable installations in task-local venv",
+    "exports": {
+      "PATH": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R1/venv/bin:$PATH",
+      "ASTRID_RUNTIME_CHECKOUT": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R1/runtime",
+      "ASTRID_VIBECOMFY_CHECKOUT": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R1/vibecomfy",
+      "TMPDIR": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R1"
+    }
+  },
+  "commands": [
+    {
+      "command": "/home/user/merge/kit/codex/task-clone.sh astrid-agent /home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOOK-CONTRACT-R1/agent 80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd",
+      "exit": 0
+    },
+    {
+      "command": "python -m pytest --collect-only -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "exit": 0,
+      "collected": 268,
+      "log": "pytest-collect.log"
+    },
+    {
+      "command": "python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "head": "63016d096441aa33d6fc1905ecaf969b7a5f9931",
+      "inner_exit": 1,
+      "result": "1 failed, 267 passed in 273.67s",
+      "log": "pytest-focused.log",
+      "no_maxfail_or_x": true
+    },
+    {
+      "command": "git diff --check 80fb5c1eaa20ce5d3d9117d880d2074068c8e1fd HEAD",
+      "exit": 0
+    },
+    {
+      "command": "git push -u origin lane/M-AG2/AG2-C07-HOOK-CONTRACT-R1",
+      "exit": 0
+    },
+    {
+      "command": "git ls-remote --heads origin refs/heads/lane/M-AG2/AG2-C07-HOOK-CONTRACT-R1",
+      "exit": 0,
+      "result": "63016d096441aa33d6fc1905ecaf969b7a5f9931"
+    }
+  ],
+  "outcomes": {
+    "count": 268,
+    "passed": 267,
+    "failed": 1,
+    "skipped": 0,
+    "deselected": 0,
+    "node_inventory": "NODE-OUTCOMES.json",
+    "method": "Collection node IDs matched to full-run failure summary; all other collected cases passed according to the 267-pass summary.",
+    "failed_node_ids": [
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph"
+    ]
+  },
+  "artifacts_sha256": {
+    "patch.diff": "08c634e33a7dd415744187878c782b7bcf53965e8e1f61eee64b79e53230d798",
+    "SCOPE-AUDIT.md": "1cfe4d9cd9526c7f07bbe0deebbe5f3b12ec73c308a56427415f674c7369c877",
+    "pytest-focused.log": "efe599454b109651b4239004ddd21aaaaf28655f2bffd38ef94ad5db28749f7d",
+    "pytest-focused.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "pytest-collect.log": "8a54dded87b2f177af4313d354c1c13160e5146c422b89564919d3778265d164",
+    "pytest-collect.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "NODE-OUTCOMES.json": "eeed8951690204cb98f976150af5c16523e4c54b14e788c7dc74a8df83e2ef7c",
+    "binding-diagnostic.log": "fa6809e4131310498a62ef22d4389fc3aa9578f47f7744727b05f65b9b208bf2",
+    "pytest-sdk.log": "71e54db7b9116422a0c96fd3c00a0d93a9bd78e9104afa7b85ebf33262085975",
+    "pytest-sdk2.log": "6b84452b9fc878a1d884bff80565161c24be357f73c24dcf139ac1c6a891bdb6"
+  },
+  "limitations": [
+    "Exact-head module is not green; do not integrate or issue a handoff.",
+    "Real host assembles source_digest from source_revision and supplies runtime_epoch; attached hook requires source_content_digest and rejects a non-null runtime_epoch. Both changes are outside test-only scope.",
+    "No hosted shard or other modules were run. Python 3.13.18 differs from hosted Python 3.11.",
+    "Unmodified transport-fault cases can stop at the hook refusal before exercising configured HTTP faults."
+  ]
+}
