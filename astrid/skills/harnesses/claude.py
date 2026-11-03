@@ -56,7 +56,8 @@ class ClaudeAdapter(HarnessAdapter):
             target = self.target_for(descriptor)
             if action == "install":
                 try:
-                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=opts.get("mechanism", "symlink"))
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=opts.get("mechanism", "symlink"),
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
                     continue
@@ -68,7 +69,12 @@ class ClaudeAdapter(HarnessAdapter):
                     )
                 )
             else:
-                changed = remove_symlink(target)
+                try:
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                        *opts.get("owned_sources", {}).get(target, ())))
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("removed" if changed else "absent") + f" {target}",

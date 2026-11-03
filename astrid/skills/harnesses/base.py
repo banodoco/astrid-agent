@@ -130,49 +130,27 @@ def ours_link_to_pack_id(link_name: str) -> str | None:
 
 
 def prune_orphan_skill_links(
-    skills_dir: Path, known_pack_ids: set[str], *, owned_targets: set[Path] | None = None,
+    skills_dir: Path, known_pack_ids: set[str], *,
+    owned_sources: dict[Path, set[Path]] | None = None,
+    declared_sources: Iterable[Path] = (),
+    conflicts: list[PlannedStep] | None = None,
 ) -> list[Path]:
-    """Remove ``astrid-*`` symlinks whose pack id is not in *known_pack_ids*.
-
-    Only our own symlinks are considered, and only symlinks are removed; a
-    foreign entry or a real (non-symlink) file/dir is never touched. The
-    gateway ``astrid`` link is never pruned here (it is always re-linked).
-    Returns the list of removed link paths.
-    """
+    """Prune vanished units only when their current entry has ownership proof."""
     removed: list[Path] = []
     if not skills_dir.is_dir():
         return removed
     for entry in sorted(skills_dir.iterdir()):
-        name = entry.name
-        if name == "astrid" or not name.startswith("astrid-"):
+        pack_id = ours_link_to_pack_id(entry.name)
+        if pack_id is None or pack_id == "_core" or pack_id in known_pack_ids:
             continue
-        if not entry.is_symlink() and not is_managed_copy(entry):
+        try:
+            changed = remove_symlink(entry, sources=(*declared_sources, *(owned_sources or {}).get(entry, ())))
+        except AstridError as exc:
+            if conflicts is not None:
+                conflicts.append(PlannedStep(str(exc), target=entry,
+                    extras={"changed": False, "conflict": str(exc)}))
             continue
-        pack_id = ours_link_to_pack_id(name)
-        if pack_id is not None and pack_id not in known_pack_ids:
-            if is_managed_copy(entry):
-                shutil.rmtree(entry)
-            else:
-                try:
-                    linked = entry.resolve(strict=True)
-                except OSError:
-                    # A stale install record is useful only when the current
-                    # link still names that recorded pack. An unrelated or
-                    # unresolved user link at the same path remains untouched.
-                    unresolved = entry.readlink()
-                    unresolved = unresolved if unresolved.is_absolute() else entry.parent / unresolved
-                    recorded_target = any(
-                        entry == target or entry.resolve(strict=False) == target.resolve(strict=False)
-                        for target in (owned_targets or set())
-                    )
-                    if not recorded_target or pack_id not in unresolved.parts:
-                        continue
-                    entry.unlink()
-                    removed.append(entry)
-                    continue
-                if "astrid" not in linked.parts and entry not in (owned_targets or set()):
-                    continue
-                entry.unlink()
+        if changed:
             removed.append(entry)
     return removed
 
@@ -230,13 +208,46 @@ def target_mechanism(target: Path, default: str = "symlink") -> str:
     return "copy" if is_managed_copy(target) else default
 
 
-def ensure_symlink(target: Path, source: Path, *, force: bool = False, mechanism: str = "symlink") -> bool:
-    """Create a symlink to ``source``, falling back to a managed directory copy."""
-    # Returns True if the FS state changed, False if already correct.
-    target.parent.mkdir(parents=True, exist_ok=True)
-    source_resolved = source.resolve()
+def _resolved(path: Path) -> Path | None:
+    try:
+        # Missing declared sources still identify owned broken links. Do not
+        # use strict=True or infer ownership from the destination's spelling.
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+
+def require_owned_target(target: Path, sources: Iterable[Path] = ()) -> None:
+    """Refuse replacement/removal without evidence about the current entry.
+
+    A record of the destination alone is insufficient after retargeting. An
+    intact copy marker proves its bytes even if its source has since changed.
+    """
+    if target.is_symlink():
+        linked = _resolved(target)
+        if linked is not None and any(linked == _resolved(source) for source in sources):
+            return
+        raise AstridError(f"Foreign skill link preserved (target not confirmed Astrid-owned): {target}")
+    if edited_managed_copy(target):
+        raise AstridError(f"Edited Astrid managed copy preserved: {target}")
+    if is_managed_copy(target):
+        return
+    if target.exists():
+        raise AstridError(f"Skill target is occupied by a foreign entry; preserved: {target}")
+
+
+def ensure_symlink(
+    target: Path, source: Path, *, force: bool = False, mechanism: str = "symlink",
+    owned_sources: Iterable[Path] = (),
+) -> bool:
+    """Create a link/copy, replacing only an entry with exact ownership proof.
+
+    ``force`` is retained for CLI compatibility; it cannot grant ownership.
+    """
     if mechanism not in {"symlink", "copy"}:
         raise ValueError(f"Unknown skill mechanism: {mechanism}")
+    source_resolved = source.resolve()
+    require_owned_target(target, (source_resolved, *owned_sources))
     if is_managed_copy(target, source_resolved):
         mode = _managed_copy_mode(target)
         if mechanism == "copy":
@@ -248,83 +259,41 @@ def ensure_symlink(target: Path, source: Path, *, force: bool = False, mechanism
             return False
         if mode != "copy":  # Keep an existing symlink fallback stable.
             return False
-    if edited_managed_copy(target):
-        raise AstridError(f"Edited Astrid managed copy preserved: {target}")
-    if mechanism == "copy":
-        if target.is_symlink():
-            try:
-                linked = target.resolve(strict=True)
-                if linked != source_resolved and "astrid" not in linked.parts:
-                    raise AstridError(f"Foreign skill link preserved: {target}")
-            except OSError:
-                raise AstridError(f"Foreign skill link preserved: {target}") from None
-            target.unlink()
-        elif target.exists() and not is_managed_copy(target):
-            if not force:
-                raise AstridError(f"Skill target is occupied by a foreign entry: {target}")
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-        if target.exists() or target.is_symlink():
-            shutil.rmtree(target) if target.is_dir() and not target.is_symlink() else target.unlink()
-        shutil.copytree(source_resolved, target)
-        (target / _COPY_MARKER).write_text(
-            json.dumps({"source": str(source_resolved), "digest": _directory_digest(source_resolved),
-                        "mechanism": "copy"}, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        return True
+    if mechanism == "symlink" and target.is_symlink() and _resolved(target) == source_resolved:
+        return False
     if target.is_symlink():
-        try:
-            existing = Path(target).resolve()
-        except OSError:
-            existing = None
-        if existing == source_resolved:
-            return False
-        if existing is None or "astrid" not in existing.parts:
-            raise AstridError(f"Foreign skill link preserved: {target}")
         target.unlink()
     elif is_managed_copy(target):
         shutil.rmtree(target)
-    elif target.exists():
-        if not force:
-            raise AstridError(
-                f"{target} exists and is not a symlink",
-                recovery_command="re-run with --force to replace it",
-            )
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-    try:
-        target.symlink_to(source_resolved, target_is_directory=source_resolved.is_dir())
-    except (OSError, NotImplementedError) as exc:
-        fallback_errors = {errno.EPERM, errno.EACCES, errno.ENOSYS, errno.EOPNOTSUPP}
-        if isinstance(exc, OSError) and exc.errno not in fallback_errors and getattr(exc, "winerror", None) != 1314:
-            raise
-        shutil.copytree(source_resolved, target)
-        (target / _COPY_MARKER).write_text(
-            json.dumps(
-                {"source": str(source_resolved), "digest": _directory_digest(source_resolved),
-                 "mechanism": "symlink-fallback"},
-                sort_keys=True,
-            ) + "\n",
-            encoding="utf-8",
-        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    copy_mode = "copy"
+    if mechanism == "symlink":
+        try:
+            target.symlink_to(source_resolved, target_is_directory=source_resolved.is_dir())
+            return True
+        except (OSError, NotImplementedError) as exc:
+            fallback_errors = {errno.EPERM, errno.EACCES, errno.ENOSYS, errno.EOPNOTSUPP}
+            if isinstance(exc, OSError) and exc.errno not in fallback_errors and getattr(exc, "winerror", None) != 1314:
+                raise
+            copy_mode = "symlink-fallback"
+    shutil.copytree(source_resolved, target)
+    (target / _COPY_MARKER).write_text(
+        json.dumps({"source": str(source_resolved), "digest": _directory_digest(source_resolved),
+                    "mechanism": copy_mode}, sort_keys=True) + "\n", encoding="utf-8",
+    )
     return True
 
 
-def remove_symlink(target: Path) -> bool:
+def remove_symlink(target: Path, *, sources: Iterable[Path] = (), dry_run: bool = False) -> bool:
+    require_owned_target(target, sources)
     if target.is_symlink():
-        target.unlink()
+        if not dry_run:
+            target.unlink()
         return True
     if is_managed_copy(target):
-        shutil.rmtree(target)
+        if not dry_run:
+            shutil.rmtree(target)
         return True
-    if target.exists():
-        # Refuse to remove a non-symlink we didn't create.
-        return False
     return False
 
 

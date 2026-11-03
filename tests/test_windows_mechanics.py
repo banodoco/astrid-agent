@@ -51,13 +51,19 @@ def test_skill_install_falls_back_to_a_managed_copy_and_removes_it(tmp_path, mon
     assert not target.exists()
 
 
-def test_skill_cleanup_still_removes_legacy_symlinks(tmp_path, monkeypatch):
+def test_skill_cleanup_still_removes_legacy_symlinks(tmp_path):
+    source = tmp_path / "declared-skill"
+    source.mkdir()
     target = tmp_path / "skills" / "astrid-demo"
-    removed = []
-    monkeypatch.setattr(Path, "is_symlink", lambda self: self == target)
-    monkeypatch.setattr(Path, "unlink", lambda self: removed.append(self))
-    assert skill_base.remove_symlink(target)
-    assert removed == [target]
+    target.parent.mkdir()
+    target.symlink_to(source)
+    assert skill_base.remove_symlink(target, sources=[source])
+    assert not target.is_symlink()
+    target.symlink_to(tmp_path / "foreign/astrid/demo")
+    from astrid.core.contracts.errors import AstridError
+    with pytest.raises(AstridError, match="preserved"):
+        skill_base.remove_symlink(target, sources=[source])
+    assert target.is_symlink()
 
 
 def test_windows_sharing_violation_retries_replace(monkeypatch, tmp_path):

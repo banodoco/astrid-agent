@@ -93,7 +93,8 @@ class HermesAdapter(HarnessAdapter):
             target = self.target_for(descriptor)
             if action == "install":
                 try:
-                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=mechanism)
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=mechanism,
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
                     continue
@@ -105,7 +106,12 @@ class HermesAdapter(HarnessAdapter):
                     )
                 )
             else:
-                changed = remove_symlink(target)
+                try:
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                        *opts.get("owned_sources", {}).get(target, ())))
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("removed" if changed else "absent") + f" {target}",
@@ -133,7 +139,8 @@ class HermesAdapter(HarnessAdapter):
         target = self.target_for(descriptor)
         if managed_target_matches(target, descriptor.skill_dir):
             mechanism = target_mechanism(target)
-            return InstallRecord(pack_id=descriptor.pack_id, target=target, mechanism=mechanism)
+            return InstallRecord(pack_id=descriptor.pack_id, target=target, mechanism=mechanism,
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
         # external-dir mechanism: packs dir registered in config.yaml
         if self.config_path.exists():
             cfg = self._load_config()

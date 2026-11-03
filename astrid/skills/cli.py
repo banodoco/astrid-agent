@@ -388,13 +388,21 @@ def _emit_report(report: dict[str, Any], args: argparse.Namespace) -> int:
         return 0
     for action in report["actions"]:
         print(f"[{action['harness']}]")
-        for step in action["steps"]:
+        for step in action.get("steps", []):
             print(f"  {step['description']}")
+        for key in ("removed", "preserved"):
+            for path in action.get(key, []):
+                print(f"  {key}: {path}")
         for key in ("outdated", "changed"):
             if key in action:
                 print(f"  {key}: {', '.join(action[key]) or '(none)'}")
         if action.get("visibility"):
             print(f"  {action['visibility']}")
+    for row in report.get("conflicts", []):
+        print(f"  conflict [{row['harness']}]: {row.get('path', '')}: {row['reason']}")
+    for row in report.get("ambiguous", []):
+        if row not in report.get("conflicts", []):
+            print(f"  preserved [{row['harness']}]: {row.get('path', '')}: {row['reason']}")
     return 0
 
 

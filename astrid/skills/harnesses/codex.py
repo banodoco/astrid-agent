@@ -67,11 +67,13 @@ class CodexAdapter(HarnessAdapter):
         force = bool(opts.get("force"))
         all_after: list[SkillDescriptor] = list(opts.get("all_after_descriptors") or [])
         steps: list[PlannedStep] = []
+        retained = []
         for descriptor in descriptors:
             target = self.target_for(descriptor)
             if action == "install":
                 try:
-                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=opts.get("mechanism", "symlink"))
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=opts.get("mechanism", "symlink"),
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
                     continue
@@ -83,7 +85,14 @@ class CodexAdapter(HarnessAdapter):
                     )
                 )
             else:
-                changed = remove_symlink(target)
+                try:
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                        *opts.get("owned_sources", {}).get(target, ())))
+                except AstridError as exc:
+                    if action == "uninstall":
+                        retained.append(descriptor)
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("removed" if changed else "absent") + f" {target}",
@@ -92,7 +101,7 @@ class CodexAdapter(HarnessAdapter):
                     )
                 )
         # AGENTS.md reflects the FINAL set of installed descriptors.
-        block_changed = self._rewrite_agents_md(all_after)
+        block_changed = self._rewrite_agents_md([*all_after, *retained])
         steps.append(
             PlannedStep(
                 description=("rewrote" if block_changed else "block unchanged") + f" {self.agents_md}",
@@ -126,14 +135,14 @@ class CodexAdapter(HarnessAdapter):
             mechanism=target_mechanism(target),
         )
 
-    def _rewrite_agents_md(self, descriptors: list[SkillDescriptor]) -> bool:
-        block = self._render_block(descriptors)
-        existing = self.agents_md.read_text(encoding="utf-8") if self.agents_md.exists() else ""
+    def _rewrite_agents_md(self, descriptors: list[SkillDescriptor], *, remove: bool = False) -> bool:
+        block = "" if remove else self._render_block(descriptors)
+        existing = self.agents_md.read_bytes().decode("utf-8") if self.agents_md.exists() else ""
         updated = self._merge_block(existing, block)
         if updated == existing:
             return False
         self.agents_md.parent.mkdir(parents=True, exist_ok=True)
-        self.agents_md.write_text(updated, encoding="utf-8")
+        self.agents_md.write_bytes(updated.encode("utf-8"))
         return True
 
     def _render_block(self, descriptors: list[SkillDescriptor]) -> str:
@@ -151,10 +160,12 @@ class CodexAdapter(HarnessAdapter):
 
     @staticmethod
     def _merge_block(existing: str, block: str) -> str:
-        if BEGIN_MARKER in existing and END_MARKER in existing:
-            before, _, rest = existing.partition(BEGIN_MARKER)
-            _, _, after = rest.partition(END_MARKER)
-            return f"{before}{block}{after}"
+        start = existing.find(BEGIN_MARKER)
+        end = existing.find(END_MARKER, start + len(BEGIN_MARKER)) if start >= 0 else -1
+        if start >= 0 and end >= 0:
+            return existing[:start] + block + existing[end + len(END_MARKER):]
+        if not block:
+            return existing
         if not existing:
             return block + "\n"
         suffix = "" if existing.endswith("\n") else "\n"
