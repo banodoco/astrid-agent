@@ -206,7 +206,7 @@ def _assert_resolved(case, state):
     assert len(case.executions) == 1
 
 
-def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case):
+def test_rejected_settlement_retains_and_replays_frozen_intent(settlement_case):
     case = settlement_case
     # The same project already owns this digest. Corrupt its stored bytes at
     # that digest, preserving size, so Runtime must reject actual conflicting
@@ -220,22 +220,29 @@ def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case
     cas_path.write_bytes(corrupt)
     with pytest.raises(RuntimeError, match="CAS object hash or size does not match staged metadata"):
         _run(case)
-    _assert_resolved(case, "failed")
-    assert len(case.writes) == len(case.failures) == 1
-    assert not case.cancels and not case.service.managed_outputs(case.task_id)
-    attempt_id, body, key = case.failures[0]
+    owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
+    assert owner.is_alive()
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+    assert not case.failures and not case.cancels and not case.service.managed_outputs(case.task_id)
+    assert case.writes and all(write == case.writes[0] for write in case.writes)
+    attempt_id, body, key = case.writes[0]
     assert attempt_id == case.attempt["attempt_id"]
-    assert key == f"fail-{attempt_id}-{case.attempt['fence']}"
     assert {k: body[k] for k in ("lease_id", "fence", "runtime_epoch")} == {
         k: case.attempt[k] for k in ("lease_id", "fence", "runtime_epoch")}
-    assert "outputs" not in body and "result" not in body
-    assert body["error"]["code"] == "publication_rejected"
-    assert "CAS object hash or size does not match staged metadata" in body["error"]["message"]
     assert case.root.exists() and (case.root / "outputs/manifest.json").exists()
     assert case.host.last_cleanup_receipt["intended_disposition"] == "retained"
     request = json.loads((case.root / "settle-request.json").read_text())
-    assert request == {"operation": "settle_attempt", "identifier": case.writes[0][0],
-                       "idempotency_key": case.writes[0][2], "body": case.writes[0][1]}
+    assert request == {"operation": "settle_attempt", "identifier": attempt_id,
+                       "idempotency_key": key, "body": body}
+    # Repair the test's corrupt CAS bytes: only the original settlement can
+    # now succeed, proving that rejection retained a replayable request.
+    cas_path.write_bytes(source)
+    owner.join(timeout=3)
+    assert not owner.is_alive()
+    _assert_resolved(case, "completed")
+    assert all(write == case.writes[0] for write in case.writes)
+    assert not case.failures and not case.cancels
+    assert len(case.service.managed_outputs(case.task_id)) == 2
 
 
 def test_conflicting_uploaded_metadata_fails_before_publication(settlement_case):
@@ -366,22 +373,27 @@ def test_lost_ack_with_delayed_readback_retains_owner_without_duplicate_outputs(
     assert not case.failures and not case.cancels
 
 
-def test_bounded_reconciliation_explicitly_cancels_before_renewal_stops(settlement_case, monkeypatch):
+def test_reconciliation_past_deadline_keeps_exact_request(settlement_case, monkeypatch):
     case = settlement_case
     case.mode = "outage"
     monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_SECONDS", 0.1, raising=False)
     with pytest.raises(OSError, match="ACK unavailable"):
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
+    time.sleep(0.3)
+    assert owner.is_alive() and case.root.exists()
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+    assert not case.failures and not case.cancels
+    assert all(write == case.writes[0] for write in case.writes)
+    case.release.set()
     owner.join(timeout=3)
-    _assert_resolved(case, "cancelled")
-    assert not case.failures and len(case.cancels) == 1
-    assert case.cancels[0][1]["stop_observed"] is True
-    assert case.cancels[0][1]["outputs"] == []
-    assert case.root.exists()
+    assert not owner.is_alive()
+    _assert_resolved(case, "completed")
+    assert not case.failures and not case.cancels
+    assert all(write == case.writes[0] for write in case.writes)
 
 
-def test_expired_reconciliation_cedes_exact_owner_without_evidence(settlement_case, monkeypatch):
+def test_expired_reconciliation_never_changes_terminal_intent(settlement_case, monkeypatch):
     case = settlement_case
     case.mode = "outage"
     monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_SECONDS", 0.1, raising=False)
@@ -393,13 +405,19 @@ def test_expired_reconciliation_cedes_exact_owner_without_evidence(settlement_ca
         for table, identity in (("tasks", case.task_id), ("attempts", case.attempt["attempt_id"])):
             case.service.store.conn.execute(f"UPDATE {table} SET lease_expires_at=? WHERE id=?", (past, identity))
         case.service.store.conn.execute("UPDATE reservations SET lease_expires_at=? WHERE task_id=?", (past, case.task_id))
+    time.sleep(0.3)
+    assert owner.is_alive() and case.root.exists()
+    assert case.service.task(case.task_id)["task"]["status"] == "running"
+    assert not case.failures and not case.cancels
+    assert all(write == case.writes[0] for write in case.writes)
+    # Runtime can independently transfer custody after expiry; observe that
+    # change without issuing a replacement terminal operation from the host.
+    with case.service.store._mutex:
+        case.service.store.conn.execute("UPDATE tasks SET attempt_id=? WHERE id=?", ("new-owner", case.task_id))
     owner.join(timeout=3)
     assert not owner.is_alive()
-    _assert_resolved(case, "failed")
-    assert len(case.failures) == 1
-    body = case.failures[0][1]
-    assert "outputs" not in body and "result" not in body
-    assert body["error"]["code"] == "reconciliation_required"
+    assert not case.failures and not case.cancels
+    assert case.host._handoff_active_attempts == 0
 
 
 def test_reconciliation_keeps_parallel_coordinator_custody_counted(settlement_case, monkeypatch):

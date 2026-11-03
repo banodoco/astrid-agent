@@ -1,6 +1,7 @@
 """G28 exercises the real host attempt boundary with short, deterministic faults."""
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -112,6 +113,11 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     started = time.monotonic()
     with pytest.raises(AttributeError if fault == "normalized_attributes" else (OSError, HostError)):
         case.host.run_task(case.task, lease_token="lease-result")
+    if fault == "failure_rpc":
+        owner = case.host._reconciliation_owners.get("attempt-result")
+        if owner is not None:
+            owner.join(timeout=3)
+            assert not owner.is_alive()
     assert_failed(case, started)
     assert len(case.runtime.failures) == 1
     binding = case.runtime.failures[0][3]
@@ -275,9 +281,14 @@ def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, m
 
         monkeypatch.setattr(case.host, "_allocate_attempt_root", capture_root)
 
+    release = threading.Event()
+    original_cancel = case.runtime.cancel
+
     def cancel(task_id, **kwargs):
-        attempts.append((task_id, kwargs))
-        raise error
+        attempts.append((task_id, copy.deepcopy(kwargs)))
+        if not release.is_set():
+            raise error
+        return original_cancel(task_id, **kwargs)
 
     monkeypatch.setattr(case.runtime, "cancel", cancel)
 
@@ -290,16 +301,26 @@ def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, m
     with pytest.raises(OSError, match="Runtime cancel transport failed") as raised:
         case.host.run_task(case.task, lease_token="lease-result")
 
-    assert raised.value is error
-    assert len(attempts) == 1
-    assert attempts[0][1]["result"]["status"] == "cancelled"
-    assert captured["terminal"]["evidence_pending"] is True
-    assert not captured["terminal"].get("recorded")
+    owner = case.host._reconciliation_owners["attempt-result"]
+    try:
+        assert raised.value is error
+        assert owner.is_alive() and attempts
+        assert all(attempt == attempts[0] for attempt in attempts)
+        assert attempts[0][1]["result"]["status"] == "cancelled"
+        assert captured["terminal"]["evidence_pending"] is True
+        assert not captured["terminal"].get("recorded")
+        assert not case.runtime.failures
+        cleanup = case.host.last_cleanup_receipt
+        assert cleanup["intended_disposition"] == ("caller_owned" if caller_owned else "retained")
+        assert case.root.exists()
+        assert receipt(case)["publication"]["status"] == "not_settled"
+    finally:
+        release.set()
+        owner.join(timeout=3)
+    assert not owner.is_alive()
+    assert all(attempt == attempts[0] for attempt in attempts)
     assert not case.runtime.failures
-    cleanup = case.host.last_cleanup_receipt
-    assert cleanup["intended_disposition"] == ("caller_owned" if caller_owned else "retained")
-    assert case.root.exists()
-    assert receipt(case)["publication"]["status"] == "not_settled"
+    assert case.task["task"]["status"] == "cancelled"
 
 
 @pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "fence", "heartbeat", "expired", "resource_expired",
@@ -862,6 +883,35 @@ def lease_clock(case, monkeypatch):
 
     clock.run = run
     return clock
+
+
+def test_terminal_gate_freezes_operation_and_arguments_after_lost_ack(case, lease_clock, monkeypatch):
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append((args, copy.deepcopy(kwargs)))
+        if len(calls) == 1:
+            raise OSError("lost acknowledgement")
+        return {"accepted": True}
+
+    monkeypatch.setattr(case.runtime, "fail", fail)
+    def exercise(terminal):
+        call = terminal["completion_call"]
+        evidence = {"code": "original"}
+        with pytest.raises(OSError, match="lost acknowledgement"):
+            call(fail, "task-result", "lease-result", structured_error=evidence)
+        evidence["code"] = "changed"
+        with pytest.raises(HostError, match="intent is already frozen"):
+            call(fail, "task-result", "lease-result", structured_error=evidence)
+        with pytest.raises(HostError, match="intent is already frozen"):
+            call(case.runtime.settle, "task-result", "lease-result")
+        assert len(calls) == 1 and not case.runtime.settlements
+        assert call(fail, "task-result", "lease-result", structured_error={"code": "original"}) == {"accepted": True}
+        assert calls[0] == calls[1]
+        with pytest.raises(HostError, match="intent is already frozen"):
+            call(case.runtime.cancel, "task-result")
+        assert len(calls) == 2
+    lease_clock.run(before=exercise)
 
 
 def test_silent_owner_renews_across_multiple_ttls_without_progress_credit(case, lease_clock):

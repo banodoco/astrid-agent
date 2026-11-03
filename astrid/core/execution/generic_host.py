@@ -5572,8 +5572,9 @@ class RuntimeProtocolClient:
                     except Exception:
                         pass
                 # A transport failure (including a lost ACK) says nothing
-                # about commit. Only a validation/conflict response AND a
-                # read of this same nonterminal owner permit a fenced failure.
+                # about commit. A validation/conflict response plus a read
+                # of this nonterminal owner identifies a rejected request;
+                # the host must still retain the same terminal intent.
                 if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
                     try:
                         task = self.task(task_id)
@@ -10563,31 +10564,43 @@ class GenericPackHost:
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
+                if isinstance(self.client, RuntimeProtocolClient):
+                    request_names = {self.client.settle: "settle-request.json", self.client.fail: "fail-request.json",
+                                     self.client.cancel: "cancel-request.json"}
+                    if operation in request_names:
+                        kwargs["request_path"] = terminal["root"] / request_names[operation]
+                frozen = terminal.get("publication_call")
+                if frozen is None:
+                    frozen = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
+                    terminal["publication_call"] = frozen
+                elif (operation, args, kwargs) != frozen:
+                    raise HostError("terminal publication intent is already frozen")
                 if terminal.get("recorded"):
                     return terminal.get("completion")
-                if operation in (self.client.settle, self.client.fail):
-                    # Publish the frozen call under the same lock as the guard:
-                    # an in-flight request may already have committed.
-                    if isinstance(self.client, RuntimeProtocolClient):
-                        kwargs["request_path"] = terminal["root"] / (
-                            "settle-request.json" if operation == self.client.settle else "fail-request.json")
-                    terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
-                    terminal["completion_state"] = "in_flight"
+                # Dispatch a copy of the frozen request so callers cannot alter
+                # the intent while a transport or later replay is in progress.
+                operation, args, kwargs = frozen[0], copy.deepcopy(frozen[1]), copy.deepcopy(frozen[2])
+                terminal["completion_state"] = "in_flight"
+                terminal.update(evidence_pending=True, publication_pending=True)
+                terminal.setdefault("pending_status", "succeeded" if operation == self.client.settle
+                                    else "cancelled" if operation == getattr(self.client, "cancel", None)
+                                    else "failed")
             try:
                 result = self._handoff_settlement_call(operation, *args, **kwargs)
             except BaseException:
                 with completion_lock:
-                    if (operation == self.client.settle
-                            and terminal.get("completion_state") == "in_flight"
+                    if (terminal.get("completion_state") == "in_flight"
                             and not terminal.get("recorded")):
-                        # Do not race a possibly committed settlement. The
-                        # reconciliation owner retains the frozen request.
+                        # Any terminal request may already have committed.
+                        # The reconciliation owner retains the frozen request.
                         terminal["completion_state"] = "unknown"
                 raise
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("settlement returned after the attempt was terminated")
                 terminal.update(recorded=True, completion=result, completion_state="acknowledged")
+                terminal.pop("evidence_pending", None)
+                terminal.pop("publication_pending", None)
             return result
 
         def lease_call(operation, *args, **kwargs):
@@ -10949,12 +10962,7 @@ class GenericPackHost:
                         lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
 
         def reconcile_publication():
-            """Own bounded exact replays, then request explicit fenced cancellation.
-
-            If Runtime cannot acknowledge cancellation, this owner stays live
-            and keeps trying. A local spool alone is never a custody transfer.
-            """
-            reconcile_deadline = time.monotonic() + _TERMINAL_RECONCILE_SECONDS
+            """Reconcile only the frozen terminal request until Runtime resolves it."""
             while not terminal.get("recorded"):
                 try:
                     current = self.client.task(str(data["id"]))
@@ -10970,58 +10978,15 @@ class GenericPackHost:
                                                 else state if state in {"failed", "cancelled"} else "failed"),
                                         settled=state in {"completed", "succeeded"}, settlement={"task": current})
                         break
-                    if (terminal.get("reconcile_cancel") or self._shutdown.is_set()
-                            or time.monotonic() >= reconcile_deadline):
-                        # The producer has returned and its task scope has
-                        # finished cleanup before this owner is installed.
-                        # Cancellation is the explicit Runtime custody handoff.
-                        cancel = getattr(self.client, "cancel", None)
-                        operation, args, kwargs = terminal["publication_call"]
-                        if operation == self.client.fail:
-                            # Preserve an already chosen failure verbatim,
-                            # including its key, even if its ACK was lost.
-                            response = self._handoff_settlement_call(operation, *args, **kwargs)
-                            terminal.update(recorded=True, completion=response, status="failed")
-                            break
-                        valid_until = terminal.get("lease_valid_until")
-                        expiry = field("lease_expires_at")
-                        observed_expired = (isinstance(expiry, str)
-                                            and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-                                            <= datetime.now(timezone.utc))
-                        if observed_expired or (valid_until is not None and time.monotonic() >= valid_until):
-                            # The pinned Runtime allows the exact owner to
-                            # cede expired custody only without outputs/result.
-                            completion_call(
-                                self.client.fail, str(data["id"]), lease_token,
-                                "terminal publication unresolved after lease expiry; owner cedes custody",
-                                retryable=False, attempt_id=exact_attempt, fence=exact_fence,
-                                structured_error={"code": "reconciliation_required"})
-                            terminal["status"] = "failed"
-                            break
-                        if callable(cancel):
-                            response = self._handoff_settlement_call(
-                                cancel, str(data["id"]), attempt_id=exact_attempt,
-                                fence=exact_fence, lease_id=lease_token,
-                                runtime_epoch=data.get("runtime_epoch"), outputs=[],
-                                result={"status": "cancelled", "error": {
-                                    "code": "reconciliation_required",
-                                    "message": "terminal publication acknowledgement remained unresolved"}},
-                                stop_observed=True,
-                                **({"request_path": terminal["root"] / "cancel-request.json"}
-                                   if isinstance(self.client, RuntimeProtocolClient) else {}))
-                            terminal.update(recorded=True, completion=response, status="cancelled")
-                            break
+                    operation, args, kwargs = terminal["publication_call"]
+                    try:
+                        response = completion_call(operation, *args, **kwargs)
+                    except TerminalPublicationRejected as exc:
+                        reject_publication(exc)
                     else:
-                        operation, args, kwargs = terminal["publication_call"]
-                        try:
-                            response = self._handoff_settlement_call(operation, *args, **kwargs)
-                        except TerminalPublicationRejected as exc:
-                            reject_publication(exc)
-                        else:
-                            terminal.update(recorded=True, completion=response,
-                                            status=terminal.get("pending_status", "succeeded"),
-                                            settled=terminal.get("pending_status") == "succeeded",
-                                            settlement=response)
+                        terminal.update(status=terminal.get("pending_status", "succeeded"),
+                                        settled=terminal.get("pending_status") == "succeeded",
+                                        settlement=response)
                 except Exception as exc:  # noqa: BLE001 - this owner must survive Runtime outages
                     terminal["reporting_error"] = exc
                 if not terminal.get("recorded"):
@@ -11035,25 +11000,10 @@ class GenericPackHost:
             self._write_task_result(terminal)
 
         def reject_publication(error):
-            # Keep the original success spool, but never attach its conflicting
-            # descriptors or success manifest to the failure mutation.
-            for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
-                terminal.pop(key, None)
+            # Even a definitive rejection cannot change the first terminal
+            # intent. Retain its request and evidence for exact reconciliation.
             terminal.update(retain_spool=True, error=error, evidence_pending=True,
-                            publication_pending=True, pending_status="failed")
-            try:
-                completion_call(
-                    self.client.fail, str(data["id"]), lease_token, str(error),
-                    retryable=False, attempt_id=exact_attempt, fence=exact_fence,
-                    structured_error={"code": "publication_rejected"},
-                    failure_diagnostic={"category": "publication_rejected", "message": str(error)})
-            except Exception:
-                # A lost failure ACK has the same owner and exact replay rule.
-                terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
-                raise
-            else:
-                terminal.pop("evidence_pending", None)
-                terminal.pop("publication_pending", None)
+                            publication_pending=True, completion_state="rejected")
 
         terminal["reject_publication"] = reject_publication
         pump_thread = None
