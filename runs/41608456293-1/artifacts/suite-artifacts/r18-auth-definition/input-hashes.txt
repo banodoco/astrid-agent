@@ -1,0 +1,2 @@
+e474578c0e4f8315c174c4a18bd4de5a7e02535c74972760a80e43f614239585  agent/tests/installer_auth_definition_venue.sh
+4c2bd12070330e3921284e4997f0531c3898072fd5d0d2be31e51e2cf626d377  agent/tests/installer_auth_definition_probe.py

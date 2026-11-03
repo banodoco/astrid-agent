@@ -1,0 +1,9 @@
+{
+  "agent_ref": "47fb140be5bd416314bf95fa7b8155c602f9fd13",
+  "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+  "artifact_paths": "suite-artifacts/**",
+  "command": "bash agent/tests/installer_auth_definition_venue.sh",
+  "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+  "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+  "slot": "6"
+}
