@@ -22,7 +22,7 @@ cleanup() {
     timeout 10s systemctl --user --no-pager --full status astrid.service > "$out/service-before-cleanup.txt" 2>&1 || true
     timeout 10s journalctl --user -u astrid.service --no-pager -n 300 > "$out/service-journal.txt" 2>&1 || true
     if [[ -d "$run_root" ]]; then
-      find "$run_root" -type f \( -name 'runtime-service.log' -o -name 'install.log' -o -name 'astrid-install.json' \) -print0 | while IFS= read -r -d '' file; do
+      timeout 20s find "$run_root" -maxdepth 8 -type f \( -name 'runtime-service.log' -o -name 'install.log' -o -name 'astrid-install.json' \) -print0 | head -z -n 8 | while IFS= read -r -d '' file; do
         name=$(printf '%s' "$file" | sha256sum | cut -c1-16)
         printf 'source=%s\n' "$file" > "$out/log-$name.txt"
         tail -c 1048576 "$file" >> "$out/log-$name.txt"
