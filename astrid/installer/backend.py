@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -113,6 +115,7 @@ class Backend:
         # retired. Keep that receipt local to this controller so an initial
         # unvalidated service definition still requires an ownership check.
         self._foreground_stop_retired = False
+        self._realm_upgrade_lock = None
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
@@ -160,6 +163,83 @@ class Backend:
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             self.say(f"Rendering unavailable: Remotion browser setup failed ({self._command_failure(exc)}). Check network access and retry the install.")
         return True
+
+    @contextlib.contextmanager
+    def realm_upgrade_lock(self, realm: dict, *, timeout: float = 120):
+        """Hold both Runtime admission and lifetime owner locks for an offline upgrade.
+
+        Callers must stop the native service first and must not start a Runtime
+        until this context has exited. Both locks refer to this directory's
+        current identity; replacing the directory requires separate custody.
+        """
+        from runtime_protocol.store import realm_admission_fence
+
+        if self._realm_upgrade_lock is not None:
+            raise RuntimeError("A realm upgrade lock is already held.")
+        root = absolute(realm["realm_root"])
+        deadline = time.monotonic() + max(0, timeout)
+        while True:
+            stack = contextlib.ExitStack()
+            try:
+                directory_fd = stack.enter_context(realm_admission_fence(root, blocking=False))
+                lock_path = root / "owner.lock"
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                stack.callback(os.close, fd)
+                opened = os.fstat(fd)
+                selected = os.stat(lock_path, follow_symlinks=False)
+                if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(selected.st_mode)
+                        or (opened.st_dev, opened.st_ino) != (selected.st_dev, selected.st_ino)):
+                    raise ValueError("The realm owner lock is not a stable regular file.")
+                platform.owner_only(fd)
+                platform.lock_file(fd, blocking=False)
+                stack.callback(platform.unlock_file, fd)
+            except BlockingIOError as exc:
+                stack.close()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("The workspace is still in use; the upgrade was refused.") from exc
+                time.sleep(min(0.1, remaining))
+                continue
+            except BaseException:
+                stack.close()
+                raise
+            break
+        try:
+            directory = os.fstat(directory_fd)
+            self._realm_upgrade_lock = (root, directory.st_dev, directory.st_ino)
+            yield
+        finally:
+            self._realm_upgrade_lock = None
+            stack.close()
+
+    def offline_realm_backup(self, data: Path, realm: dict) -> dict:
+        """Snapshot a stopped realm under its lock, without starting Runtime.
+
+        This snapshot is not yet accepted by restore: replacement of a realm
+        needs custody of the replacement directory as well as the old one.
+        """
+        root = absolute(realm["realm_root"])
+        held = self._realm_upgrade_lock
+        selected = root.stat(follow_symlinks=False)
+        if held != (root, selected.st_dev, selected.st_ino):
+            raise RuntimeError("Offline backup requires the selected realm upgrade lock.")
+        destination = self.root / "backups" / uuid.uuid4().hex[:12]
+        size = self._backup_size(root) + self._backup_size(data, support=True)
+        margin = max(256 * 1024 * 1024, size // 10)
+        platform.private_directory(destination.parent)
+        if shutil.disk_usage(self.root).free < size + margin:
+            raise BackupSpaceError("There is not enough free disk space to back up your workspace.")
+        try:
+            platform.private_directory(destination)
+            self._copy(root, destination / "realm")
+            self._copy(data, destination / "support", support=True)
+            result = {"root": str(destination), "kind": "offline"}
+            write_json(destination / "backup.json", result)
+            return result
+        except BaseException:
+            if destination.exists():
+                shutil.rmtree(destination)
+            raise
 
     @staticmethod
     def _command_failure(exc: Exception) -> str:
@@ -806,6 +886,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise
 
     def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
+        if backup.get("kind") == "offline":
+            raise ValueError("Offline realm restoration requires replacement-directory custody.")
         if platform.sys.platform == "win32":
             platform.private_directory(data)
         destination = Path(backup["root"])

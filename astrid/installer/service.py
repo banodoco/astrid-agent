@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import inspect
 import json
 import os
@@ -436,6 +437,155 @@ class Service:
             return True
         except (OSError, subprocess.SubprocessError):
             return False
+
+    def capture_upgrade_state(self, version: Version, data: Path) -> dict:
+        """Capture a validated, serializable service definition before stopping it.
+
+        A manager's stopped state alone does not establish that its child
+        container is empty. Until such an observation is available on a
+        platform, refuse before changing that manager.
+        """
+        if self.system != "linux":
+            raise RuntimeError("Cannot prove the service process container is empty on this platform; upgrade refused.")
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != str(data) or record.get("foreground")):
+            raise ValueError("The selected service does not match this managed installation.")
+        if not self.systemd():
+            raise RuntimeError("Cannot inspect the systemd service; upgrade refused.")
+        info = self._upgrade_systemd_state()
+        if (info.get("LoadState") != "loaded" or info.get("FragmentPath") != str(self.path)
+                or info.get("ActiveState") not in {"active", "inactive"}
+                or info.get("UnitFileState") not in {"enabled", "disabled"}):
+            raise ValueError("The selected systemd service state is not supported for upgrade.")
+        cgroup = info.get("ControlGroup", "")
+        if not cgroup.startswith("/") or cgroup == "/" or ".." in Path(cgroup).parts:
+            raise ValueError("The service has no inspectable process container; upgrade refused.")
+        st = self.path.lstat()
+        if not stat.S_ISREG(st.st_mode) or not owned_by_current_user(self.path, st):
+            raise ValueError("The selected service definition is not an owned regular file.")
+        raw = self.path.read_bytes()
+        # Accept only a known retained action, not an arbitrary unit which has
+        # been placed at our usual path. Use the same exact quoted syntax as
+        # the existing retained-action admission logic.
+        lines = raw.decode("utf-8").splitlines()
+        actions = [line for line in lines if line.lstrip().startswith("ExecStart=")]
+        if len(actions) != 1 or not actions[0].startswith("ExecStart="):
+            raise ValueError("The selected service action is unknown; upgrade refused.")
+        section = None
+        for line in lines:
+            if line.strip().startswith("["):
+                section = line.strip()
+            if line == actions[0] and section != "[Service]":
+                raise ValueError("The selected service action is unknown; upgrade refused.")
+        encoded = actions[0].removeprefix("ExecStart=")
+        tokens = re.findall(r'"(?:\\.|[^"\\])*"', encoded)
+        def decode(token):
+            return re.sub(r'\\([\\"n])', lambda m: "\n" if m[1] == "n" else m[1], token[1:-1]).replace("%%", "%").replace("$$", "$")
+        action = [decode(token) for token in tokens]
+        if " ".join(systemd_quote(arg).replace("$", "$$") for arg in action) != encoded:
+            raise ValueError("The selected service action is unknown; upgrade refused.")
+        script = action[-1] if action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+        if action != command(version, data, env_file=self.env_file):
+            if (not (self.root / "versions").is_dir()
+                    or not self._known_launch_action(action, data, windows=False, script=script)):
+                raise ValueError("The selected service action is unknown; upgrade refused.")
+        return {"system": self.system, "path": str(self.path),
+                "definition": base64.b64encode(raw).decode("ascii"),
+                "mode": stat.S_IMODE(st.st_mode), "cgroup": cgroup,
+                "enabled": info["UnitFileState"] == "enabled",
+                "running": info["ActiveState"] == "active"}
+
+    def _upgrade_systemd_state(self) -> dict:
+        value = self.run(["systemctl", "--user", "show", "astrid.service",
+                          "--property=MainPID,FragmentPath,LoadState,ActiveState,UnitFileState,ControlGroup"])
+        fields = {}
+        for line in value.splitlines():
+            if "=" not in line:
+                raise ValueError("The systemd service observation is malformed.")
+            key, val = line.split("=", 1)
+            if key in fields:
+                raise ValueError("The systemd service observation is ambiguous.")
+            fields[key] = val
+        return fields
+
+    def stop_for_upgrade(self, state: dict) -> None:
+        """Disable autostart and stop the exact service observed at capture."""
+        self._validate_upgrade_state(state)
+        info = self._upgrade_systemd_state()
+        st = self.path.lstat()
+        if (info.get("LoadState") != "loaded" or info.get("FragmentPath") != state["path"]
+                or info.get("ControlGroup") != state["cgroup"]
+                or info.get("UnitFileState") != ("enabled" if state["enabled"] else "disabled")
+                or info.get("ActiveState") != ("active" if state["running"] else "inactive")
+                or not stat.S_ISREG(st.st_mode) or not owned_by_current_user(self.path, st)
+                or stat.S_IMODE(st.st_mode) != state["mode"]
+                or self.path.read_bytes() != base64.b64decode(state["definition"], validate=True)):
+            raise ValueError("The selected service changed before stop; upgrade refused.")
+        self.run(["systemctl", "--user", "disable", "--now", "astrid.service"])
+
+    def _validate_upgrade_state(self, state: dict) -> None:
+        if (not isinstance(state, dict) or self.system != "linux" or state.get("system") != self.system
+                or state.get("path") != str(self.path) or type(state.get("enabled")) is not bool
+                or type(state.get("running")) is not bool or type(state.get("mode")) is not int
+                or not 0 <= state["mode"] <= 0o777 or not isinstance(state.get("definition"), str)):
+            raise ValueError("The saved service state is invalid.")
+        cgroup = state.get("cgroup")
+        if not isinstance(cgroup, str) or not cgroup.startswith("/") or cgroup == "/" or ".." in Path(cgroup).parts:
+            raise ValueError("The saved service process container is invalid.")
+        base64.b64decode(state["definition"], validate=True)
+
+    def wait_upgrade_empty(self, state: dict, deadline: float, *, cgroup_root: Path = Path("/sys/fs/cgroup")) -> None:
+        """Wait for the kernel's recursive cgroup-v2 populated indication."""
+        self._validate_upgrade_state(state)
+        group = cgroup_root / state["cgroup"].lstrip("/")
+        while True:
+            try:
+                # Never follow a substituted component outside the cgroup tree.
+                cursor = cgroup_root
+                for part in Path(state["cgroup"]).parts[1:]:
+                    cursor = cursor / part
+                    if cursor.is_symlink():
+                        raise ValueError("The service process container changed.")
+                values = dict(line.split() for line in (group / "cgroup.events").read_text().splitlines())
+                populated = values.get("populated")
+                if populated not in {"0", "1"}:
+                    raise ValueError("The service process container state is malformed.")
+                if populated == "0":
+                    return
+            except FileNotFoundError:
+                # On cgroup v2, a removed cgroup cannot retain live processes.
+                if not group.exists() and (cgroup_root / "cgroup.controllers").is_file():
+                    return
+                raise RuntimeError("The service process container cannot be inspected.")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("The Astrid service still has running processes; upgrade refused.")
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+
+    def restore_upgrade_definition(self, state: dict) -> None:
+        """Restore saved bytes while the caller retains realm authority."""
+        self._validate_upgrade_state(state)
+        raw = base64.b64decode(state["definition"], validate=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=f".{self.path.name}.")
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fchmod(stream.fileno(), state["mode"])
+                os.fsync(stream.fileno())
+            platform.durable_replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        self.run(["systemctl", "--user", "daemon-reload"])
+
+    def restore_upgrade_activation(self, state: dict) -> None:
+        """Restore saved enablement and running state after releasing authority."""
+        self._validate_upgrade_state(state)
+        self.run(["systemctl", "--user", "enable" if state["enabled"] else "disable", "astrid.service"])
+        if state["running"]:
+            self.run(["systemctl", "--user", "start", "astrid.service"])
 
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
@@ -970,7 +1120,9 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
-    def register(self, version: Version, data: Path) -> None:
+    def register(self, version: Version, data: Path, *, activate: bool = True) -> None:
+        if not activate and self.system != "linux":
+            raise RuntimeError("Staged service registration is unavailable on this platform.")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
             write_json(self.env_file, {})
@@ -984,7 +1136,8 @@ class Service:
         elif self.system == "linux":
             if self.systemd():
                 self.run(["systemctl", "--user", "daemon-reload"])
-                self.run(["systemctl", "--user", "enable", "astrid.service"])
+                if activate:
+                    self.run(["systemctl", "--user", "enable", "astrid.service"])
             else:
                 self.say(UNSUPERVISED_WARNING)
         else:
