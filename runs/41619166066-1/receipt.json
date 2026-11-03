@@ -1,0 +1,62 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "mkdir -p proof\npython3 --version > proof/environment.txt\npython3 -m venv .venv\n.venv/bin/python -m pip install pytest==9.0.2 pytest-timeout pyyaml jsonschema setuptools -e runtime -e runtime/packages/python\n.venv/bin/python -m pip freeze >> proof/environment.txt\nexport PATH=\"$PWD/.venv/bin:$PATH\"\nexport PYTHONPATH=\"$PWD/agent:$PWD/runtime:$PWD/runtime/packages/python\"\nexport ASTRID_RUNTIME_CHECKOUT=\"$PWD/runtime\"\ncd agent\npython -m pytest -q --tb=short --junitxml=../proof/pytest.xml tests/test_installer_busy_fence.py tests/test_installer_launchd_cache_window.py tests/test_installer_launchd_stop_handoff.py",
+  "effective_tuple": {
+    "agent": "004646e6fb4cf08fc1b05c7d0097bfa0a7273a81",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "event": "push",
+  "inner_exit_code": 0,
+  "inventory": [
+    {
+      "bytes": 536,
+      "path": "artifacts/proof/environment.txt",
+      "sha256": "3ab6b34b52000446d5b26562c9e73aae31065ed0ef43e02437a7bcde93d74257"
+    },
+    {
+      "bytes": 24498,
+      "path": "artifacts/proof/pytest.xml",
+      "sha256": "f6401debdaa37c73f6289a916830bc640d943c7aa6bfe0888c0183f7efe586b4"
+    },
+    {
+      "bytes": 6824,
+      "path": "command.log",
+      "sha256": "44d824357ef40efd8a453da99f2574bdbf6249804f6c793f2efa519928d6f74a"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 932,
+      "path": "requested-inputs.json",
+      "sha256": "3df66f3324f8e738ab037d194404174c22d2898bb2021e98ce249d2aff6ad520"
+    },
+    {
+      "bytes": 435,
+      "path": "tuple.txt",
+      "sha256": "f2c7ba1fc33feaa98d3b2098dbaaec6828a9df28dfa613a36a7fb44559756d15"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "004646e6fb4cf08fc1b05c7d0097bfa0a7273a81",
+    "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "artifact_paths": "proof/**",
+    "command": "mkdir -p proof\npython3 --version > proof/environment.txt\npython3 -m venv .venv\n.venv/bin/python -m pip install pytest==9.0.2 pytest-timeout pyyaml jsonschema setuptools -e runtime -e runtime/packages/python\n.venv/bin/python -m pip freeze >> proof/environment.txt\nexport PATH=\"$PWD/.venv/bin:$PATH\"\nexport PYTHONPATH=\"$PWD/agent:$PWD/runtime:$PWD/runtime/packages/python\"\nexport ASTRID_RUNTIME_CHECKOUT=\"$PWD/runtime\"\ncd agent\npython -m pytest -q --tb=short --junitxml=../proof/pytest.xml tests/test_installer_busy_fence.py tests/test_installer_launchd_cache_window.py tests/test_installer_launchd_stop_handoff.py",
+    "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "slot": "6"
+  },
+  "run_attempt": "1",
+  "run_id": "41619166066",
+  "source_head": "9b4d06efcf688e6be012b5906c4a847ee2f67091",
+  "source_ref": "refs/heads/venue/M-R1FIX-R12-CI-REALM-HOSTED-1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R12-CI-REALM-HOSTED-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "9b4d06efcf688e6be012b5906c4a847ee2f67091"
+}

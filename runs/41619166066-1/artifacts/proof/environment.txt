@@ -1,0 +1,17 @@
+Python 3.12.3
+-e git+https://github.com/banodoco/astrid-runtime@2776ba973b6c8f3555b5629b0840d9691a98d3c2#egg=astrid_runtime
+-e git+https://github.com/banodoco/astrid-runtime@2776ba973b6c8f3555b5629b0840d9691a98d3c2#egg=astrid_runtime_client&subdirectory=packages/python
+attrs==26.1.0
+iniconfig==2.3.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0
+pytest==9.0.2
+pytest-timeout==2.4.0
+PyYAML==6.0.3
+referencing==0.37.0
+rpds-py==2026.9.1
+setuptools==84.2.1
+typing_extensions==4.16.0
