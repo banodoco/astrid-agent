@@ -1,0 +1,34 @@
+{
+  "config": "home = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none/bin\nimplementation = CPython\nuv = 0.11.32\nversion_info = 3.11.13\ninclude-system-site-packages = false\n",
+  "config_sha256": "32fe3934eea74e0a4161cc480432068815d0b2bf9fe9a46967a9668cfab38972",
+  "discovery_birth_id": "ps-lstart:Tue Nov  3 02:00:59 2026",
+  "discovery_pid": 2954,
+  "executable": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none/bin/python3.11",
+  "executable_sha256": "632fc848edf9f60bf6a44d2a2475990539e52e00eedac260f9db604dab56a63d",
+  "live_owner": {
+    "discovery_birth_id": "ps-lstart:Tue Nov  3 02:00:59 2026",
+    "executable": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none/bin/python3.11",
+    "format": "astrid-launchd-r0-live-owner/v2",
+    "pid": 2954,
+    "process_birth_id": "ps-lstart:Tue Nov  3 02:00:59 2026",
+    "program": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python",
+    "uid": 501
+  },
+  "observed": {
+    "birth_id": "ps-lstart:Tue Nov  3 02:00:59 2026",
+    "parent_pid": 1,
+    "pid": 2954,
+    "uid": 501
+  },
+  "predicates": {
+    "birth_retained": true,
+    "external_to_selected_root": true,
+    "pid_matches": true,
+    "program_resolves_to_executable": true,
+    "retained_matches": true,
+    "trusted_interpreter": true,
+    "uid_matches": true,
+    "v2_witness": true
+  },
+  "program": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python"
+}

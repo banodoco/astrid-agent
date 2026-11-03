@@ -1,0 +1,157 @@
+{
+  "bootstrap_custody": [
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none/bin",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o711",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-macos-aarch64-none/bin/python3.11",
+      "regular": true,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    }
+  ],
+  "bootstrap_python": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/python",
+  "bootstrap_target_containment": false,
+  "bootstrap_to_foreign_custody": "not applicable: target outside bootstrap",
+  "config": "home = /Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin\nimplementation = CPython\nuv = 0.11.32\nversion_info = 3.11.13\ninclude-system-site-packages = false\n",
+  "config_custody": {
+    "gid": 20,
+    "mode": "0o644",
+    "owned_by_current_user": true,
+    "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/pyvenv.cfg",
+    "regular": true,
+    "safe_mode": true,
+    "symlink": false,
+    "uid": 501
+  },
+  "config_sha256": "ee82a73a6653990346c11e88e767970a43023ebf4e300421d91a34f0109ab92b",
+  "executable": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin/python3.11",
+  "executable_sha256": "632fc848edf9f60bf6a44d2a2475990539e52e00eedac260f9db604dab56a63d",
+  "foreign_custody": [
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o700",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin",
+      "regular": false,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    },
+    {
+      "gid": 20,
+      "mode": "0o711",
+      "owned_by_current_user": true,
+      "path": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin/python3.11",
+      "regular": true,
+      "safe_mode": true,
+      "symlink": false,
+      "uid": 501
+    }
+  ],
+  "foreign_scratch": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x",
+  "observed": {
+    "birth_id": "ps-lstart:Tue Nov  3 02:01:13 2026",
+    "parent_pid": 1,
+    "pid": 3432,
+    "uid": 501
+  },
+  "pid": 3432,
+  "predicates": {
+    "birth_matches_reobservation": true,
+    "bootstrap_python_directory": true,
+    "bootstrap_to_positive_executable_owned_safe": true,
+    "config_regular_owned_safe": true,
+    "copied_executable_hash_matches_source": true,
+    "darwin_and_program_symlink": true,
+    "executable_absolute_normalized": true,
+    "executable_canonical_regular": true,
+    "foreign_copy_owned_safe": true,
+    "one_absolute_normalized_link_free_home_matching_executable_parent": true,
+    "outside_bootstrap_python": true,
+    "outside_selected_root": true,
+    "pid_matches": true,
+    "program_absolute_normalized": true,
+    "program_and_parent_inside_root": true,
+    "program_parent_link_free": true,
+    "program_resolves_to_observed_executable": true,
+    "state_running": true,
+    "uid_matches": true,
+    "venv_link_free": true
+  },
+  "program": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/python",
+  "program_link_target": "/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin/python3.11",
+  "reason": "The launchd service does not match the selected Runtime owner.",
+  "refused": true,
+  "reobserved": {
+    "birth_id": "ps-lstart:Tue Nov  3 02:01:13 2026",
+    "parent_pid": 1,
+    "pid": 3432,
+    "uid": 501
+  },
+  "scope": "private live-owner helper with self-supplied birth; not full product admission",
+  "source_executable_sha256": "632fc848edf9f60bf6a44d2a2475990539e52e00eedac260f9db604dab56a63d",
+  "target": "gui/501/org.astrid.proof.r18.41562976520.1",
+  "trusted_interpreter": false
+}

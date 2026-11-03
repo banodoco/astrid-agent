@@ -1,0 +1,2059 @@
++ ['git', '-C', '/Users/runner/work/astrid-agent/astrid-agent/agent', 'rev-parse', 'HEAD']
+exit 0 
+ 098ae387521b3adb782f9b62bf60aa3ba2feb711
+
++ ['git', '-C', '/Users/runner/work/astrid-agent/astrid-agent/runtime', 'rev-parse', 'HEAD']
+exit 0 
+ a95e0e836234bc6d27ba557ba1297da95ed55290
+
++ ['git', '-C', '/Users/runner/work/astrid-agent/astrid-agent/app', 'rev-parse', 'HEAD']
+exit 0 
+ 2145dc85b21f3c5a22f96a842c0d257ae29051e5
+
++ ['shasum', '-a', '256', '-c', 'SHA256SUMS']
+exit 0 
+ provenance.json: OK
+release2/stand-in.json: OK
+served/install: OK
+served/install-manifest.json: OK
+served/install.ps1: OK
+services/launchd.plist: OK
+services/service-env.json: OK
+services/systemd.service: OK
+services/task.xml: OK
+release2/installable-stand-in.json: OK
+release2/README.md: OK
+
++ ['launchctl', 'print', 'gui/501']
+exit 0 
+ gui/501 = {
+	type = login
+	handle = 100003
+	active count = 393
+	service count = 392
+	active service count = 140
+	creator = loginwindow[150]
+	creator euid = 0
+	session = Aqua
+	endpoint destination = com.apple.xpc.launchd.domain.user.501
+	auxiliary bootstrapper = com.apple.xpc.otherbsd (complete)
+	security context = {
+		uid = 501
+		asid = 100003
+	}
+
+	bringup time = 36 ms
+	death port = 0x15003
+
+	environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.lL608jDH4g/Listeners
+	}
+
+	services = {
+		     883      - 	runner-provisioner
+		     384      - 	com.apple.syncdefaultsd
+		     502      - 	com.apple.assistantd
+		       0      - 	com.apple.DataDetectorsLocalSources
+		       0      - 	com.apple.unmountassistant.useragent
+		       0      - 	com.apple.mlhostd
+		       0      - 	com.apple.SafariHistoryServiceAgent
+		       0      - 	com.apple.preference.displays.MirrorDisplays
+		       0      - 	com.apple.sidecar-display-agent
+		     451      - 	com.apple.chronod
+		     492      - 	com.apple.contacts.donation-agent
+		     413      - 	com.apple.accessibility.heard
+		     845      - 	com.apple.siriinferenced
+		     414      - 	com.apple.corespeechd
+		       0      - 	com.apple.AutoFillPanel
+		       0      - 	com.apple.peopled
+		       0      - 	com.apple.ServicesUIAgent
+		       0      - 	com.apple.progressd
+		     398      - 	com.apple.IOUIAgent
+		       0      - 	com.apple.geoanalyticsd
+		       0      - 	com.apple.webkit.webpushd
+		     922      - 	com.apple.weatherd
+		       0      - 	com.apple.synapse.contentlinkingd
+		     379      - 	com.apple.neagent.878568F8-CCE5-4157-8315-22F20DC8FB0A
+		     712      - 	com.apple.XprotectFramework.PluginService
+		       0      - 	com.apple.cloudphotod
+		       0      - 	com.apple.ctkbind
+		       0      - 	com.apple.studentd
+		     412      - 	com.apple.replicatord
+		       0      - 	com.apple.mediastream.mstreamd
+		       0      - 	com.apple.AMPSystemPlayerAgent
+		       0      - 	com.apple.FollowUpUI
+		     509      - 	com.apple.videoconference.camera
+		     478      - 	com.apple.itunescloudd
+		       0      - 	com.apple.previewshellapp
+		       0      - 	com.apple.keyboardservicesd
+		     381      - 	com.apple.cache_delete
+		       0      - 	com.apple.scrod
+		       0      - 	com.apple.MENotificationService
+		     372      - 	com.apple.accountsd
+		     404      - 	com.apple.cdpd
+		       0      - 	com.apple.corespotlightservice
+		     394      - 	com.apple.routined
+		       0      - 	com.apple.alf.useragent
+		     472      - 	com.apple.uikitsystemapp
+		     415      - 	com.apple.accessibility.axassetsd
+		     340      - 	com.apple.Finder
+		     350      - 	com.apple.quicklook.ThumbnailsAgent
+		       0      - 	com.apple.symptomsd-diag.agent
+		     476      - 	com.apple.homed
+		       0      - 	com.apple.Safari.PasswordBreachAgent
+		     351      - 	com.apple.siriactionsd
+		       0      - 	com.apple.csuseragent
+		       0      - 	com.apple.SiriTTSTrainingAgent
+		       0      - 	com.apple.asktod
+		       0      - 	com.apple.controlstrip
+		     581      - 	com.apple.financed
+		       0      - 	com.apple.dataaccess.dataaccessd
+		       0      - 	com.apple.KeyboardAccessAgent
+		       0      - 	com.apple.quicklook
+		     333      - 	com.apple.WindowManager.agent
+		     488      - 	com.apple.spindump_agent
+		     416      - 	com.apple.ContextStoreAgent
+		       0      - 	com.apple.AOSPushRelay
+		     366      - 	com.apple.AMPDeviceDiscoveryAgent
+		       0      - 	com.apple.accessibility.dfrhud
+		       0      - 	com.apple.CallHistorySyncHelper
+		       0      0 	com.apple.parentalcontrols.check
+		     405      - 	com.apple.findmy.findmylocateagent
+		     418      - 	com.apple.BiomeAgent
+		       0      - 	com.apple.previewsd
+		       0      - 	com.apple.AquaAppearanceHelper
+		       0      - 	com.apple.AuthenticationServicesCore.AuthenticationServicesAgent
+		     508      - 	com.apple.mediaremoteagent
+		     994      - 	com.apple.mediaanalysisd
+		       0      - 	com.apple.colorsync.useragent
+		     393      - 	com.apple.triald
+		       0      - 	com.apple.cvmsCompAgent_arm64
+		     411      - 	com.apple.FontWorker
+		       0      - 	com.apple.analyticsagent
+		       0      - 	com.apple.DiskArbitrationAgent
+		     475      - 	com.apple.milod
+		       0      - 	com.apple.bookdatastored
+		     359      - 	com.apple.tccd
+		     490      - 	com.apple.appleaccountd
+		     449      - 	com.apple.parsecd
+		       0      - 	com.apple.security.keychain-circle-notification
+		       0      - 	com.apple.appstorecomponentsd
+		     367      - 	com.apple.bird
+		       0      - 	com.apple.storelegacy
+		       0      - 	com.apple.OSDUIHelper
+		       0      - 	com.apple.assessmentagent
+		       0      - 	com.apple.mlruntimed
+		       0      - 	com.apple.accessibility.AXVisualSupportAgent
+		     336      - 	com.apple.Dock.agent
+		       0      0 	com.apple.amp.mediasharingd
+		       0      - 	com.apple.nexusd
+		       0      - 	com.apple.ManagedClientAgent.enrollagent
+		     466      - 	com.apple.audio.AudioComponentRegistrar
+		     452      - 	com.apple.StatusKitAgent
+		       0      - 	com.apple.knowledgeconstructiond
+		       0      - 	com.apple.icloud.findmydeviced.findmydevice-user-agent
+		       0      - 	com.apple.inputanalyticsd
+		     480      - 	com.apple.parsec-fbf
+		     346      - 	com.apple.dmd
+		       0      - 	com.apple.xpc.loginitemregisterd
+		       0      - 	com.apple.familycontrols.useragent
+		     669      - 	com.apple.AssetCacheLocatorService
+		       0      - 	com.apple.AssetCache.agent
+		       0      - 	com.apple.diagnosticspushd
+		       0      - 	com.apple.DiagnosticsReporter
+		       0      - 	com.apple.lockoutagent
+		       0      - 	com.apple.exchange.exchangesyncd
+		     465      - 	com.apple.replayd
+		       0      - 	com.apple.videosubscriptionsd
+		     905      - 	com.apple.GameController.gamecontrolleragentd
+		     382      - 	com.apple.transparencyd
+		     439      - 	com.apple.pbs
+		       0      - 	com.apple.webprivacyd
+		     331      - 	com.apple.coreservices.uiagent
+		       0      - 	com.apple.universalaccessAuthWarn
+		       0      - 	com.apple.testmanagerd
+		     498      - 	com.apple.icloud.searchpartyuseragent
+		       0      - 	com.apple.calendar.CalendarAgentBookmarkMigrationService
+		       0      - 	com.apple.dt.AutomationModeUI
+		       0      - 	com.apple.UserPictureSyncAgent
+		     396      - 	com.apple.nsurlsessiond
+		     385      - 	com.apple.AppSSOAgent
+		       0      - 	com.apple.devicecheckd
+		       0      - 	com.apple.protectedcloudstorage.protectedcloudkeysyncing
+		       0      - 	com.apple.mbuseragent
+		       0      - 	com.apple.applespell
+		       0      - 	com.apple.scopedbookmarksagent.xpc
+		       0      - 	com.apple.coreservices.UASharedPasteboardProgressUI
+		       0      0 	com.apple.security.cloudkeychainproxy3
+		     420      - 	com.apple.imklaunchagent
+		       0      - 	com.apple.AccessibilityVisualsAgent
+		     327      - 	com.apple.UserEventAgent-Aqua
+		     363      - 	com.apple.FileProvider
+		     421      - 	com.veertu.anka.addons.ankarun
+		       0      0 	com.apple.XProtect.agent.scan.startup
+		       0      - 	com.apple.ensemble
+		     482      - 	com.apple.amsengagementd
+		       0      - 	com.apple.betaenrollmentagent
+		       0      - 	com.apple.installd.user
+		     450      - 	com.apple.followupd
+		       0      - 	com.apple.AirPortBaseStationAgent
+		       0      - 	com.apple.proactiveeventtrackerd
+		       0      - 	com.apple.proactived
+		     931      - 	com.apple.ModelCatalogAgent
+		       0      - 	com.apple.privatecloudcomputed
+		     936      - 	com.apple.ReportCrash
+		     332      - 	com.apple.universalaccessd
+		     512      - 	com.apple.linkd
+		       0      - 	com.apple.textunderstandingd
+		       0      - 	com.apple.imcore.imtransferagent
+		     477      - 	com.apple.akd
+		     423      - 	com.apple.mobiletimerd
+		       0      - 	com.apple.btsa
+		     424      - 	com.veertu.anka.addons.ankacp
+		     370      - 	com.apple.identityservicesd
+		     442      - 	com.apple.CallHistoryPluginHelper
+		       0      - 	com.apple.accessibility.MotionTrackingAgent
+		     934      - 	com.apple.biomesyncd
+		     425      - 	com.apple.icdd
+		     362      - 	com.apple.telephonyutilities.callservicesd
+		       0      - 	com.apple.DwellControl
+		       0      - 	com.apple.ckdiscretionaryd
+		       0      - 	com.apple.neagent
+		       0      - 	com.apple.syncservices.uihandler
+		     369      - 	com.apple.iconservices.iconservicesagent
+		       0      - 	com.apple.SafariLaunchAgent
+		     841      - 	com.apple.generativeexperiencesd
+		     995      - 	com.apple.diagnosticextensionsd
+		       0      - 	com.apple.intelligenceplatformd
+		       0      - 	com.apple.GamePolicyAgent
+		       0      - 	com.apple.ciphermld
+		       0      - 	com.apple.EscrowSecurityAlert
+		       0      - 	com.apple.idsfoundation.IDSRemoteURLConnectionAgent
+		       0      - 	com.apple.SafariBookmarksSyncAgent
+		       0      - 	com.apple.mbproximityhelper
+		       0      - 	com.apple.recentsd
+		     811      - 	com.apple.spotlightknowledged.updater
+		       0      - 	com.apple.XProtect.agent.scan
+		       0      - 	com.apple.uarppersonalizationd
+		       0      - 	com.apple.transparencyStaticKey
+		       0      - 	com.apple.MTLAssetUpgraderD
+		       0      - 	com.apple.cmio.LaunchCMIOUserExtensionsAgent
+		       0      - 	com.apple.sirittsd
+		       0      - 	com.apple.storekitagent
+		       0      - 	com.apple.dprivacyd
+		       0      - 	com.apple.appplaceholdersyncd
+		       0      - 	com.apple.screensharing.menuextra
+		       0      - 	com.apple.storeaccountd
+		       0      - 	com.apple.LinkedNotesUIService
+		     406      - 	com.apple.ndoagent
+		       0      - 	com.apple.ptpcamerad
+		     844      - 	com.apple.UsageTrackingAgent
+		     582      - 	com.apple.email.maild
+		       0      - 	com.apple.metadata.mdwrite
+		     348      - 	com.apple.wallpaper.agent
+		       0      - 	com.apple.bookassetd
+		       0      - 	com.apple.ManagedClientAgent.agent
+		     395      - 	com.apple.usernoted
+		     426      - 	com.veertu.anka.addons.copypaste
+		     467      - 	com.apple.localizationswitcherd
+		       0      - 	com.apple.security.DiskUnmountWatcher
+		       0      - 	com.apple.screensharing.agent
+		     632      - 	com.apple.geodMachServiceBridge
+		       0      - 	com.apple.AddressBook.AssistantService
+		       0      - 	com.apple.warmd_agent
+		     503      - 	com.apple.commerce
+		     358      - 	com.apple.CoreLocationAgent
+		       0      - 	com.apple.loginwindow.LWWeeklyMessageTracer
+		       0      - 	com.apple.PIPAgent
+		     454      - 	com.apple.cmio.ContinuityCaptureAgent
+		       0      - 	com.apple.Safari.History
+		       0      - 	com.apple.translationd
+		       0      - 	com.apple.mbfloagent
+		       0      - 	com.apple.spotlightknowledged
+		       0      0 	com.apple.AddressBook.abd
+		     375      - 	com.apple.donotdisturbd
+		       0      - 	com.apple.StorageManagement.Service
+		       0      - 	com.apple.printtool.agent
+		       0      - 	com.apple.AddressBook.SourceSync
+		       0      - 	com.apple.locationaccessstored
+		     368      - 	com.apple.SecureBackupDaemon
+		     617      - 	com.apple.voicebankingd
+		     365      - 	com.apple.calaccessd
+		       0      - 	com.apple.security.agent
+		     885      - 	com.apple.backgroundtaskmanagement.agent
+		     664      - 	com.apple.installerauthagent
+		       0      - 	com.apple.intelligenceflowd
+		     428      - 	com.apple.askpermissiond
+		       0      - 	com.apple.universalaccesscontrol
+		       0      - 	com.apple.securityuploadd
+		       0      - 	com.apple.ScreenReaderUIServer
+		       0      - 	com.apple.menuextra.battery.helper
+		       0      - 	com.apple.Safari.SafeBrowsing.Service
+		       0      - 	com.apple.businessservicesd
+		     527      - 	com.apple.newsd
+		       0      - 	com.apple.notes.exchangenotesd
+		     843      - 	com.apple.lockdownmoded
+		       0      - 	com.apple.cfnetwork.AuthBrokerAgent
+		       0      - 	com.apple.companiond
+		       0      - 	com.apple.USBAgent
+		       0      - 	com.apple.previewshellmacapp
+		       0      - 	com.apple.RapportUIAgent
+		     933      - 	com.apple.siriknowledged
+		       0      - 	com.apple.Maps.mapspushd
+		       0      - 	com.apple.findmymacmessenger
+		       0      - 	com.apple.powerchime
+		       0      - 	com.apple.languageassetd
+		       0      - 	com.apple.FilesystemUI
+		       0      - 	com.apple.voicememod
+		       0      - 	com.apple.maps.destinationd
+		       0      0 	com.apple.systemsettingsagent
+		       0      - 	com.apple.gamed
+		     429      - 	com.apple.sharingd
+		       0      - 	com.apple.seserviced
+		       0      - 	com.apple.STMUIHelper
+		     485      - 	com.apple.ScreenTimeAgent
+		       0      - 	com.apple.familynotificationd
+		       0      - 	com.apple.ssinvitationagent
+		       0      - 	com.apple.webinspectord
+		     392      - 	com.apple.ManagedSettingsAgent
+		       0      - 	com.apple.iCloudUserNotificationsd
+		       0      - 	com.apple.avatarsd
+		     501      - 	com.apple.swcd
+		       0      - 	com.apple.metrickitd
+		       0      - 	com.apple.feedbackd
+		       0      - 	com.apple.storeassetd
+		       0      - 	com.apple.speech.synthesisserver
+		       0      - 	com.apple.intelligencecontextd
+		       0      - 	com.apple.photolibraryd
+		     463      - 	com.apple.familycircled
+		       0      - 	com.apple.pluginkit.pkreporter
+		     430      - 	com.apple.AirPlayUIAgent
+		       0      - 	com.apple.FontRegistryUIAgent
+		       0      - 	com.apple.backgroundassets.user
+		     344      - 	com.apple.knowledge-agent
+		       0      - 	com.apple.storeuid
+		       0      - 	com.apple.midiserver
+		       0      - 	com.apple.RemoteManagementAgent
+		       0      - 	com.apple.sportsd
+		     441      - 	com.apple.TextInputSwitcher
+		       0      - 	com.apple.systemprofiler
+		     457      - 	com.apple.intelligentroutingd
+		       0      - 	com.apple.cvmsCompAgent_arm64_1
+		       0      - 	com.apple.AMPArtworkAgent
+		     431      - 	com.apple.imagent
+		       0      - 	com.apple.storedownloadd
+		       0      - 	com.apple.mobiledeviceupdater
+		       0      0 	com.apple.xpc.otherbsd
+		       0      - 	com.apple.sidecar-relay
+		       0      - 	com.apple.cloudsettingssyncagent
+		       0      - 	com.apple.rcd
+		       0      - 	com.apple.homeenergyd
+		     389      - 	com.apple.cloudd
+		       0      - 	com.apple.noticeboard.agent
+		       0      - 	com.apple.SpacesTouchBarAgent.app
+		       0      - 	com.apple.UserNotificationCenterAgent
+		       0      - 	com.apple.sysdiagnose_agent
+		     432      - 	com.apple.BTServer.cloudpairing
+		       0      - 	com.apple.printuitool.agent
+		       0      - 	com.apple.shazamd
+		       0      - 	com.apple.ThreadCommissionerService
+		       0      - 	com.apple.helpd
+		       0      - 	com.apple.cmfsyncagent
+		     407      - 	com.apple.icloudmailagent
+		     507      - 	com.apple.assistant_cdmd
+		       0      - 	com.apple.dt.CommandLineTools.installondemand
+		       0      - 	com.apple.tipsd
+		       0      - 	com.apple.NVMeAgent
+		       0      - 	com.apple.quicklook.ui.helper
+		       0      - 	com.apple.speech.speechdatainstallerd
+		       0      - 	com.apple.AOSHeartbeat
+		       0      - 	com.apple.managedcorespotlightd
+		       0      - 	com.apple.ATS.FontValidator
+		       0      - 	com.apple.stickersd
+		       0      - 	com.apple.photoanalysisd
+		     443      - 	com.apple.corespotlightd
+		     731      - 	com.apple.wifi.WiFiAgent
+		     447      - 	com.apple.CryptoTokenKit.ahp.agent
+		       0      - 	com.apple.screensharing.MessagesAgent
+		       0      - 	com.apple.diskspaced
+		       0      - 	com.apple.syncservices.SyncServer
+		     433      - 	com.apple.diagnostics_agent
+		     353      - 	com.apple.coreservices.sharedfilelistd
+		     674      - 	com.apple.bluetoothuserd
+		       0      - 	com.apple.naturallanguaged
+		     335      - 	com.apple.pboard
+		       0      - 	com.apple.netauth.user.gui
+		       0      - 	com.apple.imautomatichistorydeletionagent
+		       0      - 	com.apple.timezoneupdates.tznotify
+		     338      - 	com.apple.SystemUIServer.agent
+		       0      - 	com.apple.appleseed.seedusaged
+		       0      - 	com.apple.PackageUIKit.InstallStatus
+		       0      - 	com.apple.watchlistd
+		     435      - 	com.apple.TextInputMenuAgent
+		       0      - 	com.apple.passd
+		     334      - 	com.apple.talagent
+		     410      - 	com.apple.xtyped
+		       0      - 	com.apple.SafariNotificationAgent
+		     360      - 	com.apple.suggestd
+		       0      - 	com.apple.coredatad
+		       0      - 	com.apple.LocalAuthentication.UIAgent
+		       0      - 	com.apple.bluetoothUIServer
+		       0      - 	com.apple.navd
+		       0      - 	com.apple.nowplayingtouchui
+		     846      - 	com.apple.ap.adprivacyd
+		     647      - 	com.apple.ap.promotedcontentd
+		     436      - 	com.apple.remindd
+		       0      - 	com.apple.TMHelperAgent
+		       0      - 	com.apple.MobileAccessoryUpdater.fudHelperAgent
+		       0      - 	com.apple.reversetemplated
+		       0      - 	com.apple.appsleep
+		     397      - 	com.apple.apfsuseragent
+		       0      - 	com.apple.appleidsetupd
+		       0      - 	com.apple.RemoteDesktop.agent
+		     479      - 	com.apple.networkserviceproxy
+		     337      - 	com.apple.controlcenter
+		       0      - 	com.apple.DictationIM
+		       0      - 	com.apple.accessibility.LiveTranscriptionAgent
+		     497      - 	com.apple.iCloudNotificationAgent
+		     437      - 	com.apple.amsaccountsd
+		       0      - 	com.apple.duetexpertd
+		       0      - 	com.apple.AMPLibraryAgent
+		       0      - 	com.apple.BTServer.le.agent
+		       0      - 	com.apple.AskPermissionUI
+		       0      - 	com.apple.VoiceOver
+		       0      - 	com.apple.Maps.mapssyncd
+		       0      - 	com.apple.thermaltrap
+		       0      - 	com.openssh.ssh-agent
+		     361      - 	com.apple.sociallayerd
+		       0      - 	com.apple.assistant_service
+		     391      - 	com.apple.rapportd
+		     440      - 	com.apple.Spotlight
+		     400      - 	com.apple.coreservices.useractivityd
+		     601      - 	com.apple.SoftwareUpdateNotificationManager
+		       0      - 	com.apple.screencaptureui.agent
+		       0      - 	com.apple.swtransparencyd
+		     630      - 	com.apple.appstoreagent
+		       0      - 	com.apple.gputoolsserviced
+		     356      - 	com.apple.usernotificationsd
+		       0      - 	com.apple.FamilyControlsAgent
+		       0      - 	com.apple.spotlightknowledged.importer
+		       0      - 	com.apple.AssistiveControl
+		     390      - 	com.apple.CommCenter
+		       0      - 	com.apple.amsondevicestoraged
+		       0      - 	com.apple.AMPDevicesAgent
+		       0      - 	com.apple.mdmclient.agent
+	}
+
+	unmanaged processes = {
+		com.apple.xpc.launchd.unmanaged.loginwindow.150 = {
+			active count = 5
+			dynamic endpoints = {
+				"com.apple.SchedulerUpdateNotificationPort" = {
+					port = 0x2fb0b
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+				"com.apple.BezelServices" = {
+					port = 0x20403
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+			}
+			pid-local endpoints = {
+				"com.apple.tsm.portname" = {
+					port = 0x1b44f
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+				"com.apple.axserver" = {
+					port = 0x1aa03
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+			}
+		}
+		com.apple.xpc.launchd.unmanaged.QuickLookUIServ.349 = {
+			active count = 3
+			dynamic endpoints = {
+			}
+			pid-local endpoints = {
+				"com.apple.tsm.portname" = {
+					port = 0x41907
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+				"com.apple.axserver" = {
+					port = 0x53507
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+			}
+		}
+		com.apple.xpc.launchd.unmanaged.com.apple.dock..401 = {
+			active count = 3
+			dynamic endpoints = {
+			}
+			pid-local endpoints = {
+				"com.apple.tsm.portname" = {
+					port = 0x4c903
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+				"com.apple.axserver" = {
+					port = 0x4ca03
+					active = 1
+					managed = 0
+					reset = 0
+					hide = 0
+					watching = 0
+				}
+			}
+		}
+	}
+
+	endpoints = {
+	}
+
+	externally-hosted endpoints = {
+		       0    M   D   com.apple.SpeechRecognitionCore.brokerd
+		 0x6dd03    M   A   com.apple.siri.location
+		 0x67c03    M   A   com.apple.assistant.flow_service
+		 0x75c17    M   A   com.apple.private.alloy.willow.stream-idswake
+		 0x4d70b    M   A   com.apple.coreservices.lsuseractivityadministration.xpc
+		 0x34f23    M   D   com.apple.bird.push
+		       0    M   D   com.apple.homeenergyd.xpc
+		 0x3a71b    M   A   com.apple.private.alloy.shortcuts-idswake
+		 0x8e053    M   A   com.apple.private.alloy.contextsync.local-idswake
+		       0    M   D   com.apple.AuthenticationServices.AutoFill
+		 0x7a403    M   A   com.apple.corefollowup.agent
+		 0x41303    M   A   com.apple.donotdisturb.availability.service
+		 0x4a303    M   D   com.apple.usernotifications.delegate.com.apple.SoundDetectionNotifications
+		 0x7d303    M   A   com.apple.private.alloy.amsaccountsync-idswake
+		       0    M   D   com.apple.StorageManagement.Service
+		       0    M   D   com.apple.proactive.appPreference.intentStreamUpdate
+		       0    M   D   com.apple.personalization.notificationCategorization
+		 0x55a03    M   A   com.apple.corespeech.corespeechd.xpc
+		 0x7fd03    M   A   com.apple.siri.localspeechrecognitionbridge.xpc
+		       0    M   D   com.apple.people.agent
+		 0x46907    M   A   com.apple.nsurlsessiond-launchondemand
+		 0x2db03    M   A   com.apple.universalaccessd.running
+		 0x41ca7    M   A   com.apple.trial.status
+		 0x29507    M   A   com.apple.voicebanking.services
+		 0x36417    M   D   com.apple.CalendarExtensionSupport
+		 0x6c403    M   A   com.apple.linkd.transcript
+		       0    M   D   com.apple.protectedcloudstorage.protectedcloudkeysyncing.pairedsync
+		       0    M   D   com.apple.mdmclient.agent.unrestricted
+		 0x3b503    M   A   com.apple.fonts
+		 0x38103    M   A   com.apple.suggestd.deliveries
+		 0x38203    M   A   com.apple.proactive.ProactiveHarvesting.Sysdiagnose
+		 0x7a803    M   D   com.apple.CallHistorySyncHelper
+		 0x46703    M   A   com.apple.usernoted.web_client
+		 0x4fd03    M   D   com.apple.rapport.remote-text-input
+		 0x2f403    M   D   com.apple.lsd.openurl
+		       0    M   D   com.apple.LocalAuthentication.Assertions
+		 0x6e003    M   D   com.apple.assistant.crossdevice.election.service
+		       0    M   D   com.apple.appleidsetupd.repair.xpc
+		 0x2fd7f    M   A   com.apple.proactive.SuggestionRequest.ps_unstructured_reminder_interaction_suggestions
+		       0    M   D   com.apple.AuthenticationServicesCore.AuthenticationServicesAgent
+		       0    M   D   com.apple.testmanagerd
+		 0x36c03    M   A   com.apple.private.alloy.facetime.video-idswake
+		 0x37103    M   A   com.apple.callkit.callsourcehost
+		 0x84903    M   A   com.apple.ap.promotedcontent.identifiermanager
+		 0xa1c03    M   A   com.apple.generativeexperiences.retriever
+		 0x88303    M   A   com.apple.generativeexperiences.FailureTracking
+		 0x66c03    M   A   com.apple.private.alloy.findmy.itemsharing-crossaccount-idswake
+		       0    M   D   com.apple.dataaccess.dataaccessd.aps.demo
+		       0    M   D   com.apple.proactive.ContextualEngine.suggestions.xpc
+		 0xa7e03    M   A   com.apple.ondemandd.odrctl
+		 0x55c03    M   D   com.apple.corespeech.corespeechd.speechprofileadmin.service
+		 0x64303    M   A   com.apple.usernotifications.delegate.com.apple.ScreenTimeNotifications
+		 0x71703    M   A   com.apple.ScreenTimeAgent.ask
+		 0x3a22b    M   A   com.apple.usernotifications.settings-vendor
+		 0x48713    M   A   com.apple.ndoagent
+		 0x31b37    M   A   com.apple.coreservices.sharedfilelistd.xpc
+		 0x51e03    M   A   com.apple.AppSSO.service-xpc
+		       0    M   D   com.apple.mbuseragent
+		       0    M   D   com.apple.translationd
+		 0x40aa7    M   A   com.apple.accountsd.oauthsigner
+		       0    M   D   com.apple.appsleep
+		       0    M   D   com.apple.synapse.backlink-service
+		 0x38003    M   A   com.apple.suggestd.ipsos
+		 0x39003    M   A   com.apple.proactive.PersonalizationPortrait.TemporalCluster
+		 0x20403    U   A   com.apple.BezelServices
+		       0    M   D   com.apple.mbbackgrounduseragent
+		 0x3ef07    M   A   com.apple.distributed_notifications@Uv3
+		 0x50a03    M   D   com.apple.keychainsharingmessagingd
+		       0    M   D   com.apple.mdworker.shared
+		 0x5f703    U   A   com.apple.tiswitcher.fromuiserver
+		       0    M   D   com.apple.CloudPhotosConfiguration
+		       0    M   D   com.apple.languageassetd
+		 0x6ea03    M   A   com.apple.assistant.security
+		       0    M   D   com.apple.rcd
+		 0x50c17    M   A   com.apple.cloudasset.cloudd
+		       0    M   D   com.apple.asktod
+		       0    M   D   com.apple.midiserver.io
+		 0x5ba03    M   A   com.apple.chronod.replicator
+		 0x6fd43    M   A   com.apple.contacts.donation.agent
+		 0x41203    M   D   com.apple.aps.donotdisturb.sync-engine
+		 0x7db03    M   A   com.apple.aps.cloudpaird
+		       0    M   D   com.apple.metrickit.xpc
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.Siri.ActionPredictionNotifications
+		 0xa8503    M   A   com.apple.appstoreagent.CacheDelete
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.appleseed.FeedbackAssistant
+		       0    M   D   com.apple.seserviced
+		       0    M   D   com.apple.seserviced.sereservation.client
+		       0    M   D   com.apple.AssistiveControl.running
+		       0    M   D   com.apple.shazamd
+		 0x43e7b    M   A   com.apple.commcenter.oswatchdog
+		 0x2e603    M   A   com.apple.dock.ppt
+		 0x3e003    M   A   com.apple.dock.notificationcenter
+		 0x2bf2f    M   A   com.apple.dock.launchpad
+		 0x78903    M   A   com.apple.intelligentroutingd.xpc.media
+		 0x49a03    M   A   com.apple.FontWorker
+		       0    M   D   com.apple.AOSPushRelay.push.demo
+		 0x4f02b    M   D   com.apple.routined.store.cloud
+		       0    M   D   com.apple.ibooks.BLService
+		       0    M   D   com.apple.siri.encore_xpc_service
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.ManagedClient.PasscodeUserNotification2
+		       0    M   D   com.apple.synapse.DocumentWorkflowsService
+		 0x37c03    M   A   com.apple.ProactiveSummarization.server
+		 0x38603    M   A   com.apple.proactive.input.suggester
+		       0    M   D   com.apple.Maps.xpc.MediaAPI
+		       0    M   D   com.apple.intelligenceplatform.KnowledgeConstruction
+		 0x45003    M   A   com.apple.rapport.private-discovery
+		 0x2f077    M   A   com.apple.lsd.mapdb
+		       0    M   D   com.apple.mdworker.single.arm64
+		 0x42903    M   A   com.apple.ctkd.token-client
+		 0x30a03    M   A   com.apple.security.octagon
+		 0x3b903    M   A   com.apple.security.kcsharing
+		       0    M   D   com.apple.siri-distributed-evaluation
+		       0    M   D   com.apple.navd
+		       0    M   D   com.apple.RemoteDesktop.agent
+		 0x74007    M   A   com.apple.networkserviceproxy
+		       0    M   D   com.apple.testmanagerd.control
+		 0x7d203    M   A   com.apple.xpc.amsaccountsd
+		 0x59003    M   A   com.apple.aps.amsaccountsd
+		 0x33a03    M   A   com.apple.telephonyutilities.callservicesdaemon.voip
+		 0x5026f    M   A   com.apple.icloud.searchpartyd.securelocations
+		       0    M   D   com.apple.duetexpertd.SettingsActions
+		 0xa0c03    M   A   com.apple.siriinferenced.signals
+		       0    M   D   com.apple.aps.sportsd
+		 0x39f03    M   A   com.apple.usernotifications.alert-coordination
+		       0    M   D   com.apple.passd.device-registration
+		       0    M   D   com.apple.speech.synthesis.TimeAnnouncementsPort
+		 0x45943    M   A   com.apple.triald.internal
+		       0    M   D   com.apple.familynotification.agent
+		       0    M   D   com.apple.corespotlight.receiver.photos.search
+		       0    M   D   com.apple.Safari.History.Service
+		       0    M   D   com.apple.screensharing.ShareScreenInvitation
+		 0x74a03    M   A   com.apple.ak.authorizationservices.xpc
+		 0x9c703    M   A   com.apple.siri.uaf.service
+		 0x38303    M   D   com.apple.private.alloy.suggestions.smartreplies-idswake
+		 0x38b03    M   A   com.apple.suggestd.fides
+		       0    M   D   com.apple.speech.speechsynthesisd.arm64
+		       0    M   D   com.apple.MessageUIMacHelperService
+		       0    M   D   com.apple.appkit.xpc.ColorSampler
+		       0    M   D   com.apple.security.XPCTimeStampingService
+		 0x87403    M   A   com.apple.XprotectFramework.PluginService
+		 0x70403    M   A   com.apple.aa.usernotifications.xpc
+		 0x4c207    M   A   com.apple.private.alloy.fmd-idswake
+		 0x47b03    M   A   com.apple.coreservices.uasharedpasteboardmanager.xpc
+		       0    M   D   com.apple.private.alloy.keytransparency.accountkey.pinning-idswake
+		 0x35d03    M   A   com.apple.bird.cache-delete
+		       0    M   D   com.apple.aps.mlhostd
+		       0    M   D   com.apple.stickers.api
+		       0    M   D   com.apple.corespotlight.daemon.stickers
+		 0xa0813    M   A   com.apple.ap.adprivacyd.attribution
+		       0    M   D   com.apple.intelligenceflow.querydecoration
+		       0    M   D   com.apple.avatar.support
+		 0x546e3    M   A   com.apple.donotdisturb.appconfiguration.service
+		 0x4a003    M   A   com.apple.accessibility.heard
+		 0x33b03    M   A   com.apple.telephonyutilities.callservicesdaemon.conversationprovidermanager
+		 0x88203    M   A   com.apple.generativeexperiences.classification
+		 0xa201b    M   A   com.apple.generativeexperiences.textcomposition
+		 0x6f303    M   A   com.apple.aps.searchpartyuseragent
+		       0    M   D   com.apple.intelligenceplatform.InferenceSupport
+		 0x853cb    M   A   com.apple.mediaanalysisd.photos
+		 0x71e03    M   A   com.apple.legacyagent.usersettingsprovider
+		 0x59d07    M   A   com.apple.inputswitcher.startup
+		 0x61503    M   A   com.apple.itunescloud.library-auth-token-provider
+		 0x61403    M   A   com.apple.itunescloud.remote-request-execution-service
+		 0x2e407    M   D   com.apple.dock.downloads
+		 0x7ee03    M   D   com.apple.amp.mediasharingd
+		       0    M   D   com.apple.intelligenceflow.context
+		 0x59703    M   D   com.apple.uiintelligencesupport.agent
+		 0x7d703    M   A   com.apple.osanalytics.user.cachedelete
+		 0x69f03    M   D   com.apple.linkd.cliSupport
+		 0x51d03    M   A   com.apple.usernotifications.delegate.com.apple.PlatformSSO.notifications
+		 0xa1307    M   A   com.apple.aps.UsageTrackingAgent
+		 0x88e0f    M   A   com.apple.UsageTrackingAgent
+		       0    M   D   com.apple.aps.mdmclient.agent.push.development
+		       0    M   D   com.apple.scopedbookmarksagent.xpc
+		 0x5bf03    M   A   com.apple.StatusKit.subscribe
+		 0x79f0b    M   A   com.apple.StatusKit.presence
+		 0x1350b    M   A   com.apple.xpc.activity.control
+		       0    M   D   com.apple.synapse.backlink-indicator-usage
+		 0x33503    M   A   com.apple.proactive.PersonalizationPortrait.QuickType
+		 0x37e03    M   A   com.apple.suggestd.events
+		 0x39103    M   A   com.apple.proactive.PersonalizationPortrait.Topic.readWrite
+		       0    M   D   com.apple.CallHistorySyncHelper.aps
+		 0x45f2f    M   A   com.apple.usernoted.notificationcenter
+		 0x34903    M   A   com.apple.FileProvider.sim2host
+		       0    M   D   com.apple.aps.bookdatastored
+		 0x42e7f    M   D   com.apple.LocalAuthentication.ap2
+		       0    M   D   com.apple.iokit.IOServiceAuthorizeAgent
+		       0    M   D   com.apple.ensemble.dragserver
+		       0    M   D   com.apple.appleidsetup.xpc
+		 0x60103    M   D   com.apple.corespotlight.daemon.homekit
+		 0x2eb3b    M   A   com.apple.dockling.server
+		       0    M   D   com.apple.mlhostd.xpc
+		 0x3c403    M   A   com.apple.coreduetd.knowledge.user
+		       0    M   D   com.apple.voicememod.xpc
+		       0    M   D   com.apple.storeagent-xpc
+		       0    M   D   com.apple.AddressBook.abd
+		 0xa6103    M   A   com.apple.ap.promotedcontent.mescalinterface
+		       0    M   D   com.apple.dataaccess.dataaccessd.aps
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.GamePolicyNotifications
+		       0    M   D   com.apple.private.alloy.apppredictionsync-idswake
+		       0    M   D   com.apple.proactive.ActionPrediction.predictions
+		       0    M   D   com.apple.storekitservice.sim2host
+		       0    M   D   com.apple.watchlistd.xpc
+		 0x83403    M   A   com.apple.ondemandd.launchservices
+		 0x83217    M   A   com.apple.appstoreagent.legacy
+		 0x58c03    M   A   com.apple.usernotifications.delegate.com.apple.reminders
+		       0    M   D   com.apple.feedbackd.centralized-feedback
+		 0x71903    M   A   com.apple.ScreenTimeAgent.Contacts
+		       0    M   D   com.apple.gputools.service
+		       0    M   D   com.apple.progressd.aps
+		 0x61603    M   A   com.apple.private.alloy.itunescloudd-idswake
+		       0    M   D   com.apple.ThreadNetwork.xpc
+		       0    M   D   com.apple.preview-shell.shell-agent-pipe-services
+		       0    M   D   com.apple.preview-shell.host-agent-pipe-services
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.familynotifications
+		 0x9ee03    M   D   com.apple.reversetemplated
+		 0x6975f    M   A   com.apple.linkd.suggestions
+		       0    M   D   com.apple.TextUnderstanding.DocumentUpdateHandler
+		       0    M   D   com.apple.dt.CommandLineTools.installondemand
+		 0x10727    M   A   com.apple.cmio.ContinuityCaptureAgent
+		       0    M   D   com.apple.companiond.xpc
+		 0x7ed03    M   A   com.apple.inputmethodkit.setxpcendpoint
+		 0x60d03    M   A   com.apple.ak.walrus.xpc
+		 0x7a023    M   A   com.apple.StatusKit.local
+		       0    M   D   com.apple.siri.execution_service
+		 0x35047    M   A   com.apple.amp.devicediscoveryd.devicesagentevents
+		       0    M   D   com.apple.synapse.link-context-service
+		       0    M   D   com.apple.btsa
+		 0x58003    M   A   com.apple.incoming-call-filter-server
+		       0    M   D   com.apple.speech.speechsynthesisd.x86_64
+		 0x7b303    M   A   com.apple.TextInputUI.xpc.CursorUIViewService
+		 0x67d03    M   A   com.apple.assistantd.managedstorage
+		 0x42603    M   D   com.apple.aps.transparencyd-coredata
+		 0x60303    M   D   com.apple.private.appintents.delegate.com.apple.homed
+		       0    M   D   com.apple.aquaappearancehelper
+		       0    M   D   com.apple.storeuid
+		 0x34003    M   A   com.apple.callkit.service
+		 0x37303    M   A   com.apple.telephonyutilities.callservicesdaemon.callprovidermanager
+		 0x37803    M   A   com.apple.private.alloy.facetime.audio-idswake
+		 0xa6523    M   A   com.apple.ap.promotedcontent.supportinterface
+		 0xa1f03    M   A   com.apple.generativeexperiences.corefollowup
+		 0x6f82f    M   A   com.apple.icloud.searchparty.delegatedlocationpublish.items
+		 0x65e8b    M   A   com.apple.icloud.searchpartyuseragent.beaconmanager.simplebeacon
+		   0xa8b    M   A   com.apple.usernotifications.delegate.com.apple.wifi.usernotifications.autohotspot
+		       0    M   D   com.apple.intelligenceplatform.EntityResolution
+		       0    M   D   com.apple.intelligenceplatform.Lighthouse
+		 0x7d903    M   A   com.apple.BluetoothServices
+		       0    M   D   com.apple.GamePolicyAgent.menuextra
+		       0    M   D   com.apple.notifications.logging
+		 0xa8103    M   A   com.apple.aps.appstoreagent
+		 0x55703    M   D   com.apple.siri.attendingstates.xpc
+		 0x65307    M   D   com.apple.mediaanalysisd.homekitsession
+		       0    M   D   com.apple.rti-autofill
+		 0x64403    M   A   com.apple.aps.ScreenTime
+		 0x71803    M   A   com.apple.ScreenTimeAgent.organization-status
+		 0x71f03    M   A   com.apple.ScreenTimeAgent.private
+		       0    M   D   com.apple.ckdiscretionaryd
+		       0    M   D   com.apple.accessibility.AXVisualSupportAgent.startup
+		 0x44307    M   A   com.apple.aps.CommCenter
+		 0x3da03    M   D   com.apple.desktoppicture.cache-delete
+		 0xa8e07    M   A   com.apple.usernotifications.delegate.com.apple.voicebanking.usernotifications
+		 0x6c303    M   A   com.apple.linkd.extension
+		 0x790df    M   D   com.apple.usernotifications.delegate.com.apple.cmio.ContinuityCamera.notifications
+		       0    M   D   mul-xpc (Apple)_OpenStep
+		       0    M   D   com.apple.webinspector
+		 0x74603    M   A   com.apple.ak.appleidpasskey.xpc
+		 0x74803    M   A   com.apple.ak.puffin.xpc
+		 0x46203    M   A   com.apple.corespotlight.daemon.notifications
+		       0    M   D   com.apple.iBooks.BookDataStoreService
+		 0x87b03    M   A   com.apple.spotlightknowledged
+		 0x2f503    M   A   com.apple.lsd.trustedsignatures
+		       0    M   D   com.apple.cvmsCompAgent3600_arm64_1
+		       0    M   D   com.apple.DictionaryServiceHelper
+		       0    M   D   com.apple.transparencyd.ids
+		       0    M   D   com.apple.dt.previewsd.shellpipeservice.mac
+		       0    M   D   com.apple.dt.previewsd.agentpipeservice
+		 0x8e153    M   A   com.apple.biome.ContextSync
+		       0    M   D   com.apple.SiriTTSTrainingAgent
+		       0    M   D   com.apple.aps.avatar.service
+		       0    M   D   com.apple.speech.CommandAndControl.utility
+		 0x32703    M   A   com.apple.donotdisturb.service.non-launching
+		 0x57003    M   A   com.apple.askpermissiond
+		       0    M   D   com.apple.universalaccesscontrol.running
+		 0x66423    M   A   com.apple.ind.aps
+		 0xa1d03    M   A   com.apple.generativeexperiences.availabilityService
+		 0x6f503    M   A   com.apple.icloud.searchpartyuseragent.beaconmanager
+		 0x6689b    M   A   com.apple.icloud.searchpartyd.beaconsharingservice
+		       0    M   D   com.apple.intelligenceplatform.Knosis
+		       0    M   D   com.apple.aps.watchlistd.dev
+		 0x8911f    M   A   com.apple.siriinferenced
+		 0x57503    M   D   com.apple.sharing.transfer-observer
+		  0xde93    M   D   com.apple.private.alloy.bulletinboard-idswake
+		       0    M   D   com.apple.idsremoteurlconnectionagent.desktop.auth
+		       0    M   D   com.apple.xpc.loginitemregisterd
+		       0    M   D   com.apple.systemprofiler
+		       0    M   D   com.apple.Maps.MapsSync.cache
+		 0x42017    M   A   com.apple.cache_delete.public
+		       0    M   D   com.apple.intelligenceflow.uiContext
+		       0    M   D   com.apple.photos.service
+		       0    M   D   com.apple.geoanalyticsd
+		 0x69e03    M   A   com.apple.linkd.registry
+		 0x52113    M   A   com.apple.PlatformSSO.settings.service-xpc
+		       0    M   D   com.apple.SafariCloudHistoryPushAgent
+		       0    M   D   com.apple.screensharing.ViewInvitation
+		 0x3104f    M   D   com.apple.usernotifications.delegate.com.apple.wallpaper.notifications.sonoma-first-run
+		 0x3af0f    M   A   com.apple.wallpaper
+		 0x77d0f    M   A   com.apple.audio.AudioComponentPrefs
+		       0    M   D   com.apple.tipsd.assistant
+		 0x33103    M   A   com.apple.suggestd.mail
+		 0x38c03    M   A   com.apple.proactive.PersonalizationPortrait.Internal
+		       0    M   D   com.apple.private.alloy.maps.eta-idswake
+		 0x36703    M   A   com.apple.FileProvider.cache-delete
+		 0x3d003    M   A   com.apple.lsd.modifydb
+		       0    M   D   com.apple.security.KeychainStasher
+		 0x4a71f    U   A   com.apple.finder.ServiceProvider
+		       0    M   D   com.apple.tonelibraryd
+		       0    M   D   com.apple.ctcategories.service
+		 0x67f03    M   A   com.apple.siri.orchestration.capabilities
+		 0x5980b    M   A   com.apple.private.spotlight.mdwrite
+		       0    M   D   com.apple.ensemble
+		       0    M   D   com.apple.VideoSubscriberAccount.videosubscriptionsd
+		 0x31603    M   A   com.apple.quicklook.ThumbnailsAgent.CacheDelete
+		 0x7f303    M   A   com.apple.intelligenceplatform.Coordination
+		       0    M   D   com.apple.Safari.PasswordBreachHelper
+		 0x3ab27    M   A   com.apple.usernotifications.delegate.com.apple.shortcuts
+		 0x43c17    M   A   com.apple.cloudd.cache-delete
+		 0x5a703    M   A   com.apple.spotlight.IndexAgent
+		 0x59103    M   D   com.apple.amsaccountsd.multiuser
+		 0x58603    M   D   com.apple.private.alloy.icloudpairing-idswake
+		       0    M   D   com.apple.proactive.sleepSchedule
+		       0    M   D   com.apple.TMHelperAgent.DeliverNotification
+		 0x55903    M   A   com.apple.corespeech.corespeechservices
+		 0x89fb3    M   A   com.apple.mediaanalysisd.computeservice
+		 0x57a03    M   A   com.apple.SharingServices
+		 0x71403    M   D   com.apple.private.alloy.digitalhealth-idswake
+		 0x71a03    M   A   com.apple.ScreenTimeAgent.reactor-tool
+		       0    M   D   com.apple.gputools.service.simulator
+		       0    M   D   com.apple.shazamd.events
+		 0x7cc67    M   A   com.apple.inputswitcher.stop
+		       0    M   D   com.apple.familycontrols.useragent
+		 0x45a03    M   A   com.apple.aps.triald
+		       0    M   D   com.apple.screensharing.menuextra
+		 0x2de03    M   A   com.apple.windowmanager.server
+		 0x3fa63    M   A   com.apple.windowmanager.external
+		       0    M   D   com.apple.SafariBookmarksSyncAgent
+		       0    M   D   com.apple.notes.exchangenotesd
+		 0x70a03    M   A   com.apple.spinreporteragent
+		       0    M   D   com.apple.naturallanguaged
+		 0x8da23    M   A   com.apple.siri.inference.EntityMatcher.admin
+		 0x9d503    M   A   com.apple.usernotifications.delegate.com.apple.weather
+		       0    M   D   com.apple.Maps.mapspushd.icloud
+		       0    M   D   com.apple.speech.speechdatainstallerd
+		 0x7de03    M   D   com.apple.usernotifications.delegate.com.apple.iChat
+		 0x43103    M   A   com.apple.LocalAuthentication.RemoteUIHost
+		       0    M   D   com.apple.ContainerMigrationService
+		 0x72b2f    M   A   com.apple.contacts.account-caching
+		 0x72a2f    M   A   com.apple.contactsd.persistence
+		 0x67a03    M   A   com.apple.assistant.sync
+		       0    M   D   com.apple.SpatialConnect.host
+		 0x40603    M   A   com.apple.identityservicesd.aps
+		 0x42223    M   A   com.apple.transparencyd.accounts-support
+		 0x70503    M   A   com.apple.aa.custodian.xpc
+		       0    M   D   com.apple.dt.previewsd.processexit
+		       0    M   D   com.apple.sidecar-display-agent
+		       0    M   D   com.apple.DictationIM.startup
+		 0x4a103    M   D   com.apple.aps.heard
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.gamecenter
+		       0    M   D   com.apple.controlstrip
+		 0x34303    M   A   com.apple.telephonyutilities.callservicesdaemon.voip.push.development
+		       0    M   D   com.apple.private.appintents.delegate.com.apple.intelligenceplatformd
+		       0    M   D   com.apple.DwellControl.startup
+		       0    M   D   com.apple.duet.appPrediction.inspection
+		 0xa7d03    M   D   com.apple.ondemandd.CacheDelete
+		       0    M   D   com.apple.sportsd.session.xpc
+		       0    M   D   com.apple.securityuploadd
+		       0    M   D   com.apple.locationaccessstored.registration
+		 0x40303    M   A   com.apple.commcenter.coretelephony.xpc
+		 0x6b803    M   D   com.apple.aps.newsd
+		       0    M   D   com.apple.protectedcloudstorage.protectedcloudkeysyncing
+		 0xa120f    M   A   com.apple.private.alloy.usagetracking-idswake
+		       0    M   D   com.apple.aps.mdmclient.agent.push.production
+		       0    M   D   com.apple.coreservices.uasharedpasteboardprogressui.xpc
+		 0x74b03    M   A   com.apple.ak.aps
+		       0    M   D   com.apple.preview-shell-mac.host-agent-pipe-services
+		 0x9eaab    M   A   com.apple.aps.weather
+		       0    M   D   com.apple.Maps.xpc.SharedTrip
+		 0x58203    M   A   com.apple.imagent.desktop.auth
+		 0x57b03    M   A   com.apple.coremedia.virtualdisplaycg
+		 0x7e303    M   A   com.apple.AirPlayAgent.xpc
+		 0x72803    M   A   com.apple.contactsd.support
+		 0x5d303    M   A   com.apple.AddressBook.ContactsAccountsService
+		 0x5060b    M   D   com.apple.TrustedPeersHelper
+		       0    M   D   com.apple.bluetoothUIServer
+		       0    M   D   com.apple.unmountassistant.useragent
+		       0    M   D   com.apple.dt.previewsd.previewservice.mac
+		 0x2ff03    M   A   com.apple.proactive.SuggestionRequest.cd_calendar_interaction_suggestions
+		 0x2ad13    M   A   com.apple.coreservices.quarantine-resolver
+		       0    M   D   com.apple.sirittsd
+		 0x4a203    M   A   com.apple.private.alloy.hearing-idswake
+		       0    M   D   com.apple.gamed
+		       0    M   D   com.apple.sysdiagnose_agent
+		 0x4aa4b    M   A   com.apple.private.alloy.widgets-idswake
+		 0x58803    M   A   com.apple.HearingModeService
+		       0    M   D   com.apple.GamePolicyAgent.daemon
+		 0xa8003    M   D   com.apple.storekitservice
+		 0x64003    M   A   com.apple.ScreenTimeAgent.accessrequestor
+		       0    M   D   com.apple.AddressBook.PushSubscription
+		 0x32303    M   D   com.apple.bulletinboard.settingspersistenceconnection
+		       0    M   D   com.apple.quicklook
+		 0x6d3a3    M   D   com.apple.videoconference.avconference
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.ShazamNotifications
+		 0x3b41f    M   A   com.apple.dmd.policy
+		       0    M   D   com.apple.preview-shell.host-shell-pipe-services
+		       0    M   D   com.apple.DataDeliveryServices.AssetService
+		       0    M   D   com.apple.scrod
+		       0    M   D   com.apple.syncservices.SyncServer
+		       0    M   D   com.apple.ptpcamerad
+		 0xa1103    M   A   com.apple.UsageTrackingAgent.private
+		       0    M   D   com.apple.cvmsCompAgent_arm64_1
+		 0x889ab    M   D   com.apple.usernotifications.delegate.com.apple.LockdownMode
+		       0    M   D   com.apple.corespotlightservice
+		 0x1aee3    M   D   com.apple.security.cloudkeychainproxy3
+		 0x5be03    M   A   com.apple.private.alloy.status.keysharing-idswake
+		 0x56a03    M   A   com.apple.MobileTimer.timerserver
+		 0x9c603    M   A   com.apple.siriknowledged
+		       0    M   D   com.apple.quicklook.ui.helper.active
+		 0x76003    M   A   com.apple.frontboard.systemappservices
+		 0x38503    M   A   com.apple.private.psg.internal
+		 0x7e003    M   D   com.apple.madrid.lite-idswake
+		 0x45203    M   A   com.apple.rapport.StatusUpdates
+		 0x45103    M   A   com.apple.rapport.people
+		       0    M   D   com.apple.storedownloadd
+		 0x30733    M   A   com.apple.securityd.aps
+		       0    M   D   com.apple.CoreDevice.remotepairingd
+		 0x5aca3    M   A   com.apple.geod
+		 0x5d903    M   A   com.apple.replayd-cache-delete
+		 0x51903    M   A   com.apple.findmy.findmylocate.friendshipservice
+		 0x47907    M   A   com.apple.coreservices.lsbestappsuggestionmanager.xpc
+		       0    M   D   com.apple.screensharing.agent
+		       0    M   D   com.apple.maps.destinationd.donations
+		 0x33807    M   A   com.apple.telephonyutilities.callservicesdaemon.callcapabilities
+		 0x37203    M   A   com.apple.callkit.callcontrollerhost
+		 0x33d03    M   A   com.apple.copresence.conversationmanagerhost
+		 0x65c57    M   A   com.apple.searchparty.btfindingsession
+		 0x20917    M   A   com.apple.usernotifications.delegate.com.apple.wifi.usernotifications.join
+		 0x55b03    M   D   com.apple.corespeech.corespeechd.attending.service
+		 0x32103    M   A   com.apple.usernotifications.listener
+		       0    M   D   com.apple.speech.synthesis.SpeakingHotKeyPort
+		 0x4e12b    M   A   com.apple.nsurlsessiond
+		 0x3e103    M   A   com.apple.windowmanager.dragserver
+		       0    M   D   com.apple.synapse.backlinkindicator
+		 0x48547    M   A   com.apple.aps.applecare.push.handler
+		       0    M   D   com.apple.amsondevicestoraged.xpc
+		 0x42a5b    M   A   com.apple.PlatformSSO.service-login-manager-xpc
+		       0    M   D   com.apple.textunderstandingd
+		       0    M   D   com.apple.aps.webkit.webpushd.incoming-push
+		 0x45d03    M   A   com.apple.routined.event
+		 0x45303    M   A   com.apple.PairingManager
+		 0x4fe03    M   A   com.apple.CompanionLink
+		       0    M   D   com.apple.cvmsCompAgent_x86_64
+		 0x34b03    M   A   com.apple.pluginkit.pkd
+		 0x68203    M   A   com.apple.siri.contextcollector
+		 0x67e03    M   A   com.apple.assistant.settings
+		 0x75103    M   A   com.apple.private.alloy.home-idswake
+		 0x75503    M   A   com.apple.private.alloy.willow-idswake
+		       0    M   D   com.apple.dt.previewsd.previewservice
+		 0x30203    M   A   com.apple.proactive.SuggestionRequest.ps_facetime_interaction_model
+		       0    M   D   com.apple.ATS.FontValidator
+		       0    M   D   com.apple.webprivacyd
+		       0    M   D   com.apple.gamed.aps
+		 0x37403    M   A   com.apple.private.alloy.phonecontinuity-idswake
+		  0x1833    M   A   com.apple.SharedWebCredentials
+		       0    M   D   com.apple.proactive.appDirectory
+		 0x7d403    M   A   com.apple.remindd.userInteractive
+		 0x55503    M   A   com.apple.corespeech.corespeechd.activation.xpc
+		 0x63d03    M   A   com.apple.ScreenTimeAgent.downtime
+		       0    M   D   com.apple.AddressBook.PushNotification
+		       0    M   D   com.apple.VoiceOver.running
+		 0x86603    M   A   com.apple.AssetCacheLocatorService
+		 0x6ca9f    M   A   com.apple.newsd.analytics
+		       0    M   D   com.apple.storeaccountd
+		 0x78347    M   A   com.apple.family.notifier
+		 0x6d57f    M   A   com.apple.assistant.cdm
+		       0    M   D   com.apple.mdmclient.agent
+		 0x85d6b    M   A   com.apple.bluetoothuser.xpc
+		       0    M   D   com.apple.tipsd
+		       0    M   D   com.apple.aps.bookassetd
+		 0x56703    M   D   com.apple.usernotifications.delegate.com.apple.mobiletimer
+		       0    M   D   com.apple.preview-shell-mac.system-services
+		 0x2df3b    M   A   com.apple.pasteboard.1
+		 0x33203    M   A   com.apple.suggestd.internal
+		 0x4d913    M   A   com.apple.siri.context.service
+		 0x7cb57    M   A   com.apple.Spotlight
+		       0    M   D   com.apple.cloudphotod.daemon
+		 0x75203    M   D   com.apple.homekit.coredata.xpc
+		 0x30003    M   A   com.apple.coreduetd.people.user
+		 0xa0a33    M   A   com.apple.ap.adprivacyd.opt-out
+		 0x12623    M   A   com.apple.coreservices.code-evaluation
+		 0x7a103    M   A   com.apple.chrono.controlcenter
+		 0x5b943    M   A   com.apple.chronoservices
+		       0    M   D   com.apple.accessibility.LiveTranscriptionAgent
+		 0x80b03    M   A   com.apple.aps.financed
+		       0    M   D   com.apple.intelligenceplatform.Internal
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.tv
+		 0x83303    M   A   com.apple.ondemandd.appreview
+		 0x7e503    M   A   com.apple.sharing.handoff.scanning
+		       0    M   D   com.apple.proactive.ContextualActions.xpc
+		       0    M   D   com.apple.assessmentagent.activeRestrictionUUIDFetching
+		       0    M   D   com.apple.passd.payment
+		       0    M   D   com.apple.privatecloudcompute
+		       0    M   D   com.apple.private.alloy.accessibility.switchcontrol-idswake
+		 0x6dc3f    M   A   com.apple.commerce
+		 0x4f403    M   A   com.apple.triald.cache-delete
+		 0x34d17    M   A   com.apple.calaccessd.xpc
+		       0    M   D   com.apple.preview-shell.system-services
+		 0x6c503    M   A   com.apple.linkd.mediator
+		       0    M   D   com.apple.preview-shell-mac.shell-agent-pipe-services
+		       0    M   D   com.apple.RapportUIAgent
+		       0    M   D   com.apple.synapse.notes-activation-service
+		 0x38e03    M   A   com.apple.proactive.PersonalizationPortrait.Location.readWrite
+		       0    M   D   com.apple.private.alloy.maps-idswake
+		 0x45c07    M   A   com.apple.usernoted.events
+		       0    M   D   com.apple.mdworker.single.x86_64
+		 0x3e80b    M   A   com.apple.cfprefsd.agent
+		 0x5dc03    M   A   com.apple.replaykit.sharingsession
+		 0x6e303    M   A   com.apple.assistant.dictation
+		 0x6e903    M   A   com.apple.siri.tether
+		 0x552f3    M   A   com.apple.identityservicesd.pds
+		 0x60003    M   D   com.apple.homed.aps
+		 0x7f503    M   A   com.apple.biome.compute.source.user
+		 0x8e303    M   A   com.apple.private.alloy.contextsync-idswake
+		       0    M   D   com.apple.stickers.aps
+		       0    M   D   com.apple.syncservices.uihandler
+		 0xa1b03    M   A   com.apple.generativeexperiences.externaltextcomposition
+		 0x88403    M   A   com.apple.generativeexperiences.generativeexperiencessession
+		       0    M   D   com.apple.intelligenceplatform.EventLog
+		 0x58d03    M   A   com.apple.aps.remindd.dataaccess.dev
+		 0xa5677    M   A   com.apple.mediaanalysisd.embeddingstore
+		       0    M   D   com.apple.KeyboardAccessAgent.startup
+		       0    M   D   com.apple.assessmentagent
+		 0x71503    M   A   com.apple.ScreenTimeAgent.accessresponder
+		 0x64203    M   A   com.apple.ScreenTimeAgent
+		       0    M   D   com.apple.AddressBook.SourceSync
+		       0    M   D   com.apple.BMEHelper
+		 0x32203    M   A   com.apple.private.alloy.continuity.notifications-idswake
+		 0x43f8f    M   A   com.apple.private.alloy.thumper.keys-idswake
+		       0    M   D   com.apple.Maps.MapsSync.xpc
+		       0    M   D   com.apple.Maps.MapsSync.service
+		       0    M   D   com.apple.helpd
+		 0x32603    M   A   com.apple.CoreLocation.agent
+		 0x54703    M   A   com.apple.accountsd.accountmanager
+		       0    M   D   com.apple.AOSPushRelay
+		 0x8963b    M   A   com.apple.backgroundtaskmanagementagent
+		 0x8a003    M   A   com.apple.backgroundtaskmanagement.notifications
+		 0x79e87    M   A   com.apple.aps.StatusKit
+		 0x7ea03    M   A   com.apple.MobileTimer.stopwatchserver
+		 0x7eb03    M   D   com.apple.MobileTimer.sessionserver
+		 0x56803    M   D   com.apple.private.alloy.mobiletimersync-idswake
+		       0    M   D   com.apple.exchange.exchangesyncd
+		       0    M   D   com.apple.preview-shell-mac.host-shell-pipe-services
+		 0x4f903    M   A   com.apple.ManagedSettingsAgent
+		 0x7794b    M   D   com.apple.UIKit.statusbarserver
+		 0x38403    M   A   com.apple.aps.suggestd
+		 0x38803    M   A   com.apple.proactive.PersonalizationPortrait.Event
+		       0    M   D   com.apple.Maps.mapspushd.geoservices
+		       0    M   D   com.apple.coredatad.cloudkit
+		 0x7fa03    M   A   com.apple.accessibility.axassetsd.service
+		       0    M   D   com.apple.cvmsCompAgent3600_x86_64_1
+		 0x63913    M   A   com.apple.imdpersistence.IMDPersistenceAgent
+		       0    M   D   com.apple.LocalAuthentication.UI
+		       0    M   D   com.apple.FontRegistry.FontRegistryUIAgent
+		 0x60203    M   A   com.apple.usernotifications.delegate.com.apple.Home
+		 0x5b403    M   A   com.apple.parsecd
+		 0x51607    M   A   com.apple.findmy.findmylocate.settings
+		 0x4d80f    M   A   com.apple.coreservices.uasharedpasteboardaux.xpc
+		       0    M   D   com.apple.csuseragent
+		 0x61927    M   A   com.apple.networkserviceproxy.fetch-token
+		 0x89333    M   A   com.apple.AdSheetPhone.push
+		       0    M   D   com.apple.intelligenceflow.snippet-streaming
+		       0    M   D   com.apple.maps.destinationd.sources
+		       0    M   D   com.apple.maps.destinationd.predictions
+		       0    M   D   com.apple.seeding.client
+		 0x7e603    M   A   com.apple.sharingd.nsxpc
+		       0    M   D   com.apple.amp.library.framework
+		 0x64103    M   A   com.apple.ScreenTimeAgent.setup
+		 0x71b03    M   D   com.apple.ScreenTimeAgent.diagnostics-service
+		 0x724cf    M   A   com.apple.private.alloy.screentime-idswake
+		       0    M   D   com.apple.FamilyControlsAgent
+		       0    M   D   com.apple.passd.in-app-payment
+		 0x2e307    M   A   com.apple.dock.remotedesktoppicture
+		 0x3650f    M   A   com.apple.corespotlight.daemon.calendar
+		 0x534bb    M   A   com.apple.cache_delete
+		 0x7847f    M   A   com.apple.familycircle.agent
+		       0    M   D   com.apple.applespell
+		 0x85b7b    M   A   com.apple.usernotifications.delegate.com.apple.BTMNotificationAgent
+		 0x56903    M   A   com.apple.usernotifications.delegate.com.apple.clock
+		 0x2e133    M   A   com.apple.coreservices.uauseractivitypasteboardclient.xpc
+		 0x4584f    M   A   com.apple.ManagedSettingsAgent.publisher
+		       0    M   D   com.apple.netauth.user.gui
+		 0x37d03    M   A   com.apple.suggestd.reminders
+		 0x34503    M   A   com.apple.fileprovider.pushkit
+		 0x3cf03    M   D   com.apple.lsd.diagnostics
+		 0x2ea37    M   D   com.apple.lsd.personaobserver
+		       0    M   D   com.apple.cvmsCompAgent3600_x86_64
+		       0    M   D   com.apple.installandsetup.migrationhelper
+		 0x86403    U   A   com.apple.aps.routined
+		       0    M   D   com.apple.CharacterPicker.RemoteGenerationViewService
+		 0x9f733    M   A   com.apple.GameController.gamecontrolleragentd
+		 0x4d607    M   A   com.apple.coreservices.lsuseractivity.simulatorsupport
+		 0x4d507    M   A   com.apple.coreservices.uasharedpasteboardcontroll.xpc
+		 0x2ee03    M   D   com.apple.dockextra.server
+		       0    M   D   com.apple.dt.previewsd.installservice
+		 0x3c103    M   A   com.apple.coreduet.knowledge.sync.push
+		       0    M   D   com.apple.noticeboard.agent
+		       0    M   D   com.apple.voicememod.datastore.Cloud
+		       0    M   D   com.apple.SpacesTouchBarService
+		       0    M   D   com.apple.AddressBook.AssistantService
+		       0    M   D   com.apple.SafariLaunchAgent.push
+		 0x37603    M   D   com.apple.telephonyutilities.callservicesdaemon.neighborhood-activities
+		       0    M   D   com.apple.dataaccess.dataaccessd
+		 0x58403    M   D   com.apple.usernotifications.delegate.com.apple.MuteControlUserNotifications
+		       0    M   D   com.apple.proactive.ContextualEngine.internal.xpc
+		 0x7b217    M   A   com.apple.CryptoTokenKit.AuthenticationHintsProvider.agent.libxpc
+		       0    M   D   com.apple.quicklookd.xpc
+		 0x13717    M   A   com.apple.universalaccessd.startup
+		 0x6c91b    M   A   com.apple.lockdownmoded
+		 0x74703    M   A   com.apple.ak.privateemail.xpc
+		 0x56b03    M   A   com.apple.MobileTimer.alarmserver
+		 0x5f45f    M   D   com.apple.UIKit.KeyboardManagement.hosted
+		 0x38903    M   A   com.apple.proactive.experiments.responses
+		 0x3940b    M   A   com.apple.proactive.ProactiveHarvesting.Internal
+		       0    M   D   com.apple.cvmsCompAgent3425AMD_x86_64
+		       0    M   D   com.apple.mdworker.sizing
+		 0x32503    M   A   com.apple.trustd.agent
+		 0x3bb03    M   A   com.apple.security.escrow-update
+		       0    M   D   com.apple.DistributionKit.DistributionHelper
+		 0x54203    M   A   com.apple.hiservices-xpcservice
+		 0x6512b    M   A   com.apple.aps.aa
+		       0    M   D   com.apple.accessibility.MotionTrackingAgent
+		       0    M   D   com.apple.AuthenticationServices.CredentialSharingGroups
+		       0    M   D   com.apple.aps.voicememod
+		 0x3d403    M   D   com.apple.controlcenter
+		       0    M   D   com.apple.intelligenceflow.transcript-entity-querying
+		 0x40203    M   A   com.apple.iconservices
+		       0    M   D   com.apple.RemoteManagementAgent.store
+		 0x7a73b    M   A   com.apple.ind.cloudfeatures
+		       0    M   D   com.apple.duet.expertcenter
+		 0x57103    M   A   com.apple.sharing.collaborationuserdefaults
+		       0    M   D   com.apple.ciphermld
+		       0    M   D   com.apple.amp.library
+		 0x71c03    M   D   com.apple.ScreenTimeAgent.settings
+		       0    M   D   com.apple.AddressBook.ScheduledSync
+		 0x39c03    M   A   com.apple.usernotificationsvendor.listener
+		       0    M   D   com.apple.passd.aps
+		       0    M   D   com.apple.private.alloy.applepay-idswake
+		 0x7b733    M   A   com.apple.CryptoTokenKit.AuthenticationHintsProvider
+		       0    M   D   com.apple.spotlightknowledged.importer
+		       0    M   D   com.apple.storeassetd
+		       0    M   D   com.apple.progressd
+		 0x74303    M   A   com.apple.itunescloudd.playactivity
+		 0x2e503    M   A   com.apple.dock.appstore
+		       0    M   D   com.apple.keyboardServices.textReplacementServer.aps
+		       0    M   D   com.apple.aps.diagnostics
+		 0x48303    M   A   com.apple.cdp.daemon
+		 0x8c903    M   D   com.apple.weatherd.weatherkit
+		       0    M   D   com.apple.Maps.mapspushd
+		 0x46403    M   A   com.apple.usernoted.push
+		 0x7dd03    M   A   com.apple.aps.imagent
+		 0x7df03    M   D   com.apple.imagent.cache-delete
+		       0    M   D   com.apple.spotlight.ImportAgent
+		 0x3cd03    M   D   com.apple.lsd.plugin
+		       0    M   D   com.apple.Virtualization.EventTap
+		 0x68303    M   A   com.apple.assistant.client
+		 0x6e703    M   D   com.apple.assistant.uibridge-service
+		 0x6e803    M   A   com.apple.aps.assistantd.fmip
+		 0x4c4db    M   A   com.apple.findmy.findmylocate.fenceservice
+		       0    M   D   com.apple.backgroundassets.user
+		 0x7f003    M   A   com.apple.intelligenceplatform.InternalBiome
+		 0x5921f    M   A   com.apple.pbs.fetch_services
+		       0    M   D   com.apple.intelligenceflow.internal
+		       0    M   D   com.apple.SafariLaunchAgent
+		 0x36d03    M   A   com.apple.telephonyutilities.callservicesdaemon.usernotificationprovider
+		 0xa1e03    M   A   com.apple.generativeexperiences.sysdiagnose
+		 0x8802f    M   A   com.apple.generativeexperiences.summarization
+		 0x24f63    M   A   com.apple.usernotifications.delegate.com.apple.wifi.usernotifications.diagnostics
+		       0    M   D   com.apple.intelligenceplatform.KGSimulation
+		       0    M   D   com.apple.mediastream.mstreamd.sharing.push-prod
+		       0    M   D   com.apple.duet.appPreference.prediction
+		       0    M   D   com.apple.aps.watchlistd
+		       0    M   D   com.apple.watchlistd.aps.demo
+		 0xa8203    M   A   com.apple.ondemandd.client
+		 0x8901f    M   A   com.apple.siriinferenced.remembers
+		 0x7d603    M   A   com.apple.aps.remindd
+		 0x55803    M   A   com.apple.corespeech.corespeechd.endpointer.service
+		       0    M   D   com.apple.corespotlight.daemon.people
+		       0    M   D   com.apple.AssistiveControl.startup
+		       0    M   D   com.apple.corefollowup.uihelper
+		       0    M   D   com.apple.BTServer.le.agent
+		       0    M   D   com.apple.screensharing.MessagesAgent
+		       0    M   D   com.apple.AskPermissionUI
+		 0x2ab3b    M   A   com.apple.ReportCrash
+		 0x3ff6f    M   A   com.apple.window_proxies.startup
+		 0x554d7    M   A   com.apple.SecureBackupDaemon.concurrent
+		       0    M   D   com.apple.Maps.MapsSync.store
+		 0x3d703    M   A   com.apple.dock.spaces
+		       0    M   D   com.apple.AOSPushRelay.notifier
+		       0    M   D   com.apple.AOSPushRelay.push
+		       0    M   D   com.apple.DistributedTimers
+		 0x45e03    M   A   com.apple.routined.registration
+		 0x56603    M   A   com.apple.inputmethodkit.launcher
+		 0x74c4f    M   A   com.apple.ak.custodian.xpc
+		 0x3610f    M   A   com.apple.amp.devicediscoveryd
+		 0x32e03    M   A   com.apple.suggestd.PersonalizationPortrait.StringDonation
+		 0x32b03    M   A   com.apple.proactive.PersonalizationPortrait.Location.readOnly
+		 0x46303    M   A   com.apple.usernotifications.remotenotificationservice
+		 0x4ff03    M   A   com.apple.rapport
+		 0x3ba03    M   A   com.apple.securityd.sos
+		       0    M   D   com.apple.SetStoreUpdateService
+		 0x3243f    M   D   com.apple.usernotifications.delegate.com.apple.tccd
+		 0x6de03    M   A   com.apple.assistant.analytics-observation
+		 0x40703    M   A   com.apple.identityservicesd.nsxpc.auth
+		       0    M   D   com.apple.cloudphotod
+		 0x7591b    M   A   com.apple.matter.support.xpc
+		 0x65603    M   A   com.apple.usernotifications.delegate.com.apple.appleaccount.notifications
+		 0x65403    M   A   com.apple.private.alloy.accounts.representative-idswake
+		       0    M   D   com.apple.dt.previewsd.shellpipeservice
+		       0    M   D   com.apple.ctkbind-notification
+		       0    M   D   com.apple.neagent.lsproxy
+		 0xa8403    M   A   com.apple.geod.cachedelete
+		 0x81527    M   A   com.apple.usernotifications.delegate.com.apple.SoftwareUpdateNotification
+		 0x33c03    M   A   com.apple.private.alloy.facetime.multi-idswake
+		 0xa6303    M   A   com.apple.ap.promotedcontent.metrics
+		 0xa310f    M   A   com.apple.generativeexperiences.availability.internal
+		 0x66933    M   A   com.apple.icloud.searchpartyuseragent.pairingmanager
+		       0    M   D   com.apple.intelligenceplatform.Sysdiagnose
+		 0x58303    M   D   com.apple.usernotifications.delegate.com.apple.AudioAccessoryUserNotifications
+		 0x9fd27    M   A   com.apple.mediaanalysisd.realtime
+		 0x57603    M   A   com.apple.coreservices.appleid.aps
+		 0x57203    M   A   com.apple.sharing.handoff.advertising
+		 0x71603    M   A   com.apple.ScreenTimeAgent.communication
+		       0    M   D   com.apple.passd.trusted-device-enrollment-info-provider
+		 0x68faf    M   A   com.apple.videoconference.camera
+		 0x55317    M   A   com.apple.SecureBackupDaemon
+		 0x7c917    M   A   com.apple.inputswitcher.running
+		 0x3db03    M   A   com.apple.dock.controlcenter
+		       0    M   D   com.apple.diskspaced
+		       0    M   D   com.apple.mbproximityhelper
+		 0x6c203    M   A   com.apple.linkd.autoShortcut
+		       0    M   D   com.apple.amp.library.devicecontents
+		       0    M   D   com.apple.webkit.webpushd.service
+		       0    M   D   com.apple.metadata.mdwrite
+		 0x13243    M   A   com.apple.xpc.activity.unmanaged
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.iBooksX
+		 0x8d95f    M   D   com.apple.siriknowledged.koa.donate
+		 0x4e403    M   A   com.apple.usernoted.multi_client
+		 0x4e603    M   A   com.apple.usernoted.social_client
+		 0xa3e03    M   A   com.apple.installerauthagent
+		       0    M   D   com.apple.mdworker.application
+		       0    M   D   com.apple.accessibility.mediaaccessibilityd
+		 0x5da03    M   A   com.apple.replaykit.sharingsession.notification
+		 0x2e007    M   A   com.apple.transparencyd.ids-support
+		 0x3d203    M   A   com.apple.ipodserver
+		       0    M   D   com.apple.dt.previewsd.crashlistener
+		       0    M   D   com.apple.aps.gamed.CK
+		 0x73eb3    M   A   com.apple.feedbacklogger
+		 0x37703    M   A   com.apple.group-activities.conversationmanagerhost
+		 0xa6203    M   A   com.apple.ap.promotedcontent.attributionservice
+		 0xaa503    M   A   com.apple.financed.service.financestore
+		       0    M   D   com.apple.sportsd.xpc
+		 0x7ff03    M   D   com.apple.siri.audiopowerupdate.xpc
+		 0x57303    M   A   com.apple.sharing.classroom-transfer
+		       0    M   D   com.apple.Music.MPMusicPlayerControllerInternal
+		 0x71d03    M   A   com.apple.legacyagent.usersettingsstore
+		       0    M   D   com.apple.passd.bulletins
+		       0    M   D   com.apple.speech.synthesis.ScreenReaderPort
+		 0x56503    M   A   com.apple.inputmethodkit.getxpcendpoint
+		       0    M   D   com.apple.AccessibilityVisualsAgent
+		       0    M   D   com.apple.accessibility.dfrhud
+		 0x33403    M   A   com.apple.proactive.PersonalizationPortrait.NamedEntity.readWrite
+		 0x32803    M   A   com.apple.proactive.PersonalizationPortrait.SocialHighlight
+		 0x7e103    M   A   com.apple.coremedia.shaphelper.xpc
+		 0x44f03    M   A   com.apple.RemoteDisplay
+		       0    M   D   com.apple.usermanagerhelper
+		 0x39503    M   A   com.apple.tccd
+		 0x6df03    M   A   com.apple.siri.external_request
+		 0x52303    M   A   com.apple.aps.transparencyd
+		 0x60403    M   D   com.apple.matter.native.xpc
+		 0x75303    M   D   com.apple.aps.homekit
+		 0x2ef03    M   A   com.apple.systemuiserver.ServiceProvider
+		 0x2ed03    M   A   com.apple.SUISMessaging
+		       0    M   D   com.apple.dt.previewsd.installservice.mac
+		 0x31707    M   A   com.apple.siri.VoiceShortcuts.xpc
+		 0x8e203    M   A   com.apple.biomesyncd.sync
+		 0x62b03    M   A   com.apple.aps.amsengagementd
+		 0x73423    M   A   com.apple.xpc.amsengagementd
+		 0x7ba03    M   A   com.apple.MobileAsset.SpotlightResources
+		 0x54103    M   A   com.apple.donotdisturb.service
+		       0    M   D   com.apple.gamed.apsdev
+		 0x723f7    M   A   com.apple.ind.xpc
+		 0x84807    M   A   com.apple.ap.adservicesd.statusconditionservice
+		 0x9b60f    M   A   com.apple.diagnosticextensionsd.session
+		 0x8e80f    M   A   com.apple.diagnosticextensionsd.sharing-wakeup
+		       0    M   D   com.apple.intelligenceplatform.AssetRegistry
+		       0    M   D   com.apple.swtransparencyd
+		       0    M   D   com.apple.proactive.hero.AppPrediction.predictions
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.ATXDebugNotifications
+		 0xa4e47    M   D   com.apple.mediaanalysisd.homekit
+		 0x65f03    M   D   com.apple.proactive.ProactiveSuggestionClientModel.xpc
+		       0    M   D   com.apple.printuitool.agent
+		       0    M   D   com.apple.ScreenReaderUIServer
+		       0    M   D   com.apple.amp.SystemPlayer
+		       0    M   D   com.apple.appplaceholdersync
+		       0    M   D   com.apple.accessibility.AXVisualSupportAgent.running
+		 0x3df03    M   A   com.apple.appkit.restoration_storage
+		 0x3dc33    M   A   com.apple.commcenter.xpc
+		 0x6b603    M   A   com.apple.newsd.download
+		       0    M   D   com.apple.cvmsCompAgent_arm64
+		 0x72f03    M   D   com.apple.corerecents.recentsd
+		 0x60c03    M   A   com.apple.ak.auth.xpc
+		 0x8dd03    M   A   com.apple.siriknowledged.aps
+		 0x37b03    M   A   com.apple.proactive.PersonalizationPortrait.Connections
+		 0x58103    M   A   com.apple.usernotifications.delegate.com.apple.MobileSMS
+		 0x44c2b    M   D   com.apple.private.alloy.coreduet.sync-idswake
+		 0x2f303    M   A   com.apple.lsd.advertisingidentifiers
+		 0x31e03    M   A   com.apple.secinitd
+		 0x30903    M   A   com.apple.securityd.general
+		       0    M   D   com.apple.CharacterPicker.FileService
+		       0    M   D   com.apple.iCloudHelper
+		       0    M   D   com.apple.LocalAuthentication.DFR
+		 0x68003    M   A   com.apple.assistant.analytics
+		 0x67097    M   A   com.apple.siri.vocabularyupdates
+		 0x54e03    M   A   com.apple.identityservicesd.idquery.desktop.auth
+		 0x54f03    M   A   com.apple.identityservicesd.nsxpc
+		 0x40503    M   A   com.apple.usernotifications.delegate.com.apple.identityservicesd.firewall
+		 0x52403    M   A   com.apple.transparencyd
+		 0x63c03    M   A   com.apple.aa.daemon.xpc
+		 0x4212b    M   A   com.apple.findmy.findmylocate.locationservice
+		       0    M   D   com.apple.stickers.launch-state-manager
+		 0x89403    M   A   com.apple.ap.adprivacyd.idmanager
+		       0    M   D   com.apple.RemoteManagementAgent
+		 0xa8dcf    M   A   com.apple.ap.promotedcontent.signing
+		       0    M   D   com.apple.mediastream.sharing
+		       0    M   D   com.apple.proactive.timeIntelligence
+		       0    M   D   com.apple.proactive.AppPrediction.predictions
+		       0    M   D   com.apple.amp.library.sharing
+		 0x63f03    M   A   com.apple.ScreenTimeAgent.command-line-tool
+		       0    M   D   com.apple.calendar.CalendarAgentBookmarkMigrationService
+		       0    M   D   com.apple.colorsync.useragent
+		 0x61803    M   A   com.apple.itunescloud.in-app-message-service
+		 0x4f503    M   A   com.apple.triald.namespace-management
+		 0x2e703    M   A   com.apple.dock.fullscreen
+		 0x3d903    M   A   com.apple.dock.server
+		       0    M   D   com.apple.SafariBookmarksSyncAgent.Push
+		 0x6ab03    M   A   com.apple.newsd.today-feed
+		       0    M   D   com.apple.devicecheckd
+		       0    M   D   com.apple.aps.SafariCloudHistoryPushAgent
+		 0x88b03    M   D   com.apple.private.alloy.lockdownmode-idswake
+		       0    M   D   com.apple.AOSPushRelay.push.dev
+		 0x60b03    M   A   com.apple.ak.anisette.xpc
+		       0    M   D   com.apple.quicklook.ui.helper
+		 0x33303    M   D   com.apple.suggestd.mail-intelligence
+		 0x32a03    M   A   com.apple.suggestd.messages
+		 0x46803    M   A   com.apple.usernoted.client
+		       0    M   D   com.apple.fskit.fskit_agent
+		 0x54a03    M   A   com.apple.ViewBridgeAuxiliary
+		 0x2fb0b    U   A   com.apple.SchedulerUpdateNotificationPort
+		 0x5e503    M   A   com.apple.localizationswitcherd
+		 0x55003    M   A   com.apple.identityservicesd.desktop.auth
+		       0    M   D   com.apple.icloudusernotification.agent
+		 0x65503    M   A   com.apple.aps.appleaccountd
+		 0x56303    M   A   com.apple.biome.access.user
+		       0    M   D   com.apple.managedcorespotlightd
+		       0    M   D   com.apple.photoanalysisd
+		 0x41103    M   D   com.apple.private.alloy.donotdisturb-idswake
+		       0    M   D   com.apple.universalaccesscontrol.startup
+		       0    M   D   com.apple.intelligenceplatform.Feedback
+		       0    M   D   com.apple.aps.storekitservice
+		       0    M   D   com.apple.storekitagent
+		 0x65d03    M   A   com.apple.appstoreagent.xpc
+		 0x83503    M   D   com.apple.ondemandd.appinstall
+		 0x4a403    M   A   com.apple.private.ssr.voiceprofileservice
+		 0x58b03    M   A   com.apple.tsm.uiserver
+		       0    M   D   com.apple.STMUIHelper
+		 0x39e03    M   A   com.apple.usernotifications.coreservice
+		       0    M   D   com.apple.passd.library
+		       0    M   D   com.apple.passd.account
+		       0    M   D   com.apple.mlruntime.xpc
+		       0    M   D   com.apple.BTLEAudioController.xpc
+		       0    M   D   com.apple.shazamd.ui
+		 0x61303    M   A   com.apple.itunescloud.music-subscription-status-service
+		       0    M   D   com.apple.businessservicesd
+		 0x3d803    M   A   com.apple.dock.sidecar
+		       0    M   D   com.apple.corespotlight.receiver.photos
+		 0x69963    M   A   com.apple.aps.bluetoothuserd
+		       0    M   D   com.apple.USBAgent
+		       0    M   D   com.apple.synapse.add-link-context-service
+		 0x38a03    M   D   com.apple.suggestd.portrait.internal
+		 0x4e717    M   A   com.apple.usernoted.dock
+		 0x3a137    M   A   com.apple.containermanagerd
+		       0    M   D   com.apple.netauth.user.auth
+		 0x76d03    M   D   com.apple.CoreRoutine.helperservice
+		 0xa4703    M   D   com.apple.security.XPCKeychainSandboxCheck
+		 0x70b83    M   D   com.apple.siri.intelligence-tool-helper-service
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.TimeZoneUpdates.tznotify
+		 0x7f203    M   A   com.apple.cascade.SetChangeRelayService
+		 0x35e03    M   A   com.apple.bird
+		 0x30103    M   A   com.apple.proactive.SuggestionRequest.ps_facetime_fallback_interaction_model
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.studentd.notifications
+		       0    M   D   com.apple.DictationIM.feedback
+		       0    M   D   com.apple.aps.remotemanagementd.http.apns-dev
+		       0    M   D   com.apple.OSDUIHelper
+		 0x7e803    M   A   com.apple.aps.askpermission
+		 0x36f03    M   D   com.apple.telephonyutilities.callservicesdaemon.simulatedconversationcontroller
+		 0x84707    M   A   com.apple.ap.promotedcontent.pcinterface
+		 0x80c03    M   D   com.apple.aps.financed.store
+		 0x3fba3    M   D   com.apple.financed.service.store
+		 0x6f403    M   A   com.apple.icloud.searchpartyuseragent.ownersession
+		       0    M   D   com.apple.DwellControl.running
+		       0    M   D   com.apple.proactive.sports.xpc
+		 0x83117    M   A   com.apple.ondemandd.devtools
+		 0x8a247    M   A   com.apple.mediaanalysisd.service.public
+		 0x5e337    M   A   com.apple.mediaanalysisd.analysis
+		 0x57703    M   A   com.apple.sharing.sharesheet
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.Passbook
+		 0x61703    M   A   com.apple.itunescloudd.xpc
+		 0x610cb    M   A   com.apple.itunescloudd.tcchelper
+		       0    M   D   com.apple.aps.mapssyncd
+		 0x3923b    M   A   com.apple.usernotifications.delegate.com.apple.iCal
+		 0x6b703    M   D   com.apple.newsd.feed
+		 0x7820b    M   A   com.apple.aps.family
+		       0    M   D   com.apple.imtransferservices.IMTransferAgent
+		 0x48a0f    M   A   com.apple.aps.icloud.mcc
+		 0x4ba0f    M   A   com.apple.icloudmailagent.secret.xpc
+		 0xaa32f    M   D   com.apple.email.maild
+		       0    M   D   com.apple.translation.text
+		 0x49623    M   A   com.apple.FontWorker.ATS
+		       0    M   D   com.apple.private.alloy.companion.auth-idswake
+		 0x4dfaf    M   A   com.apple.fonts.atsbridge
+		 0x46c03    M   A   com.apple.usernotifications.delegate.com.apple.apfsuseragent
+		 0x4e303    M   A   com.apple.usernoted.prefs
+		 0x34703    M   A   com.apple.fileprovider.extension.push.development
+		 0x75a0f    M   A   com.apple.milod.xpc.service
+		 0x7e203    M   A   com.apple.AirPlayUIAgent.xpc
+		 0x50027    M   A   com.apple.private.alloy.nearby-idswake
+		 0x51803    M   A   com.apple.CoreAuthentication.agent
+		 0x3ce03    M   A   com.apple.lsd.open
+		 0x3bc07    M   A   com.apple.securityd.xpc
+		       0    M   D   com.apple.package-script-service
+		       0    M   D   com.apple.accounts.dom
+		 0x7810f    M   A   com.apple.replayd
+		 0x6e103    M   A   com.apple.siri.pommes_search_xpc_service
+		       0    M   D   com.apple.photos.cloud.pushnotification
+		       0    M   D   com.apple.appleidsetupd.setup.xpc
+		 0x70c4b    M   A   com.apple.aa.inheritance.xpc
+		       0    M   D   com.apple.appstorecomponentsd.xpc
+		 0x34ea3    M   A   com.apple.bird.token
+		 0x3ac5b    M   A   com.apple.siriactionsd.xpc
+		 0x3c003    M   A   com.apple.proactive.SuggestionRequest.ps_unstructured_calendar_interaction_suggestions
+		       0    M   D   com.apple.midiserver
+		 0x40f07    M   A   com.apple.private.alloy.status.personal-idswake
+		 0x61e03    M   A   com.apple.parsec-fbf
+		 0x36e03    M   A   com.apple.private.alloy.facetime.sync-idswake
+		 0x33e03    M   A   com.apple.telephonyutilities.callservicesdaemon.callhistorymanager
+		 0x37503    M   A   com.apple.telephonyutilities.callservicesdaemon.callhistorycontroller
+		 0x66b03    M   A   com.apple.icloud.searchpartyd.aps
+		 0xa7f03    M   A   com.apple.appstored.xpc.storequeue
+		       0    M   D   com.apple.dprivacyd
+		 0x33907    M   A   com.apple.remindd
+		 0x7fc03    M   D   com.apple.corespeech.audioinjection.xpc
+		       0    M   D   com.apple.FamilyControlsAgent.private
+		       0    M   D   com.apple.passd.usage
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.SwitchControl.idc
+		       0    M   D   com.apple.accessibility.AXVisualSupportAgent
+		 0x44407    M   D   com.apple.commcenter.atcs.xpc
+		 0x5de03    M   A   com.apple.audio.AudioComponentRegistrar
+		 0x74903    M   A   com.apple.ak.inheritance.xpc
+		 0x8dc03    M   D   com.apple.siri.reference_resolution_module
+		 0x9dac7    M   D   com.apple.weatherd.summary-strings
+		 0x38d03    M   A   com.apple.suggestd.spotlightknowledged
+		 0x4e503    M   A   com.apple.usernoted.daemon_client
+		 0x57e03    M   A   com.apple.corespotlight.daemon.messages
+		       0    M   D   com.apple.mdworker.mail
+		 0x51b27    M   A   com.apple.CoreAuthentication.agent.libxpc
+		 0x30833    M   A   com.apple.securityd.ckks
+		 0x42b03    M   A   com.apple.kvsd
+		       0    M   D   com.apple.backgroundassets.system
+		 0x2ec03    M   A   com.apple.systemuiserver.screencapture
+		       0    M   D   com.apple.neagent
+		       0    M   D   com.apple.intelligenceflow.toolbox
+		       0    M   D   com.apple.intelligenceflow.orchestrator
+		       0    M   D   com.apple.universalaccessAuthWarn
+		       0    M   D   com.apple.UNCUserNotificationAgent
+		       0    M   D   com.apple.dt.xctestd.target
+		 0x34203    M   A   com.apple.telephonyutilities.callservicesdaemon.voip.push
+		 0x39337    M   A   com.apple.telephonyutilities.callservicesdaemon.conversationmanager
+		       0    M   D   com.apple.dataaccess.dataaccessd.aps.dev
+		 0x7da03    M   A   com.apple.BTServer.cloudpairing
+		       0    M   D   com.apple.proactive.infoSuggestion.xpc
+		       0    M   D   com.apple.ModeEntityScorer
+		 0xa7c03    M   A   com.apple.usernotifications.delegate.com.apple.AppStore
+		 0x63e03    M   A   com.apple.ScreenTimeAgent.persistence
+		       0    M   D   com.apple.aps.shazamd
+		 0x8266b    M   D   com.apple.aps.voicebankingd
+		 0x11e7b    M   A   com.apple.voicebanking.store
+		       0    M   D   com.apple.photolibraryd.cacheDelete
+		       0    M   D   com.apple.private.alloy.pcskey.sync-idswake
+		 0x4ed0b    M   A   com.apple.routined.safetyMonitor
+		       0    M   D   com.apple.amp.artworkd
+		 0x79d03    M   D   com.apple.aps.StatusKit.CloudKitMirroring
+		 0x8ca03    M   A   com.apple.weatherd.notifications
+		 0x37f03    M   A   com.apple.proactive.PersonalizationPortrait.Config
+		 0x33003    M   A   com.apple.proactive.PersonalizationPortrait.NamedEntity.readOnly
+		 0x32c03    M   A   com.apple.proactive.PersonalizationPortrait.Contact
+		 0x34803    M   A   com.apple.corespotlight.daemon.fileprovider
+		 0x34603    M   A   com.apple.fileprovider.extension.push
+		 0x2f66f    M   A   com.apple.carboncore.csnameddata
+		 0x5db03    M   A   com.apple.usernotifications.delegate.com.apple.ReplayKitNotifications
+		 0x6e503    M   A   com.apple.private.alloy.siri.icloud-idswake
+		 0x48403    M   D   com.apple.icloud.fmfd.aps
+		       0    M   D   com.apple.rcd.media.key.events
+		       0    M   D   com.apple.dt.previewsd.agentpipeservice.mac
+		 0x3a81f    M   D   com.apple.aps.siriactionsd
+		 0x2e227    M   A   com.apple.controlcenter.show.toggles
+		 0x72d03    M   A   com.apple.xpc.amsuniversallinks
+		       0    M   D   com.apple.inputanalyticsd
+		       0    M   D   com.apple.private.alloy.askto-idswake
+		 0x4a903    M   A   com.apple.replicatorservices
+		 0x58703    M   A   com.apple.BluetoothCloudServices
+		 0x7d503    M   A   com.apple.aps.remindd.dataaccess.demo
+		 0x7e403    M   A   com.apple.sharing.sharesheetrecipients
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.battery-monitor
+		       0    M   D   com.apple.passd.assertions
+		 0x3110f    M   A   com.apple.dmd.emergency-mode
+		 0x13627    M   A   com.apple.window_proxies
+		       0    M   D   com.apple.KeyboardServices.TextReplacementService
+		 0x51c03    M   A   com.apple.PlatformSSO.service-xpc
+		       0    M   D   com.apple.TextUnderstanding.DocumentUnderstandingHarvesting
+		       0    M   D   com.apple.cfnetwork.AuthBrokerAgent
+		 0x4eb03    M   D   com.apple.routined.store.cache
+		       0    M   D   com.apple.security.agent
+		       0    M   D   com.apple.alf.useragent
+		 0x60a87    M   A   com.apple.ak.signinwithapple.xpc
+		       0    M   D   com.apple.mobile.cache_delete_ibooks
+		 0x32d03    M   A   com.apple.suggestd.contacts
+		 0x46603    M   A   com.apple.usernotifications.usernotificationservice
+		       0    M   D   com.apple.mbfloagent
+		       0    M   D   com.apple.WorkflowKit.ShortcutsViewService
+		 0x6e203    M   D   com.apple.assistant.request-dispatcher.uibridge-service
+		 0x6e403    M   A   com.apple.assistantd.aps
+		 0x6e603    M   A   com.apple.assistant.audio-session-assertion
+		 0x4010f    M   D   com.apple.identityservicesd.desktop.sim2host
+		 0x5ff03    M   A   com.apple.homed.xpc
+		 0x47a0f    M   A   com.apple.coreservices.lsuseractivitymanager.xpc
+		       0    M   D   com.apple.storeagent.storekit
+		 0x7a307    M   A   com.apple.chrono.widgetcenterconnection
+		 0x5a303    M   A   com.apple.spotlight.SearchAgent
+		 0x6fc9b    M   D   com.apple.contacts.donation.maintenance
+		 0x7e903    M   A   com.apple.icdd
+		 0x34403    M   A   com.apple.callkit.networkextension.voip
+		 0x37903    M   A   com.apple.telephonyutilities.callservicesdaemon.callstatecontroller
+		       0    M   D   com.apple.storekit.configuration.xpc
+		 0xa0d07    M   A   com.apple.sirisuggestions
+		 0x58e03    M   A   com.apple.aps.remindd.dataaccess
+		 0x57903    M   A   com.apple.sharing.airdrop.service
+		 0x5015f    M   A   com.apple.ScreenTimeAgent.ask-for-time
+		       0    M   D   com.apple.passd.cloud-store
+		       0    M   D   com.apple.passd.payment-continuity
+		       0    M   D   com.apple.ServicesTouchBarService
+		 0x3b717    M   A   com.apple.dmd
+		 0x60f47    M   A   com.apple.aps.itunescloudd
+		       0    M   D   com.apple.VoiceOver.startup
+		 0x34c07    M   A   com.apple.CalendarAgent
+		       0    M   D   com.apple.intelligenceflow.contextIntelligence
+		 0x7a67f    M   D   com.apple.linkd.observationStatusRegistry
+		       0    M   D   com.apple.nexus
+		       0    M   D   com.apple.PIPAgent
+		       0    M   D   com.apple.usernotifications.delegate.com.apple.mdmclient.usernotifications.v2
+		       0    M   D   com.apple.SafariNotificationAgent
+		       0    M   D   com.apple.DiskArbitration.DiskArbitrationAgent
+		       0    M   D   com.apple.assistant_service
+		 0x8de03    M   A   com.apple.siriknowledged.vocabulary.admin
+		 0x9c503    M   D   com.apple.siri.conversation_context_module
+		 0x9d403    M   A   com.apple.weatherd.decommissioning
+		 0x38f03    M   A   com.apple.suggestd.urls
+		 0x46503    M   A   com.apple.usernoted.test
+		 0x57f03    M   A   com.apple.madrid-idswake
+		       0    M   D   com.apple.findmymacmessenger
+		       0    M   D   com.apple.icloud.findmydeviced.findmydevice-user-agent
+		 0x2f103    M   A   com.apple.security.translocation
+		       0    M   D   com.apple.cvmsCompAgent_x86_64_1
+		       0    M   D   com.apple.cvmsCompAgent3425AMD_x86_64_1
+		       0    M   D   com.apple.TrustEvaluationAgent
+		 0x72903    M   D   com.apple.contactsd.contact-provider
+		       0    M   D   com.apple.cvmsCompAgent3600_arm64
+		 0x68403    M   A   com.apple.siri.client_lite
+		 0x68103    M   D   com.apple.siri.orchestration.intelligencesession
+		       0    M   D   com.apple.sidecar-relay
+		       0    M   D   com.apple.aps.photos.cloud.datarepair
+		 0x31503    M   A   com.apple.quicklook.ThumbnailsAgent
+		       0    M   D   com.apple.symptom_diagnostics_collection
+		 0x60503    M   D   com.apple.homekit.xpc
+		 0x75603    M   A   com.apple.matter.framework.xpc
+		 0x7f103    M   A   com.apple.biome.compute.publisher.service.user
+		 0x7f403    M   A   com.apple.biome.PublicStreamAccessService
+		       0    M   D   com.apple.aps.homeenergyd
+		       0    M   D   com.apple.MTLAssetUpgraderD
+		 0x3d60b    M   D   com.apple.usernotifications.delegate.com.apple.controlcenter.notifications.airplay
+		 0x5cf93    M   A   com.apple.xpc.amsserverdatacacheservice
+		 0x5a603    M   A   com.apple.corespotlightd.cachedelete
+		       0    M   D   com.apple.aps.remotemanagementd.http.apns-prod
+		 0x37003    M   A   com.apple.callkit.notificationserviceextension.voip
+		 0x33f03    M   A   com.apple.private.alloy.phone.auth-idswake
+		 0x85137    M   A   com.apple.private.alloy.ded-idswake
+		 0x8035f    M   A   com.apple.financed.service.coredatastore
+		       0    M   D   com.apple.mediastream.mstreamd.sharing.push-dev
+		 0x58503    M   A   com.apple.usernotifications.delegate.com.apple.BTUserNotifications
+		       0    M   D   com.apple.screencaptureui
+		       0    M   D   com.apple.metrickitsource.xpc
+		       0    M   D   com.apple.printtool.agent
+		 0x7fb03    M   D   com.apple.siri.ssrvtuitrainingservice.xpc
+		 0x7fe03    M   A   com.apple.corespeech.voicetriggerservice
+		       0    M   D   com.apple.KeyboardAccessAgent.running
+		       0    M   D   com.apple.passd.sharing-channel
+		 0x46a2b    M   A   com.apple.nsurlsessiond-cachedelete
+		       0    M   D   com.apple.cmfsyncagent.auth
+		 0x6ac03    M   A   com.apple.newsd.today
+		 0x63053    M   A   com.apple.newsd.url-resolution
+		 0x7ec03    M   A   com.apple.inputmethodkit.launchagent
+		       0    M   D   com.apple.webinspector.debugger
+		 0x5bd23    M   A   com.apple.StatusKit.publish
+		 0x32903    M   A   com.apple.sociallayerd
+		 0x32f03    M   A   com.apple.corespotlight.receiver.suggestions
+		 0x36803    M   A   com.apple.FileProvider
+		 0x3f813    M   A   com.apple.metadata.mdbulkimport
+		       0    M   D   com.apple.DeviceSupportUpdater
+		 0x5225f    M   A   com.apple.aps.kvsd
+		 0x67b03    M   A   com.apple.siri.analytics.assistant
+		 0x75403    M   A   com.apple.private.alloy.home.invite-idswake
+		 0x56203    M   A   com.apple.intelligenceplatform.View
+		 0x5a11b    M   A   com.apple.CallHistoryPluginHelper
+		 0x517af    M   A   com.apple.cloudd
+		       0    M   D   com.apple.studentd
+		       0    M   D   com.apple.maps.destinationd.signalPipeline
+		       0    M   D   com.apple.avatar.service
+		       0    M   D   com.apple.installd.user
+		 0x4b703    M   A   com.apple.spotlight.IndexDelegateAgent
+		 0x56f03    M   A   com.apple.usernotifications.delegate.com.apple.askpermission.notifications
+		 0x81427    M   A   com.apple.SoftwareUpdateNotificationManagerService
+		 0x34103    M   A   com.apple.callkit.networkextension.messagecontrollerhost
+		 0x6f93b    M   A   com.apple.icloud.searchparty.locationfetch.items
+		 0x2bc0f    M   A   com.apple.wifi.WiFiAgent
+		 0x7d803    M   A   com.apple.AudioAccessoryServices
+		 0x55603    M   A   com.apple.corespeech.corespeechd.rchandling.service
+		 0x57803    M   A   com.apple.AutoUnlock.AuthenticationHintsProvider
+		 0x57403    M   A   com.apple.sharingd
+		 0x9cd0f    M   A   com.apple.modelcatalog.subscriptions
+		 0x39d03    M   D   com.apple.usernotifications.tool
+		       0    M   D   com.apple.Safari.SafeBrowsing.Service
+		       0    M   D   com.apple.amp.devicesd
+		       0    M   D   com.apple.TextUnderstanding.SmartReplies.Inference
+		 0x3b027    M   A   com.apple.wallpaper.CacheDelete
+		 0x4ec03    M   D   com.apple.routined.internal
+		       0    M   D   com.apple.siri.shared_flow_plugin_service
+		 0x38703    M   A   com.apple.proactive.PersonalizationPortrait.Topic.readOnly
+		 0x2f203    M   D   com.apple.lsd.extensions
+		       0    M   D   com.apple.metadata.mdflagwriter
+	}
+
+	task-special ports = {
+			 0x12103 4       bootstrap  com.apple.xpc.launchd.user.domain.501.100003.Aqua
+			  0x2707 9          access  (unknown)
+	}
+
+	disabled services = {
+		"com.apple.Siri.agent" => disabled
+		"com.apple.FolderActionsDispatcher" => disabled
+		"com.apple.notificationcenterui.agent" => disabled
+		"com.apple.appleseed.seedusaged.postinstall" => disabled
+		"com.apple.ScriptMenuApp" => disabled
+	}
+
+	properties = gui | gui login
+}
+
++ ['launchctl', 'print', 'gui/501/haus.astrid.runtime']
+exit 113 
+ Bad request.
+Could not find service "haus.astrid.runtime" in domain for user gui: 501
+
++ ['sh', '/Users/runner/work/astrid-agent/astrid-agent/agent/tests/fixtures/release0/served/install', '--manifest', '/Users/runner/work/astrid-agent/astrid-agent/agent/tests/fixtures/release0/served/install-manifest.json', '--root', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/program', '--data-root', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/data']
+exit 0 
+ Getting Astrid ready. The first time takes a few minutes.
+Using your workspace at /Users/runner/work/_temp/r18-mac-z2jz1rqg/data.
+Installing Astrid.
+Starting Astrid at sign-in.
+Open https://astrid.haus
+Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"
+
++ ['/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python', '/Users/runner/work/astrid-agent/astrid-agent/venue/proof/r18-mac-hosted/native.py', '--inspect']
+exit 0 
+ + ['launchctl', 'print', 'gui/501/haus.astrid.runtime']
+exit 0 
+ gui/501/haus.astrid.runtime = {
+	active count = 1
+	path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/LaunchAgents/haus.astrid.runtime.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python
+	arguments = {
+		/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python
+		-X
+		utf8
+		-I
+		-c
+		import json,os,sys
+from pathlib import Path
+path=Path('/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/data', '--source-manifest', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/profile.json']))
+	}
+
+	stdout path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/Logs/Astrid Runtime/runtime-service.log
+	stderr path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/Logs/Astrid Runtime/runtime-service.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.lL608jDH4g/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		BUN_INSTALL_BIN => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp/bin
+		ASTRID_REMOTION_PROJECT_DIR => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/remotion
+		ASTRID_INSTALL_OMP_SOURCE => fork
+		ASTRID_INSTALL_OMP_COMMIT => 78f0e0960f471c2c62b943272a48c33366f239fe
+		ASTRID_INSTALL_FFPROBE_VERSION => 7.0.2-https://www.martin-riedl.de
+		ASTRID_INSTALL_FFMPEG_VERSION => 7.0.2-https://www.martin-riedl.de
+		ASTRID_INSTALL_FFMPEG_SOURCE => download
+		ASTRID_CAPABILITY_MATRIX_PATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/config/astrid-beta-capabilities.json
+		PATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/bun/bun-darwin-aarch64:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/node/node-v20.19.4-darwin-arm64/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg:/usr/bin:/bin:/usr/sbin:/sbin
+		ASTRID_FFMPEG_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg/ffmpeg
+		ASTRID_SOURCE_PROVENANCE_ROOT => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a
+		ASTRID_INSTALL_OMP_VERSION => 18.12.6
+		PYTHONIOENCODING => utf-8
+		BUN_INSTALL => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp
+		ASTRID_RUNTIME_DOOR_PORT => 17340
+		ASTRID_RUNTIME_DATA_ROOT => /Users/runner/work/_temp/r18-mac-z2jz1rqg/data
+		ASTRID_HOST_EXECUTION_PROFILE => installed
+		ASTRID_FFPROBE_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg/ffprobe
+		ASTRID_BUN_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/bun/bun-darwin-aarch64/bun
+		ASTRID_TIMELINE_SCHEMA_PYTHONPATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/remotion/node_modules/@banodoco/timeline-schema/python
+		ASTRID_NODE_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/node/node-v20.19.4-darwin-arm64/bin/node
+		XPC_SERVICE_NAME => haus.astrid.runtime
+	}
+
+	domain = gui/501 [100003]
+	asid = 100003
+	minimum runtime = 10
+	exit timeout = 90
+	runs = 1
+	pid = 2954
+	immediate reason = speculative
+	forks = 2
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	probabilistic guard malloc policy = {
+		activation rate = 1/1000
+		sample rate = 1/0
+	}
+
+	properties = keepalive | runatload | inferred program | system service | tle system
+}
+
++ ['/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/.local/share/astrid/bootstrap/uv', 'venv', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py', '--python', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin/python3.11']
+exit 0 
+ Using CPython 3.11.13 interpreter at: /Users/runner/work/_temp/r18-mac-z2jz1rqg/foreign-90bxms3x/python/bin/python3.11
+Creating virtual environment at: /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py
+Activate with: source /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/activate
+
++ ['launchctl', 'print', 'gui/501/org.astrid.proof.r18.41562976520.1']
+exit 113 
+ Bad request.
+Could not find service "org.astrid.proof.r18.41562976520.1" in domain for user gui: 501
+
++ ['launchctl', 'bootstrap', 'gui/501', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.plist']
+exit 0 
+ 
++ ['launchctl', 'print', 'gui/501/org.astrid.proof.r18.41562976520.1']
+exit 0 
+ gui/501/org.astrid.proof.r18.41562976520.1 = {
+	active count = 1
+	path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/python
+	arguments = {
+		/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/python
+		-c
+		import time; time.sleep(300)
+	}
+
+	stdout path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.log
+	stderr path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.lL608jDH4g/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		XPC_SERVICE_NAME => org.astrid.proof.r18.41562976520.1
+	}
+
+	domain = gui/501 [100003]
+	asid = 100003
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 3432
+	immediate reason = speculative
+	forks = 0
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	probabilistic guard malloc policy = {
+		activation rate = 1/1000
+		sample rate = 1/0
+	}
+
+	properties = runatload | inferred program | system service | tle system
+}
+
++ ['launchctl', 'print', 'gui/501/org.astrid.proof.r18.41562976520.1']
+exit 0 
+ gui/501/org.astrid.proof.r18.41562976520.1 = {
+	active count = 1
+	path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/python
+	arguments = {
+		/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/foreign-proof/py/bin/python
+		-c
+		import time; time.sleep(300)
+	}
+
+	stdout path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.log
+	stderr path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/foreign-proof.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.lL608jDH4g/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		XPC_SERVICE_NAME => org.astrid.proof.r18.41562976520.1
+	}
+
+	domain = gui/501 [100003]
+	asid = 100003
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 3432
+	immediate reason = speculative
+	forks = 0
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	probabilistic guard malloc policy = {
+		activation rate = 1/1000
+		sample rate = 1/0
+	}
+
+	properties = runatload | inferred program | system service | tle system
+}
+
++ ['launchctl', 'bootout', 'gui/501/org.astrid.proof.r18.41562976520.1']
+exit 0 
+ 
+
++ ['launchctl', 'print', 'gui/501/haus.astrid.runtime']
+exit 0 
+ gui/501/haus.astrid.runtime = {
+	active count = 1
+	path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/LaunchAgents/haus.astrid.runtime.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python
+	arguments = {
+		/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin/python
+		-X
+		utf8
+		-I
+		-c
+		import json,os,sys
+from pathlib import Path
+path=Path('/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/data', '--source-manifest', '/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/profile.json']))
+	}
+
+	stdout path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/Logs/Astrid Runtime/runtime-service.log
+	stderr path = /Users/runner/work/_temp/r18-mac-z2jz1rqg/home/Library/Logs/Astrid Runtime/runtime-service.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /private/tmp/com.apple.launchd.lL608jDH4g/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		BUN_INSTALL_BIN => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp/bin
+		ASTRID_REMOTION_PROJECT_DIR => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/remotion
+		ASTRID_INSTALL_OMP_SOURCE => fork
+		ASTRID_INSTALL_OMP_COMMIT => 78f0e0960f471c2c62b943272a48c33366f239fe
+		ASTRID_INSTALL_FFPROBE_VERSION => 7.0.2-https://www.martin-riedl.de
+		ASTRID_INSTALL_FFMPEG_VERSION => 7.0.2-https://www.martin-riedl.de
+		ASTRID_INSTALL_FFMPEG_SOURCE => download
+		ASTRID_CAPABILITY_MATRIX_PATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/config/astrid-beta-capabilities.json
+		PATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/py/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/bun/bun-darwin-aarch64:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/node/node-v20.19.4-darwin-arm64/bin:/Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg:/usr/bin:/bin:/usr/sbin:/sbin
+		ASTRID_FFMPEG_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg/ffmpeg
+		ASTRID_SOURCE_PROVENANCE_ROOT => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a
+		ASTRID_INSTALL_OMP_VERSION => 18.12.6
+		PYTHONIOENCODING => utf-8
+		BUN_INSTALL => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/omp
+		ASTRID_RUNTIME_DOOR_PORT => 17340
+		ASTRID_RUNTIME_DATA_ROOT => /Users/runner/work/_temp/r18-mac-z2jz1rqg/data
+		ASTRID_HOST_EXECUTION_PROFILE => installed
+		ASTRID_FFPROBE_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/ffmpeg/ffprobe
+		ASTRID_BUN_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/bun/bun-darwin-aarch64/bun
+		ASTRID_TIMELINE_SCHEMA_PYTHONPATH => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/a/remotion/node_modules/@banodoco/timeline-schema/python
+		ASTRID_NODE_EXECUTABLE => /Users/runner/work/_temp/r18-mac-z2jz1rqg/program/versions/3204bb00-6d53a190-ae2b4e8c/tools/node/node-v20.19.4-darwin-arm64/bin/node
+		XPC_SERVICE_NAME => haus.astrid.runtime
+	}
+
+	domain = gui/501 [100003]
+	asid = 100003
+	minimum runtime = 10
+	exit timeout = 90
+	runs = 1
+	pid = 2954
+	immediate reason = speculative
+	forks = 2
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	probabilistic guard malloc policy = {
+		activation rate = 1/1000
+		sample rate = 1/0
+	}
+
+	properties = keepalive | runatload | inferred program | system service | tle system
+}
+
++ ['launchctl', 'bootout', 'gui/501/haus.astrid.runtime']
+exit 0 
+ 

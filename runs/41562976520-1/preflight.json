@@ -1,0 +1,9 @@
+{
+  "candidate_manifest_sha256": "528615bf87637471ef38072e6899e745bdba7e54d5a65436b1bac5af3447b45c",
+  "domain": "gui/501",
+  "label": "absent",
+  "os": "macOS-15.8.2-arm64-arm-64bit-Mach-O",
+  "port_17340": "free ipv4 and ipv6",
+  "scratch": "/Users/runner/work/_temp/r18-mac-z2jz1rqg",
+  "uid": 501
+}

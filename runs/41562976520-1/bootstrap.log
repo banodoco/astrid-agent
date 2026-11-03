@@ -1,0 +1,6 @@
+Getting Astrid ready. The first time takes a few minutes.
+Using your workspace at /Users/runner/work/_temp/r18-mac-z2jz1rqg/data.
+Installing Astrid.
+Starting Astrid at sign-in.
+Open https://astrid.haus
+Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"
