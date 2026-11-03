@@ -567,7 +567,6 @@ def test_invalid_unselected_declarations_grant_no_inventory_authority(damage):
     from astrid.core.generation.engine_contracts import EngineError
     asset = {'name': 'model.bin', 'subdir': 'models', 'url': 'https://fixture.invalid/model.bin',
              'sha256': 'a' * 64, 'size_bytes': 20, **damage}
-    workflow = SimpleNamespace(metadata={'model_assets': [asset]})
-    assert declared_model_specs(workflow, require_complete=False) == ()
+    assert declared_model_specs([asset], require_complete=False) == ()
     with pytest.raises(EngineError):
-        declared_model_specs(workflow)
+        declared_model_specs([asset])

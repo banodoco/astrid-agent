@@ -200,7 +200,7 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
                     packs.append({'name': pack.name, 'repository': repo, 'revision': revision,
                                   'classes': sorted(pack.classes & classes)})
             return [{'id': entry_id, 'provider_only': False, 'modes': [
-                {'mode': mode, 'workflow': workflow, 'models': list(declared_model_specs(workflow)),
+                {'mode': mode, 'workflow': workflow, 'models': list(declared_model_specs(workflow.metadata.get('model_assets', []))),
                  'node_packs': packs, 'unlocked': unlocked} for mode in entry['modes']]}]
     manifests = []
     for entry in entries:

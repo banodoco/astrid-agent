@@ -5,7 +5,7 @@ import shlex
 from typing import Any
 
 
-def declared_model_specs(workflow: Any, *, require_complete: bool = True):
+def declared_model_specs(assets: Any, *, require_complete: bool = True):
     """Project canonical workflow declarations into the existing downloader type.
 
     Incomplete declarations grant no custody authority. Inventory composition
@@ -14,7 +14,6 @@ def declared_model_specs(workflow: Any, *, require_complete: bool = True):
     from .engine_contracts import EngineError, IntegrityError, ModelLockValidationError, ModelSpec
     from .model_downloader import _safe_relative, _validate_model
 
-    assets = workflow.metadata.get('model_assets', [])
     if not isinstance(assets, (list, tuple)):
         raise ModelLockValidationError('entry model_assets must be a list')
     models = {}

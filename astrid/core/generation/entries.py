@@ -66,12 +66,16 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         ambiguity = None if kind and modes else 'kind or mode requires review'
         try:
             workflow = workflow_from_ready(item['id'], _discovery=discovery)
+            # A transient projection of the owning workflow declaration. Never
+            # persist or maintain a separate asset list alongside the template.
+            model_assets = workflow.metadata.get('model_assets', [])
             needs = [{**ref, 'role': LOADER_ROLES.get(ref['class_type']),
                       **({'ambiguity': 'unknown loader role'} if ref['class_type'] not in LOADER_ROLES else {})}
                      for ref in _referenced_model_values(workflow)]
             binds = {name: name for name in workflow.inputs}
         except Exception:
             needs, binds = [], {}
+            model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'
         registry_ids = {catalog_by_template[(item['id'], mode)] for mode in modes
                         if (item['id'], mode) in catalog_by_template}
@@ -79,6 +83,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
                      'bundle': str((root / item['path']).resolve()), 'needs': needs, 'binds': binds,
                      'defaults': {}, 'inputs': item.get('public_inputs', []), 'source': 'ready-template',
                      'requirements': {'custom_nodes': item.get('custom_nodes', []), 'models': needs},
+                     'model_assets': model_assets,
                      'registry_id': next(iter(registry_ids)) if len(registry_ids) == 1 else None,
                      'ambiguity': ambiguity,
                      **({'license_notice': item['license_notice']} if item.get('license_notice') else {})})

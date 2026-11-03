@@ -262,7 +262,7 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
     persisted and disk discovery never grants authority to an unknown file.
     """
     from .asset_gaps import declared_model_specs
-    from .entries import ready_entries, _load_entry_workflow
+    from .entries import ready_entries
     from .engine_contracts import IntegrityError
     from .model_downloader import _matches, _root_and_destination, _validate_model
     from .model_root import canonical_model_inventory_digest, validate_model_root_binding
@@ -272,8 +272,7 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
     for entry in ready_entries():
         if entry.get('ambiguity') == 'ready workflow metadata could not be loaded':
             continue
-        workflow = _load_entry_workflow(entry)
-        for model in declared_model_specs(workflow, require_complete=False):
+        for model in declared_model_specs(entry.get('model_assets', []), require_complete=False):
             relative, _url = _validate_model(model)
             _, path = _root_and_destination(str(binding.path), relative)
             if not path.exists():

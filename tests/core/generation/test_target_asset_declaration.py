@@ -188,7 +188,8 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
     workflow.requirements.models = copy.deepcopy(assets)
     bundle = emit_bundle(workflow, tmp_path / 'pinned-declaration/workflow.py', {'operation': 'authored'})
     entry = {'id': 'image/cpu-declared-assets', 'source': 'ready-template', 'modes': ['t2i'],
-             'bundle': str(bundle.python_path), 'ambiguity': None}
+             'bundle': str(bundle.python_path), 'ambiguity': None,
+             'model_assets': bundle.workflow.metadata['model_assets']}
     original_find = entries._ready_entries_for
     monkeypatch.setattr(entries, '_ready_entries_for',
         lambda identifier=None: [entry] if identifier == entry['id'] else original_find(identifier))
