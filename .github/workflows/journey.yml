@@ -319,7 +319,7 @@ jobs:
           if journey_row:
               direct_only = True
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
-          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and not direct_only:
+          if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
               raise SystemExit("diagnostic_keep_going requires direct_only")
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
@@ -717,6 +717,25 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish diagnostic table or pre-driver failure
+        if: always() && inputs.diagnostic_keep_going == true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload/before-cleanup"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $report = Join-Path $dir 'keepgoing-report.json'
+          $table = Join-Path $dir 'keepgoing-report.md'
+          if (-not (Test-Path -LiteralPath $report)) {
+            $errorText = 'Driver report unavailable; inspect preceding job steps for the exact error.'
+            $row = @{stage='pre-driver-or-scope'; result='not-run'; forced_continuation_used=$false; first_error=$errorText; evidence_path='GitHub Actions job log'}
+            $value = @{schema_version=1; proof_mode='keep-going-diagnostic'; classification='NON-PROOF'; status='fail'; qualification=@{eligible=$false}; job_id='${{ matrix.job_id }}'; stages=@($row)}
+            $json = $value | ConvertTo-Json -Depth 10
+            [IO.File]::WriteAllText($report, $json, [Text.UTF8Encoding]::new($false))
+            $value.receipt_kind = 'diagnostic-only'
+            [IO.File]::WriteAllText((Join-Path $dir 'journey-result.json'), ($value | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($table, "NON-PROOF`n`n| stage | result | forced-continuation-used | first error |`n| --- | --- | --- | --- |`n| pre-driver-or-scope | not-run | false | $errorText |`n", [Text.UTF8Encoding]::new($false))
+          }
+          if (Test-Path -LiteralPath $table) { Get-Content -LiteralPath $table | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
@@ -745,7 +764,7 @@ jobs:
                 throw "Unexpected staged evidence path: $relative"
               }
               $name = $Matches[2]
-              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$' -and $name -notmatch '^keepgoing-stage-[0-9]{2}\.log$') {
                 throw "Unexpected staged evidence filename: $relative"
               }
               if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
