@@ -115,6 +115,21 @@ def test_offline_backup_refuses_and_removes_corrupt_copy(tmp_path, monkeypatch):
     assert (root / "state").read_bytes() == b"original"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not allow unlinking the open lock")
+def test_offline_backup_refuses_replaced_owner_lock(tmp_path):
+    data = tmp_path / "data"
+    root = data / "runtime" / "realms" / "selected"
+    root.mkdir(parents=True)
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    realm = {"realm_root": str(root)}
+    with backend.realm_upgrade_lock(realm, timeout=0):
+        (root / "owner.lock").unlink()
+        (root / "owner.lock").touch()
+        with pytest.raises(ValueError, match="owner lock changed"):
+            backend.offline_realm_backup(data, realm)
+    assert not (backend.root / "backups").exists()
+
+
 def test_manual_upgrade_lock_cannot_be_nested_with_runtime_owner_fence(tmp_path):
     """The WIP lock is not Runtime's reentrant fence and cannot wrap migration."""
     from runtime_protocol.errors import OwnerBusyError

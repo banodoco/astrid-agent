@@ -193,6 +193,10 @@ class Backend:
                 platform.owner_only(fd)
                 platform.lock_file(fd, blocking=False)
                 stack.callback(platform.unlock_file, fd)
+                selected = os.stat(lock_path, follow_symlinks=False)
+                if (not stat.S_ISREG(selected.st_mode)
+                        or (opened.st_dev, opened.st_ino) != (selected.st_dev, selected.st_ino)):
+                    raise ValueError("The realm owner lock changed during acquisition.")
             except BlockingIOError as exc:
                 stack.close()
                 remaining = deadline - time.monotonic()
@@ -206,11 +210,26 @@ class Backend:
             break
         try:
             directory = os.fstat(directory_fd)
-            self._realm_upgrade_lock = (root, directory.st_dev, directory.st_ino)
+            self._realm_upgrade_lock = (root, directory.st_dev, directory.st_ino,
+                                        fd, opened.st_dev, opened.st_ino)
             yield
         finally:
             self._realm_upgrade_lock = None
             stack.close()
+
+    def _check_realm_upgrade_lock(self, root: Path) -> None:
+        held = self._realm_upgrade_lock
+        if held is None or held[0] != root:
+            raise RuntimeError("Offline backup requires the selected realm upgrade lock.")
+        _, device, inode, fd, lock_device, lock_inode = held
+        directory = root.stat(follow_symlinks=False)
+        descriptor = os.fstat(fd)
+        selected = (root / "owner.lock").stat(follow_symlinks=False)
+        if ((directory.st_dev, directory.st_ino) != (device, inode)
+                or not stat.S_ISREG(descriptor.st_mode) or not stat.S_ISREG(selected.st_mode)
+                or (descriptor.st_dev, descriptor.st_ino) != (lock_device, lock_inode)
+                or (selected.st_dev, selected.st_ino) != (lock_device, lock_inode)):
+            raise ValueError("The selected realm or its owner lock changed during the upgrade.")
 
     def offline_realm_backup(self, data: Path, realm: dict) -> dict:
         """Snapshot a stopped realm under its lock, without starting Runtime.
@@ -219,10 +238,7 @@ class Backend:
         needs custody of the replacement directory as well as the old one.
         """
         root = absolute(realm["realm_root"])
-        held = self._realm_upgrade_lock
-        selected = root.stat(follow_symlinks=False)
-        if held != (root, selected.st_dev, selected.st_ino):
-            raise RuntimeError("Offline backup requires the selected realm upgrade lock.")
+        self._check_realm_upgrade_lock(root)
         destination = self.root / "backups" / uuid.uuid4().hex[:12]
         size = self._backup_size(root) + self._backup_size(data, support=True)
         margin = max(256 * 1024 * 1024, size // 10)
@@ -243,6 +259,7 @@ class Backend:
                     or realm_manifest != self._backup_manifest(destination / "realm")
                     or support_manifest != self._backup_manifest(destination / "support")):
                 raise ValueError("The offline backup could not be verified.")
+            self._check_realm_upgrade_lock(root)
             result = {"root": str(destination), "kind": "offline"}
             write_json(destination / "backup.json", {**result, "manifest": {
                 "realm": realm_manifest, "support": support_manifest}})
