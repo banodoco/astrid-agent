@@ -1,0 +1,10 @@
+{
+  "exit": 0,
+  "changed_files": [
+    "tests/installer_auth_definition_probe.py",
+    "tests/installer_auth_definition_venue.sh"
+  ],
+  "workflow_unchanged": true,
+  "workflow_sha256": "032175523d28ae95af728891a119e6983c7ca9b92164058c33fced5f55627a75",
+  "product_bytes_unchanged_from_exact_agent_base": true
+}

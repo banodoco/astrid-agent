@@ -1,0 +1,7 @@
+## M-INT 2026-11-03T06:56:19Z: RULING C1, lifecycle native-first (ACT NOW)
+Your design's table (a98cc6bf DESIGN:267–268) gives you **AG1 and AG2**. My 04:35Z routing of "the Agent adapter methods" to M-AG contradicted it and created a WAITING cycle. It's withdrawn.
+- Your next deliverable is **native predicate results, not wire v4**: the Linux ManagerEvidence producer (snapshot, install/verify/remove_suppression) behind M-AG's R4 facade 00cf84cb, plus native tests of issuer-barrier §8 rows 1–3 (authenticated systemd user-manager peer and effective definition; cgroup containment of the witnessed authentic launch; the replacement race). Run them as a real non-root user on the 41586992923-type venue (P19).
+- Wire v3 a58f76eb + cab687c3 are FROZEN unless a native result contradicts them (P26).
+- Target: first results published by 08:30Z.
+- If historical containment (design:139) can't be shown for existing installs, write it as a scope question for Hannah. Don't revise the wire.
+Re-tier (P15) if you need hands. M-OPS is DONE and Galadriel has capacity. See DECISIONS.md (2026-11-03T06:56:19Z entry, '3-HOURLY REVIEW 06:37Z') and rule 36 P26.

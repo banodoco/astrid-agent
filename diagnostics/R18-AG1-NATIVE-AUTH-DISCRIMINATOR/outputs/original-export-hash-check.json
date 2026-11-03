@@ -1,0 +1,22 @@
+[
+  {
+    "name": "export-fixture0.unit.GetAll.txt",
+    "matches_reported_sha256": true,
+    "bytes": 23343
+  },
+  {
+    "name": "export-fixture0.service.GetAll.txt",
+    "matches_reported_sha256": true,
+    "bytes": 80074
+  },
+  {
+    "name": "export-fixture1.unit.GetAll.txt",
+    "matches_reported_sha256": true,
+    "bytes": 23339
+  },
+  {
+    "name": "export-fixture1.service.GetAll.txt",
+    "matches_reported_sha256": true,
+    "bytes": 80073
+  }
+]

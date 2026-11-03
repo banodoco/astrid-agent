@@ -1,0 +1,14 @@
+{
+  "exit": 0,
+  "outer_manifest": true,
+  "inventory_files": 25,
+  "native_exports": 8,
+  "requested_effective_tuple_matches": true,
+  "probe_hash_matches": true,
+  "observed_controls": 10,
+  "unknown_controls": [
+    "foreign_manager_rejected_by_uid"
+  ],
+  "diagnostic_exit": 1,
+  "admission_exit": 1
+}

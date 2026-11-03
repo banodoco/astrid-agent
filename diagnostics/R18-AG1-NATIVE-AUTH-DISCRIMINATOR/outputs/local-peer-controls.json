@@ -1,0 +1,98 @@
+{
+  "admission_exit": 1,
+  "authority": false,
+  "calls": [],
+  "cleanup": {},
+  "diagnostic_exit": 0,
+  "errors": [],
+  "euid": 0,
+  "predicates": {
+    "active_loaded_definition_stale": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "effective_fixture_principal_argv": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "environment_pointer_unchanged": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "foreign_manager_rejected_by_uid": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "launch_environment_changed_without_reload": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "loaded_definition_changed_after_reload": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "separate_connection_selected_readback": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "socket_bound_live_user_peer": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "socket_pidfd_replacement_and_death": {
+      "detail": null,
+      "state": "observed"
+    },
+    "unreadable_file_remains_unknown": {
+      "detail": "not completed",
+      "state": "unknown"
+    },
+    "unsupported_field_remains_unknown": {
+      "detail": "not completed",
+      "state": "unknown"
+    }
+  },
+  "remaining_authority": {
+    "authenticated_system_bus_image_namespace": {
+      "state": "unknown"
+    },
+    "authenticated_user_manager_image_epoch": {
+      "state": "unknown"
+    },
+    "complete_effective_definition_semantics": {
+      "state": "unknown"
+    },
+    "historical_containment": {
+      "state": "unknown"
+    },
+    "independent_runtime_verifier": {
+      "state": "unknown"
+    },
+    "loaded_disk_equivalence": {
+      "state": "unknown"
+    },
+    "replacement_safe_mutation": {
+      "state": "unknown"
+    },
+    "routes_and_pending_jobs_complete": {
+      "state": "unknown"
+    },
+    "runtime_issuer_barrier": {
+      "state": "unknown"
+    }
+  },
+  "replacement_control": {
+    "first_pid": 12,
+    "new_pid": 13,
+    "new_readable": false,
+    "old_dead_readable": true,
+    "old_pid_after_death": -1,
+    "old_socket_requery": {
+      "pid": -1,
+      "readable": true
+    },
+    "requery_error": null,
+    "second_pid": 13
+  },
+  "uid": 0
+}

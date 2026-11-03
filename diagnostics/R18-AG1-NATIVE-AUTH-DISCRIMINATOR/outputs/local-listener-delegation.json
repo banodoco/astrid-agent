@@ -1,0 +1,9 @@
+{
+  "exit": 0,
+  "uid": 0,
+  "listener_pid": 4,
+  "handler_pid": 5,
+  "socket_credential_pid": 4,
+  "socket_pidfd_pid": 4,
+  "conclusion": "SO_PEERPIDFD pins retained listener credentials; an inherited listener may have a different request handler. Plumbing only; no non-root systemd claim."
+}

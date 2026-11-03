@@ -1,0 +1,52 @@
+[
+  {
+    "name": "linux-af_unix.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.8/net/unix/af_unix.c",
+    "sha256": "a5ecafbd6a071f271687bfffd0b2976a0788b3cc463397afbe2f780c97db67e9"
+  },
+  {
+    "name": "linux-pidfd.h",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/linux/pidfd.h",
+    "sha256": "bf26cf9017bdf4ec2376993642626a112a0b6f7efaa0fa448356a36c3b7433d1"
+  },
+  {
+    "name": "linux-pidfs.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/fs/pidfs.c",
+    "sha256": "249d553ba8a69e12bb4c9ac6e94c06415ddc9cf7c6e7bdfb4a114314c357ee02"
+  },
+  {
+    "name": "linux-proc-base.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.8/fs/proc/base.c",
+    "sha256": "12c5c231cf7ddb0d15145f7b900e9244f04099e7d5143881c6d3208ee0e5dca8"
+  },
+  {
+    "name": "linux-proc-namespaces.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.8/fs/proc/namespaces.c",
+    "sha256": "cc38b0cd358741199f25ecb99487caf46e3794bc8d444dd777791b7c1d49fb45"
+  },
+  {
+    "name": "linux-sock.c",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.8/net/core/sock.c",
+    "sha256": "3997357b25c99e5de78962cfaf49d96973ee5ea8e147722cd1514ea19bd419aa"
+  },
+  {
+    "name": "linux-socket.h",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.8/include/uapi/asm-generic/socket.h",
+    "sha256": "795c17350dcd328870890fcfa9c96ae4751687f348d340f9a760679e19d59527"
+  },
+  {
+    "name": "systemd-exec-invoke.c",
+    "url": "https://raw.githubusercontent.com/systemd/systemd/v255/src/core/exec-invoke.c",
+    "sha256": "33da124c5cd657c09c2325641425a99be6df50e40e92d2bb18441f209d29ae46"
+  },
+  {
+    "name": "systemd-exec.xml",
+    "url": "https://raw.githubusercontent.com/systemd/systemd/v255/man/systemd.exec.xml",
+    "sha256": "a0cba490c60152ca042beeab42183c2f63e209113be18afee89c6e5cdf50478c"
+  },
+  {
+    "name": "systemd-execute.c",
+    "url": "https://raw.githubusercontent.com/systemd/systemd/v255/src/core/execute.c",
+    "sha256": "ae0bca4daba0ea2eb57aff8657b1d8c9bcd408d238c39e60cd9ee417b8d705cc"
+  }
+]

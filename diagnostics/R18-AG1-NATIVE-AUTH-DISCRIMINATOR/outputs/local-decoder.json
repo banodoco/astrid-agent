@@ -1,0 +1,14 @@
+{
+  "exit": 0,
+  "uid": 0,
+  "scope": "real dbus-daemon client/typed decoder plumbing only; no systemd or non-root proof",
+  "signature": "a{sv}",
+  "properties": [
+    "ProcessID",
+    "UnixUserID"
+  ],
+  "known_values_checked": [
+    "UnixUserID",
+    "ProcessID"
+  ]
+}
