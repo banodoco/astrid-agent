@@ -2467,3 +2467,85 @@ def test_linux_lock_snapshot_retains_sanitized_bounded_log_and_refuses_symlink(t
     after = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['after-cleanup']['linux_lock_install_log']
     assert after['status'] == 'unavailable'
     assert retained.read_bytes() == data
+
+
+def test_linux_identity_capture_workflow_scopes_opt_in():
+    workflow = (journey.ROOT / '.github' / 'workflows' / 'journey.yml').read_text()
+    assert workflow.count('      linux_identity_capture:') == 2
+    assert "matrix.job_id == 'direct-linux' && inputs.linux_identity_capture && '1' || '0'" in workflow
+    assert not journey.credential_name('ASTRID_LINUX_IDENTITY_CAPTURE')
+
+
+def test_linux_identity_capture_reaches_isolated_bootstrap_child(tmp_path, monkeypatch):
+    app, manifest = app_checkout(tmp_path)
+    # Like the App bootstrap, run isolated Python and use execv to inherit its environment.
+    (app / 'public' / 'install').write_text(
+        f'''#!/bin/sh
+{sys.executable} -I -c 'import os,sys; os.execv(sys.executable, [sys.executable, "-I", "-c", "import os; print(os.getenv(\\"ASTRID_LINUX_IDENTITY_CAPTURE\\", \\"absent\\"))"])'
+''')
+    evidence = tmp_path / 'evidence'
+    evidence.mkdir()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    for value in ('1', '0'):
+        monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', value)
+        with journey.without_provider_credentials():
+            journey.bootstrap(app, manifest, 'sh', 'update', evidence, tmp_path / 'root', tmp_path / 'data')
+        assert (evidence / 'update-bootstrap.log').read_text().strip() == value
+
+
+def test_linux_identity_snapshot_retains_sanitized_record_and_failure(tmp_path, monkeypatch):
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    line = 'installer-linux-identity {"schema":"installer-linux-identity-v1","match":false,"bridge":"missing"}'
+    source.write_text('x' * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 50) +
+                      '\nTOKEN=do-not-publish\n' + line + '\n')
+    original = {'status': 'fail', 'checks': {'release': 'not-run'}, 'installed_tuple': None}
+    journey.write_json(evidence / 'journey-result.json', original)
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    monkeypatch.delenv('ASTRID_LINUX_LOCK_CAPTURE', raising=False)
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    result = journey.read_json(evidence / 'journey-result.json')
+    assert all(result[key] == value for key, value in original.items())
+    record = result['failure_diagnostics']['before-cleanup']['linux_identity_install_log']
+    retained = run_root / 'evidence-upload' / 'before-cleanup' / 'install.log'
+    data = retained.read_bytes()
+    assert record['status'] == 'captured' and record['truncated']
+    assert len(data) <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert line.encode() in data and b'do-not-publish' not in data
+    assert record['raw_sha256'] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert record['sha256'] == hashlib.sha256(data).hexdigest()
+    assert not (evidence / 'install.log').exists()
+    source.unlink()
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'after-cleanup')
+    after = journey.read_json(evidence / 'journey-result.json')
+    assert after['failure_diagnostics']['after-cleanup']['linux_identity_install_log']['status'] != 'captured'
+    assert all(after[key] == value for key, value in original.items())
+    assert retained.read_bytes() == data
+
+
+def test_linux_identity_capture_scope_and_symlink_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    monkeypatch.delenv('ASTRID_LINUX_LOCK_CAPTURE', raising=False)
+    monkeypatch.setattr(journey.sys, 'platform', 'darwin')
+    assert not journey.linux_installer_capture_enabled()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '0')
+    assert not journey.linux_installer_capture_enabled()
+    monkeypatch.setenv('ASTRID_LINUX_IDENTITY_CAPTURE', '1')
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    source.symlink_to(tmp_path / 'secret')
+    journey.write_json(evidence / 'journey-result.json', {'status': 'fail'})
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    record = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['before-cleanup']['linux_identity_install_log']
+    assert record == {'status': 'unavailable', 'reason': 'symlink'}
+    assert not (run_root / 'evidence-upload' / 'before-cleanup' / 'install.log').exists()

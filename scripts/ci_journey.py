@@ -569,6 +569,14 @@ def linux_lock_capture_enabled() -> bool:
     return sys.platform == "linux" and os.environ.get("ASTRID_LINUX_LOCK_CAPTURE") == "1"
 
 
+def linux_identity_capture_enabled() -> bool:
+    return sys.platform == "linux" and os.environ.get("ASTRID_LINUX_IDENTITY_CAPTURE") == "1"
+
+
+def linux_installer_capture_enabled() -> bool:
+    return linux_lock_capture_enabled() or linux_identity_capture_enabled()
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of the run-owned Runtime and named service logs."""
     if sys.platform == "darwin":
@@ -579,7 +587,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
     paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
     for source in paths:
-        if (source.name == "install.log" and (linux_lock_capture_enabled() or
+        if (source.name == "install.log" and (linux_installer_capture_enabled() or
                 (sys.platform == "darwin" and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1"))):
             continue
         if source.is_symlink() or not source.is_file():
@@ -1052,7 +1060,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         sources.append(release0_assertion)
     for source in sources:
         name = source.name
-        if (name == "install.log" and (linux_lock_capture_enabled() or
+        if (name == "install.log" and (linux_installer_capture_enabled() or
                 (sys.platform == "darwin" and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1"))):
             continue
         if (name not in JOURNEY_EVIDENCE_NAMES and
@@ -1190,18 +1198,21 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         diagnostic = {}
         if sys.platform == "darwin" and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1":
             diagnostic["mac_stop_capture"] = capture_mac_stop_records(run_root, destination)
-        if linux_lock_capture_enabled():
+        if linux_installer_capture_enabled():
             source = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
             # Refuse symlinked ancestors before using the existing bounded sanitizer.
             parents = [run_root.joinpath(*source.relative_to(run_root).parts[:i])
                        for i in range(1, len(source.relative_to(run_root).parts))]
             if source.is_symlink() or any(parent.is_symlink() for parent in parents):
-                diagnostic["linux_lock_install_log"] = {"status": "unavailable", "reason": "symlink"}
+                item = {"status": "unavailable", "reason": "symlink"}
             else:
                 item = _capture_regular_file(source, destination / "install.log", run_root)
                 if item["status"] == "captured":
                     item["sha256"] = hashlib.sha256((destination / "install.log").read_bytes()).hexdigest()
+            if linux_lock_capture_enabled():
                 diagnostic["linux_lock_install_log"] = item
+            if linux_identity_capture_enabled():
+                diagnostic["linux_identity_install_log"] = item
         for key, name in (("install_log", "install.log"),
                           ("service_manager", f"manager-state-{phase}.json")):
             path = destination / name

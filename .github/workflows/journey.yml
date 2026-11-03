@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      linux_identity_capture:
+        description: Enable same-call installer identity capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -108,6 +113,11 @@ on:
         type: boolean
       linux_lock_capture:
         description: Enable diagnostic parent lock capture on the direct Linux row only
+        required: false
+        default: false
+        type: boolean
+      linux_identity_capture:
+        description: Enable same-call installer identity capture on the direct Linux row only
         required: false
         default: false
         type: boolean
@@ -664,6 +674,7 @@ jobs:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
           ASTRID_INSTALLER_MAC_STOP_CAPTURE: ${{ matrix.job_id == 'direct-macos' && inputs.mac_stop_capture && '1' || '0' }}
           ASTRID_LINUX_LOCK_CAPTURE: ${{ matrix.job_id == 'direct-linux' && inputs.linux_lock_capture && '1' || '0' }}
+          ASTRID_LINUX_IDENTITY_CAPTURE: ${{ matrix.job_id == 'direct-linux' && inputs.linux_identity_capture && '1' || '0' }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           if ('${{ matrix.job_id }}' -eq 'direct-windows') {
