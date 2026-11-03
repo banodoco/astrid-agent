@@ -68,15 +68,21 @@ def test_service_absence_is_exact(monkeypatch, code, text, expected):
     assert capture.service_absent() is expected
 
 
-def test_port_guard_refuses_occupied_port(monkeypatch):
-    class Occupied:
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def bind(self, address):
-            assert address == ('127.0.0.1', 17340)
-            raise OSError('already in use')
-    monkeypatch.setattr(capture.socket, 'socket', lambda *args: Occupied())
-    assert capture.port_free() is False
+@pytest.mark.parametrize("code,stdout,stderr,expected", [
+    (1, "", "", True),
+    (0, "COMMAND PID USER", "", False),
+    (1, "", "lsof warning", False),
+    (2, "", "error", False),
+])
+def test_port_guard_requires_exact_lsof_absence(monkeypatch, code, stdout, stderr, expected):
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(capture.subprocess, 'run', run)
+    assert capture.port_free() is expected
+    assert calls == [["/usr/sbin/lsof", "-nP", "-iTCP:17340", "-sTCP:LISTEN"]]
+
 
 
 def test_refused_host_does_not_create_private_temp_root(tmp_path, monkeypatch):
@@ -92,6 +98,7 @@ def test_refused_host_does_not_create_private_temp_root(tmp_path, monkeypatch):
     monkeypatch.setenv('RUNNER_TEMP', str(runner_temp))
     monkeypatch.setenv('GITHUB_ENV', str(github_env))
     monkeypatch.setattr(capture.shutil, 'disk_usage', lambda _: SimpleNamespace(free=20_000_000_000))
+    monkeypatch.setattr(capture, 'port_free', lambda: True)
     monkeypatch.setattr(capture, 'service_absent', lambda: False)
     monkeypatch.setattr(capture.tempfile, 'mkdtemp', lambda **kw: pytest.fail('capture root must not be created'))
     with pytest.raises(SystemExit):
@@ -112,3 +119,12 @@ def test_global_guard_is_rechecked_just_before_driver():
     assert source.rindex('guard_host(home)') < source.index('argv = [str(py)')
     assert 'host_owners_exist()' in inspect.getsource(capture.guard_host)
     assert 'port_free()' in inspect.getsource(capture.guard_host)
+
+
+def test_guard_checks_lsof_before_launchd_and_refuses_unknown(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(capture, 'port_free', lambda: events.append('lsof') or False)
+    monkeypatch.setattr(capture, 'service_absent', lambda: events.append('launchctl') or True)
+    with pytest.raises(RuntimeError, match='port'):
+        capture.guard_host(tmp_path)
+    assert events == ['lsof']

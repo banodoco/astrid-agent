@@ -7,7 +7,6 @@ import pwd
 import re
 import shutil
 import signal
-import socket
 import stat
 import subprocess
 import sys
@@ -47,15 +46,16 @@ def service_absent():
 
 
 def port_free():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try: sock.bind(("127.0.0.1", 17340))
-        except OSError: return False
-    return True
+    """Require lsof to prove no TCP listener on the default Runtime port."""
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", "-iTCP:17340", "-sTCP:LISTEN"],
+                            capture_output=True, text=True, timeout=20)
+    return result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip()
 
 
 def guard_host(home):
-    if shutil.disk_usage(home).free < 10_000_000_000:
-        raise RuntimeError("Insufficient disk")
+    # The R3 contract explicitly asks for the port observation first.
+    if not port_free():
+        raise RuntimeError("Default Runtime port is occupied or cannot be verified; no installation attempted")
     if not service_absent():
         raise RuntimeError("Runner Runtime service present or absence unverified")
     plist = home / "Library/LaunchAgents/haus.astrid.runtime.plist"
@@ -63,14 +63,14 @@ def guard_host(home):
         raise RuntimeError("Runner Runtime plist already exists")
     if host_owners_exist():
         raise RuntimeError("Host has existing Runtime owner; no installation attempted")
-    if not port_free():
-        raise RuntimeError("Default Runtime port is occupied; no installation attempted")
+    if shutil.disk_usage(home).free < 10_000_000_000:
+        raise RuntimeError("Insufficient disk")
 
 
 def safe_error(exc):
     known = {"Insufficient disk", "Runner Runtime service present or absence unverified",
              "Runner Runtime plist already exists", "Host has existing Runtime owner; no installation attempted",
-             "Default Runtime port is occupied; no installation attempted", "Runner-owned Python is unavailable",
+             "Default Runtime port is occupied or cannot be verified; no installation attempted", "Runner-owned Python is unavailable",
              "Runner Python version differs", "Fresh capture root is unsafe", "Insufficient disk before source operation",
              "Source checkout identity differs", "Frozen fixture hashes differ", "Receipt runner image is not local"}
     text = str(exc)
