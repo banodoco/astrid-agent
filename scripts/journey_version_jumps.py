@@ -406,6 +406,9 @@ def bootstrap_release0(fixture: Path, manifest: Path, shell: str, evidence: Path
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
+        # Hosted pwsh can leak its module directory into Windows PowerShell 5.1,
+        # where Get-Acl's Microsoft.PowerShell.Security module may then fail to load.
+        env = {key: value for key, value in env.items() if key.casefold() != "psmodulepath"}
         journey.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
                      fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env)
     else:

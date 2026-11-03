@@ -29,6 +29,26 @@ def test_release0_bootstrap_uses_the_frozen_served_script_without_a_url_fallback
     assert log.name == "release0-bootstrap.log"
 
 
+def test_windows_release0_bootstrap_drops_inherited_powershell_module_path(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(jumps.sys, "platform", "win32")
+    monkeypatch.setenv("PSModulePath", r"C:\pwsh\Modules;C:\pwsh\7\Modules")
+    monkeypatch.setenv("KEEP_ME", "preserved")
+    monkeypatch.setattr(jumps.journey, "run", lambda argv, log, **kwargs: calls.append((argv, log, kwargs)))
+
+    root, manifest, _receipt = jumps.verified_release0_fixture(jumps.RELEASE0_FIXTURE)
+    program, data = tmp_path / "program", tmp_path / "data"
+    jumps.bootstrap_release0(root, manifest, "powershell.exe", tmp_path / "evidence", program, data)
+
+    argv, log, kwargs = calls[0]
+    assert argv == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", root / "served" / "install.ps1", "--manifest", manifest,
+                    "--root", program, "--data-root", data]
+    assert log.name == "release0-bootstrap.log"
+    assert all(key.casefold() != "psmodulepath" for key in kwargs["env"])
+    assert kwargs["env"]["KEEP_ME"] == "preserved"
+
+
 @pytest.mark.parametrize("changes", (
     {"mode": "pinokio-backend"},
     {"allow_release0_to_release1": False},
