@@ -22,7 +22,6 @@ from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
-    BackupSpaceError,
     RuntimeOperationError,
     VerificationError,
     Version,
@@ -806,38 +805,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             return self._backup_ignored(source, Path(folder), names, support=support)
 
         shutil.copytree(source, destination, copy_function=copy_file, ignore=ignore)
-
-    def backup(self, version: Version, data: Path, realm: dict) -> dict:
-        from runtime_protocol import platform
-        destination = self.root / "backups" / uuid.uuid4().hex[:12]
-        kind = "clone" if self.service.system == "darwin" else "runtime"
-        realm_root = absolute(realm["realm_root"])
-        if kind != "clone":
-            size = self._backup_size(realm_root) + self._backup_size(data, support=True)
-            margin = max(256 * 1024 * 1024, size // 10)
-            platform.private_directory(destination.parent)
-            if shutil.disk_usage(self.root).free < size + margin:
-                raise BackupSpaceError("There is not enough free disk space to back up your workspace.")
-        try:
-            platform.private_directory(destination)
-            if kind == "clone":
-                self._copy(realm_root, destination / "realm", clone=True)
-            else:
-                # The backup CLI uses authenticated RPC. Start only the neutral
-                # daemon (no foreground service supervisor and no browser door).
-                try:
-                    self.runtime(version, data, "up", "--hosted-origin", "off", profile=True)
-                    self.runtime(version, data, "backup", "--destination", str(destination / "realm"))
-                finally:
-                    self.stop(version, data)
-            self._copy(data, destination / "support", clone=kind == "clone", support=True)
-            result = {"root": str(destination), "kind": kind}
-            write_json(destination / "backup.json", result)
-            return result
-        except BaseException:
-            if destination.exists():
-                shutil.rmtree(destination)
-            raise
 
     def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
         if platform.sys.platform == "win32":

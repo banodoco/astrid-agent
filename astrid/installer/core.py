@@ -306,6 +306,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
             or absolute(transaction["data_root"]) != absolute(data)):
         raise ValueError("The interrupted update identity does not match this installation.")
+    if transaction.get("runtime_upgrade_started"):
+        raise RuntimeError("The Runtime upgrade may have changed the workspace; preserve the current selection and use Runtime upgrade recovery.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save
@@ -424,7 +426,7 @@ class Installer:
     def _run_update_transaction(self, old: Version, realm: dict, *, prepare, stop,
                                  switch_candidate, switch_old, activate, activate_old,
                                  backup=None, migrate=None, restore_workspace: bool = True,
-                                 kind: str = "migration",
+                                 kind: str = "migration", runtime_upgrade: bool = False,
                                  transaction_context: dict | None = None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
@@ -501,6 +503,11 @@ class Installer:
                     transaction["backup"] = backup_image
                     self._save_update(transaction, "backed_up", backup=backup_image)
                 if migrate is not None:
+                    if runtime_upgrade:
+                        # A lost acknowledgement can hide a completed migration
+                        # and a serving candidate. Never restore or start old on
+                        # the basis of the Agent journal alone.
+                        self._save_update(transaction, "upgrading", runtime_upgrade_started=True)
                     migrate(candidate, self.data, realm)
                     self._save_update(transaction, "migrated")
                 switch_candidate(candidate)
@@ -514,6 +521,8 @@ class Installer:
                 self._save_update(transaction, "complete")
                 return candidate
             except (Exception, KeyboardInterrupt) as failure:
+                if transaction.get("runtime_upgrade_started"):
+                    raise
                 rollback_after(failure)
                 raise
 
@@ -677,8 +686,8 @@ class Installer:
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=None if same_schema else self.backend.backup,
                 migrate=None if same_schema else migrate, kind="migration",
+                runtime_upgrade=not same_schema,
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:

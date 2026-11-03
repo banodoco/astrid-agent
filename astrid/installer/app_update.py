@@ -584,9 +584,9 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             activate=activate,
             activate_old=lambda previous, workspace, selected_realm: lifecycle.start(
                 previous, workspace, selected_realm["realm_id"]),
-            backup=backend.backup if not no_migration and not repair else None,
             migrate=migrate if not no_migration and not repair else None,
             restore_workspace=not no_migration and not repair,
             kind="app" if no_migration or repair else "migration",
+            runtime_upgrade=not no_migration and not repair,
         )
         say("Astrid is updated and running.")
