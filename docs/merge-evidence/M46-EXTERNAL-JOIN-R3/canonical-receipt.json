@@ -1,0 +1,60 @@
+{
+  "base": "ae8415a3daaa56843ecf6353ebe5a4dc0858fc55",
+  "branch": "lane/M-CI/M46-EXTERNAL-JOIN-R3",
+  "checks": {
+    "changed_paths": [
+      "scripts/check_journey_evidence.py",
+      "tests/test_m4_6_actions_index.py"
+    ],
+    "diff_check_exit": 0,
+    "py_compile_exit": 0,
+    "remote_head_verified": true
+  },
+  "co_review": "M-QUAL requested in REPORT.md; no response recorded",
+  "disposition": "incomplete; admission vetoed",
+  "head": "73bf76fec0b4c40bf1770763d61a77f4b5fc7591",
+  "parents": [
+    "ae8415a3daaa56843ecf6353ebe5a4dc0858fc55"
+  ],
+  "producer": {
+    "head": "10daf020ccb117e717cec7f40ed6e5131266fbf7",
+    "merged": false,
+    "parent": "8cc6881749edc6b2e998d3031f2220f45d5763de",
+    "ref": "lane/M-QUAL/R-36-M46-WORKFLOW-BINDING-R1",
+    "workflow_blob": "221dff2c375527287567ba4c29ee9cf904a24a40",
+    "workflow_sha256": "6968888ed8cb0548dcd3f9141e4b7248159e8e7333906332e04a59635e435630"
+  },
+  "proof": {
+    "admitted": false,
+    "archive_receipt_binding": false,
+    "hosted_artifact": null,
+    "positive_authenticated_construction_fixture": false,
+    "trust_limit": "Relies on GitHub run/artifact association and pinned workflow, not a cryptographic job signature; this route is not yet implemented.",
+    "workflow_structural_validation": false
+  },
+  "repository": "banodoco/astrid-agent",
+  "sha256": {
+    "focused-tests.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "focused-tests.log": "b1e218e6eeddf46c22a307f85ce108f6acc425055c7d83b0deed8f058ceab024",
+    "scripts/check_journey_evidence.py": "51d7b70a5497016ba1eb9d48019c1aa2c1669f28585accdd952e614faf813533",
+    "synthetic_archive": "74a06ea6113b7f98d70ba2286ddaa21a9a17e25ed2bb8736a823dbc46177eb44",
+    "tests/test_m4_6_actions_index.py": "9617651fa8200716bba1cb0b284289c12b08d53a749d7c6c4c93dacd7ae6daa8"
+  },
+  "task": "M46-EXTERNAL-JOIN-R3",
+  "test": {
+    "command": "PYTHONPATH=/home/user/merge/ws/M-CI/repos/astrid-runtime uv run --no-project --with pytest --with jsonschema --with pyyaml python -m pytest -q tests/test_m4_6_actions_index.py tests/test_journey_predicates.py",
+    "exit_file": "focused-tests.exit",
+    "inner_exit": 0,
+    "log": "focused-tests.log",
+    "passed": 52
+  },
+  "tree": "926743dc5099a1b449ac4ffad3d3aab0dc50c60d",
+  "tuple": {
+    "agent": "3cc84be5d8c565f1a4a500dcf713478498e34885",
+    "app": "33f1de3f33dfb1e9799ca745c5c3b8437173e06e",
+    "classification": "synthetic fixture only",
+    "manifest_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "pinokio": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime": "a3e3f2ed95d6363e7f5b463b521da94221cf6f00"
+  }
+}
