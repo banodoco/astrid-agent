@@ -1,0 +1,16 @@
+{
+  "config": "home = /Users/runner/work/_temp/r18-mac-92ex_429/program/foreign-python/bin\nimplementation = CPython\nuv = 0.11.32\nversion_info = 3.11.13\ninclude-system-site-packages = false\n",
+  "executable": "/Users/runner/work/_temp/r18-mac-92ex_429/program/foreign-python/bin/python3.11",
+  "observed": {
+    "birth_id": "ps-lstart:Tue Nov  3 01:48:05 2026",
+    "parent_pid": 1,
+    "pid": 3876,
+    "uid": 501
+  },
+  "pid": 3876,
+  "program": "/Users/runner/work/_temp/r18-mac-92ex_429/program/versions/foreign-proof/py/bin/python",
+  "reason": null,
+  "refused": false,
+  "target": "gui/501/org.astrid.proof.r18.41561185739.1",
+  "trusted_interpreter": true
+}
