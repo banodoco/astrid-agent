@@ -47,7 +47,9 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
     from astrid.core.pack.imports import install_pack_imports, pack_command_args, pack_module_path
 
     control = json.loads(encoded)
-    if (not isinstance(control, dict) or set(control) != {"pack_id", "root", "source_digest", "argv"}
+    if (not isinstance(control, dict) or set(control) not in (
+            {"pack_id", "root", "source_digest", "argv"},
+            {"pack_id", "root", "source_digest", "argv", "map"})
             or not isinstance(control["argv"], list)
             or any(not isinstance(arg, str) for arg in control["argv"])):
         raise ValueError("invalid selected pack command")
@@ -61,7 +63,8 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
         raise ValueError("admitted capability source digest changed")
     module_path, path_names = (pack_module_path(Path(args[0]).resolve().relative_to(root))
                                if args[0] not in {"-m", "-c"} else (None, {}))
-    install_pack_imports(control["pack_id"], root, path_names, source_digest=control["source_digest"])
+    install_pack_imports(control["pack_id"], root, path_names, source_digest=control["source_digest"],
+                         selected_map=control.get("map"))
     bridge = _install_inherited_bridge(bridge_fd) if bridge_fd is not None else None
     try:
         if "-B" in control["argv"]:

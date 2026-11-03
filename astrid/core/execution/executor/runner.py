@@ -358,7 +358,8 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
     _verify_action_admission(executor.to_dict(), _admission)
     module_path, path_names = pack_module_path(relative)
     prefix = install_pack_imports(str(executor.metadata.get("source_pack") or root.name), root, path_names,
-                                  source_digest=str(_admission["source_digest"]))
+                                  source_digest=str(_admission["source_digest"]),
+                                  selected_map=_admission.get("selected_pack_map"))
     module = import_module(prefix + "." + module_path)
     function = getattr(module, function_name, None)
     if not callable(function):

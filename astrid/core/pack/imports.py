@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.abc
 import importlib.util
 import keyword
+import os
 import re
 import sys
 from pathlib import Path
@@ -34,24 +35,26 @@ class _PackSourceLoader(importlib.abc.Loader):
 
 
 class _PackSourceFinder(importlib.abc.MetaPathFinder):
-    """Resolve only the selected canonical pack, directly from raw source."""
+    """Resolve the admitted pack map directly from raw source."""
 
-    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str], source_digest: str) -> None:
-        self.prefix, self.root, self.path_names = prefix, root, path_names
-        self.source_digest = source_digest
+    def __init__(self, selected: Mapping[str, Mapping[str, str]], aliases: Mapping[str, Mapping[str, str]]) -> None:
+        self.selected, self.aliases = selected, aliases
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
-            if fullname.startswith("astrid.packs."):
-                pack_id = fullname.split(".")[2]
-                if not (Path(__file__).resolve().parents[2] / "packs" / pack_id).is_dir():
-                    raise ModuleNotFoundError(f"pack {pack_id!r} was not selected for this execution")
+        if not fullname.startswith("astrid.packs."):
             return None
-        suffix = fullname[len(self.prefix):].lstrip(".")
+        pack_id = fullname.split(".")[2]
+        if pack_id not in self.selected:
+            if not (Path(__file__).resolve().parents[2] / "packs" / pack_id).is_dir():
+                raise ModuleNotFoundError(f"pack {pack_id!r} was not selected for this execution")
+            return None
+        root = Path(self.selected[pack_id]["root"])
+        path_names = self.aliases.get(pack_id, {})
+        suffix = fullname[len("astrid.packs." + pack_id):].lstrip(".")
         parts = suffix.split(".") if suffix else []
         if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
             raise ValueError("invalid action module name")
-        base = self.root.joinpath(*(self.path_names.get(part, part) for part in parts))
+        base = root.joinpath(*(path_names.get(part, part) for part in parts))
         directory = base.resolve()
         source = None
         package = directory.is_dir()
@@ -63,7 +66,7 @@ class _PackSourceFinder(importlib.abc.MetaPathFinder):
             source = Path(str(base) + ".py").resolve()
             if not source.is_file():
                 raise ModuleNotFoundError(f"no selected Python source for {fullname!r}")
-        if not directory.is_relative_to(self.root) or (source is not None and not source.is_relative_to(self.root)):
+        if not directory.is_relative_to(root) or (source is not None and not source.is_relative_to(root)):
             raise ValueError("action import escapes admitted pack root")
         loader = _PackSourceLoader(source, directory)
         spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
@@ -86,13 +89,51 @@ def pack_module_path(relative: Path) -> tuple[str, dict[str, str]]:
     return ".".join(names), aliases
 
 
+def validate_selected_pack_map(selected: Mapping[str, Mapping[str, str]], *, verify_digests: bool = True) -> dict[str, dict[str, str]]:
+    """Validate exact roots and run digests without scanning other collections."""
+    from astrid.core.pack.identity import pack_digest
+
+    if not isinstance(selected, Mapping) or not selected:
+        raise ValueError("selected pack map must be a nonempty mapping")
+    result = {}
+    for pack_id, entry in sorted(selected.items()):
+        if (not isinstance(pack_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id)
+                or not isinstance(entry, Mapping) or set(entry) != {"root", "source_digest"}
+                or not isinstance(entry["root"], str) or not isinstance(entry["source_digest"], str)):
+            raise ValueError("invalid selected pack map entry")
+        root = Path(entry["root"]).resolve(strict=True)
+        if not root.is_dir() or root.name != pack_id or str(root) != entry["root"]:
+            raise ValueError("selected pack id must match its canonical directory name")
+        builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
+        if builtin.is_dir() and builtin.resolve() != root:
+            raise ValueError("external selected pack collides with an in-tree pack")
+        if not re.fullmatch(r"[0-9a-f]{64}", entry["source_digest"]):
+            raise ValueError("invalid selected pack source digest")
+        if verify_digests and pack_digest(root) != entry["source_digest"]:
+            raise ValueError("admitted capability source digest changed")
+        result[pack_id] = dict(entry)
+    return result
+
+
+def selected_pack_environment(selected: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
+    """Descendant namespace inputs; never add pack collections to PYTHONPATH."""
+    import json
+
+    builtin = Path(__file__).resolve().parents[2] / "packs"
+    roots = dict.fromkeys(str(Path(entry["root"]).parent) for entry in selected.values()
+                          if Path(entry["root"]).parent != builtin)
+    return {"ASTRID_PACKS_PATH": os.pathsep.join(roots),
+            "ASTRID_SELECTED_PACK_MAP": json.dumps(selected, sort_keys=True)}
+
+
 def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str] | None = None,
-                         *, source_digest: str | None = None) -> str:
+                         *, source_digest: str | None = None,
+                         selected_map: Mapping[str, Mapping[str, str]] | None = None) -> str:
     """Bind this single-run worker to one canonical source identity.
 
     The host creates a fresh interpreter for each action. Keep imported modules
     until that interpreter exits; updates never evict live module objects.
-    Dependency maps and descendant propagation are supplied by the host layer.
+    The host supplies the complete transitive map for this execution.
     """
     if not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id) or root.name != pack_id:
         raise ValueError("selected pack id must match its directory name")
@@ -102,31 +143,33 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
     builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
     if builtin.is_dir() and builtin.resolve() != root:
         raise ValueError("external selected pack collides with an in-tree pack")
-    import astrid.packs
-
-    prefix = "astrid.packs." + pack_id
-    # Reuse the namespace's reserved-id/core policy; do not maintain a second list.
-    roots = astrid.packs._PACK_ROOTS
-    if root != builtin.resolve():
-        roots = tuple(dict.fromkeys((*roots, root.parent)))
-    try:
-        astrid.packs._check_collisions(roots)
-    except ImportError as exc:
-        raise ValueError(str(exc)) from exc
     if source_digest is None:
         from astrid.core.pack.identity import pack_digest
 
         source_digest = pack_digest(root)
+    selected = validate_selected_pack_map(selected_map if selected_map is not None else {
+        pack_id: {"root": str(root), "source_digest": source_digest}})
+    if selected.get(pack_id) != {"root": str(root), "source_digest": source_digest}:
+        raise ValueError("selected pack differs from admitted map")
+    os.environ.update(selected_pack_environment(selected))
+    import astrid.packs
+
+    prefix = "astrid.packs." + pack_id
+    roots = tuple(Path(item) for item in os.environ["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
+    try:
+        astrid.packs._check_collisions(roots)
+    except ImportError as exc:
+        raise ValueError(str(exc)) from exc
     names = dict(path_names or {})
     for finder in sys.meta_path:
-        if isinstance(finder, _PackSourceFinder) and finder.prefix == prefix:
-            if (finder.root != root or finder.path_names != names
-                    or finder.source_digest != source_digest):
+        if isinstance(finder, _PackSourceFinder):
+            if finder.selected != selected or finder.aliases.get(pack_id, {}) != names:
                 raise ValueError("selected pack changed; start a fresh action worker")
             return prefix
-    if any(name == prefix or name.startswith(prefix + ".") for name in sys.modules):
+    if any(name == "astrid.packs." + item or name.startswith("astrid.packs." + item + ".")
+           for name in sys.modules for item in selected):
         raise ValueError("selected pack was imported before action admission")
-    sys.meta_path.insert(0, _PackSourceFinder(prefix, root, names, source_digest))
+    sys.meta_path.insert(0, _PackSourceFinder(selected, {pack_id: names}))
     return prefix
 
 
