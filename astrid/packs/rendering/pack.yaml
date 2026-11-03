@@ -679,8 +679,6 @@ actions:
     - kind: implementation
       path: actions/timeline_visualize/scope.py
     - kind: implementation
-      path: actions/timeline_visualize/scorer.py
-    - kind: implementation
       path: actions/timeline_visualize/select.py
     - kind: implementation
       path: actions/timeline_visualize/shot_selector.py

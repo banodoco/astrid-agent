@@ -16,19 +16,19 @@ permissions:
     reason: Reads input video clips and writes generated audio files.
   - id: environment
     reason: Reads FAL_KEY for fal.ai API authentication.
-description: fal.ai integration for clip Foley and MiniMax H3 video generation.
-keywords: [fal, foley, audio, hunyuan, minimax, h3, video, api, integration]
+description: fal.ai integration for clip Foley, MiniMax H3 video generation, and optional sprite upscaling.
+keywords: [fal, foley, audio, hunyuan, minimax, h3, video, sprite, upscale, api, integration]
 capabilities: [generate_clip_foley, generate_h3_video]
 agent:
   purpose: Choose fal only when the hosted fal.ai service is explicitly selected
-    for fal.fal_foley or fal.h3_video. These declared hosted actions require fal
+    for a fal action. These declared hosted actions require fal
     credential context; fal is never an automatic default provider.
   do_not_use_for: Do not use fal as an automatic/default provider. Do not use it for
     full spatial-Foley orchestration (use foley.foley_map) or general image/video
     generation when the user has not explicitly selected fal.
   required_context:
     - docs/SKILL.md
-  normal_entrypoints: [fal.fal_foley, fal.h3_video]
+  normal_entrypoints: [fal.fal_foley, fal.h3_video, fal.sprite_upscale]
 documentation:
   kind: skill
   path: docs/SKILL.md
@@ -325,3 +325,78 @@ actions:
         path: actions/h3_video/run.py
       - kind: documentation
         path: actions/h3_video/STAGE.md
+  sprite_upscale:
+    name: fal Sprite Frame Upscale
+    version: 1.0.0
+    short_description: Optionally upscale a directory of sprite frames with FAL Clarity.
+    description: Run after rendering.sprite_sheet when AI sprite upscaling is explicitly requested.
+    keywords: [fal, sprite, upscale, image]
+    invocation:
+      kind: command
+      command:
+        argv:
+          - "{python_exec}"
+          - "-m"
+          - astrid.packs.fal.actions.sprite_upscale.run
+          - --frames-dir
+          - "{frames_dir}"
+          - --out-dir
+          - "{out}"
+          - --subject
+          - "{subject}"
+          - --animation
+          - "{animation}"
+        input_args:
+          - input: frames_dir
+            flag: --frames-dir
+            optional: false
+          - input: subject
+            flag: --subject
+            optional: false
+          - input: animation
+            flag: --animation
+            optional: false
+          - input: env_file
+            flag: --env-file
+            optional: true
+    inputs:
+      - name: frames_dir
+        type: directory
+        required: true
+        description: PNG frames produced by rendering.sprite_sheet.
+      - name: subject
+        type: string
+        required: true
+      - name: animation
+        type: string
+        required: true
+      - name: env_file
+        type: file
+        required: false
+        description: Optional explicitly named env file containing FAL_KEY.
+    outputs:
+      - name: upscaled_frames
+        type: directory
+        path_template: "{out}"
+        artifact_type: image
+        mode: create_or_replace
+    scoped_configs: [credentials.fal]
+    cache:
+      mode: none
+    isolation:
+      mode: subprocess
+      network: true
+    metadata:
+      env: [FAL_KEY]
+      runtime_entrypoint: main
+      runtime_file: actions/sprite_upscale/run.py
+      runtime_module: astrid.packs.fal.actions.sprite_upscale.run
+    resources:
+      - kind: implementation
+        path: actions/sprite_upscale/__init__.py
+      - kind: implementation
+        path: actions/sprite_upscale/run.py
+      - kind: implementation
+        path: actions/sprite_upscale/upscale.py
+      - kind: documentation
+        path: actions/sprite_upscale/STAGE.md

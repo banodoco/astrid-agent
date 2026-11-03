@@ -19,7 +19,7 @@ from astrid.packs.generation.actions.generate_image_openai.run import (
     generate as openai_generate,
     main,
 )
-from astrid.packs.rendering.actions.sprite_sheet.run import load_fal_key
+from astrid.packs.fal.actions.sprite_upscale.upscale import load_fal_key
 
 def test_fake_openai_provider_receipt_binds_generated_images_port(
     tmp_path, monkeypatch

@@ -46,24 +46,15 @@ from .sheet import (  # noqa: F401
     write_layout_guide,
 )
 from .upscale import (  # noqa: F401
-    DEFAULT_FAL_UPSCALER,
     DEFAULT_KEY_COLOR,
     EDIT_API_URL,
-    FAL_KEY_NAMES,
-    _ai_upscale_prompt,
     _call_image_edit_api,
-    _download_url,
-    _fal_image_url,
     _image_content_type,
-    _merge_upscaled_rgb_with_source_alpha,
     _multipart_field,
     _multipart_file,
     _request_payload_for_image_model,
-    _scale_upscaled_image,
     _sprite_prompt,
     _write_first_image,
-    ai_upscale_frames_with_fal,
-    load_fal_key,
     upscale_frames,
 )
 from .web_outputs import (  # noqa: F401
@@ -161,7 +152,6 @@ def build(args: argparse.Namespace) -> int:
     frames_dir = args.out_dir / "frames"
     normalized_frames_dir = args.out_dir / "frames_normalized"
     upscaled_frames_dir = args.out_dir / "frames_upscaled"
-    ai_upscaled_frames_dir = args.out_dir / "frames_ai_upscaled"
     web_dir = args.out_dir / "web"
     processed_sheet_path = args.out_dir / "sprite_sheet_processed.png"
     review_video_path = args.out_dir / "sprite_preview.mp4"
@@ -205,10 +195,6 @@ def build(args: argparse.Namespace) -> int:
                     "review_video": str(review_video_path),
                     "master_video": str(master_video_path),
                     "web_dir": str(web_dir) if args.web else None,
-                    "ai_upscale_provider": args.ai_upscale_provider,
-                    "ai_upscale_model": args.ai_upscale_model
-                    if args.ai_upscale_provider != "none"
-                    else None,
                     "manifest": str(manifest_path),
                     **request_payload,
                 },
@@ -282,8 +268,6 @@ def build(args: argparse.Namespace) -> int:
         normalized_frame_paths = output_frames
         preview_frames_dir = normalized_frames_dir
     upscaled_frames: list[str] | None = None
-    ai_upscaled_frames: list[str] | None = None
-    ai_upscale_report: list[dict[str, Any]] | None = None
     if abs(args.upscale_factor - 1.0) >= 0.0001:
         upscaled_frames = upscale_frames(
             output_frames,
@@ -294,13 +278,6 @@ def build(args: argparse.Namespace) -> int:
         )
         output_frames = upscaled_frames
         preview_frames_dir = upscaled_frames_dir
-    if args.ai_upscale_provider == "fal":
-        ai_upscaled_frames, ai_upscale_report = ai_upscale_frames_with_fal(
-            output_frames, ai_upscaled_frames_dir, args=args, force=args.force
-        )
-        output_frames = ai_upscaled_frames
-        preview_frames_dir = ai_upscaled_frames_dir
-
     final_sheet_path: Path | None = None
     if preview_frames_dir != frames_dir:
         assemble_sprite_sheet_from_frames(
@@ -349,7 +326,6 @@ def build(args: argparse.Namespace) -> int:
         "frames": frames,
         "normalized_frames": normalized_frame_paths,
         "upscaled_frames": upscaled_frames,
-        "ai_upscaled_frames": ai_upscaled_frames,
         "review_video": str(review_video_path),
         "master_video": str(master_video_path) if args.prores else None,
         "web_outputs": web_outputs,
@@ -365,22 +341,6 @@ def build(args: argparse.Namespace) -> int:
         "normalized_frame_report": normalize_report,
         "upscale_factor": args.upscale_factor,
         "upscale_filter": args.upscale_filter if abs(args.upscale_factor - 1.0) >= 0.0001 else None,
-        "ai_upscale": {
-            "provider": args.ai_upscale_provider,
-            "model": args.ai_upscale_model if args.ai_upscale_provider != "none" else None,
-            "factor": args.ai_upscale_factor if args.ai_upscale_provider != "none" else None,
-            "creativity": args.ai_upscale_creativity
-            if args.ai_upscale_provider != "none"
-            else None,
-            "resemblance": args.ai_upscale_resemblance
-            if args.ai_upscale_provider != "none"
-            else None,
-            "guidance_scale": args.ai_upscale_guidance_scale
-            if args.ai_upscale_provider != "none"
-            else None,
-            "steps": args.ai_upscale_steps if args.ai_upscale_provider != "none" else None,
-            "report": ai_upscale_report,
-        },
         "request": {key: value for key, value in request_payload.items() if key != "prompt"},
         "usage": response.get("usage"),
         "created": response.get("created"),
@@ -409,8 +369,6 @@ def build(args: argparse.Namespace) -> int:
         universal_outputs.append({"path": "frames_normalized", "type": "directory"})
     if upscaled_frames:
         universal_outputs.append({"path": "frames_upscaled", "type": "directory"})
-    if ai_upscaled_frames:
-        universal_outputs.append({"path": "frames_ai_upscaled", "type": "directory"})
     if args.web:
         universal_outputs.append({"path": "web", "type": "directory"})
 
@@ -499,53 +457,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="lanczos",
         help="ffmpeg scale filter for --upscale-factor.",
     )
-    add_choice_arg(
-        parser,
-        "--ai-upscale-provider",
-        values=("none", "fal"),
-        default="none",
-        help="Run a proper AI upscaler after slicing/normalization. Use fal for FAL Clarity Upscaler.",
-    )
-    add(
-        "--ai-upscale-model",
-        default=DEFAULT_FAL_UPSCALER,
-        help="FAL model id for --ai-upscale-provider fal.",
-    )
-    add(
-        "--ai-upscale-factor",
-        type=float,
-        default=2.0,
-        help="AI upscale multiplier passed to the provider.",
-    )
-    add(
-        "--ai-upscale-prompt",
-        help="Prompt for the AI upscaler. Defaults to a sprite-preserving prompt derived from --subject and --animation.",
-    )
-    add(
-        "--ai-upscale-negative-prompt",
-        default="low quality, blurry, distorted, changed pose, changed silhouette, extra limbs, background, text, watermark",
-    )
-    add(
-        "--ai-upscale-creativity",
-        type=float,
-        default=0.18,
-        help="FAL Clarity creativity/denoise strength. Lower preserves sprite frames better.",
-    )
-    add(
-        "--ai-upscale-resemblance",
-        type=float,
-        default=0.9,
-        help="FAL Clarity resemblance/control strength. Higher preserves the source frame better.",
-    )
-    add("--ai-upscale-guidance-scale", type=float, default=4.0)
-    add("--ai-upscale-steps", type=int, default=28)
-    add(
-        "--fal-env-file",
-        type=Path,
-        help="Explicitly named fallback env file containing FAL_KEY (the shared Astrid env file and process environment take precedence).",
-    )
-    add("--fal-timeout", type=int, default=900)
-    add("--fal-logs", action="store_true", help="Print FAL queue logs while AI upscaling.")
     add(
         "--frames",
         type=int,
@@ -656,18 +567,6 @@ def main(argv: list[str] | None = None) -> int:
         _die("--normalize-margin must be >= 0")
     if args.upscale_factor <= 0:
         _die("--upscale-factor must be > 0")
-    if args.ai_upscale_factor <= 0:
-        _die("--ai-upscale-factor must be > 0")
-    if args.ai_upscale_provider == "fal" and not args.ai_upscale_model:
-        _die("--ai-upscale-model is required for --ai-upscale-provider fal")
-    if args.ai_upscale_steps < 1:
-        _die("--ai-upscale-steps must be >= 1")
-    if args.fal_timeout < 1:
-        _die("--fal-timeout must be >= 1")
-    for name in ("ai_upscale_creativity", "ai_upscale_resemblance"):
-        value = getattr(args, name)
-        if value < 0 or value > 1:
-            _die(f"--{name.replace('_', '-')} must be between 0 and 1")
     if args.web_quality < 0 or args.web_quality > 100:
         _die("--web-quality must be between 0 and 100")
     if args.web_max_dim < 0:
