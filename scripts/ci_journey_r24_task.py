@@ -54,9 +54,11 @@ def _loopback_endpoint(value: Any) -> str:
 
 
 def _write_owner_discovery_diagnostic(
-    path: Path | None, *, data_root: Path, expected_credential: Path,
-    credential_regular_nonsymlink: bool, credential_matches: bool,
-    discovery: dict[str, Any],
+    path: Path | None, *, data_root: Path, expected_owner_credential: Path,
+    owner_credential_regular_nonsymlink: bool,
+    expected_discovery_credential: Path,
+    discovery_credential_regular_nonsymlink: bool,
+    discovery_credential_matches: bool, discovery: dict[str, Any],
 ) -> None:
     if path is None:
         return
@@ -98,10 +100,14 @@ def _write_owner_discovery_diagnostic(
     diagnostic = {
         "schema": "astrid.r24.owner-discovery-diagnostic.v1",
         "selected_data_root": str(data_root),
-        "resolved_expected_owner_token_path": str(expected_credential),
-        "expected_owner_token_regular_nonsymlink": credential_regular_nonsymlink,
+        "resolved_expected_owner_token_path": str(expected_owner_credential),
+        "expected_owner_token_regular_nonsymlink": owner_credential_regular_nonsymlink,
+        "resolved_expected_discovery_credential_path": str(expected_discovery_credential),
+        "expected_discovery_credential_regular_nonsymlink": (
+            discovery_credential_regular_nonsymlink
+        ),
         "discovery_credential_file": observed_credential,
-        "discovery_credential_path_equals_expected": credential_matches,
+        "discovery_credential_path_equals_expected": discovery_credential_matches,
         "discovery_endpoint": safe_endpoint,
         "endpoint_redacted": endpoint_redacted,
         "endpoint_parse_succeeded": endpoint_parse_succeeded,
@@ -134,15 +140,20 @@ def _installed(
             or version.get("identity") != {"release": 1, "managed_by": "pinokio"}):
         raise TaskBoundaryError("installed version identity mismatch")
     discovery = _read(data / "runtime/discovery.json")
-    credential_path = data / "runtime/credentials/owner.token"
-    credential_regular_nonsymlink = (
-        not credential_path.is_symlink() and credential_path.is_file()
+    owner_credential_path = data / "runtime/credentials/owner.token"
+    owner_credential_regular_nonsymlink = (
+        not owner_credential_path.is_symlink() and owner_credential_path.is_file()
     )
-    if not credential_regular_nonsymlink:
+    if not owner_credential_regular_nonsymlink:
         raise TaskBoundaryError("Runtime owner credential mismatch")
-    credential = credential_path.resolve(strict=True)
-    credential_matches = (
-        Path(str(discovery.get("credential_file", ""))) == credential
+    owner_credential = owner_credential_path.resolve(strict=True)
+    discovery_credential_path = data / "credentials/astrid.json"
+    discovery_credential_regular_nonsymlink = (
+        not discovery_credential_path.is_symlink() and discovery_credential_path.is_file()
+    )
+    expected_discovery_credential = discovery_credential_path.resolve()
+    discovery_credential_matches = (
+        Path(str(discovery.get("credential_file", ""))) == expected_discovery_credential
     )
     endpoint = discovery.get("endpoint")
     try:
@@ -151,15 +162,21 @@ def _installed(
     except TaskBoundaryError:
         canonical_endpoint = None
         endpoint_matches = False
-    if not credential_matches or not endpoint_matches:
+    if (not discovery_credential_matches or not discovery_credential_regular_nonsymlink
+            or not endpoint_matches):
         _write_owner_discovery_diagnostic(
-            owner_diagnostic, data_root=data, expected_credential=credential,
-            credential_regular_nonsymlink=credential_regular_nonsymlink,
-            credential_matches=credential_matches,
+            owner_diagnostic, data_root=data,
+            expected_owner_credential=owner_credential,
+            owner_credential_regular_nonsymlink=owner_credential_regular_nonsymlink,
+            expected_discovery_credential=expected_discovery_credential,
+            discovery_credential_regular_nonsymlink=(
+                discovery_credential_regular_nonsymlink
+            ),
+            discovery_credential_matches=discovery_credential_matches,
             discovery=discovery,
         )
         raise TaskBoundaryError("Runtime owner discovery mismatch")
-    return install, data.resolve(), discovery, credential
+    return install, data.resolve(), discovery, owner_credential
 
 
 def _source_binding(version_root: Path, expected: Path, observed: Path) -> dict[str, str]:
