@@ -95,7 +95,8 @@ def test_owns_actual_child_request_and_two_retained_snapshots(collector):
     assert child["argv"] == [rows["collector"]["executable"], "-I", "-S", "-c", supervisor._HELPER]
     assert child["cwd"] == rows["collector"]["cwd"]
     assert child["executable_sha256"] == rows["collector"]["executable_sha256"]
-    assert rows["child-reaped"]["outer_exit"] == 0
+    assert rows["child-result"]["outer_exit"] == 0
+    assert rows["child-result"]["output_complete"] is True
     assert rows["initial-diagnostic-checkpoint"] == rows["final-diagnostic-checkpoint"]
     request = rows["diagnostic-request"]
     assert len(request["request_id"]) == 32
@@ -142,7 +143,7 @@ def test_failed_observation_retains_abort_and_consumes(monkeypatch, collector, f
     if fail_at == 1:
         assert not any(row["kind"] == "launched-pid" for row in rows)
     else:
-        assert any(row["kind"] == "child-reaped" for row in rows)
+        assert any(row["kind"] == "child-result" for row in rows)
     with pytest.raises(supervisor.SupervisorRefused, match="consumed"):
         collector.collect_diagnostic()
 
@@ -181,7 +182,9 @@ def test_wrong_reply_nonzero_signal_timeout_and_overflow_refuse(monkeypatch, col
     with pytest.raises(supervisor.SupervisorRefused, match="retained"):
         collector.collect_diagnostic()
     rows = {row["kind"]: row["value"] for row in records(collector)}
-    assert rows["child-reaped"]["outer_exit"] is not None
+    assert rows["child-result"]["outer_exit"] is not None
+    if "time.sleep" in suffix or "70000" in suffix:
+        assert rows["child-result"]["output_complete"] is False
     assert "final-diagnostic-checkpoint" in rows
     with pytest.raises(supervisor.SupervisorRefused, match="consumed"):
         collector.collect_diagnostic()
@@ -194,7 +197,7 @@ def test_partial_readiness_has_a_deadline(monkeypatch, collector):
                         "import os,time; os.write(1,b'r'); time.sleep(20)")
     with pytest.raises(supervisor.SupervisorRefused, match="retained"):
         collector.collect_diagnostic()
-    assert any(row["kind"] == "child-reaped" for row in records(collector))
+    assert any(row["kind"] == "child-result" for row in records(collector))
 
 
 @pytest.mark.parametrize("field,value", [
@@ -213,7 +216,7 @@ def test_actual_child_mismatch_is_retained_and_reaped(monkeypatch, collector, fi
     monkeypatch.setattr(supervisor._PinnedProcess, "capture", altered)
     with pytest.raises(supervisor.SupervisorRefused, match="retained"):
         collector.collect_diagnostic()
-    assert any(row["kind"] == "child-reaped" for row in records(collector))
+    assert any(row["kind"] == "child-result" for row in records(collector))
 
 
 @pytest.mark.parametrize("bad", [True, 0, -1, "1"])

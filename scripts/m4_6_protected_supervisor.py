@@ -231,7 +231,10 @@ class DiagnosticCheckpointCollector:
                 self._state = "armed"
             except Exception as exc:
                 self._append("arm-failed", {"error": str(exc)})
-                self._observer.close("diagnostic arm failed")
+                try:
+                    self._observer.close("diagnostic arm failed")
+                except Exception as close_error:
+                    self._append("observer-close-failed", {"error": str(close_error)})
                 raise SupervisorRefused("initial absence unavailable") from exc
 
     def collect_diagnostic(self) -> bytes:
@@ -298,7 +301,7 @@ class DiagnosticCheckpointCollector:
                         failed("child-cleanup-failed", exc)
                     stdout = output.stdout if output is not None else b""
                     stderr = output.stderr if output is not None else b""
-                    self._append("child-reaped", {"outer_exit": child.returncode,
+                    self._append("child-result", {"outer_exit": child.returncode,
                                  "stdout_hex": stdout.hex(), "stderr_hex": stderr.hex(),
                                  "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
                                  "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
