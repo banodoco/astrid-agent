@@ -54,7 +54,9 @@ s=socket.socket()
 s.bind(('127.0.0.1', 17340))
 s.close()
 PY
-run=$(mktemp -d "$runner_temp/lifecycle-${run_id}-${attempt}-XXXXXX")
+# GitHub's /home/runner is mode 0750. A different disposable user cannot
+# traverse RUNNER_TEMP, so create a unique task-owned tree on the ephemeral VM.
+run=$(mktemp -d "/var/tmp/lifecycle-${run_id}-${attempt}-XXXXXX")
 mkdir -p "$run/home" "$run/agent/scripts" "$run/agent/tests/fixtures" "$run/app/public" "$run/evidence" "$run/tmp"
 cp agent/scripts/*.py "$run/agent/scripts/"
 cp -a agent/tests/fixtures/release0 "$run/agent/tests/fixtures/"
@@ -84,8 +86,8 @@ log "created disposable user=$name uid=$uid_owned run=$run"
 sudo loginctl enable-linger "$name"
 sudo systemctl start "user-runtime-dir@$uid_owned.service"
 sudo systemctl start "user@$uid_owned.service"
-for _ in {1..15}; do [[ -S "/run/user/$uid_owned/bus" ]] && break; sleep 1; done
-if [[ ! -S "/run/user/$uid_owned/bus" ]]; then
+for _ in {1..15}; do sudo -u "$name" test -S "/run/user/$uid_owned/bus" && break; sleep 1; done
+if ! sudo -u "$name" test -S "/run/user/$uid_owned/bus"; then
   log 'user bus absent; capturing manager and runtime-directory diagnostics'
   sudo systemctl --no-pager --full status "user-runtime-dir@$uid_owned.service" "user@$uid_owned.service" >"$out/manager-status.log" 2>&1 || true
   sudo journalctl --no-pager -b -u "user@$uid_owned.service" -u "user-runtime-dir@$uid_owned.service" >"$out/manager-journal.log" 2>&1 || true
