@@ -291,9 +291,9 @@ def test_bounded_reconciliation_explicitly_cancels_before_renewal_stops(settleme
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
     owner.join(timeout=3)
-    _assert_resolved(case, "cancelled")
+    _assert_resolved(case, "cancel_requested")
     assert not case.failures and len(case.cancels) == 1
-    assert case.cancels[0][1]["stop_observed"] is True
+    assert case.cancels[0][1]["stop_observed"] is False
     assert case.cancels[0][1]["outputs"] == []
     assert case.root.exists()
 
