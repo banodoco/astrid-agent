@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="82.098" timestamp="2026-11-03T02:36:10.308317+00:00" hostname="runnervm48cm3"><testcase classname="tests.integrations.test_pinned_element_render_proof" name="test_pinned_element_render_proof_on_standin" time="80.787"><failure message="AssertionError: {'day': {'differing_pixels': 5762, 'height': 1080, 'max_channel_delta': 193, 'mean_absolute_delta': 0.18475340792181072, ...}, 'next': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}, 'very': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}}&#10;assert False&#10; +  where False = all(&lt;generator object test_pinned_element_render_proof_on_standin.&lt;locals&gt;.&lt;genexpr&gt; at 0x7fc4a60dee90&gt;)">configured = &lt;tests.core.test_project_packs.FakeDocuments object at 0x7fc4a65a6fc0&gt;
+remotion_project = PosixPath('/home/runner/work/astrid-agent/astrid-agent/agent/remotion')
+preview_runtime = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/app/node_modules'), PosixPath('/home/runner/work/_temp/node-v20.19.4-linux-x64/bin/node'))
+tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+
+    def test_pinned_element_render_proof_on_standin(
+        configured,
+        remotion_project: Path,
+        preview_runtime: tuple[Path, Path],
+        tmp_path: Path,
+    ) -&gt; None:
+        node_modules, node = preview_runtime
+        runtime, refs, sources = _make_admitted_standin(configured)
+        snapshot = resolve_managed_render_snapshot(
+            project_ref="demo",
+            timeline_ref="main",
+            client=runtime,
+        )
+        validate_managed_render_snapshot(snapshot)
+        assert len(selections(snapshot.config)) == 2
+        assert {row["reference"]["revision"] for row in selections(snapshot.config)} == {
+            refs[0]["revision"], refs[1]["revision"]
+        }
+        clip_rows = snapshot.config["clips"]
+        assert runtime.standin_before_placement["clipType"] == "am-discord"
+        assert "elementRef" not in runtime.standin_before_placement
+        assert clip_rows[0]["id"] == "occ-standin:c02-02-am-discord"
+        assert clip_rows[0]["clipType"] == "reveal"
+        assert clip_rows[0]["elementRef"] == refs[0]
+        assert clip_rows[1]["elementRef"] == refs[1]
+    
+        timeline_path, assets_path, authority = managed_timeline.materialize_managed_render_snapshot(
+            tmp_path / "managed", snapshot
+        )
+        export_frames = run.capture_remotion_frames(
+            timeline_path,
+            assets_path,
+            tmp_path / "export-frames",
+            list(SAMPLES.values()),
+            project_dir=remotion_project,
+            frame_resolution=(1920, 1080),
+        )
+        assert all(path.is_file() and path.stat().st_size &gt; 0 for path in export_frames.values())
+    
+        preview_root = tmp_path / "vite-preview"
+        _write_preview_app(preview_root, sources, node_modules)
+        preview_frames = _capture_vite_preview(
+            preview_root, tmp_path / "preview-frames", list(SAMPLES.values()),
+            node_modules=node_modules, node=node,
+        )
+        parity = {
+            label: _metrics(preview_frames[frame], export_frames[frame])
+            for label, frame in SAMPLES.items()
+        }
+&gt;       assert all(row["pass"] for row in parity.values()), parity
+E       AssertionError: {'day': {'differing_pixels': 5762, 'height': 1080, 'max_channel_delta': 193, 'mean_absolute_delta': 0.18475340792181072, ...}, 'next': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}, 'very': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}}
+E       assert False
+E        +  where False = all(&lt;generator object test_pinned_element_render_proof_on_standin.&lt;locals&gt;.&lt;genexpr&gt; at 0x7fc4a60dee90&gt;)
+
+tests/integrations/test_pinned_element_render_proof.py:436: AssertionError</failure></testcase></testsuite></testsuites>

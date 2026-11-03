@@ -1,0 +1,132 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set -euo pipefail\nmkdir -p out/t3\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/t3/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\ncurl -fsSL https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.gz -o \"$RUNNER_TEMP/t04-node.tgz\"\nprintf '%s  %s\\n' d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560 \"$RUNNER_TEMP/t04-node.tgz\" | sha256sum -c -\ntar -xzf \"$RUNNER_TEMP/t04-node.tgz\" -C \"$RUNNER_TEMP\"\nexport PATH=\"$RUNNER_TEMP/node-v20.19.4-linux-x64/bin:$PATH\"\ntest \"$(node --version)\" = v20.19.4\ntest \"$(npm --version)\" = 10.8.2\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\nnpm ci --prefix agent/remotion --no-audit --no-fund\n(cd agent/remotion && npx remotion browser ensure)\nnpm ci --prefix app --no-audit --no-fund\nexport PLAYWRIGHT_BROWSERS_PATH=\"$RUNNER_TEMP/t04-playwright-browsers\"\n(cd app && npx playwright install --with-deps chromium)\nexport PLAYWRIGHT_CHROMIUM_EXECUTABLE=\"$PLAYWRIGHT_BROWSERS_PATH/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell\"\nmkdir -p \"$RUNNER_TEMP/t04-browser-preflight-home\"\n(cd app && HOME=\"$RUNNER_TEMP/t04-browser-preflight-home\" node - <<'BROWSER_PREFLIGHT'\nconst fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\nconst {chromium} = require('playwright');\nconst version = require('playwright/package.json').version;\nconst corePackage = require.resolve('playwright-core/package.json');\nconst coreVersion = require(corePackage).version;\nconst browsers = JSON.parse(fs.readFileSync(path.join(path.dirname(corePackage), 'browsers.json'), 'utf8'));\nconst shell = browsers.browsers.find(item => item.name === 'chromium-headless-shell');\nif (version !== '1.60.0' || coreVersion !== version || !shell || shell.revision !== '1223' || shell.browserVersion !== '148.0.7778.96') throw new Error('unexpected App Playwright/browser identity');\nconst executable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;\nif (!path.isAbsolute(executable) || !fs.statSync(executable).isFile()) throw new Error('browser executable missing or not absolute');\nfs.accessSync(executable, fs.constants.X_OK);\n(async () => {\n  const browser = await chromium.launch({headless: true, executablePath: executable});\n  const browserVersion = browser.version();\n  await browser.close();\n  if (browserVersion !== shell.browserVersion) throw new Error(`unexpected launched browser version: ${browserVersion}`);\n  const result = {playwright_version: version, playwright_core_version: coreVersion, browser_revision: shell.revision, expected_browser_version: shell.browserVersion, launched_browser_version: browserVersion, browsers_path: process.env.PLAYWRIGHT_BROWSERS_PATH, executable: fs.realpathSync(executable), executable_sha256: crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex'), isolated_home: process.env.HOME, launch: 'success'};\n  fs.writeFileSync(path.join(process.env.GITHUB_WORKSPACE, 'out/t3/browser-identity.json'), JSON.stringify(result, null, 2) + '\\n');\n  console.log(JSON.stringify(result));\n})().catch(error => { console.error(error); process.exitCode = 1; });\nBROWSER_PREFLIGHT\n)\nsudo apt-get update\nsudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall ffmpeg\n{\n  dpkg-query -W -f='${Package} ${Version} ${Architecture}\\n' ffmpeg\n  for binary in ffmpeg ffprobe; do\n    path=\"$(command -v \"$binary\")\"\n    printf '%s path=%s resolved=%s\\n' \"$binary\" \"$path\" \"$(readlink -f \"$path\")\"\n    sha256sum \"$path\"\n    \"$path\" -version\n  done\n} | tee out/t3/media-tools.txt\nexport ASTRID_T3_EVIDENCE_DIR=\"$GITHUB_WORKSPACE/out/t3/evidence\"\nexport ASTRID_TIMELINE_SCHEMA_PYTHONPATH=\"$GITHUB_WORKSPACE/agent/astrid/core/timeline/schema/timeline-config.schema.json\"\npython3 - <<'SCHEMA_IDENTITY'\nimport hashlib,json,os,pathlib\np=pathlib.Path(os.environ['ASTRID_TIMELINE_SCHEMA_PYTHONPATH']).resolve(strict=True)\ndigest=hashlib.sha256(p.read_bytes()).hexdigest()\npathlib.Path('out/t3/schema-identity.json').write_text(json.dumps({'environment_variable':'ASTRID_TIMELINE_SCHEMA_PYTHONPATH','resolved_path':str(p),'sha256':digest},indent=2)+'\\n')\nassert digest == 'f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08', 'unexpected Agent schema identity'\nSCHEMA_IDENTITY\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= -vv -rA --basetemp=\"$RUNNER_TEMP/t04-pytest\" --junitxml=../out/t3/results.xml tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin > ../out/t3/pytest.log 2>&1\nrc=$?\nset -e\nprintf '%s\\n' \"$rc\" > ../out/t3/inner-exit.txt\nexport TEST_EXIT=\"$rc\"\nset +e\npython3 - <<'DIAGNOSTICS'\nimport hashlib, json, os, pathlib, re, tempfile\n\nout = pathlib.Path('../out/t3/diagnostics')\nout.mkdir(parents=True, exist_ok=True)\nroots = [('failed-validation', pathlib.Path(os.environ['RUNNER_TEMP']) / 't04-pytest', 'failed-validation-*.json'), ('probe-stderr', pathlib.Path(tempfile.gettempdir()) / 'astrid-probe-logs', '*.stderr.log')]\nmanifest = {'limits': {'files_per_kind': 16, 'bytes_per_file': 65536}, 'kinds': {}}\n# Diagnostic output is untrusted: redact environment values and credential-like lines.\nvalues = sorted({v for v in os.environ.values() if len(v) >= 8 and '\\n' not in v}, key=len, reverse=True)\ndef scrub(s):\n    for value in values:\n        s = s.replace(value, '[ENV_REDACTED]')\n    s = re.sub(r'(?i)(https?://)[^\\s/@]+:[^\\s/@]+@', r'\\1[REDACTED]@', s)\n    s = re.sub(r'(?im)^.*(?:authorization|bearer\\s+|api[_-]?key|password|passwd|secret|token|credential|private[_ -]?key|cookie).*(?:\\n|$)', '[SENSITIVE LINE REDACTED]\\n', s)\n    return s\nfor kind, root, pattern in roots:\n    result = {'root': str(root), 'matched': 0, 'retained': [], 'errors': [], 'omitted_over_limit': 0}\n    manifest['kinds'][kind] = result\n    try:\n        files = sorted(p for p in root.rglob(pattern) if p.is_file() and not p.is_symlink()) if root.exists() else []\n        result['matched'] = len(files)\n        result['omitted_over_limit'] = max(0, len(files) - 16)\n        for i, path in enumerate(files[:16]):\n            try:\n                size = path.stat().st_size\n                with path.open('rb') as stream:\n                    raw = stream.read(65536)\n                item = {'source_relative': str(path.relative_to(root)), 'source_bytes': size, 'captured_prefix_sha256': hashlib.sha256(raw).hexdigest(), 'truncated': size > len(raw)}\n                text = scrub(raw.decode('utf-8', 'replace'))\n                # Failed validation contains a receipt which can include argv and environment.\n                # Preserve the fixed diagnostic fields and a scrubbed probe check, not raw custody data.\n                if kind == 'failed-validation':\n                    record = json.loads(raw) if size <= len(raw) else {}\n                    safe = {k: record.get(k) for k in ('schema', 'status', 'error_type', 'probe_check', 'retained_original_child_pid', 'cleanup_uncertain')}\n                    safe['original_probe_receipt_present'] = record.get('original_probe_receipt') is not None\n                    text = scrub(json.dumps(safe, indent=2, sort_keys=True)) + '\\n'\n                name = f'{kind}-{i:02d}' + ('.json' if kind == 'failed-validation' else '.log')\n                (out / name).write_text(text, encoding='utf-8')\n                item['retained_as'] = name\n                item['retained_sha256'] = hashlib.sha256((out / name).read_bytes()).hexdigest()\n                result['retained'].append(item)\n            except Exception as exc:\n                result['errors'].append({'source_relative': str(path.relative_to(root)), 'error_type': type(exc).__name__})\n    except Exception as exc:\n        result['errors'].append({'error_type': type(exc).__name__})\n    result['absence'] = 'no matching files found' if not result['matched'] and not result['errors'] else None\n(out / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\\n')\nDIAGNOSTICS\ncapture_rc=$?\nset -e\nprintf '%s\\n' \"$capture_rc\" > ../out/t3/diagnostics-capture-exit.txt\npython3 - <<'RETAIN'\nimport json,os,pathlib,shutil\nout=pathlib.Path('../out/t3'); root=pathlib.Path(os.environ['RUNNER_TEMP'])/'t04-pytest'\nfor name in ('export-frames','preview-frames','builtin-baseline'):\n for i,p in enumerate(root.rglob(name)):\n  if p.is_dir(): shutil.copytree(p,out/'visuals'/name/str(i),dirs_exist_ok=True)\ndata={'inner_exit':int(os.environ['TEST_EXIT']),'groups':{'1':'two pinned revisions, colors and source digests','2':'missing/corrupt snapshot rejection','3':'built-in baseline unchanged','4':'preview/export frames 5,15,25 within asserted tolerance'},'mapping_only':True,'fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(out/'group-map.json').write_text(json.dumps(data,indent=2)+'\\n')\nRETAIN\nexit \"$rc\"\n",
+  "effective_tuple": {
+    "agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 605,
+      "path": "artifacts/out/t3/browser-identity.json",
+      "sha256": "444f783ada8edcc6797044478419c5e600e27280d33fee02c1b74454854e8d45"
+    },
+    {
+      "bytes": 520,
+      "path": "artifacts/out/t3/diagnostics/manifest.json",
+      "sha256": "af2c2959033e5f3896e02bb02206bc4a5761909eb6a42395176a8f145ab7c78f"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/out/t3/diagnostics-capture-exit.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 381,
+      "path": "artifacts/out/t3/group-map.json",
+      "sha256": "b4c43da0949d198ad43e1b13a068b12d1ac8609206e32536e20094660bb9315a"
+    },
+    {
+      "bytes": 917,
+      "path": "artifacts/out/t3/identity.json",
+      "sha256": "0f6451a39c17b6bc1211c9587cee2e7abccb62275ec09cdd229b28e1750e9a67"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/out/t3/inner-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 3981,
+      "path": "artifacts/out/t3/media-tools.txt",
+      "sha256": "de95fd4d141504880f4dd8bfed04dd224ab04d2aa0817dadcaf1742d676a2a09"
+    },
+    {
+      "bytes": 7863,
+      "path": "artifacts/out/t3/pytest.log",
+      "sha256": "b61690ea5541796f5bc024c81e7e9f618cfb36de5071ba5a0852bae7972355cf"
+    },
+    {
+      "bytes": 4186,
+      "path": "artifacts/out/t3/results.xml",
+      "sha256": "44b67471e4802ecb20f863846fcb2f0d63970e048308b92f0a03436b28b7888d"
+    },
+    {
+      "bytes": 274,
+      "path": "artifacts/out/t3/schema-identity.json",
+      "sha256": "5a5bd143887178fb1a33001481be1a5b081778481ba2ba3deefae4596619fbfa"
+    },
+    {
+      "bytes": 34428,
+      "path": "artifacts/out/t3/visuals/export-frames/0/frame-05.png",
+      "sha256": "c26b6e64d603e06cc045ae394efa2f9a693d38a61dd1c209db292eb7ff172ff0"
+    },
+    {
+      "bytes": 34427,
+      "path": "artifacts/out/t3/visuals/export-frames/0/frame-15.png",
+      "sha256": "0a350a9e4d13ef5d78458eef9150d40f088746aa957d6436fe16cf0e9916e5bc"
+    },
+    {
+      "bytes": 51128,
+      "path": "artifacts/out/t3/visuals/export-frames/0/frame-25.png",
+      "sha256": "0ebfecde11ec2c29a9e7ffd157fc821831725c60b6dc9204ca5ea205fc7fea6a"
+    },
+    {
+      "bytes": 8515,
+      "path": "artifacts/out/t3/visuals/preview-frames/0/frame-15.png",
+      "sha256": "358f0cf0b02a9645827e570fb4cb5409b73469f038fa81ae580540bf589173ef"
+    },
+    {
+      "bytes": 22371,
+      "path": "artifacts/out/t3/visuals/preview-frames/0/frame-25.png",
+      "sha256": "5ffd65ac03ba998a0edb344ca51992ac2aa6697eae37c4d7880665503ec5daae"
+    },
+    {
+      "bytes": 8516,
+      "path": "artifacts/out/t3/visuals/preview-frames/0/frame-5.png",
+      "sha256": "a6753a27eb6b803437c1482e02f8a3b71615b31eb72ef581e1ec31608b1b001d"
+    },
+    {
+      "bytes": 140213,
+      "path": "command.log",
+      "sha256": "634d41c2101e794420ceb9ec49fce06596f696264124aad130b34d57c66e4920"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 10405,
+      "path": "requested-inputs.json",
+      "sha256": "b67be6b6153761a52ad8663a63bf53009c768c38406ab265e84b8870b5db699e"
+    },
+    {
+      "bytes": 440,
+      "path": "tuple.txt",
+      "sha256": "edac2400e94757c0cab15beef9d1cf77511b87584265c6e80c1013806f46ed62"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app_ref": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "artifact_paths": "out/t3",
+    "command": "set -euo pipefail\nmkdir -p out/t3\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/t3/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\ncurl -fsSL https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.gz -o \"$RUNNER_TEMP/t04-node.tgz\"\nprintf '%s  %s\\n' d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560 \"$RUNNER_TEMP/t04-node.tgz\" | sha256sum -c -\ntar -xzf \"$RUNNER_TEMP/t04-node.tgz\" -C \"$RUNNER_TEMP\"\nexport PATH=\"$RUNNER_TEMP/node-v20.19.4-linux-x64/bin:$PATH\"\ntest \"$(node --version)\" = v20.19.4\ntest \"$(npm --version)\" = 10.8.2\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\nnpm ci --prefix agent/remotion --no-audit --no-fund\n(cd agent/remotion && npx remotion browser ensure)\nnpm ci --prefix app --no-audit --no-fund\nexport PLAYWRIGHT_BROWSERS_PATH=\"$RUNNER_TEMP/t04-playwright-browsers\"\n(cd app && npx playwright install --with-deps chromium)\nexport PLAYWRIGHT_CHROMIUM_EXECUTABLE=\"$PLAYWRIGHT_BROWSERS_PATH/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell\"\nmkdir -p \"$RUNNER_TEMP/t04-browser-preflight-home\"\n(cd app && HOME=\"$RUNNER_TEMP/t04-browser-preflight-home\" node - <<'BROWSER_PREFLIGHT'\nconst fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\nconst {chromium} = require('playwright');\nconst version = require('playwright/package.json').version;\nconst corePackage = require.resolve('playwright-core/package.json');\nconst coreVersion = require(corePackage).version;\nconst browsers = JSON.parse(fs.readFileSync(path.join(path.dirname(corePackage), 'browsers.json'), 'utf8'));\nconst shell = browsers.browsers.find(item => item.name === 'chromium-headless-shell');\nif (version !== '1.60.0' || coreVersion !== version || !shell || shell.revision !== '1223' || shell.browserVersion !== '148.0.7778.96') throw new Error('unexpected App Playwright/browser identity');\nconst executable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;\nif (!path.isAbsolute(executable) || !fs.statSync(executable).isFile()) throw new Error('browser executable missing or not absolute');\nfs.accessSync(executable, fs.constants.X_OK);\n(async () => {\n  const browser = await chromium.launch({headless: true, executablePath: executable});\n  const browserVersion = browser.version();\n  await browser.close();\n  if (browserVersion !== shell.browserVersion) throw new Error(`unexpected launched browser version: ${browserVersion}`);\n  const result = {playwright_version: version, playwright_core_version: coreVersion, browser_revision: shell.revision, expected_browser_version: shell.browserVersion, launched_browser_version: browserVersion, browsers_path: process.env.PLAYWRIGHT_BROWSERS_PATH, executable: fs.realpathSync(executable), executable_sha256: crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex'), isolated_home: process.env.HOME, launch: 'success'};\n  fs.writeFileSync(path.join(process.env.GITHUB_WORKSPACE, 'out/t3/browser-identity.json'), JSON.stringify(result, null, 2) + '\\n');\n  console.log(JSON.stringify(result));\n})().catch(error => { console.error(error); process.exitCode = 1; });\nBROWSER_PREFLIGHT\n)\nsudo apt-get update\nsudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall ffmpeg\n{\n  dpkg-query -W -f='${Package} ${Version} ${Architecture}\\n' ffmpeg\n  for binary in ffmpeg ffprobe; do\n    path=\"$(command -v \"$binary\")\"\n    printf '%s path=%s resolved=%s\\n' \"$binary\" \"$path\" \"$(readlink -f \"$path\")\"\n    sha256sum \"$path\"\n    \"$path\" -version\n  done\n} | tee out/t3/media-tools.txt\nexport ASTRID_T3_EVIDENCE_DIR=\"$GITHUB_WORKSPACE/out/t3/evidence\"\nexport ASTRID_TIMELINE_SCHEMA_PYTHONPATH=\"$GITHUB_WORKSPACE/agent/astrid/core/timeline/schema/timeline-config.schema.json\"\npython3 - <<'SCHEMA_IDENTITY'\nimport hashlib,json,os,pathlib\np=pathlib.Path(os.environ['ASTRID_TIMELINE_SCHEMA_PYTHONPATH']).resolve(strict=True)\ndigest=hashlib.sha256(p.read_bytes()).hexdigest()\npathlib.Path('out/t3/schema-identity.json').write_text(json.dumps({'environment_variable':'ASTRID_TIMELINE_SCHEMA_PYTHONPATH','resolved_path':str(p),'sha256':digest},indent=2)+'\\n')\nassert digest == 'f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08', 'unexpected Agent schema identity'\nSCHEMA_IDENTITY\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= -vv -rA --basetemp=\"$RUNNER_TEMP/t04-pytest\" --junitxml=../out/t3/results.xml tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin > ../out/t3/pytest.log 2>&1\nrc=$?\nset -e\nprintf '%s\\n' \"$rc\" > ../out/t3/inner-exit.txt\nexport TEST_EXIT=\"$rc\"\nset +e\npython3 - <<'DIAGNOSTICS'\nimport hashlib, json, os, pathlib, re, tempfile\n\nout = pathlib.Path('../out/t3/diagnostics')\nout.mkdir(parents=True, exist_ok=True)\nroots = [('failed-validation', pathlib.Path(os.environ['RUNNER_TEMP']) / 't04-pytest', 'failed-validation-*.json'), ('probe-stderr', pathlib.Path(tempfile.gettempdir()) / 'astrid-probe-logs', '*.stderr.log')]\nmanifest = {'limits': {'files_per_kind': 16, 'bytes_per_file': 65536}, 'kinds': {}}\n# Diagnostic output is untrusted: redact environment values and credential-like lines.\nvalues = sorted({v for v in os.environ.values() if len(v) >= 8 and '\\n' not in v}, key=len, reverse=True)\ndef scrub(s):\n    for value in values:\n        s = s.replace(value, '[ENV_REDACTED]')\n    s = re.sub(r'(?i)(https?://)[^\\s/@]+:[^\\s/@]+@', r'\\1[REDACTED]@', s)\n    s = re.sub(r'(?im)^.*(?:authorization|bearer\\s+|api[_-]?key|password|passwd|secret|token|credential|private[_ -]?key|cookie).*(?:\\n|$)', '[SENSITIVE LINE REDACTED]\\n', s)\n    return s\nfor kind, root, pattern in roots:\n    result = {'root': str(root), 'matched': 0, 'retained': [], 'errors': [], 'omitted_over_limit': 0}\n    manifest['kinds'][kind] = result\n    try:\n        files = sorted(p for p in root.rglob(pattern) if p.is_file() and not p.is_symlink()) if root.exists() else []\n        result['matched'] = len(files)\n        result['omitted_over_limit'] = max(0, len(files) - 16)\n        for i, path in enumerate(files[:16]):\n            try:\n                size = path.stat().st_size\n                with path.open('rb') as stream:\n                    raw = stream.read(65536)\n                item = {'source_relative': str(path.relative_to(root)), 'source_bytes': size, 'captured_prefix_sha256': hashlib.sha256(raw).hexdigest(), 'truncated': size > len(raw)}\n                text = scrub(raw.decode('utf-8', 'replace'))\n                # Failed validation contains a receipt which can include argv and environment.\n                # Preserve the fixed diagnostic fields and a scrubbed probe check, not raw custody data.\n                if kind == 'failed-validation':\n                    record = json.loads(raw) if size <= len(raw) else {}\n                    safe = {k: record.get(k) for k in ('schema', 'status', 'error_type', 'probe_check', 'retained_original_child_pid', 'cleanup_uncertain')}\n                    safe['original_probe_receipt_present'] = record.get('original_probe_receipt') is not None\n                    text = scrub(json.dumps(safe, indent=2, sort_keys=True)) + '\\n'\n                name = f'{kind}-{i:02d}' + ('.json' if kind == 'failed-validation' else '.log')\n                (out / name).write_text(text, encoding='utf-8')\n                item['retained_as'] = name\n                item['retained_sha256'] = hashlib.sha256((out / name).read_bytes()).hexdigest()\n                result['retained'].append(item)\n            except Exception as exc:\n                result['errors'].append({'source_relative': str(path.relative_to(root)), 'error_type': type(exc).__name__})\n    except Exception as exc:\n        result['errors'].append({'error_type': type(exc).__name__})\n    result['absence'] = 'no matching files found' if not result['matched'] and not result['errors'] else None\n(out / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\\n')\nDIAGNOSTICS\ncapture_rc=$?\nset -e\nprintf '%s\\n' \"$capture_rc\" > ../out/t3/diagnostics-capture-exit.txt\npython3 - <<'RETAIN'\nimport json,os,pathlib,shutil\nout=pathlib.Path('../out/t3'); root=pathlib.Path(os.environ['RUNNER_TEMP'])/'t04-pytest'\nfor name in ('export-frames','preview-frames','builtin-baseline'):\n for i,p in enumerate(root.rglob(name)):\n  if p.is_dir(): shutil.copytree(p,out/'visuals'/name/str(i),dirs_exist_ok=True)\ndata={'inner_exit':int(os.environ['TEST_EXIT']),'groups':{'1':'two pinned revisions, colors and source digests','2':'missing/corrupt snapshot rejection','3':'built-in baseline unchanged','4':'preview/export frames 5,15,25 within asserted tolerance'},'mapping_only':True,'fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(out/'group-map.json').write_text(json.dumps(data,indent=2)+'\\n')\nRETAIN\nexit \"$rc\"\n",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "slot": "5"
+  },
+  "run_attempt": "1",
+  "run_id": "41566800792",
+  "source_head": "45204290084550d0a1adb6cbe8c48a7550011e13",
+  "source_ref": "refs/heads/venue/M-QUAL-R-34-T04-T3-BROWSER-PATH-R1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-QUAL-R-34-T04-T3-BROWSER-PATH-R1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "45204290084550d0a1adb6cbe8c48a7550011e13"
+}
