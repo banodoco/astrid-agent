@@ -2224,3 +2224,109 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_windows_turnover_snapshots_compare_pre_stop_launch_and_retain(tmp_path, monkeypatch):
+    run_root, data, evidence, support = _windows_job_drain_inputs(tmp_path, receipt_launch="c" * 32)
+    baseline = evidence / "release0-api-seed"
+    baseline.mkdir(parents=True)
+    (support / ".pack-host-job-cleanup.lock").write_text("")
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda path: {
+        "status": "unavailable", "reason": "acl-query-failed", "exit_code": 1})
+    native = tmp_path / "native"
+    native.mkdir()
+    (native / "runtime-service.log").write_text("access_token=secret-value\n")
+    monkeypatch.setenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, str(native))
+    before = journey.capture_windows_turnover(baseline, data, "seed", "before-stop", None)
+    (support / "generic-host.json").unlink()
+    journey.capture_windows_turnover(baseline, data, "seed", "owner-absent", before)
+    journey.write_json(support / "generic-host.json", {**before, "runtime_service_launch_id": "b" * 32})
+    receipt = journey.read_json(support / "pack-host-job-cleanup.json")
+    receipt["receipts"].append({"runtime_service_launch_id": "a" * 32, "job_drained": True})
+    journey.write_json(support / "pack-host-job-cleanup.json", receipt)
+    journey.capture_windows_turnover(baseline, data, "seed", "after-start", before)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    def read(phase):
+        return journey.read_json(staged / f"runtime-service-service-turnover-seed-{phase}.log")
+    pre, gone, after = read("before-stop"), read("owner-absent"), read("after-start")
+    assert pre["pre_stop_launch_receipt_comparison"]["status"] == "exact-id-not-observed"
+    assert gone["pre_stop_registration_comparison"]["status"] == "registration-absent"
+    assert after["pre_stop_registration_comparison"]["status"] == "different-launch-id"
+    assert after["pre_stop_launch_receipt_comparison"] == {
+        "status": "exact-id-present", "exact_id_count": 1, "exact_id_job_drained_count": 1}
+    assert after["cleanup_receipt"]["ownership"]["reason"] == "acl-query-failed"
+    assert after["cleanup_lock"]["ownership"]["exit_code"] == 1
+    assert after["writer_event"]["status"] == "unavailable"
+    assert "secret-value" not in json.dumps(after)
+    assert "must-not-be-retained" not in json.dumps(after)
+
+
+def test_windows_turnover_missing_invalid_and_unreadable_never_use_pid_fallback(tmp_path, monkeypatch):
+    _, data, evidence, support = _windows_job_drain_inputs(tmp_path)
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda _: {"status": "unavailable"})
+    before = journey.read_json(support / "generic-host.json")
+    before.pop("runtime_service_launch_id")
+    journey.capture_windows_turnover(evidence, data, "seed", "owner-absent", before)
+    path = evidence / "runtime-service-service-turnover-seed-owner-absent.log"
+    assert journey.read_json(path)["pre_stop_launch_receipt_comparison"]["status"] == "unavailable"
+    before["runtime_service_launch_id"] = "a" * 32
+    (support / "pack-host-job-cleanup.json").unlink()
+    journey.capture_windows_turnover(evidence, data, "seed", "owner-absent", before)
+    assert journey.read_json(path)["pre_stop_launch_receipt_comparison"]["reason"] == "receipt absent"
+    original = journey._windows_job_drain_file
+    def unreadable(path, **kwargs):
+        if path.name == "pack-host-job-cleanup.json":
+            return {"status": "unreadable", "error": "PermissionError"}, None
+        return original(path, **kwargs)
+    monkeypatch.setattr(journey, "_windows_job_drain_file", unreadable)
+    journey.capture_windows_turnover(evidence, data, "seed", "owner-absent", before)
+    result = journey.read_json(path)
+    assert result["cleanup_receipt"]["file"]["error"] == "PermissionError"
+    assert result["pre_stop_launch_receipt_comparison"]["reason"] == "receipt unreadable"
+
+
+def test_windows_turnover_boundaries_do_not_change_stop_or_restart_on_capture_failure(tmp_path, monkeypatch):
+    evidence = tmp_path / "release0-api-seed"
+    calls = []
+    state = {"running": True}
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: {"manager": "task-scheduler"})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
+    monkeypatch.setattr(journey, "wait_ready", lambda *_: calls.append("ready"))
+    def powershell(code, *_args, **_kwargs):
+        operation = "stop" if "Stop-ScheduledTask" in code else "start"
+        calls.append(operation)
+        state["running"] = operation == "start"
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    def capture(_evidence, _data, _action, phase, _before):
+        calls.append(phase)
+        if phase == "owner-absent":
+            raise PermissionError("private details")
+        return {}
+    monkeypatch.setattr(journey, "capture_windows_turnover", capture)
+    monkeypatch.setattr(jumps, "workspace", lambda *_args, **_kwargs: calls.append("workspace") or {})
+    jumps.direct_workspace(tmp_path, {}, tmp_path, evidence, "seed", {})
+    assert calls == ["before-stop", "stop", "owner-absent", "workspace", "start", "after-start", "ready"]
+    assert state["running"]
+    failure = journey.read_json(evidence / "runtime-service-service-turnover-seed-owner-absent.log")
+    assert failure["capture_error"] == "PermissionError"
+    assert "private details" not in json.dumps(failure)
+
+
+def test_windows_turnover_malformed_and_unsafe_files_are_not_comparable(tmp_path, monkeypatch):
+    _, data, evidence, support = _windows_job_drain_inputs(tmp_path)
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda _: {"status": "unavailable"})
+    before = journey.read_json(support / "generic-host.json")
+    (support / "pack-host-job-cleanup.json").write_text("{")
+    (support / "generic-host.json").unlink()
+    (support / "generic-host.json").mkdir()
+    journey.capture_windows_turnover(evidence, data, "snapshot", "owner-absent", before)
+    result = journey.read_json(evidence / "runtime-service-service-turnover-snapshot-owner-absent.log")
+    assert result["registration"]["status"] == "unsafe"
+    assert result["pre_stop_registration_comparison"]["status"] == "unavailable"
+    assert result["cleanup_receipt"]["status"] == "malformed"
+    assert result["pre_stop_launch_receipt_comparison"]["reason"] == "receipt malformed"

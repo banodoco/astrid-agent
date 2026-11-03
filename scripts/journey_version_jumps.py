@@ -473,6 +473,26 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         start = ["launchctl", "bootstrap", domain, service["service_path"]]
     elif manager != "task-scheduler":
         raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    # Diagnostics must never decide whether the existing stop or restart runs.
+    turnover_enabled = manager == "task-scheduler" and evidence.name == "release0-api-seed" and action in {"seed", "snapshot"}
+    before = None
+    def capture_turnover(phase: str) -> dict | None:
+        if not turnover_enabled:
+            return None
+        try:
+            return journey.capture_windows_turnover(evidence, data, action, phase, before)
+        except Exception as exc:
+            print(f"Turnover capture {phase} failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+            try:
+                path = evidence / f"runtime-service-service-turnover-{action}-{phase}.log"
+                if not path.is_symlink():
+                    journey.write_json(path, {"schema_version": 1, "kind": "windows-registration-turnover-diagnostic",
+                                              "action": action, "phase": phase,
+                                              "capture_error": type(exc).__name__})
+            except Exception as write_error:
+                print(f"Turnover error record failed: {type(write_error).__name__}", file=sys.stderr, flush=True)
+            return None
+    before = capture_turnover("before-stop")
     try:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
@@ -486,6 +506,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
+        capture_turnover("owner-absent")
         return workspace(version, data, evidence, action, request, realm=realm)
     finally:
         if manager == "task-scheduler":
@@ -493,6 +514,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.windows.powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask "
                                        "-TaskName 'Astrid Runtime' -TaskPath '\\'",
                                        f"{action}-start-service.log", show=False, timeout=30)
+            capture_turnover("after-start")
         else:
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)

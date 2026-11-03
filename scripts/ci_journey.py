@@ -24,7 +24,7 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 if __package__:
@@ -922,6 +922,106 @@ def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Pat
     return capture
 
 
+def _turnover_file(path: Path, *, identities: bool = False) -> tuple[dict, dict | None]:
+    """Read only a bounded, sanitized projection; hashes do not prove a writer."""
+    meta, content = _windows_job_drain_file(path, limit=WINDOWS_JOB_DRAIN_CAPTURE_LIMIT)
+    result = {"file": meta, "status": meta["status"]}
+    if content is None:
+        return result, None
+    result["sha256"] = hashlib.sha256(content).hexdigest()
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        result["status"] = "malformed"
+        return result, None
+    if not isinstance(value, dict):
+        result["status"] = "malformed"
+        return result, None
+    result["status"] = "captured"
+    if identities:
+        result.update(
+            pid=_windows_job_drain_pid(value.get("pid")),
+            process_birth_id=_windows_job_drain_identifier(value.get("process_birth_id"), WINDOWS_JOB_DRAIN_BIRTH_ID),
+            runtime_instance_id=_windows_job_drain_identifier(value.get("runtime_instance_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+            runtime_service_launch_id=_windows_job_drain_identifier(value.get("runtime_service_launch_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+        )
+    return result, value
+
+
+def capture_windows_turnover(evidence: Path, data: Path, action: str, phase: str,
+                             before: dict | None) -> dict:
+    """Retain independent observations; comparison is to the pre-stop launch only."""
+    if action not in {"seed", "snapshot"} or phase not in {"before-stop", "owner-absent", "after-start"}:
+        raise ValueError("invalid turnover capture boundary")
+    support = data / "runtime"
+    registration, state = _turnover_file(support / "generic-host.json", identities=True)
+    if state is not None:
+        registration["support_root_binding"] = _windows_job_drain_path_binding(state.get("support_root"), support)
+    readiness, _ = _turnover_file(support / "generic-host.ready.json", identities=True)
+    discovery, _ = _turnover_file(support / "discovery.json", identities=True)
+    instance_lock, _ = _turnover_file(support / "instance.lock", identities=True)
+    receipt_path = support / "pack-host-job-cleanup.json"
+    receipt, value = _turnover_file(receipt_path)
+    lock_path = support / ".pack-host-job-cleanup.lock"
+    lock = _windows_job_drain_file_metadata(lock_path)
+    receipt["ownership"] = (_windows_job_drain_ownership(receipt_path) if receipt["file"]["status"] == "read"
+                            else {"status": "not-observed"})
+    lock["ownership"] = (_windows_job_drain_ownership(lock_path) if lock["status"] == "regular"
+                         else {"status": "not-observed"})
+    reference = state if phase == "before-stop" else before
+    launch = reference.get("runtime_service_launch_id") if isinstance(reference, dict) else None
+    comparison = {"status": "unavailable", "reason": "pre-stop launch ID unavailable or invalid"}
+    if value is not None:
+        entries = value.get("receipts")
+        if (value.get("version") != 1 or value.get("service_name") != "pack-host" or
+                _windows_job_drain_path_binding(value.get("support_root"), support) != "matches-runtime-support" or
+                not isinstance(entries, list)):
+            receipt["status"] = "malformed"
+            comparison = {"status": "unavailable", "reason": "receipt malformed"}
+        elif not isinstance(launch, str) or not WINDOWS_JOB_DRAIN_LAUNCH_ID.fullmatch(launch):
+            comparison = {"status": "unavailable", "reason": "pre-stop launch ID unavailable or invalid"}
+        else:
+            exact = [entry for entry in entries if isinstance(entry, dict) and
+                     entry.get("runtime_service_launch_id") == launch]
+            comparison = {"status": "exact-id-present" if exact else "exact-id-not-observed",
+                          "exact_id_count": len(exact),
+                          "exact_id_job_drained_count": sum(e.get("job_drained") is True for e in exact)}
+            receipt["receipt_count"] = len(entries)
+    else:
+        comparison = {"status": "unavailable", "reason": "receipt " + receipt["status"]}
+    current_launch = state.get("runtime_service_launch_id") if isinstance(state, dict) else None
+    registration_comparison = {"status": "unavailable"}
+    if phase != "before-stop":
+        if registration["status"] == "absent" and isinstance(launch, str) and WINDOWS_JOB_DRAIN_LAUNCH_ID.fullmatch(launch):
+            registration_comparison = {"status": "registration-absent"}
+        elif (isinstance(launch, str) and WINDOWS_JOB_DRAIN_LAUNCH_ID.fullmatch(launch) and
+              isinstance(current_launch, str) and WINDOWS_JOB_DRAIN_LAUNCH_ID.fullmatch(current_launch)):
+            registration_comparison = {"status": "same-launch-id" if current_launch == launch else "different-launch-id"}
+    native_dir = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+    logs = {}
+    for name in ("runtime-service.log", "runtime.log"):
+        if native_dir:
+            logs[name] = _windows_job_drain_log(Path(native_dir) / name)
+            if "content" in logs[name]:
+                logs[name]["content"] = logs[name]["content"][-4096:]
+        else:
+            logs[name] = {"status": "unavailable", "reason": "native log directory was not declared"}
+    capture = {"schema_version": 1, "kind": "windows-registration-turnover-diagnostic",
+               "phase": phase, "action": action, "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+               "registration": registration, "readiness": readiness, "discovery": discovery,
+               "instance_lock": instance_lock, "cleanup_receipt": receipt, "cleanup_lock": lock,
+               "pre_stop_launch_receipt_comparison": comparison,
+               "pre_stop_registration_comparison": registration_comparison, "native_logs": logs,
+               "owner_observation": ("existing owner census returned empty immediately before capture"
+                                     if phase == "owner-absent" else "not observed by this capture"),
+               "writer_event": {"status": "unavailable", "reason": "no authenticated producer write hook"}}
+    path = evidence / f"runtime-service-service-turnover-{action}-{phase}.log"
+    if path.is_symlink():
+        raise OSError("unsafe turnover artifact")
+    write_json(path, capture)
+    return state if phase == "before-stop" and isinstance(state, dict) else {}
+
+
 def retained_pack_host_evidence_name(name: str) -> str:
     """Map a finite pack-host diagnostic source to the existing hosted pattern."""
     if name not in PACK_HOST_READINESS_EVIDENCE_NAMES:
@@ -959,6 +1059,11 @@ def retain_named_evidence(evidence: Path, phase: str) -> dict[str, tuple[str, st
         if not source_root.is_dir() or source_root.is_symlink():
             continue
         sources.extend(source_root / name for name in sorted(PACK_HOST_READINESS_EVIDENCE_NAMES))
+    turnover_root = evidence / "release0-api-seed"
+    if turnover_root.is_dir() and not turnover_root.is_symlink():
+        for action in ("seed", "snapshot"):
+            for boundary in ("before-stop", "owner-absent", "after-start"):
+                sources.append(turnover_root / f"runtime-service-service-turnover-{action}-{boundary}.log")
     retained_sources = {}
     for source in sources:
         name = source.name
