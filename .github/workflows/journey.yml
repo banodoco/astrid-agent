@@ -74,6 +74,15 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      macos_admission_diagnostic:
+        description: Diagnostic-only in-process capture, never exact-99bb qualification
+        required: false
+        default: false
+        type: boolean
+      macos_admission_cert_sha256:
+        description: SHA-256 of DER recipient certificate approved for private capture retention
+        required: false
+        type: string
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
         required: true
@@ -163,6 +172,8 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      macos_admission_diagnostic: ${{ steps.config.outputs.macos_admission_diagnostic }}
+      macos_admission_cert_sha256: ${{ steps.config.outputs.macos_admission_cert_sha256 }}
     steps:
       - name: Check out reviewed Agent matrix contracts
         uses: actions/checkout@v4
@@ -244,6 +255,9 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          MAC_ADMISSION_DIAGNOSTIC: ${{ inputs.macos_admission_diagnostic || false }}
+          MAC_ADMISSION_CERT_SHA256: ${{ inputs.macos_admission_cert_sha256 || '' }}
+          EVENT_NAME: ${{ github.event_name }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -290,6 +304,16 @@ jobs:
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          mac_capture = os.environ.get("MAC_ADMISSION_DIAGNOSTIC", "false").lower() == "true"
+          cert_sha256 = os.environ.get("MAC_ADMISSION_CERT_SHA256", "")
+          if mac_capture:
+              if (os.environ.get("EVENT_NAME") != "workflow_dispatch" or not direct_only or
+                      candidate["agent"] != "743c8f3d8c9bc6fd363fc267f634fad33060233c" or
+                      candidate["runtime"] != "2776ba973b6c8f3555b5629b0840d9691a98d3c2" or
+                      not re.fullmatch(r"[0-9a-f]{64}", cert_sha256) or
+                      any(os.environ.get(key, "false").lower() == "true" for key in
+                          ("M4_4A_BACKEND_ONLY", "M4_5_ENABLED", "M4_5_ONLY", "M4_4B_ENABLED", "M4_6_ENABLED"))):
+                  raise SystemExit("macOS admission capture requires diagnostic tuple, direct-only dispatch and recipient fingerprint")
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
@@ -356,6 +380,8 @@ jobs:
                                   ("m4_4b_enabled", str(m4_4b_enabled).lower()),
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
+                                  ("macos_admission_diagnostic", str(mac_capture).lower()),
+                                  ("macos_admission_cert_sha256", cert_sha256 if mac_capture else ""),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
@@ -640,6 +666,7 @@ jobs:
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
+        if: matrix.job_id != 'direct-macos' || needs.config.outputs.macos_admission_diagnostic != 'true'
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
@@ -675,6 +702,26 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run private macOS admission diagnostic lifecycle
+        id: mac_admission
+        if: matrix.job_id == 'direct-macos' && needs.config.outputs.macos_admission_diagnostic == 'true'
+        shell: bash
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: macos-15
+          MAC_ADMISSION_CERT_SHA256: ${{ needs.config.outputs.macos_admission_cert_sha256 }}
+          MAC_ADMISSION_RECIPIENT_CERT: ${{ secrets.MAC_ADMISSION_RECIPIENT_CERT }}
+        run: |
+          # This is a diagnostic result, ineligible for exact-99bb qualification.
+          bash agent/scripts/run_macos_admission_capture.sh
+      - name: Retain encrypted validated macOS admission capture
+        if: always() && steps.mac_admission.outputs.capture_encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 7
+          name: macos-admission-diagnostic-encrypted
+          path: ${{ runner.temp }}/macos-admission-capture.p7m
+          if-no-files-found: error
+          compression-level: 0
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
@@ -690,7 +737,9 @@ jobs:
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
-            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
+            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt',
+            # Existing source observation contains a boolean, not the import path.
+            'macos-bootstrap-source.json'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.

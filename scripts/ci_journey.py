@@ -1152,15 +1152,21 @@ def capture_macos_bootstrap_source(manifest_path: Path, agent_checkout: Path, ev
         expected = agent_checkout / "astrid" / "installer" / "service.py"
         output["candidate_source_sha256"] = hashlib.sha256(expected.read_bytes()).hexdigest()
         python = manifest_path.parent / "bootstrap-venv" / "bin" / "python"
-        code = ("import hashlib,json,pathlib,astrid.installer.service as s; "
+        code = ("import hashlib,json,pathlib,sys,astrid.installer.service as s; "
                 "p=pathlib.Path(s.__file__).resolve(); "
-                "print(json.dumps({'import_path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))")
+                "print(json.dumps({'in_bootstrap_venv':p.is_relative_to(pathlib.Path(sys.prefix).resolve()),"
+                "'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))")
         completed = subprocess.run([str(python), "-I", "-c", code], capture_output=True,
                                    text=True, timeout=30, check=False)
         output["import_exit"] = completed.returncode
         if completed.returncode == 0:
             observed = json.loads(completed.stdout)
-            output.update(status="observed", import_path=observed["import_path"],
+            if (not isinstance(observed, dict) or set(observed) != {"in_bootstrap_venv", "sha256"} or
+                    type(observed["in_bootstrap_venv"]) is not bool or
+                    not isinstance(observed["sha256"], str) or
+                    re.fullmatch(r"[0-9a-f]{64}", observed["sha256"]) is None):
+                raise ValueError("invalid bootstrap source observation")
+            output.update(status="observed", in_bootstrap_venv=observed["in_bootstrap_venv"],
                           installed_source_sha256=observed["sha256"],
                           matches_candidate=observed["sha256"] == output["candidate_source_sha256"])
     except Exception as exc:

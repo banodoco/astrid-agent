@@ -1341,7 +1341,7 @@ def test_macos_bootstrap_source_capture_records_observed_and_expected_hash(tmp_p
     def fake_run(argv, **kwargs):
         calls.append(argv)
         return SimpleNamespace(returncode=0, stdout=json.dumps({
-            "import_path": "/bootstrap/site-packages/astrid/installer/service.py", "sha256": digest}))
+            "in_bootstrap_venv": True, "sha256": digest}))
     monkeypatch.setattr(journey.subprocess, "run", fake_run)
     journey.capture_macos_bootstrap_source(tmp_path / "app/public/install-manifest.json",
                                            tmp_path / "candidate", tmp_path / "evidence")
@@ -1350,6 +1350,7 @@ def test_macos_bootstrap_source_capture_records_observed_and_expected_hash(tmp_p
     assert calls[0][1:3] == ["-I", "-c"]
     assert result["status"] == "observed" and result["matches_candidate"] is True
     assert result["installed_source_sha256"] == digest
+    assert result["in_bootstrap_venv"] is True and "import_path" not in result
     assert "macos-bootstrap-source.json" in journey.JOURNEY_EVIDENCE_NAMES
 
 
