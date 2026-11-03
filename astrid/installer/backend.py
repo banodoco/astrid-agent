@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -728,6 +729,39 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except Exception as exc:
             raise self._downstream_stop_failure(exc) from exc
         return result
+
+    def wait_for_realm_owner(self, realm: dict, *, timeout: float = 90) -> None:
+        """Observe owner.lock becoming available without reading or retaining it.
+
+        This observation is not a fence for a later mutation. Runtime must acquire
+        its own owner fence after the installer releases this descriptor.
+        """
+        lock = absolute(realm["realm_root"]) / "owner.lock"
+        descriptor = os.open(lock, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            held = os.fstat(descriptor)
+            current = os.stat(lock, follow_symlinks=False)
+            if (not stat.S_ISREG(held.st_mode) or not stat.S_ISREG(current.st_mode)
+                    or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)):
+                raise ValueError("The workspace owner lock changed; refusing the update.")
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    platform.lock_file(descriptor, blocking=False)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("The workspace owner did not finish stopping.") from None
+                    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+            try:
+                current = os.stat(lock, follow_symlinks=False)
+                if (not stat.S_ISREG(current.st_mode)
+                        or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)):
+                    raise ValueError("The workspace owner lock changed; refusing the update.")
+            finally:
+                platform.unlock_file(descriptor)
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:
