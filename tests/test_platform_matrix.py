@@ -22,5 +22,5 @@ def test_generation_platform_matrix_references_existing_packs_and_sources():
                 path = ROOT / source
                 assert path.is_file(), source
                 assert 0 < int(line) <= len(path.read_text(encoding="utf-8").splitlines()), (source, line)
-    for source in ("docs/getting-started.md", "astrid/packs/_core/docs/SKILL.md"):
+    for source in ("docs/getting-started.md", "astrid/core/resources/skills/SKILL.md"):
         assert "reference/where-things-run.md" in (ROOT / source).read_text(encoding="utf-8")

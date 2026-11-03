@@ -131,6 +131,6 @@ def test_real_installed_pack_is_discovered_but_not_written_to_bundled_index(
 
 
 def test_committed_capability_index_is_generated_from_registry():
-    path = Path(__file__).resolve().parents[3] / "astrid/packs/_core/docs/references/capabilities.md"
+    path = Path(__file__).resolve().parents[3] / "astrid/core/resources/skills/references/capabilities.md"
     text = path.read_text(encoding="utf-8")
     assert gen_capability_index.render_block() in text

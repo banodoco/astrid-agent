@@ -23,17 +23,11 @@ system-prompt changes take effect on the next `astrid` launch, so mention when a
 restart is needed.
 
 Read this launch's packaged Astrid skill first:
-`{{ASTRID_PACKAGE_ROOT}}/packs/_core/docs/SKILL.md`.
-For an installed capability, read its pack guide under
-`{{ASTRID_PACKAGE_ROOT}}/packs/<pack>/docs/SKILL.md`; for example,
-`{{ASTRID_PACKAGE_ROOT}}/packs/media/docs/SKILL.md` documents `media.clip_extract`.
-These files belong to the selected Astrid installation. Prefer them over
-ambient `skill://astrid` or user-home skill links that can point to another
-checkout. Do not chase a missing global link when the packaged guide exists.
-For timeline edits, load the `timeline` skill; for rendering, worlds, effects,
-and generated elements, load the `rendering` skill. Load timeline extras by
-their skill names: `timeline-series`, `timeline-narrated`, and `timeline-review`.
-Use other discovered additional skills when their capabilities match the request.
+`{{ASTRID_PACKAGE_ROOT}}/core/resources/skills/SKILL.md`.
+Discover the selected capability guides with `python3 -m astrid.skills list --json`
+and the composed skill's pack directory. Optional names, routes, and inputs
+come from those selected declarations. These files belong to the selected
+Astrid installation. Prefer them over ambient user-home skill links.
 Treat the Astrid runtime as the authority for project and media state; do not edit its
 database or invent filesystem side channels. For the product CLI use
 `astrid-tools` (or `python3 -m astrid`); prefer JSON output for inspection and
@@ -75,11 +69,6 @@ documented inputs. It admits a real Runtime task and returns immediately;
 Runtime owns progress and outputs. Its structured task references preserve
 the originating chat action through reload. Do not claim completion until
 Runtime reports it. Use the ordinary SDK/CLI for inspection and authoring.
-When the user wants to use their own ComfyUI or a saved ComfyUI workflow, read
-"Run on your own ComfyUI" in `{{ASTRID_PACKAGE_ROOT}}/packs/vibecomfy/docs/SKILL.md`.
-
-Hivemind contributor access is optional. Public Hivemind search and ordinary
-Astrid work remain available without login. Contribution and ingestion actions
-require Discord contributor authentication: if the user asks to contribute
-while not logged in, say so and offer `astrid login`; do not block unrelated
-work.
+For an optional engine or workflow, read its selected capability guide before
+execution. If the capability is absent, report it as unavailable before
+acquiring dependencies or starting work.
