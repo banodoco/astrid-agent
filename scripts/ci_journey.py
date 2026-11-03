@@ -676,6 +676,32 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             if not target.exists() and source.is_file() and not source.is_symlink():
                 shutil.copyfile(source, target)
 
+    # Readiness capture lives at fixed task directories, including the R0 seed.
+    # Promote only finite known names through the existing hosted log allowlist.
+    roots = (evidence, evidence / "release0-api-seed" / "release0-task",
+             evidence / "release1-working-task")
+    suffixes = (".json", "-service-pack-host.log", "-runtime.log",
+                "-runtime-service.log", "-generic-host.log")
+    for index, directory in enumerate(roots):
+        if not directory.is_dir() or any(p.is_symlink() for p in (directory, *directory.parents)):
+            continue
+        for observation in windows.PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+            for suffix in suffixes:
+                source = directory / f"pack-host-readiness-{observation}{suffix}"
+                if source.is_symlink() or not source.is_file():
+                    continue
+                target = destination / f"runtime-service-service-readiness-{index}-{observation}{suffix}.log"
+                try:
+                    if source.stat().st_size <= EVIDENCE_LOG_LIMIT:
+                        shutil.copyfile(source, target)
+                except OSError as exc:
+                    print(f"Journey readiness staging failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+    if phase == "after-cleanup":
+        for source in sorted((destination.parent / "before-cleanup").glob("runtime-service-service-readiness-*.log")):
+            target = destination / source.name
+            if not target.exists() and source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, target)
+
     # The W1 observer writes under the direct journey's fixed seed directory.
     # Promote only its bounded, uniquely named files to the existing boundary.
     seed_evidence = evidence / "release0-api-seed"
@@ -843,6 +869,11 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                "XDG_CONFIG_HOME": str(home / ".config"),
                "ASTRID_RUNTIME_DATA_ROOT": str(data),
                "ASTRID_CI_PROGRAM_ROOT": str(root), "ASTRID_CI_DATA_ROOT": str(data)}
+    if sys.platform == "win32":
+        native_local = os.environ.get("LOCALAPPDATA")
+        changes[windows.NATIVE_RUNTIME_LOG_DIR_ENV] = (
+            str(Path(native_local) / "Astrid Runtime/logs") if native_local else ""
+        )
     prior = {key: os.environ.get(key) for key in changes}
     os.environ.update(changes)
     try:
