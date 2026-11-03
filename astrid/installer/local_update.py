@@ -467,9 +467,6 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
         hooks.call("start-editor", previous, selected_realm, rollback=True)
         hooks.call("verify-editor", previous, selected_realm, rollback=True)
 
-    def backup(previous, workspace, selected_realm):
-        return _at_step("backup-workspace", backend.backup, previous, workspace, selected_realm)
-
     def migrate(candidate_version, workspace, _realm):
         _at_step("upgrade-runtime", backend.upgrade, candidate_version, workspace)
         _at_step("stop-runtime", backend.stop, candidate_version, workspace)
@@ -480,9 +477,9 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
             _at_step("run-transaction", installer._run_update_transaction,
                      old, realm, prepare=prepare, stop=stop, switch_candidate=select,
                      switch_old=select_old, activate=activate, activate_old=activate_old,
-                     backup=backup if not repair else None,
                      migrate=migrate if not repair else None,
                      restore_workspace=not repair, kind="app" if repair else "migration",
+                     runtime_upgrade=not repair,
                      transaction_context=context)
     except Exception as exc:
         if not getattr(exc, "step", None):
