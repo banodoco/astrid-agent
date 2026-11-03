@@ -1,0 +1,1530 @@
+{
+  "artifacts": [
+    {
+      "bytes": 53137,
+      "path": "DESIGN.md",
+      "sha256": "3b6a528c074c6db8cd17d92ae743a752fa202e309e9af1bb11cab61d48e98eb1"
+    },
+    {
+      "bytes": 10116,
+      "path": "REPORT.md",
+      "sha256": "2e13fc4c0948217bfe4b04cb917009c988895084df57f34d2812ebaba326531a"
+    },
+    {
+      "bytes": 6510,
+      "path": "sub/1/COMMANDS.md",
+      "sha256": "03fc976f25a12f77ea9b382a512fb6ece97bf27b79056858462b0a4c09c45bcf"
+    },
+    {
+      "bytes": 16969,
+      "path": "sub/1/DESIGN-REVIEW.md",
+      "sha256": "fcc1ae6e3ea3c5b044b5fc612f4ae54a3ffd27a1f856fd66aea98fc5380b17a0"
+    },
+    {
+      "bytes": 26826,
+      "path": "sub/1/REPORT.md",
+      "sha256": "05a47838ea86c0c017b168c526c1bd9d5c5d405aca00767b266749e1d4b4a157"
+    },
+    {
+      "bytes": 654,
+      "path": "scratch/CURRENT-TUPLE.json",
+      "sha256": "71a738081dba7f84bea0b882a975cd540b62684e8f6f1fa0d99f572e62908e50"
+    },
+    {
+      "bytes": 100206,
+      "path": "scratch/DECISIONS.md",
+      "sha256": "59a80b103e5b5a59b52340c091cc64a7586ab51f19f42004064ff35145d4a175"
+    },
+    {
+      "bytes": 4327,
+      "path": "scratch/MAC-RUNNER-SETUP.md",
+      "sha256": "eb7c0eff288be07ead4a60d9ef68d76d77528c7dacede45c92d90ad2d68de1e9"
+    },
+    {
+      "bytes": 43924,
+      "path": "scratch/MERGE-OPERATING.md",
+      "sha256": "99c2a44c62902eb7bcf9b83f366b502197977508ec4d3bc4c626d172803873b9"
+    },
+    {
+      "bytes": 1607556,
+      "path": "scratch/ORCHESTRATOR.md",
+      "sha256": "becae5133999db2ccc8a9c723cbade0f8185953ebdad5f7a39b28854a0a78d20"
+    },
+    {
+      "bytes": 1468,
+      "path": "scratch/api-artifacts.json",
+      "sha256": "865f4bbf93e272b730d1e52274bce5f5a3316530d1e6527aedef2c836b24c2e0"
+    },
+    {
+      "bytes": 5244,
+      "path": "scratch/api-jobs.json",
+      "sha256": "07dace88eec7b466806d60908ce0c750765e62a4012336fe12a949e28c925120"
+    },
+    {
+      "bytes": 7005,
+      "path": "scratch/api-repository.json",
+      "sha256": "89fce6056f6f306e22c9d8f8320a967fbaa5b3c908863ca6bf16e830e495a1cb"
+    },
+    {
+      "bytes": 12302,
+      "path": "scratch/api-run.json",
+      "sha256": "1a49490c1ea8a35ced6c74b28d6f32749c3d137ef6a7cb76f03d3e2f341b5602"
+    },
+    {
+      "bytes": 235,
+      "path": "scratch/base-identity.txt",
+      "sha256": "ad354a4d612403214cb6e2c3913ca7897208533e1696e247f51c061e38ac26ce"
+    },
+    {
+      "bytes": 49,
+      "path": "scratch/branch.txt",
+      "sha256": "30b13a3a8e1f87a4a3b5d617c7a87a4977caf923313265d87b03074ea150f1ce"
+    },
+    {
+      "bytes": 12265,
+      "path": "scratch/build_receipt.py",
+      "sha256": "dedd3df7f142d80a7fb0030ec5ee152072e305c2873bafc9600e6803636747a0"
+    },
+    {
+      "bytes": 4969,
+      "path": "scratch/capture_evidence.py",
+      "sha256": "651f6a5db05955a32086daf5849b127834801d5e6699b44016ab6a1d2d2913da"
+    },
+    {
+      "bytes": 25096,
+      "path": "scratch/command-output/item_1.txt",
+      "sha256": "8f0851c44f46127cc65fa14362f96804efb93a1a41597826e8ad2c0bb4ca2c9a"
+    },
+    {
+      "bytes": 11946,
+      "path": "scratch/command-output/item_10.txt",
+      "sha256": "c640b6c1ca7d4642267b633b32a5c0e6ec6d7ed8857fc5086b0a0dcd12e0898c"
+    },
+    {
+      "bytes": 935,
+      "path": "scratch/command-output/item_11.txt",
+      "sha256": "361da16322771803c82393ff6c78e11bd72386e9987a7670e3f77607cfe8f53c"
+    },
+    {
+      "bytes": 160,
+      "path": "scratch/command-output/item_12.txt",
+      "sha256": "2b3d6e2b443eedc9e1a4a9f2906c3583c7ae6fb37733c9d5953abb4455d1654b"
+    },
+    {
+      "bytes": 63164,
+      "path": "scratch/command-output/item_13.txt",
+      "sha256": "fa90425b667dfbeae30a7638e2fd01ed404a0fac079c6024a39a983a9f82a4be"
+    },
+    {
+      "bytes": 20341,
+      "path": "scratch/command-output/item_14.txt",
+      "sha256": "5d9717be142d64a8b2ce5d75f2e0bd864d4561566baa1882f0ee8eca028c2921"
+    },
+    {
+      "bytes": 14504,
+      "path": "scratch/command-output/item_16.txt",
+      "sha256": "928773182e7602731cec3dd0cc57a51f5ef59b35ff852fb90a7256035a9085ee"
+    },
+    {
+      "bytes": 59952,
+      "path": "scratch/command-output/item_17.txt",
+      "sha256": "411135b1cd0e391bca9ddf062a8bfff9c54a7e814467168d98fcda015221a1a7"
+    },
+    {
+      "bytes": 22451,
+      "path": "scratch/command-output/item_19.txt",
+      "sha256": "13c8992d39747e551a15a3aed9f83e3b382bc79c8ecaac78bc2a38fdff08f55e"
+    },
+    {
+      "bytes": 896,
+      "path": "scratch/command-output/item_2.txt",
+      "sha256": "f46c0ca28f8a5e96fb6f4cd7fa310778f010015f39d72807d926c89c73613cdf"
+    },
+    {
+      "bytes": 21358,
+      "path": "scratch/command-output/item_20.txt",
+      "sha256": "7f8e19faae0344172b0e023f02b94b7b0b09c48e44c2b17aff6e27fc07585829"
+    },
+    {
+      "bytes": 21009,
+      "path": "scratch/command-output/item_21.txt",
+      "sha256": "4c5391b8053dcc50bcea3faffe2728bc0a85e645caeb4115413f282de75d59f6"
+    },
+    {
+      "bytes": 19310,
+      "path": "scratch/command-output/item_22.txt",
+      "sha256": "c6c9983eb0cd7f1b1747caf4df1e1aaae41543b9ac2b89985e64038592684572"
+    },
+    {
+      "bytes": 6422,
+      "path": "scratch/command-output/item_23.txt",
+      "sha256": "bfcb8b57918222abf296af376685d5f54d109ec2f38980fa2cef58bb599be369"
+    },
+    {
+      "bytes": 23032,
+      "path": "scratch/command-output/item_24.txt",
+      "sha256": "e8f9472963db6f2462598cfc9d40aa10592f72f17a80193731649d3a398f4f96"
+    },
+    {
+      "bytes": 22306,
+      "path": "scratch/command-output/item_25.txt",
+      "sha256": "d599bbf55a363f5bfbcc1ff38b6b42abc7a7f2465add6e68ac9cc28f7fa5e2a4"
+    },
+    {
+      "bytes": 278,
+      "path": "scratch/command-output/item_27.txt",
+      "sha256": "7da3726d5d7ef109c3cea2a839943da74db973220bbd62fc9f4fea08ff1d5bdf"
+    },
+    {
+      "bytes": 20739,
+      "path": "scratch/command-output/item_29.txt",
+      "sha256": "c5830a641515cafdfb39c1d885655b93de232c89cab90a88487635ce3239cbac"
+    },
+    {
+      "bytes": 16412,
+      "path": "scratch/command-output/item_3.txt",
+      "sha256": "5ce1323d9b4243fc18e5c3572d4ac98e26e816ee1b21c1cc0bbea392b751d2dc"
+    },
+    {
+      "bytes": 16171,
+      "path": "scratch/command-output/item_30.txt",
+      "sha256": "bcadde1a9749c24e89ef83049a8eb326989cb87ea3313c5e2f3498596989beae"
+    },
+    {
+      "bytes": 23370,
+      "path": "scratch/command-output/item_31.txt",
+      "sha256": "5911eb0d5d885553f99734510f6aac10b1fb784084ca2183d6e9fa832b15a28b"
+    },
+    {
+      "bytes": 4530,
+      "path": "scratch/command-output/item_33.txt",
+      "sha256": "e9509ce5715c304bb0a048f2d3babd0b23237e3a4e9444ca5a34d9ebc099dfae"
+    },
+    {
+      "bytes": 11821,
+      "path": "scratch/command-output/item_35.txt",
+      "sha256": "19a686c22c299435adbb3ac7fd1736432e02c6a508bdd68987ec11577482fc0b"
+    },
+    {
+      "bytes": 24240,
+      "path": "scratch/command-output/item_36.txt",
+      "sha256": "409ad4fd18f7bc4d3660e8f226eccd8ae2373fadee0ab9ba665c0110d1f888cc"
+    },
+    {
+      "bytes": 14800,
+      "path": "scratch/command-output/item_37.txt",
+      "sha256": "65653ffd0c6a122ee998d3299649aeb3cce6982c8fd8b093946975530d1e358d"
+    },
+    {
+      "bytes": 1183,
+      "path": "scratch/command-output/item_39.txt",
+      "sha256": "e5f6251988456892368bc016652c14b2eba04f384fcb09b5ce51c44f65fca5ea"
+    },
+    {
+      "bytes": 1048606,
+      "path": "scratch/command-output/item_4.txt",
+      "sha256": "804ba99c0fdfa9302d648e14d9903137fea0e3356ad558cac465baa4a2226bb9"
+    },
+    {
+      "bytes": 7930,
+      "path": "scratch/command-output/item_40.txt",
+      "sha256": "197df4ee2dd9680453d489cc65b4e4a837366e5e6ea5d7b3577d09b28fa93e83"
+    },
+    {
+      "bytes": 0,
+      "path": "scratch/command-output/item_42.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2497,
+      "path": "scratch/command-output/item_43.txt",
+      "sha256": "11e74e2cd83ed90d9edd3e2e8e7a6727327df1d41907c2e76378373fdf47d357"
+    },
+    {
+      "bytes": 17130,
+      "path": "scratch/command-output/item_44.txt",
+      "sha256": "9b08c0da7fe03d13e42154326237200d5006ec27b82da07e8ba4f22a8f4426b0"
+    },
+    {
+      "bytes": 37148,
+      "path": "scratch/command-output/item_47.txt",
+      "sha256": "fd385e57fdefb835ee278921c3daf098bd955b033ac2bc2ddfecb0d6767af293"
+    },
+    {
+      "bytes": 3246,
+      "path": "scratch/command-output/item_48.txt",
+      "sha256": "a29057dffa4b447ce3e9d0832c853d36af3d4f406c25d8828f0fb23307c52c1c"
+    },
+    {
+      "bytes": 1048607,
+      "path": "scratch/command-output/item_5.txt",
+      "sha256": "bcfc390a5bfe40e609b8cd176761b0cb318a51508020584541241daca08691c0"
+    },
+    {
+      "bytes": 2321,
+      "path": "scratch/command-output/item_53.txt",
+      "sha256": "369d203b397805ea75691c037220c71f3af4962352e18d90a599c5901a1f27e3"
+    },
+    {
+      "bytes": 395,
+      "path": "scratch/command-output/item_54.txt",
+      "sha256": "e239241ea2a327aa1290ef8f4de8d08a33f4aacb4d64184424f9dfad41a03302"
+    },
+    {
+      "bytes": 1989,
+      "path": "scratch/command-output/item_55.txt",
+      "sha256": "56e6cf9b7a8637227802f1cb9a022531b89ff6cc13b8905ce1e1a1a8db116e42"
+    },
+    {
+      "bytes": 11816,
+      "path": "scratch/command-output/item_57.txt",
+      "sha256": "285ae78b24295eb5d16e2f4d689b28fb5e2341f3e9e51ca8d97bc01e14b282ac"
+    },
+    {
+      "bytes": 92448,
+      "path": "scratch/command-output/item_6.txt",
+      "sha256": "5dd4ba17da81643dbed9f40057c460228cbd3408af0abb4e76fff4bf82a53be1"
+    },
+    {
+      "bytes": 288,
+      "path": "scratch/command-output/item_61.txt",
+      "sha256": "4930ae2d0aa7c1e591cdb7ac202cb392b5008577b18b17bb64e793d1d7dd1355"
+    },
+    {
+      "bytes": 156,
+      "path": "scratch/command-output/item_63.txt",
+      "sha256": "15c58137cc92aab110be16b3ddf8c83d27b5c8a57ccedbb65011d60a2c3a81d8"
+    },
+    {
+      "bytes": 721,
+      "path": "scratch/command-output/item_64.txt",
+      "sha256": "d7fdc6c42e77aa166f3317e088dfec8b007748c6e7feb87e0568924b16404a70"
+    },
+    {
+      "bytes": 4505,
+      "path": "scratch/command-output/item_66.txt",
+      "sha256": "6e201344ef9d70c1ac390119199357ad044c9d30440a79b03c495990a068c87e"
+    },
+    {
+      "bytes": 1146,
+      "path": "scratch/command-output/item_7.txt",
+      "sha256": "5d7b48aa568173da7c8c476a453ac2fdd3cb165130606400248d3d4c9f252e96"
+    },
+    {
+      "bytes": 1599,
+      "path": "scratch/command-output/item_8.txt",
+      "sha256": "956323ed4d8fe44168be66c090fb18862c0d3dbe3ebd8a858c2bfa7ebbd80844"
+    },
+    {
+      "bytes": 62353,
+      "path": "scratch/command-output/item_9.txt",
+      "sha256": "0a21ff126406081e8302f819ffabba68e202eec8122b0ee2fb1cab34be8fc123"
+    },
+    {
+      "bytes": 26212,
+      "path": "scratch/command-transcript.json",
+      "sha256": "19e002741b4ed084c63891da3406670b03e3d09a0b4ca659fa5ca47d1b827058"
+    },
+    {
+      "bytes": 6922,
+      "path": "scratch/delivery-validation.json",
+      "sha256": "8793a946cac18cbef269a2198efaec871517f57ec2da53915f6930a643cbef1a"
+    },
+    {
+      "bytes": 1585,
+      "path": "scratch/final-base-checks.json",
+      "sha256": "0626f9895fb56844dd8a9f897bd75823f7cb7bd0628ef6f4e12b3f63305e2d2b"
+    },
+    {
+      "bytes": 3780,
+      "path": "scratch/http-reads.jsonl",
+      "sha256": "94c861887e284dd12ad60f9c6ede7a87c5266f0e3cf4402f91a1a2b6f120b2df"
+    },
+    {
+      "bytes": 1108,
+      "path": "scratch/input-manifest.json",
+      "sha256": "ed41852cc6f2a1c8b053750e9033cf40809ae1410c3ed439c43a535bc2b1903b"
+    },
+    {
+      "bytes": 2450,
+      "path": "scratch/inspection-commands.jsonl",
+      "sha256": "d3f2bb383436bbc283a9101a6811989311d861b37e359cf642f9408da664d0eb"
+    },
+    {
+      "bytes": 1217,
+      "path": "scratch/oidc-discovery.json",
+      "sha256": "c3fba014c6fc3be9f3950c3ce883ceb2670d586dd2efbfec9342d49bef33516b"
+    },
+    {
+      "bytes": 4530,
+      "path": "scratch/platform-summary.json",
+      "sha256": "e9509ce5715c304bb0a048f2d3babd0b23237e3a4e9444ca5a34d9ebc099dfae"
+    },
+    {
+      "bytes": 4979,
+      "path": "scratch/prior-inputs.json",
+      "sha256": "254b66bc31f44e95bac6696b178e59dfa3c2bd17565d0ab0f6ae2e7c3d0960ac"
+    },
+    {
+      "bytes": 59,
+      "path": "scratch/published-base.txt",
+      "sha256": "1ffc017b9002d802782bdff79204bd93c544fb10b772e10701c150438a643870"
+    },
+    {
+      "bytes": 2428,
+      "path": "scratch/refusal-probe.json",
+      "sha256": "d77c12bcb753eeb0b294fa0e67789f637e2a9ac38de131bcb20756ce721c8536"
+    },
+    {
+      "bytes": 2164,
+      "path": "scratch/refusal_probe.py",
+      "sha256": "8117c2fcf21b0ca1e3e69e676a68fb76a46d04eb8dde996afb42531576711451"
+    },
+    {
+      "bytes": 6917,
+      "path": "scratch/source-manifest.json",
+      "sha256": "0a11ef2875d5bead965eb11a6fab1416b32087074d8d9c163f35689d5b4c8aae"
+    },
+    {
+      "bytes": 2104,
+      "path": "scratch/validate_receipt.py",
+      "sha256": "7ef582a69e840a1140d86adf4930c843d490c3a126e96c399f2da19b6d70de03"
+    },
+    {
+      "bytes": 13871,
+      "path": "scratch/web-reads.json",
+      "sha256": "c184777233ae38afed007e77f5a41455f25bdbfa33765fdc06dd6bf825aa6ac3"
+    },
+    {
+      "bytes": 0,
+      "path": "scratch/worktree-status.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "claims": [
+    {
+      "claim": "fixed provider always refuses before native mutation",
+      "sources": [
+        "DESIGN.md#2-verified-facts-supported-capabilities-and-gaps",
+        "agent/scripts/m4_6_platform_session_provider.py:35-46",
+        "scratch/refusal-probe.json"
+      ]
+    },
+    {
+      "claim": "missing production collector mint, immutable image, exact child and parent revocation",
+      "sources": [
+        "agent/scripts/m4_6_trusted_launcher.py:728-743",
+        "sub/1/REPORT.md"
+      ]
+    },
+    {
+      "claim": "OIDC/job APIs support job identity but inspected artifact API lacks exact producer job/attempt/slot edge",
+      "sources": [
+        "scratch/http-reads.jsonl",
+        "scratch/platform-summary.json",
+        "agent/scripts/m4_6_artifact_provenance.py:17-27"
+      ]
+    },
+    {
+      "claim": "independent semantic data source remains missing",
+      "sources": [
+        "agent/scripts/native_service_adapter.py:268-344",
+        "sub/1/REPORT.md"
+      ]
+    },
+    {
+      "claim": "P13 checkpoint/data required on all slots; continuity/containment deferred, never passed",
+      "sources": [
+        "scratch/MERGE-OPERATING.md:190",
+        "scratch/DECISIONS.md:338"
+      ]
+    },
+    {
+      "claim": "P19 real OS/non-root proof required for future identity/service implementation",
+      "sources": [
+        "scratch/MERGE-OPERATING.md:196"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "command": "/bin/bash -lc \"pwd; rg --files -g 'AGENTS.md' -g 'ORCHESTRATOR.md' -g '*DECISION*' -g '*P13*' -g '*P19*' -g 'REPORT.md' -g 'DESIGN.md' -g 'canonical-receipt.json' -g 'task-clone.sh'\"",
+      "event_id": "item_1",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_1.txt",
+      "sha256": "8f0851c44f46127cc65fa14362f96804efb93a1a41597826e8ad2c0bb4ca2c9a",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'git status --short; git branch --show-current; git rev-parse HEAD; ls -la /home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1'",
+      "event_id": "item_2",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_2.txt",
+      "sha256": "f46c0ca28f8a5e96fb6f4cd7fa310778f010015f39d72807d926c89c73613cdf",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"ls -la /home/user/merge/kit/codex; rg --files /home/user/merge -g 'AGENTS.md'\"",
+      "event_id": "item_3",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_3.txt",
+      "sha256": "5ce1323d9b4243fc18e5c3572d4ac98e26e816ee1b21c1cc0bbea392b751d2dc",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat /home/user/merge/kit/codex/task-clone.sh; cat ORCHESTRATOR.md'",
+      "event_id": "item_4",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_4.txt",
+      "sha256": "804ba99c0fdfa9302d648e14d9903137fea0e3356ad558cac465baa4a2226bb9",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/REPORT.md queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/canonical-receipt.json queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/REPORT.md queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/DESIGN.md'",
+      "event_id": "item_6",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_6.txt",
+      "sha256": "5dd4ba17da81643dbed9f40057c460228cbd3408af0abb4e76fff4bf82a53be1",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"rg -n '02:06:53|M4-6|trusted.context|authenticated.*context|native.*producer' /home/user/merge/ws/M-CI/ORCHESTRATOR.md /home/user/merge/ws/M-CI/inbox /home/user/merge/ws/M-QUAL/inbox /home/user/merge/ws/M-QUAL/DECISIONS* /home/user/merge/ws/M-QUAL/queue/done/R-30*\"",
+      "event_id": "item_5",
+      "exit_code": 2,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_5.txt",
+      "sha256": "bcfc390a5bfe40e609b8cd176761b0cb318a51508020584541241daca08691c0",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat AGENTS.md; git status --short; git rev-parse HEAD; git remote -v; rg --files | rg 'DECISIONS|P13|P19|m46|native.*context|trusted.*launch|provenance'\"",
+      "event_id": "item_7",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_7.txt",
+      "sha256": "5d7b48aa568173da7c8c476a453ac2fdd3cb165130606400248d3d4c9f252e96",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat AGENTS.md; git status --short; git rev-parse HEAD; git remote -v; rg --files scripts tests .github | rg 'native|trusted|provenance|m4_6|m46'\"",
+      "event_id": "item_8",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_8.txt",
+      "sha256": "956323ed4d8fe44168be66c090fb18862c0d3dbe3ebd8a858c2bfa7ebbd80844",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/REPORT.md queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/canonical-receipt.json'",
+      "event_id": "item_9",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_9.txt",
+      "sha256": "0a21ff126406081e8302f819ffabba68e202eec8122b0ee2fb1cab34be8fc123",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/REPORT.md; wc -l queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/DESIGN.md; rg -n '02:06:53|M4-6|native context|trusted.context|Option B' ORCHESTRATOR.md | tail -n 55\"",
+      "event_id": "item_10",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_10.txt",
+      "sha256": "c640b6c1ca7d4642267b633b32a5c0e6ec6d7ed8857fc5086b0a0dcd12e0898c",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"rg -n '02:06:53|trusted.context|native context|native.*producer' /home/user/merge/ws/M-CI/ORCHESTRATOR.md | tail -n 30; ls /home/user/repo/docs/merge-plan; rg -n '\"'^##.*P13|''^##.*P19|Option B|native context|M4-6'\"' /home/user/repo/docs/merge-plan/DECISIONS.md | tail -n 40; ls /home/user/merge/inbox/reviews | rg 'R-30|R-36|C-06'\"",
+      "event_id": "item_11",
+      "exit_code": 1,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_11.txt",
+      "sha256": "361da16322771803c82393ff6c78e11bd72386e9987a7670e3f77607cfe8f53c",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc 'CODEX_WORKSPACE=/home/user/merge/ws/M-QUAL /home/user/merge/kit/codex/task-clone.sh astrid-agent /home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent b54117c9312165e2799554ec27480665d5cad2b1'",
+      "event_id": "item_12",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_12.txt",
+      "sha256": "2b3d6e2b443eedc9e1a4a9f2906c3583c7ae6fb37733c9d5953abb4455d1654b",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '15240,15495p' ORCHESTRATOR.md; tail -n 120 BRIEF.md; cat /home/user/merge/kit/FAST-ITERATION.md\"",
+      "event_id": "item_13",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_13.txt",
+      "sha256": "fa90425b667dfbeae30a7638e2fd01ed404a0fac079c6024a39a983a9f82a4be",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,200p' queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/DESIGN.md; sed -n '290,400p' queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/DESIGN.md; rg -n 'P13|P19|rule 36|rule 35' /home/user/repo/docs/merge-plan/MERGE-PLAN.md /home/user/repo/docs/merge-plan/DECISIONS.md; ls /home/user/merge/inbox\"",
+      "event_id": "item_14",
+      "exit_code": 2,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_14.txt",
+      "sha256": "5d9717be142d64a8b2ce5d75f2e0bd864d4561566baa1882f0ee8eca028c2921",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc \"git switch -c lane/M-QUAL/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1; git log -1 --format=fuller; git ls-remote origin refs/heads/int/r1; cat scripts/m4_6_platform_session_provider.py; sed -n '1,245p' scripts/m4_6_trusted_launcher.py; sed -n '680,760p' scripts/m4_6_trusted_launcher.py\"",
+      "event_id": "item_16",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_16.txt",
+      "sha256": "928773182e7602731cec3dd0cc57a51f5ef59b35ff852fb90a7256035a9085ee",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat scripts/m4_6_artifact_provenance.py; cat tests/test_m4_6_platform_session_provider.py; rg -n 'trusted|context|session|provenance|runner|artifact' tests/test_m4_6_artifact_provenance.py | head -n 80; rg -n 'P13|P19' /home/user/repo/docs/merge-plan/COURSE.md; sed -n '310,380p' /home/user/repo/docs/merge-plan/DECISIONS.md; rg --files /home/user/repo/docs/merge-plan /home/user/merge-docs/docs/merge-plan | rg 'R-30|C-06g|R5-RECHAIN' | head -n 60\"",
+      "event_id": "item_17",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_17.txt",
+      "sha256": "411135b1cd0e391bca9ddf062a8bfff9c54a7e814467168d98fcda015221a1a7",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"rg -n 'P13|P19|checkpoint|non-root' /home/user/repo/docs/merge-plan/MERGE-PLAN.md /home/user/repo/docs/merge-plan/README.md /home/user/merge/ws/M-QUAL/BRIEF.md | tail -n 30; rg --files /home/user/merge-docs /home/user/merge/ws/M-QUAL/queue/done -g '*.md' -g '\"'!events*'\"' | rg 'R-30|C06|C-06|PROVENANCE' | head -n 50; sed -n '11770,11795p' /home/user/merge/ws/M-QUAL/ORCHESTRATOR.md; sed -n '15455,15480p' /home/user/merge/ws/M-QUAL/ORCHESTRATOR.md; cat /home/user/merge/kit/FAST-ITERATION.md\"",
+      "event_id": "item_19",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_19.txt",
+      "sha256": "13c8992d39747e551a15a3aed9f83e3b382bc79c8ecaac78bc2a38fdff08f55e",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '400,460p' /home/user/repo/docs/merge-plan/admin/kit/MERGE-OPERATING.md; rg -n 'P13|P19' /home/user/repo/docs/merge-plan/admin/kit/MERGE-OPERATING.md; cat /home/user/merge/ws/M-QUAL/queue/done/R-30/M-INT-DISPOSITION.md; sed -n '1,145p' /home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-PROOF-INTEGRITY-REVIEW-R1/REPORT.md; sed -n '1,125p' /home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-R3-REVIEW-R1/REPORT.md\"",
+      "event_id": "item_20",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_20.txt",
+      "sha256": "7f8e19faae0344172b0e023f02b94b7b0b09c48e44c2b17aff6e27fc07585829",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '1,235p' scripts/m4_6_artifact_provenance.py; sed -n '475,550p' scripts/m4_6_artifact_provenance.py; rg -n '\"'^def |''^class |''^@dataclass|AUTH|SESSION'\"' scripts/native_service_adapter.py | head -n 110; rg -n 'runs-on|m4.6|skip|oidc|id-token|permissions' .github/workflows/journey.yml | tail -n 65; rg -n 'AuthenticatedPlatformSession|PlatformSessionBinding|CustodyBinding|RemovalRequest|FinalRemoval|TrustedSession' scripts/native_service_adapter.py\"",
+      "event_id": "item_21",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_21.txt",
+      "sha256": "4c5391b8053dcc50bcea3faffe2728bc0a85e645caeb4115413f282de75d59f6",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '220,460p' scripts/m4_6_trusted_launcher.py; sed -n '460,685p' scripts/m4_6_trusted_launcher.py\"",
+      "event_id": "item_22",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_22.txt",
+      "sha256": "c6c9983eb0cd7f1b1747caf4df1e1aaae41543b9ac2b89985e64038592684572",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat /home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-RAW-PRODUCER-R1/REPORT.md'",
+      "event_id": "item_23",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_23.txt",
+      "sha256": "bfcb8b57918222abf296af376685d5f54d109ec2f38980fa2cef58bb599be369",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat /home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-COLLECTION-PRODUCER-R1/REPORT.md; cat /home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-FRESHNESS-BINDING-R1/REPORT.md; sed -n '45,122p' /home/user/merge/ws/M-QUAL/queue/done/R-30-SELF-HOSTED-PROFILE-DESIGN-R1/DESIGN.md\"",
+      "event_id": "item_24",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_24.txt",
+      "sha256": "e8f9472963db6f2462598cfc9d40aa10592f72f17a80193731649d3a398f4f96",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '688,1038p' scripts/native_service_adapter.py; sed -n '2445,2545p' scripts/native_service_adapter.py; sed -n '4500,4565p' scripts/native_service_adapter.py; sed -n '4600,4665p' scripts/native_service_adapter.py\"",
+      "event_id": "item_25",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_25.txt",
+      "sha256": "d599bbf55a363f5bfbcc1ff38b6b42abc7a7f2465add6e68ac9cc28f7fa5e2a4",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'python3 scratch/inspect.py'",
+      "event_id": "item_27",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_27.txt",
+      "sha256": "7da3726d5d7ef109c3cea2a839943da74db973220bbd62fc9f4fea08ff1d5bdf",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '550,715p' scripts/native_service_adapter.py; sed -n '100,265p' scripts/m4_6_artifact_provenance.py; sed -n '1,190p' scripts/journey_predicates.py; sed -n '1,130p' tests/test_m4_6_platform_session_provider.py\"",
+      "event_id": "item_29",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_29.txt",
+      "sha256": "c5830a641515cafdfb39c1d885655b93de232c89cab90a88487635ce3239cbac",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '20,110p' /home/user/repo/docs/merge-plan/admin/MAC-RUNNER-SETUP.md; sed -n '1,160p' scripts/ci/trusted_hosted_download.py; sed -n '17,105p' scripts/journey_failure_modes.py; sed -n '1,80p' scripts/journey_matrix.py\"",
+      "event_id": "item_30",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_30.txt",
+      "sha256": "bcadde1a9749c24e89ef83049a8eb326989cb87ea3313c5e2f3498596989beae",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '720,790p' scripts/native_service_adapter.py; sed -n '105,240p' scripts/m4_6_artifact_provenance.py; sed -n '720,810p' scripts/m4_6_artifact_provenance.py; sed -n '2580,2710p' scripts/native_service_adapter.py; sed -n '4740,4785p' scripts/native_service_adapter.py; rg -n 'def test_' tests/test_m4_6_trusted_launcher.py tests/test_m4_6_artifact_provenance.py | tail -n 45\"",
+      "event_id": "item_31",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_31.txt",
+      "sha256": "5911eb0d5d885553f99734510f6aac10b1fb784084ca2183d6e9fa832b15a28b",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json,pathlib\np=pathlib.Path('scratch')\nr=json.loads((p/'api-repository.json').read_text()); run=json.loads((p/'api-run.json').read_text()); jobs=json.loads((p/'api-jobs.json').read_text()); arts=json.loads((p/'api-artifacts.json').read_text()); oidc=json.loads((p/'oidc-discovery.json').read_text())\nout={'repository':{k:r.get(k) for k in ('id','full_name','visibility')},'run':{k:run.get(k) for k in ('id','run_attempt','head_sha','workflow_id','path','status','conclusion')},'jobs':[ {k:x.get(k) for k in ('id','run_id','run_attempt','name','check_run_url','runner_id','runner_name','runner_group_id','runner_group_name','labels','head_sha','status','conclusion')} for x in jobs.get('jobs',[])], 'artifacts':arts,'oidc':oidc}\n(p/'platform-summary.json').write_text(json.dumps(out,indent=2)+'\\\\n');print(json.dumps(out,indent=2))\nPY\"",
+      "event_id": "item_33",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_33.txt",
+      "sha256": "e9509ce5715c304bb0a048f2d3babd0b23237e3a4e9444ca5a34d9ebc099dfae",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"rg -n '\"'^class DataProbe|''^class Durable|''^class LiveProcess|''^class NativeOwner|def _linux_identity|def probe|def removal_census|def observe_absent|def observe'\"\\\\(|instance.*guid|InvocationID|lstart|proc_pidpath|launchctl' scripts/native_service_adapter.py | head -n 80; sed -n '2960,3050p' scripts/native_service_adapter.py; sed -n '4080,4115p' scripts/native_service_adapter.py; sed -n '1,80p' scripts/journey_predicates.py; rg -n '\"'^def |private.*release|mint'\"' scripts/m4_6_artifact_provenance.py | tail -n 25\"",
+      "event_id": "item_35",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_35.txt",
+      "sha256": "19a686c22c299435adbb3ac7fd1736432e02c6a508bdd68987ec11577482fc0b",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '3440,3538p' scripts/native_service_adapter.py; sed -n '4300,4370p' scripts/native_service_adapter.py; sed -n '4400,4455p' scripts/native_service_adapter.py; sed -n '2220,2380p' scripts/native_service_adapter.py; sed -n '580,725p' scripts/m4_6_artifact_provenance.py\"",
+      "event_id": "item_36",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_36.txt",
+      "sha256": "409ad4fd18f7bc4d3660e8f226eccd8ae2373fadee0ab9ba665c0110d1f888cc",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"rg -n '\"'^## 5|''^### 5|Claim|claim|proof|Option'\"' /home/user/merge/ws/M-QUAL/queue/done/R-30/DESIGN.md | head -n 35; sed -n '90,205p' /home/user/merge/ws/M-QUAL/queue/done/R-30/DESIGN.md; cat scratch/CURRENT-TUPLE.json; rg -n '02:06:53' scratch/ORCHESTRATOR.md\"",
+      "event_id": "item_37",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_37.txt",
+      "sha256": "65653ffd0c6a122ee998d3299649aeb3cce6982c8fd8b093946975530d1e358d",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'PYTHONDONTWRITEBYTECODE=1 python3 scratch/refusal_probe.py > scratch/refusal-probe.json'",
+      "event_id": "item_39",
+      "exit_code": 1,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_39.txt",
+      "sha256": "e5f6251988456892368bc016652c14b2eba04f384fcb09b5ce51c44f65fca5ea",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc \"cat scratch/refusal-probe.json; rg -n 'def test_' tests/test_native_service_adapter.py | tail -n 28; sed -n '236,263p' /home/user/merge/ws/M-QUAL/queue/done/R-30/DESIGN.md; rg -n 'source-fixed|checkpoint|Option B|continuous|def probe' scripts/m4_6_pinokio_custody_provider.py | tail -n 20\"",
+      "event_id": "item_40",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_40.txt",
+      "sha256": "197df4ee2dd9680453d489cc65b4e4a837366e5e6ea5d7b3577d09b28fa93e83",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'PYTHONDONTWRITEBYTECODE=1 python3 -I scratch/refusal_probe.py > scratch/refusal-probe.json'",
+      "event_id": "item_42",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_42.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat scratch/refusal-probe.json; git status --short'",
+      "event_id": "item_43",
+      "exit_code": 128,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_43.txt",
+      "sha256": "11e74e2cd83ed90d9edd3e2e8e7a6727327df1d41907c2e76378373fdf47d357",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '975,1064p' scripts/shared_journey_driver.py; sed -n '268,345p' scripts/native_service_adapter.py; sed -n '1290,1385p' scripts/native_service_adapter.py; sed -n '387,410p' scripts/native_service_adapter.py; sed -n '1,105p' tests/test_m4_6_trusted_launcher.py; rg -n 'deferred-R1.x|checkpoint|containment' scripts/journey_matrix.py | tail -n 25\"",
+      "event_id": "item_44",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_44.txt",
+      "sha256": "9b08c0da7fe03d13e42154326237200d5006ec27b82da07e8ba4f22a8f4426b0",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '235,290p' DESIGN.md; cat sub/1/REPORT.md; cat sub/1/COMMANDS.md\"",
+      "event_id": "item_47",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_47.txt",
+      "sha256": "fd385e57fdefb835ee278921c3daf098bd955b033ac2bc2ddfecb0d6767af293",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '203,230p' DESIGN.md; wc -l -w DESIGN.md\"",
+      "event_id": "item_48",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_48.txt",
+      "sha256": "a29057dffa4b447ce3e9d0832c853d36af3d4f406c25d8828f0fb23307c52c1c",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"sed -n '4365,4384p' agent/scripts/native_service_adapter.py; sed -n '65,90p' agent/scripts/journey_predicates.py; python3 - <<'PY'\nimport json,pathlib,collections\np=pathlib.Path('events.jsonl')\ncounts=collections.Counter()\nexamples={}\nfor line in p.open():\n try:r=json.loads(line)\n except:continue\n typ=r.get('type','?');counts[typ]+=1\n if typ not in examples:examples[typ]=list(r)\nprint(counts)\nprint(examples)\nPY\"",
+      "event_id": "item_53",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_53.txt",
+      "sha256": "369d203b397805ea75691c037220c71f3af4962352e18d90a599c5901a1f27e3",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json,collections,pathlib\nc=collections.Counter()\nfor line in pathlib.Path('events.jsonl').open():\n try:r=json.loads(line)\n except:continue\n if r.get('type')=='item.completed':\n  x=r.get('item',{});c[x.get('type')]+=1\nprint(c)\nfor line in pathlib.Path('events.jsonl').open():\n try:r=json.loads(line)\n except:continue\n x=r.get('item',{})\n if x.get('type')=='command_execution':\n  print({k:(v[:200] if isinstance(v,str) else v) for k,v in x.items() if k\"'!='\"'aggregated_output'});break\nPY\"",
+      "event_id": "item_54",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_54.txt",
+      "sha256": "e239241ea2a327aa1290ef8f4de8d08a33f4aacb4d64184424f9dfad41a03302",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json,pathlib\nrows=[]\nfor line in pathlib.Path('events.jsonl').open():\n try:r=json.loads(line)\n except:continue\n x=r.get('item',{})\n if r.get('type')=='item.completed' and x.get('type')=='command_execution': rows.append({k:x.get(k) for k in ('id','exit_code','status','command')})\nprint(json.dumps(rows[-5:],indent=2))\nPY\"",
+      "event_id": "item_55",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_55.txt",
+      "sha256": "56e6cf9b7a8637227802f1cb9a022531b89ff6cc13b8905ce1e1a1a8db116e42",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'cat sub/1/DESIGN-REVIEW.md; wc -l -w DESIGN.md REPORT.md; git -C agent status --porcelain=v1; git -C agent diff --exit-code b54117c9312165e2799554ec27480665d5cad2b1 --'",
+      "event_id": "item_57",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_57.txt",
+      "sha256": "285ae78b24295eb5d16e2f4d689b28fb5e2341f3e9e51ca8d97bc01e14b282ac",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'PYTHONDONTWRITEBYTECODE=1 python3 -I scratch/build_receipt.py'",
+      "event_id": "item_61",
+      "exit_code": 1,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_61.txt",
+      "sha256": "4930ae2d0aa7c1e591cdb7ac202cb392b5008577b18b17bb64e793d1d7dd1355",
+      "status": "failed"
+    },
+    {
+      "command": "/bin/bash -lc 'PYTHONDONTWRITEBYTECODE=1 python3 -I scratch/build_receipt.py'",
+      "event_id": "item_63",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_63.txt",
+      "sha256": "15c58137cc92aab110be16b3ddf8c83d27b5c8a57ccedbb65011d60a2c3a81d8",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json,pathlib\nr=json.loads(pathlib.Path('canonical-receipt.json').read_text())\nfor row in r['commands']:\n if any(x in row['command'] for x in ('task-clone.sh astrid-agent','git switch -c','refusal_probe.py','build_receipt.py')):\n  print(row['event_id'],row['exit_code'],row['status'],row['command'][:160])\nprint('unknown exits',sum(x['exit_code'] is None for x in r['commands']))\nPY\"",
+      "event_id": "item_64",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_64.txt",
+      "sha256": "d7fdc6c42e77aa166f3317e088dfec8b007748c6e7feb87e0568924b16404a70",
+      "status": "completed"
+    },
+    {
+      "command": "/bin/bash -lc 'sha256sum DESIGN.md; tail -n 25 sub/1/DESIGN-REVIEW.md; PYTHONDONTWRITEBYTECODE=1 python3 -I scratch/build_receipt.py'",
+      "event_id": "item_66",
+      "exit_code": 0,
+      "exit_scope": "recorded outer shell; inner failures remain in output",
+      "output": "scratch/command-output/item_66.txt",
+      "sha256": "6e201344ef9d70c1ac390119199357ad044c9d30440a79b03c495990a068c87e",
+      "status": "completed"
+    }
+  ],
+  "created_at": "2026-11-03T02:30:14.900430+00:00",
+  "design_packet_complete": true,
+  "done_when_outcome": "exact missing platform capabilities, owners and smallest actionable experiment identified",
+  "exact_argv_inspection_commands": [
+    {
+      "argv": [
+        "git",
+        "show",
+        "-s",
+        "--format=%H%n%P%n%T%n%s",
+        "HEAD"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "base-identity",
+      "output": "scratch/base-identity.txt",
+      "sha256": "ad354a4d612403214cb6e2c3913ca7897208533e1696e247f51c061e38ac26ce"
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "branch",
+      "output": "scratch/branch.txt",
+      "sha256": "30b13a3a8e1f87a4a3b5d617c7a87a4977caf923313265d87b03074ea150f1ce"
+    },
+    {
+      "argv": [
+        "git",
+        "status",
+        "--porcelain=v1"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "worktree-status",
+      "output": "scratch/worktree-status.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "git",
+        "ls-remote",
+        "origin",
+        "refs/heads/int/r1"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "published-base",
+      "output": "scratch/published-base.txt",
+      "sha256": "1ffc017b9002d802782bdff79204bd93c544fb10b772e10701c150438a643870"
+    },
+    {
+      "argv": [
+        "git",
+        "show",
+        "-s",
+        "--format=%H%n%P%n%T%n%s",
+        "HEAD"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "base-identity",
+      "output": "scratch/base-identity.txt",
+      "sha256": "ad354a4d612403214cb6e2c3913ca7897208533e1696e247f51c061e38ac26ce"
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "branch",
+      "output": "scratch/branch.txt",
+      "sha256": "30b13a3a8e1f87a4a3b5d617c7a87a4977caf923313265d87b03074ea150f1ce"
+    },
+    {
+      "argv": [
+        "git",
+        "status",
+        "--porcelain=v1"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "worktree-status",
+      "output": "scratch/worktree-status.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "git",
+        "ls-remote",
+        "origin",
+        "refs/heads/int/r1"
+      ],
+      "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+      "exit_code": 0,
+      "label": "published-base",
+      "output": "scratch/published-base.txt",
+      "sha256": "1ffc017b9002d802782bdff79204bd93c544fb10b772e10701c150438a643870"
+    }
+  ],
+  "http_reads": [
+    {
+      "http_status": 200,
+      "output": "scratch/oidc-discovery.json",
+      "requested_at": "2026-11-03T02:12:01.536914+00:00",
+      "sha256": "c3fba014c6fc3be9f3950c3ce883ceb2670d586dd2efbfec9342d49bef33516b",
+      "url": "https://token.actions.githubusercontent.com/.well-known/openid-configuration",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-repository.json",
+      "requested_at": "2026-11-03T02:12:01.977755+00:00",
+      "sha256": "89fce6056f6f306e22c9d8f8320a967fbaa5b3c908863ca6bf16e830e495a1cb",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-run.json",
+      "requested_at": "2026-11-03T02:12:02.235806+00:00",
+      "sha256": "1a49490c1ea8a35ced6c74b28d6f32749c3d137ef6a7cb76f03d3e2f341b5602",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/attempts/1",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-jobs.json",
+      "requested_at": "2026-11-03T02:12:02.632805+00:00",
+      "sha256": "07dace88eec7b466806d60908ce0c750765e62a4012336fe12a949e28c925120",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/attempts/1/jobs?per_page=100",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-artifacts.json",
+      "requested_at": "2026-11-03T02:12:02.838780+00:00",
+      "sha256": "865f4bbf93e272b730d1e52274bce5f5a3316530d1e6527aedef2c836b24c2e0",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/artifacts?per_page=100",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/oidc-discovery.json",
+      "requested_at": "2026-11-03T02:13:56.765498+00:00",
+      "sha256": "c3fba014c6fc3be9f3950c3ce883ceb2670d586dd2efbfec9342d49bef33516b",
+      "url": "https://token.actions.githubusercontent.com/.well-known/openid-configuration",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-repository.json",
+      "requested_at": "2026-11-03T02:13:57.240087+00:00",
+      "sha256": "89fce6056f6f306e22c9d8f8320a967fbaa5b3c908863ca6bf16e830e495a1cb",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-run.json",
+      "requested_at": "2026-11-03T02:13:57.641273+00:00",
+      "sha256": "1a49490c1ea8a35ced6c74b28d6f32749c3d137ef6a7cb76f03d3e2f341b5602",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/attempts/1",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-jobs.json",
+      "requested_at": "2026-11-03T02:13:57.947525+00:00",
+      "sha256": "07dace88eec7b466806d60908ce0c750765e62a4012336fe12a949e28c925120",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/attempts/1/jobs?per_page=100",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    },
+    {
+      "http_status": 200,
+      "output": "scratch/api-artifacts.json",
+      "requested_at": "2026-11-03T02:13:58.220085+00:00",
+      "sha256": "865f4bbf93e272b730d1e52274bce5f5a3316530d1e6527aedef2c836b24c2e0",
+      "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41562148461/artifacts?per_page=100",
+      "use": "public read-only transport/schema evidence; no bearer token or live native collector"
+    }
+  ],
+  "kind": "task-design-work-receipt",
+  "limitations": [
+    "All new record/profile/RPC/source-object formats in DESIGN.md are conditional proposals, not current APIs or authenticated output.",
+    "No verified production host root or immutable collector-image attestation exists in the inspected inputs.",
+    "No OIDC bearer requested/verified; public HTTPS API specimens are identity/schema observations only.",
+    "No artifact binary download, product command, native mutation, hosted dispatch, release verdict or integration handoff.",
+    "Supplementary OS/data/transport source parser profiles and Pinokio operation IDs remain explicit unavailable implementation inputs.",
+    "Action-14 actual-data/program/selection/sentinel gap and separate macos-15/macos-14 vocabulary mismatch remain unresolved.",
+    "Wrapper exits do not certify every chained inner command; null recorded exits are retained as unknown.",
+    "Receipt command snapshot has a cutoff; build/validation and final review may be listed by explicit receipt verification records."
+  ],
+  "missing_capabilities": [
+    {
+      "capability": "protected exact native collector launch/image/process/parent-revocation/export source",
+      "next_experiment": "DESIGN.md section 8 read-only real non-root Linux systemd-user isolation/census trial; no dispatch emitted",
+      "owner": "M-QUAL backend with M-VENUE; separately administered host provisioning M-INT/Hannah"
+    },
+    {
+      "capability": "immutable artifact-to-producer-job/attempt/frozen-slot/protected-context upload transaction",
+      "next_experiment": "independently retained real upload transaction and concordant API terminal/download facts; REST name/time/digest alone refuses",
+      "owner": "M-CI evaluator join with M-VENUE/platform transport support; Q supplies protected export hash"
+    },
+    {
+      "capability": "actual checkpoint/census/store readers and real protocol operation surface",
+      "next_experiment": "freeze installed-store canonicalization/parser and capture real non-root source observations before protected enablement",
+      "owner": "M-QUAL native producer; M-PIN engine facts; M-R1FIX product operation surface"
+    }
+  ],
+  "not_authority": "This work receipt is not NativeContextRecordV1, an artifact origin attestation, admission, or native evidence.",
+  "planning_inputs": [
+    {
+      "bytes": 1607556,
+      "path": "/home/user/merge/ws/M-QUAL/ORCHESTRATOR.md",
+      "sha256": "becae5133999db2ccc8a9c723cbade0f8185953ebdad5f7a39b28854a0a78d20",
+      "snapshot": "scratch/ORCHESTRATOR.md"
+    },
+    {
+      "bytes": 100206,
+      "path": "/home/user/repo/docs/merge-plan/DECISIONS.md",
+      "sha256": "59a80b103e5b5a59b52340c091cc64a7586ab51f19f42004064ff35145d4a175",
+      "snapshot": "scratch/DECISIONS.md"
+    },
+    {
+      "bytes": 43924,
+      "path": "/home/user/repo/docs/merge-plan/admin/kit/MERGE-OPERATING.md",
+      "sha256": "99c2a44c62902eb7bcf9b83f366b502197977508ec4d3bc4c626d172803873b9",
+      "snapshot": "scratch/MERGE-OPERATING.md"
+    },
+    {
+      "bytes": 4327,
+      "path": "/home/user/repo/docs/merge-plan/admin/MAC-RUNNER-SETUP.md",
+      "sha256": "eb7c0eff288be07ead4a60d9ef68d76d77528c7dacede45c92d90ad2d68de1e9",
+      "snapshot": "scratch/MAC-RUNNER-SETUP.md"
+    },
+    {
+      "bytes": 654,
+      "path": "/home/user/repo/docs/merge-plan/CURRENT-TUPLE.json",
+      "sha256": "71a738081dba7f84bea0b882a975cd540b62684e8f6f1fa0d99f572e62908e50",
+      "snapshot": "scratch/CURRENT-TUPLE.json"
+    }
+  ],
+  "prior_inputs": [
+    {
+      "bytes": 27257,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/REPORT.md",
+      "sha256": "66e0921c7991edcb2966956dbf9d2074802fd7459e8788402704e2ea127b50f7"
+    },
+    {
+      "bytes": 35096,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-KEEP-DATA-NATIVE-SEAM-R1/canonical-receipt.json",
+      "sha256": "f7c0318800c5b151faec4a37954f7e2534164a527aecbab387faf022cfe24527"
+    },
+    {
+      "bytes": 6533,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/REPORT.md",
+      "sha256": "982f65b613cdaa12da352c1a546152102610b04737812237c8490fb017885a99"
+    },
+    {
+      "bytes": 23562,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/DESIGN.md",
+      "sha256": "bfe37a17e8c5be48f5b6003040cc362e84ebf36a5d2089835279e541d9e812f0"
+    },
+    {
+      "bytes": 18486,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-DIRECT-NATIVE-SESSION-DESIGN-R1/receipt.json",
+      "sha256": "7f1163b2afbefe37d2e6a2e2eb3ca13c3eb7f990b62f1df770412bebe6ed9296"
+    },
+    {
+      "bytes": 718,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30/M-INT-DISPOSITION.md",
+      "sha256": "1708b3e70c58738a5c864e20f89bc595befd1c92bc5b9a8108e6c4c3ea37f7b7"
+    },
+    {
+      "bytes": 48709,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30/DESIGN.md",
+      "sha256": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d"
+    },
+    {
+      "bytes": 45717,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30-SELF-HOSTED-PROFILE-DESIGN-R1/DESIGN.md",
+      "sha256": "16f60407dbdccfe9947aa40389f1092ceb0e747c29260759e8bafd8dd033aefa"
+    },
+    {
+      "bytes": 6810,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-COLLECTION-PRODUCER-R1/REPORT.md",
+      "sha256": "558bbadab368aba955ace72e30f56424ad7eaef9730780a45979b27de991ef79"
+    },
+    {
+      "bytes": 4732,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-FRESHNESS-BINDING-R1/REPORT.md",
+      "sha256": "be0870cc33554eff945d4b16de83010e6c732fb14400b2f393d715069b516433"
+    },
+    {
+      "bytes": 6422,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-30-MAC-RAW-PRODUCER-R1/REPORT.md",
+      "sha256": "bfcb8b57918222abf296af376685d5f54d109ec2f38980fa2cef58bb599be369"
+    },
+    {
+      "bytes": 10281,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-PROOF-INTEGRITY-REVIEW-R1/REPORT.md",
+      "sha256": "0d15e16ff6faec5e06b17ea587f752f62e22f0e73dfe10ae68380ba5e7222156"
+    },
+    {
+      "bytes": 49999,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-PROOF-INTEGRITY-REVIEW-R1/canonical-receipt.json",
+      "sha256": "9a0bc9d930bc4e70c79765657ca503341ef019cacecaae27a1bff82b5b19f629"
+    },
+    {
+      "bytes": 8847,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-R3-REVIEW-R1/REPORT.md",
+      "sha256": "6c2f92fbb984a0e50b79b29d77678ee2df34d383c31a119f3ca4bb4e0e0b5aa5"
+    },
+    {
+      "bytes": 33835,
+      "classification": "prior design/review evidence; not fresh native execution",
+      "path": "/home/user/merge/ws/M-QUAL/queue/done/R-36-C06G-R3-REVIEW-R1/canonical-receipt.json",
+      "sha256": "37cd007c0478a7103cec1d85ef7638d38fc5d6c891949e888d0a594a57fa2b2f"
+    },
+    {
+      "bytes": 2441,
+      "classification": "inspected task guidance/clone mechanism",
+      "path": "/home/user/merge/kit/codex/task-clone.sh",
+      "sha256": "182592da383c1a4b756d6ca664f3b0624384985620177ddaecdfaddf95a03c39"
+    },
+    {
+      "bytes": 8374,
+      "classification": "inspected task guidance/clone mechanism",
+      "path": "/home/user/merge/kit/FAST-ITERATION.md",
+      "sha256": "71104186543ee6a42f1d44d3af3f519e520b2ce3d0456c5fc307026758e04017"
+    },
+    {
+      "bytes": 51508,
+      "classification": "inspected task guidance/clone mechanism",
+      "path": "/home/user/merge/ws/M-QUAL/BRIEF.md",
+      "sha256": "21a7f64443c803231e392a42abe336aa66db82f931ecb6259d77a7a0ba53d3e0"
+    }
+  ],
+  "product_tuple_snapshot": {
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "artifacts": {
+      "public/install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+      "public/install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
+      "public/install.sh": "591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285"
+    },
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "published_at": "2026-11-02T17:55:27Z",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "receipt_integrity_check": {
+    "argv": [
+      "python3",
+      "-I",
+      "scratch/validate_receipt.py"
+    ],
+    "classification": "post-build file/digest consistency only; output is outside hashed artifacts to avoid self-reference",
+    "cwd": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1",
+    "output": "scratch/receipt-integrity-check.json"
+  },
+  "repo": {
+    "base": "b54117c9312165e2799554ec27480665d5cad2b1",
+    "branch": "lane/M-QUAL/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1",
+    "clone": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+    "head": "b54117c9312165e2799554ec27480665d5cad2b1",
+    "parents": [
+      "ef8df6eb25c5de1691c357c2a6d0e3b87f5074c2",
+      "890ca2347bdc8c9377e178fd176a9eca3152e00f"
+    ],
+    "published_ref_observation": "scratch/published-base.txt",
+    "source_bytes_unchanged": true,
+    "tree": "3eaa0f3326ec85635f10368aefca76716499b437",
+    "url": "https://github.com/banodoco/astrid-agent"
+  },
+  "schema_version": 1,
+  "scope": {
+    "checker_predicate_scenario_changes": false,
+    "commit": false,
+    "hosted_dispatch": false,
+    "implementation": false,
+    "integration_handoff": false,
+    "native_execution": false,
+    "product_changes": false,
+    "push": false,
+    "qualification": false,
+    "workflow_changes": false,
+    "write_root": "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1"
+  },
+  "source_manifest": [
+    {
+      "bytes": 2018,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "cf787b21683301d0c6c612e9791e03393c6a1420",
+      "path": "scripts/m4_6_platform_session_provider.py",
+      "sha256": "bac81169466f1ff785979710e47083ece028eee5d56ab1ad1fc548ee820c58fc"
+    },
+    {
+      "bytes": 32076,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "70649680e1cb1d218728034ac4e786c0a67af0db",
+      "path": "scripts/m4_6_trusted_launcher.py",
+      "sha256": "99f12bbcd4f974cf6ef9eabccb9857a0d0c587b7d7f8d7d0cb4bde7f1184e045"
+    },
+    {
+      "bytes": 38751,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "f3549f767e88325123e02817da52c2599692f3e5",
+      "path": "scripts/m4_6_artifact_provenance.py",
+      "sha256": "31a59e9b1bb71efbe55e308bb370c28320f7ab17dd0732813f40154476dad0aa"
+    },
+    {
+      "bytes": 207216,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "c81a61261791f297e5ccdf23b645699793158c4b",
+      "path": "scripts/native_service_adapter.py",
+      "sha256": "6b9906fd8a8995d12aeac0f8e0ab23f0cdaffc722ea9d6c6b5452316c95436e7"
+    },
+    {
+      "bytes": 33119,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "a22d8840f764a85dd2356b05d788a52449c05e4b",
+      "path": "scripts/m4_6_pinokio_custody_provider.py",
+      "sha256": "05538e2ecd10774e7374db6ecf4df4f525bf7fffd5eaed25554a1eaf9fd322d4"
+    },
+    {
+      "bytes": 34462,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "241ac8baa883f97eaba2ad760f0693b2e89b578c",
+      "path": "scripts/m4_6_process_observer.py",
+      "sha256": "a20cafdf4ca33a20167a85d37031ab3ba86e2274b57023d4680f230d8ff568bd"
+    },
+    {
+      "bytes": 48545,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "0e6b1c522c773041b5abe79a94cb690ae9b6c078",
+      "path": "scripts/shared_journey_driver.py",
+      "sha256": "a304ed209863593b3b8ffc79e6a339fd18d5263c831cbdc9165d650547a942e6"
+    },
+    {
+      "bytes": 21025,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "947804992a56cb685102e61deb929247b73b3889",
+      "path": "scripts/journey_failure_modes.py",
+      "sha256": "3e0d02a7d2e068f6a6df566880c3d1f51a9b3104cc69ac1380cdd02b2bb57606"
+    },
+    {
+      "bytes": 7980,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "bd1643a7e4b4419e04d27428235e91f347481fd2",
+      "path": "scripts/journey_predicates.py",
+      "sha256": "6ef495007d3f815eaad52c61d2ec7e86f8abca9e4287a48321c64f119e7021f4"
+    },
+    {
+      "bytes": 53215,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "e2aba55fdb03838f3dc0da8aeac58312d8435f1b",
+      "path": "scripts/check_journey_evidence.py",
+      "sha256": "473e9572c2af6e0825e1b01076b16a85af6b4c72557c70eed62949f4940a9be7"
+    },
+    {
+      "bytes": 19111,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "8b4c97c5dfcefca65c45814e543548577602b4ec",
+      "path": "scripts/journey_matrix.py",
+      "sha256": "8edb29ec54a1befe4521ba0f8df5ef47d95bb86009eb8ac85b7c08c8e74b3023"
+    },
+    {
+      "bytes": 105263,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "b3e1ac7946fb431ebbab7f64757717fc01ceef8c",
+      "path": "scripts/ci_journey.py",
+      "sha256": "51d3a7e4e1b9531bc3c8aceaafe838ae2dfbf581329760e780a6a12d4e5d4d55"
+    },
+    {
+      "bytes": 56266,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "7f291afcf9f7bbba4f520a156595463a6a68e36e",
+      "path": ".github/workflows/journey.yml",
+      "sha256": "ca1f0110c3b7e7db70cdaaadf88fc74f4a9c56991c5735202492b85afc055b83"
+    },
+    {
+      "bytes": 5885,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "04ddd3d5530e31ce70b438c1ef479cb4b10c02bd",
+      "path": "scripts/ci/trusted_hosted_download.py",
+      "sha256": "5ee86f7708ed9087d3790c65e206e1d12af34632e9242eee64401a4e0d3ba811"
+    },
+    {
+      "bytes": 7126,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "49a0f0e0be21083f5f20ce9294694532b95fcc3a",
+      "path": "scripts/ci/regression_aggregate.py",
+      "sha256": "543411441341447fd9d6806bb32e331b564ea05809052fba73bc6e199dabcffd"
+    },
+    {
+      "bytes": 747,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "3436e20e5e80b3b153c1ef0fd8c5c9ec227917ea",
+      "path": "tests/test_m4_6_platform_session_provider.py",
+      "sha256": "f12cf86d898f2cb77f3051fed31a573e4577601b328b342ffc1cc549322fd971"
+    },
+    {
+      "bytes": 21007,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "fb97abe1d48e81743c9e199b126d6b7e4964a87b",
+      "path": "tests/test_m4_6_trusted_launcher.py",
+      "sha256": "e50dd17d725bd398238f83b7f9b103203baf8cffd74f63459fc4cadf51316e58"
+    },
+    {
+      "bytes": 34555,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "78df207ce3ab2a1b51bc0680b7ec7a883bbac0b3",
+      "path": "tests/test_m4_6_artifact_provenance.py",
+      "sha256": "243d94063c6b125ed9383023f89fc88d2361abd87b1ebf4ae56c3217a8fcba09"
+    },
+    {
+      "bytes": 107492,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "28b55144d5a829c6726784aaa275e656e0e1183f",
+      "path": "tests/test_native_service_adapter.py",
+      "sha256": "63d170008450302c5a7dd04d43f49de32e81a231c547f89008dd2f1694b7389c"
+    },
+    {
+      "bytes": 8355,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "b5751f688338d55896f0fff05485fefeaf9467f3",
+      "path": "tests/test_m4_6_pinokio_custody_provider.py",
+      "sha256": "7cf4d7bb705fe857b9bfb3f5966ae3259e73008419275d187b90d6f396aff232"
+    },
+    {
+      "bytes": 5914,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "ba0519888a9f1d6c873ad45c8a59c5891b266e78",
+      "path": "tests/test_journey_predicates.py",
+      "sha256": "bfb840e7fb5aae942a1fc63ec59a38bd741ebe3a91407ae1a98ee6d12b9da3cb"
+    },
+    {
+      "bytes": 29150,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "c2d6b2842211e173a96f00d21f1fe4df4f714a58",
+      "path": "tests/test_shared_journey_driver.py",
+      "sha256": "8f6c81322c933f1f79ae67be718affe0a372226f1a3537f0dfe813c03213df76"
+    },
+    {
+      "bytes": 4029,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "8616646542d4548bdda795c41d16a9c0f345c989",
+      "path": "tests/test_m4_6_process_observer.py",
+      "sha256": "ba1c6eb89fa88430acc55665687d284ae9f99279b97c63b0f672dcefe75f9230"
+    },
+    {
+      "bytes": 13422,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "d611b8347c7544dd1f5dc0a777551a82b652b94d",
+      "path": "tests/test_journey_evidence.py",
+      "sha256": "4cc44afb90c2418b4cc48f56f442feaebbd83a6c5c31071bc2a9d479e0d6906a"
+    },
+    {
+      "bytes": 520,
+      "commit": "b54117c9312165e2799554ec27480665d5cad2b1",
+      "git_blob": "37c83bfce431b8741ee003130baa83ab3f6f755d",
+      "path": "AGENTS.md",
+      "sha256": "afcb76ee114b760c7e4891ce8af157d3531bdb9c00a3a9c1dd40deb2f1032252"
+    }
+  ],
+  "status": "AWAITING_EVIDENCE",
+  "task_id": "R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1",
+  "verification": {
+    "final_base_checks": [
+      {
+        "argv": [
+          "git",
+          "-C",
+          "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+          "rev-parse",
+          "HEAD"
+        ],
+        "exit_code": 0,
+        "output": "b54117c9312165e2799554ec27480665d5cad2b1\n"
+      },
+      {
+        "argv": [
+          "git",
+          "-C",
+          "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+          "branch",
+          "--show-current"
+        ],
+        "exit_code": 0,
+        "output": "lane/M-QUAL/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1\n"
+      },
+      {
+        "argv": [
+          "git",
+          "-C",
+          "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+          "show",
+          "-s",
+          "--format=%H%n%P%n%T",
+          "HEAD"
+        ],
+        "exit_code": 0,
+        "output": "b54117c9312165e2799554ec27480665d5cad2b1\nef8df6eb25c5de1691c357c2a6d0e3b87f5074c2 890ca2347bdc8c9377e178fd176a9eca3152e00f\n3eaa0f3326ec85635f10368aefca76716499b437\n"
+      },
+      {
+        "argv": [
+          "git",
+          "-C",
+          "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+          "status",
+          "--porcelain=v1"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "argv": [
+          "git",
+          "-C",
+          "/home/user/merge/ws/M-QUAL/queue/running/R-36-M46-TRUSTED-CONTEXT-CONTRACT-R1/agent",
+          "diff",
+          "--exit-code",
+          "b54117c9312165e2799554ec27480665d5cad2b1",
+          "--"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "check": "all inspected source bytes match initial exact-base manifest",
+        "count": 25,
+        "result": "pass"
+      }
+    ],
+    "independent_review": "sub/1/DESIGN-REVIEW.md",
+    "initial_smoke_cause": "scratch inspect.py shadowed stdlib; renamed helper and used python -I",
+    "initial_smoke_exit": 1,
+    "negative_refusal_smoke_exit": 0,
+    "negative_refusals_confirmed": 4,
+    "pytest_run": false,
+    "real_non_root_host_proof_run": false
+  }
+}
