@@ -637,7 +637,7 @@ def _prompt_args(
         package_root = Path(__file__).resolve().parent
         prompt += (
             "\n\nUse this selected installation's Astrid skill: "
-            f"{package_root / 'packs' / '_core' / 'docs' / 'SKILL.md'}. "
+            f"{package_root / 'core' / 'resources' / 'skills' / 'SKILL.md'}. "
             f"Installed pack guides are under {package_root / 'packs'}/<pack>/docs/SKILL.md. "
             "Prefer these files over ambient user-home skill links; "
             "a missing global skill link is not a reason to search retired checkouts."
