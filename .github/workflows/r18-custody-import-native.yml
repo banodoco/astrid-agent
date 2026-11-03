@@ -1,0 +1,64 @@
+name: R18 custody installed helper macOS
+on:
+  push:
+    branches: ['venue/M-R1FIX-R18-CUSTODY-IMPORT-NATIVE-P19-1']
+permissions:
+  contents: write
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: venue
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 23252c5da5b89b87ea38570b4b87b3a66f9e955e
+          path: agent
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: a95e0e836234bc6d27ba557ba1297da95ed55290
+          path: runtime
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Run installed helper and focused controls
+        shell: bash
+        run: |
+          mkdir -p out
+          set +e
+          python3 -B venue/proof/r18-custody-import-native/run.py >out/command.log 2>&1
+          rc=$?
+          printf '%s\n' "$rc" >out/exit-code.txt
+          exit "$rc"
+      - name: Publish run receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p out
+          test -f out/exit-code.txt || printf 'missing: proof step did not reach exit capture\n' >out/exit-code.txt
+          python3 -B venue/proof/r18-custody-import-native/receipt.py
+          git clone --no-checkout venue results
+          git -C results remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git -C results config user.name github-actions\[bot\]
+          git -C results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C results checkout --orphan result
+          git -C results rm -rf . >/dev/null 2>&1 || true
+          dest="results/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$dest"
+          cp -R out/. "$dest/"
+          git -C results add runs
+          git -C results commit -m "R18 custody import native receipt $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git -C results -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" push origin HEAD:refs/heads/venue-results/M-R1FIX-R18-CUSTODY-IMPORT-NATIVE-P19-1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r18-custody-import-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: warn
