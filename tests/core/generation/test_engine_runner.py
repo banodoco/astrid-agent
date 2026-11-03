@@ -2586,7 +2586,8 @@ def test_pre_relocation_comfyui_receipt_survives_status_without_rewrite(tmp_path
         pin_path.write_bytes(pins)
         helper = package / "core/generation/model_downloader.py"
         helper.write_bytes(helper.read_bytes() + b"\n")
-        with pytest.raises(IntegrityError, match="receipt identity"):
-            read_status()
+        refused = read_status()
+        assert (refused.status, refused.error_code, refused.failed_step_id) == (
+            "failed", "engine_reinstall_required", "environment:comfy")
     assert snapshot() == original
     assert {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshot().items()} == original_hashes

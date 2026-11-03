@@ -309,6 +309,11 @@ def _relocated_identity(recipe, recipe_sha256, helper_sha256=None):
             or record["recipe_sha256"] != recipes.recipe_digest(recipe)
             or helper_sha256 is not None and record["legacy_helper_sha256"] != helper_sha256):
         return False
+    # Recipe identity is a data-semantic mapping. Only persisted helper
+    # admission needs the exact reviewed current code closure; leaving that
+    # decision at the environment gate preserves stale-helper reinstall errors.
+    if helper_sha256 is None:
+        return True
     manifest = dict(helper_manifest(recipe))
     manifest.pop(_RELOCATION_PATH)
     return record["files"] == manifest
