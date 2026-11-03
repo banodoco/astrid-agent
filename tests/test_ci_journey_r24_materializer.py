@@ -19,13 +19,13 @@ from scripts import pinokio_linux_mode_actions as mode_actions
 def test_materializer_pins_exact_candidate_producer_and_native_engine():
     assert materializer.R24_CANDIDATE == provider.LIVE_CANDIDATE
     assert materializer.R24_CANDIDATE == {
-        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
-        "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+        "app": "bfb15570d72c39fbdc32f6209ecec7c929b71d5c",
+        "agent": "69dda026212ca16c37cc8239d06ccd159603aa24",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
-        "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+        "pinokio": "7955800419fc92b11e553d6f7acb7613090617e6",
+        "manifest_sha256": "09707100ad238cf206085aa5b267ca4108e482ac50e06068a3475932180b65bd",
     }
-    assert provider.LIVE_PRODUCER_REF == "70636d1833164dad84a3551606b61ba2634565ba"
+    assert provider.LIVE_PRODUCER_REF == "93c21a16dc94269c0c575f1a721e9b01ef1f386b"
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
     assert materializer.PTERM_REF == "5be43718701c448b43daf0ce51d8935f170065bb"
     assert materializer.TASK_DURATION_SECONDS == 300
@@ -372,8 +372,12 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
     assert "evidence/materializer/installed-identity.json" in raw
-    assert "70636d1833164dad84a3551606b61ba2634565ba" in raw
+    assert "93c21a16dc94269c0c575f1a721e9b01ef1f386b" in raw
     assert "13cb31104c8aae655d0ee04efdb9537aa111e340" in raw
+    assert "          - fully-local" in raw
+    assert "ref: bfb15570d72c39fbdc32f6209ecec7c929b71d5c" in raw
+    assert "ref: 69dda026212ca16c37cc8239d06ccd159603aa24" in raw
+    assert "ref: 7955800419fc92b11e553d6f7acb7613090617e6" in raw
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
     assert "REQUESTED_MODE" in raw

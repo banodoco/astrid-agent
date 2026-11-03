@@ -254,26 +254,26 @@ def test_success_invocation_rejects_unbound_inputs(tmp_path, monkeypatch, mutati
 
 def test_final_live_provider_pins_are_exact():
     from scripts import ci_journey_provider as provider
-    assert provider.LIVE_PRODUCER_REF == "70636d1833164dad84a3551606b61ba2634565ba"
+    assert provider.LIVE_PRODUCER_REF == "93c21a16dc94269c0c575f1a721e9b01ef1f386b"
     assert provider.LIVE_PRODUCER_FILES == {
         "pinokio/providers/r24-linux.py": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9",
         "pinokio/providers/r24-action.cjs": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01",
         "pinokio/providers/r24-live-action.js": "32778884de8fd1e615cfbbb8d56f79aa9b57e7ddb5eb6239621d01de2e00db92",
-        "pinokio/providers/r24-linux-binding.json": "8462aadc2a36d632d13e4ddfaa95a566398b09498fce5e9b4d35ee1ca87e7a23",
+        "pinokio/providers/r24-linux-binding.json": "44b6c5d6699bc451d9c9c004e4ab06ff5c76e48f07a710722f11ec3931d57fdd",
         "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
     }
     assert provider.LIVE_INTERFACE_FILES == {
-        "pinokio/providers/R24-LINUX.md": "99f3d67582789c2b0dabb74dc6b7738b21932637c33b1f4a1fbefbeb35decacb",
+        "pinokio/providers/R24-LINUX.md": "9b361fe85d7e327d1f54f930f9491cbaa7712944828b464c8358bd9b04a0f867",
     }
     assert provider.LIVE_CANDIDATE == {
-        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
-        "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+        "app": "bfb15570d72c39fbdc32f6209ecec7c929b71d5c",
+        "agent": "69dda026212ca16c37cc8239d06ccd159603aa24",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
-        "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+        "pinokio": "7955800419fc92b11e553d6f7acb7613090617e6",
+        "manifest_sha256": "09707100ad238cf206085aa5b267ca4108e482ac50e06068a3475932180b65bd",
     }
     assert provider.LIVE_STOP == {
-        "ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+        "ref": "7955800419fc92b11e553d6f7acb7613090617e6",
         "path": "pinokio/stop.js",
         "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48",
     }
