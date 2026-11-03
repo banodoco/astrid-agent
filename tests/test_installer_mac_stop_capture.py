@@ -48,6 +48,7 @@ def test_capture_observes_bootout_and_runtime_stop_order(tmp_path, monkeypatch):
         "down_enter", "runtime_stop_enter", "runtime_stop_return", "down_return"]
     assert "discovery" not in rows[2]
     assert rows[6]["discovery"] == "absent"
+    assert rows[5]["runtime_owner"] == rows[6]["runtime_owner"] == "same"
     assert len({row["capture"] for row in rows}) == 1
     assert actions.index("launchctl-bootout") < actions.index("c1-stop-owner")
 

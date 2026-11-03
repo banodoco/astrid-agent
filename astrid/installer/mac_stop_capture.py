@@ -68,7 +68,7 @@ class MacStopCapture:
         except Exception:
             return "unobserved"
 
-    def event(self, stage):
+    def event(self, stage, runtime_owner=None):
         # Only fixed stage names are supplied by installer call sites. Errors in
         # diagnostics cannot change admission, stop, or rollback behavior.
         try:
@@ -77,6 +77,8 @@ class MacStopCapture:
                      "seq": self.seq, "stage": stage, "wall_ns": time.time_ns(),
                      "monotonic_ns": time.monotonic_ns(), "discovery": self._discovery(),
                      "process": self._process()}
+            if runtime_owner is not None:
+                value["runtime_owner"] = runtime_owner
             value["sample_end_wall_ns"] = time.time_ns()
             value["sample_end_monotonic_ns"] = time.monotonic_ns()
             with self.log.open("a", encoding="utf-8") as stream:
@@ -111,11 +113,14 @@ class ObservedBoundary:
         return getattr(self._boundary, name)
 
     def stop_owner(self, **kwargs):
-        self._capture.event("runtime_stop_enter")
+        selected = (kwargs.get("pid"), kwargs.get("process_birth_id"), kwargs.get("instance_id"))
+        match = ("unbound" if self._capture.owner is None else
+                 "same" if selected == self._capture.owner else "different")
+        self._capture.event("runtime_stop_enter", match)
         try:
             result = self._boundary.stop_owner(**kwargs)
         except BaseException:
-            self._capture.event("runtime_stop_error")
+            self._capture.event("runtime_stop_error", match)
             raise
-        self._capture.event("runtime_stop_return")
+        self._capture.event("runtime_stop_return", match)
         return result
