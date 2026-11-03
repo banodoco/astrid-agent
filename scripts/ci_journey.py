@@ -1412,7 +1412,8 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             windows.EVIDENCE = evidence
             windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
                                "start.log")
-        wait_ready(data)
+        wait_timeout = int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900"))
+        wait_ready(data, timeout=wait_timeout)
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"],
                                      **selected_tuple(manifest, version)}
         verify_mode = "update" if args.leg == "stale-update" else "install"
