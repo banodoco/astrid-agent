@@ -16,7 +16,9 @@ from scripts.m4_6_pinokio_custody_provider import (
     PinokioSelectedApp,
     PinokioSourceMismatch,
     PreparedPinokioRequest,
+    validate_pinokio_session_row,
 )
+from scripts.journey_matrix import M4_6_MATRIX
 from scripts.m4_6_process_observer import ObservationRefused
 
 
@@ -194,7 +196,10 @@ def test_pinokio_provider_is_distinct_from_direct_and_live_owner_refuses() -> No
         )
 
     owner = PINOKIO_CUSTODY_PROVIDER.create_owner(
-        {"slot_id": "pinokio-backend-linux", "contract": {"mode": "pinokio-backend"}},
+        {
+            "slot_id": "pinokio-backend-linux",
+            "contract": next(row for row in M4_6_MATRIX if row["job_id"] == "pinokio-backend-linux"),
+        },
         runner=object(),
         process_probe=object(),
         data_probe=object(),
@@ -218,6 +223,78 @@ def test_pinokio_provider_is_distinct_from_direct_and_live_owner_refuses() -> No
     with pytest.raises(PinokioCustodyRefused, match="live Pinokio admission is closed"):
         owner.probe()
     assert owner.raw[-1] == {"event": "refused", "operation": "probe"}
+
+
+def test_pinokio_session_validator_accepts_exact_six_rows_and_owner_stays_closed() -> None:
+    for row in M4_6_MATRIX:
+        if not row["job_id"].startswith("pinokio-"):
+            continue
+        mode, os_name = validate_pinokio_session_row(row["job_id"], row)
+        assert (mode, os_name) == (row["mode"], row["os"])
+        owner = PINOKIO_CUSTODY_PROVIDER.create_owner(
+            {"slot_id": row["job_id"], "contract": row},
+            runner=object(), process_probe=object(), data_probe=object(),
+            durable_journal_probe=object(),
+        )
+        assert owner.os_name == row["os"]
+        with pytest.raises(PinokioCustodyRefused, match="live Pinokio admission is closed"):
+            owner.probe()
+
+
+def test_pinokio_session_validator_rejects_crossed_mode_os_runner_and_shell_rows() -> None:
+    pinokio_rows = [row for row in M4_6_MATRIX if row["job_id"].startswith("pinokio-")]
+    for source in pinokio_rows:
+        for target in pinokio_rows:
+            if source["job_id"] == target["job_id"]:
+                continue
+            with pytest.raises(PinokioCustodyRefused):
+                validate_pinokio_session_row(source["job_id"], target)
+
+    valid = dict(next(row for row in pinokio_rows if row["job_id"] == "pinokio-backend-linux"))
+    for field, value in (
+        ("mode", "pinokio-fully-local"),
+        ("os", "windows"),
+        ("runner", "macos-15"),
+        ("shell", "powershell.exe"),
+    ):
+        crossed = dict(valid, **{field: value})
+        with pytest.raises(PinokioCustodyRefused):
+            validate_pinokio_session_row(valid["job_id"], crossed)
+
+    with pytest.raises(PinokioCustodyRefused, match="selected mode/OS differs"):
+        PINOKIO_CUSTODY_PROVIDER.create_owner(
+            {
+                "slot_id": valid["job_id"], "contract": valid,
+                "mode": "pinokio-fully-local", "os": "linux",
+            },
+            runner=object(), process_probe=object(), data_probe=object(),
+            durable_journal_probe=object(),
+        )
+
+
+@pytest.mark.parametrize(
+    "slot_id,contract",
+    [
+        (None, {}),
+        ("direct-linux", {}),
+        ("pinokio-backend-linux", None),
+        ("pinokio-backend-linux", {}),
+        (
+            "pinokio-backend-linux",
+            {"job_id": "pinokio-backend-linux", "mode": "pinokio-backend", "os": "linux", "runner": "ubuntu-24.04"},
+        ),
+        (
+            "pinokio-backend-linux",
+            {
+                "job_id": "pinokio-backend-linux", "mode": "pinokio-backend", "os": "linux",
+                "runner": "ubuntu-24.04", "shell": "sh", "unexpected": True,
+            },
+        ),
+    ],
+)
+def test_pinokio_session_validator_rejects_malformed_or_missing_inputs(slot_id, contract) -> None:
+    with pytest.raises(PinokioCustodyRefused):
+        validate_pinokio_session_row(slot_id, contract)
 
 
 def test_custody_observer_gap_refuses_authorization() -> None:

@@ -67,15 +67,30 @@ _REQUIRE_CALL_RE: Final = re.compile(r"\brequire\s*\(")
 _DYNAMIC_IMPORT_RE: Final = re.compile(r"\bimport\s*\(")
 _MAX_ACTION_BYTES: Final = 8 * 1024 * 1024
 _MAX_GRAPH_FILES: Final = 128
-_SUPPORTED_SLOTS: Final = frozenset(
-    {
-        "pinokio-backend-macos",
-        "pinokio-backend-linux",
-        "pinokio-backend-windows",
-        "pinokio-fully-local-macos",
-        "pinokio-fully-local-linux",
-        "pinokio-fully-local-windows",
-    }
+_PINOKIO_SESSION_ROWS: Final = {
+    "pinokio-backend-macos": {
+        "mode": "pinokio-backend", "os": "macos", "runner": "macos-15", "shell": "sh",
+    },
+    "pinokio-backend-linux": {
+        "mode": "pinokio-backend", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+    },
+    "pinokio-backend-windows": {
+        "mode": "pinokio-backend", "os": "windows", "runner": "windows-2022",
+        "shell": "powershell.exe",
+    },
+    "pinokio-fully-local-macos": {
+        "mode": "pinokio-fully-local", "os": "macos", "runner": "macos-15", "shell": "sh",
+    },
+    "pinokio-fully-local-linux": {
+        "mode": "pinokio-fully-local", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+    },
+    "pinokio-fully-local-windows": {
+        "mode": "pinokio-fully-local", "os": "windows", "runner": "windows-2022",
+        "shell": "powershell.exe",
+    },
+}
+_PINOKIO_SESSION_ROW_FIELDS: Final = frozenset(
+    {"job_id", "mode", "os", "runner", "shell"}
 )
 _ROLE_BY_OPERATION: Final = {
     "start": "pinokio/start.js",
@@ -94,6 +109,25 @@ class PinokioSourceMismatch(PinokioCustodyRefused):
 
 class PinokioSettlementUnknown(PinokioCustodyRefused):
     """An engine request did not receive sufficient terminal settlement proof."""
+
+
+def validate_pinokio_session_row(
+    slot_id: object, contract: object
+) -> tuple[str, str]:
+    """Return the selected mode/OS only for one complete, exact M-QUAL row.
+
+    The slot suffix alone is not an OS authority: mode, OS, runner image and
+    shell must all correlate with the same frozen row. This validates request
+    shape only; it does not authenticate a host or open session admission.
+    """
+    if not isinstance(slot_id, str) or slot_id not in _PINOKIO_SESSION_ROWS:
+        raise PinokioCustodyRefused("Pinokio provider only accepts the fixed six Pinokio slots")
+    if not isinstance(contract, Mapping):
+        raise PinokioCustodyRefused("Pinokio session row is missing or malformed")
+    expected = {"job_id": slot_id, **_PINOKIO_SESSION_ROWS[slot_id]}
+    if set(contract) != _PINOKIO_SESSION_ROW_FIELDS or dict(contract) != expected:
+        raise PinokioCustodyRefused("Pinokio slot/mode/OS/runner/shell do not match one fixed row")
+    return expected["mode"], expected["os"]
 
 
 def _canonical(value: object) -> bytes:
@@ -786,20 +820,13 @@ class _PinokioCustodyProvider:
         durable_journal_probe: DurableJournalProbe,
     ) -> PinokioCustodyOwner:
         slot_id = context.get("slot_id")
-        if slot_id not in _SUPPORTED_SLOTS:
+        if not isinstance(slot_id, str):
             raise PinokioCustodyRefused("Pinokio provider only accepts the fixed six Pinokio slots")
-        contract = context.get("contract")
-        if not isinstance(contract, Mapping) or contract.get("mode") not in {
-            "pinokio-backend",
-            "pinokio-fully-local",
-        }:
-            raise PinokioCustodyRefused("Pinokio slot does not have direct Pinokio custody")
-        suffix = str(slot_id).rsplit("-", 1)[-1]
-        os_name = {"macos": "macos", "linux": "linux", "windows": "windows"}.get(suffix)
-        if os_name is None:
-            raise PinokioCustodyRefused("Pinokio slot OS is not fixed")
+        mode, os_name = validate_pinokio_session_row(slot_id, context.get("contract"))
+        if context.get("mode", mode) != mode or context.get("os", os_name) != os_name:
+            raise PinokioCustodyRefused("Pinokio selected mode/OS differs from the fixed session row")
         return PinokioCustodyOwner(
-            slot_id=str(slot_id),
+            slot_id=slot_id,
             os_name=os_name,
             runner=runner,
             process_probe=process_probe,
