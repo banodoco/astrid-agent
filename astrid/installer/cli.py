@@ -160,7 +160,11 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
                     reason = safe(conflict.get("reason", "ownership is ambiguous"))
                     print(f"  Skill target preserved: {where} ({reason}).")
         if failure is not None:
-            print(f"  Failure: {type(failure).__name__}: {safe(failure)}")
+            safe_context = failure.safe_message if isinstance(failure, VerificationError) else None
+            if safe_context:
+                print(f"  Failure: {type(failure).__name__}: {safe(safe_context)}")
+            else:
+                print(f"  Failure: {type(failure).__name__}")
     print("  Way back: " + _way_back_command(choices, mode=mode))
 
 

@@ -1122,6 +1122,31 @@ def test_cli_shows_safe_verification_context_but_not_raw_diagnostics(tmp_path, m
     assert "private-token-should-not-appear" not in output
 
 
+@pytest.mark.parametrize("failure_type", [subprocess.SubprocessError, RuntimeError])
+def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
+    tmp_path, monkeypatch, capsys, failure_type
+):
+    from runtime_protocol import platform
+
+    from astrid.installer import cli
+
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    raw = f"private-subprocess-token service log says permission denied at {tmp_path / 'service.log'}"
+
+    def verification_failed(*_args, **_kwargs):
+        raise failure_type(raw)
+
+    monkeypatch.setattr(cli, "Backend", verification_failed)
+
+    assert cli.main(["--root", str(tmp_path / "program")]) == 1
+    output = capsys.readouterr().out
+    assert f"Failure: {failure_type.__name__}" in output
+    assert raw not in output
+    assert "private-subprocess-token" not in output
+    assert str(tmp_path / "service.log") not in output
+    assert f"Details: {tmp_path / 'logs/install.log'}" in output
+
+
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])
 def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     monkeypatch, tmp_path, sandbox_flag, expected_control
