@@ -161,10 +161,12 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
         assert release.wait(3), "test must release its stalled stage"
         if stage == "authority":
             return None
+        result = original(*args, **kwargs)
         if stage == "settlement":
-            # Model a transport returning a stale success after the guard won.
-            return {"task": {"id": "task-result", "status": "completed"}}
-        return original(*args, **kwargs)
+            # The blocked request commits once released; its response and
+            # authoritative task readback must describe the same outcome.
+            case.task["task"]["status"] = "completed"
+        return result
 
     monkeypatch.setattr(owner, name, (lambda *_a, **_k: lambda: stalled()) if stage == "authority" else stalled)
 
@@ -179,18 +181,32 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
     worker.start()
     try:
         assert entered.wait(2)
-        expiry = time.monotonic() + 2
-        while not (case.root / "result.json").exists() and time.monotonic() < expiry:
-            time.sleep(0.01)
-        assert case.task["task"]["status"] == "failed"
-        assert receipt(case)["status"] == "timeout"
-        assert receipt(case)["error"]["code"] == "timeout"
-        frozen = (case.root / "result.json").read_bytes()
-        assert worker.is_alive(), "receipt must precede release of the blocked stage"
+        if stage == "settlement":
+            # Give the deadline observer time to run while the terminal call
+            # remains in flight. It cannot safely publish an opposing failure.
+            time.sleep(0.7)
+            assert case.task["task"]["status"] == "running"
+            assert worker.is_alive()
+            assert not case.runtime.settlements and not case.runtime.failures
+        else:
+            expiry = time.monotonic() + 2
+            while not (case.root / "result.json").exists() and time.monotonic() < expiry:
+                time.sleep(0.01)
+            assert case.task["task"]["status"] == "failed"
+            assert receipt(case)["status"] == "timeout"
+            assert receipt(case)["error"]["code"] == "timeout"
+            frozen = (case.root / "result.json").read_bytes()
+            assert worker.is_alive(), "receipt must precede release of the blocked stage"
     finally:
         release.set()
         worker.join(timeout=3)
     assert not worker.is_alive()
+    if stage == "settlement":
+        assert case.task["task"]["status"] == "completed"
+        assert receipt(case)["status"] == "succeeded"
+        assert len(case.runtime.settlements) == 1 and not case.runtime.failures
+        assert len(returned) == 1 and not isinstance(returned[0], BaseException)
+        return
     assert_failed(case, started, code="timeout")
     assert (case.root / "result.json").read_bytes() == frozen
     assert not case.runtime.settlements

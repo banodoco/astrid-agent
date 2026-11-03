@@ -208,10 +208,21 @@ def _assert_resolved(case, state):
 
 def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case):
     case = settlement_case
-    with pytest.raises(RuntimeError, match="output metadata does not match existing object"):
+    # The same project already owns this digest. Corrupt its stored bytes at
+    # that digest, preserving size, so Runtime must reject actual conflicting
+    # content rather than merely differing association metadata.
+    source = (FIXTURES / "bug14/qwen_image_2_1_turbo.py").read_bytes()
+    digest = hashlib.sha256(source).hexdigest()
+    cas_path = case.service.store.cas_root / digest[:2] / digest[2:]
+    assert cas_path.read_bytes() == source
+    corrupt = bytes([source[0] ^ 1]) + source[1:]
+    assert len(corrupt) == len(source) and corrupt != source
+    cas_path.write_bytes(corrupt)
+    with pytest.raises(RuntimeError, match="CAS object hash or size does not match staged metadata"):
         _run(case)
     _assert_resolved(case, "failed")
     assert len(case.writes) == len(case.failures) == 1
+    assert not case.cancels and not case.service.managed_outputs(case.task_id)
     attempt_id, body, key = case.failures[0]
     assert attempt_id == case.attempt["attempt_id"]
     assert key == f"fail-{attempt_id}-{case.attempt['fence']}"
@@ -219,7 +230,7 @@ def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case
         k: case.attempt[k] for k in ("lease_id", "fence", "runtime_epoch")}
     assert "outputs" not in body and "result" not in body
     assert body["error"]["code"] == "publication_rejected"
-    assert "output metadata does not match existing object" in body["error"]["message"]
+    assert "CAS object hash or size does not match staged metadata" in body["error"]["message"]
     assert case.root.exists() and (case.root / "outputs/manifest.json").exists()
     assert case.host.last_cleanup_receipt["intended_disposition"] == "retained"
     request = json.loads((case.root / "settle-request.json").read_text())
