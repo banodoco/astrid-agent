@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fail closed on missing or mismatched installed-product journey evidence."""
 import argparse
+import base64
+import binascii
 import datetime as dt
 import hashlib
 import json
@@ -990,7 +992,8 @@ M4_6_ORIGIN_NEEDS = (
 
 
 def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
-                       harness_sha, run, jobs, artifact, archive):
+                       harness_sha, run, jobs, artifact, archive, *, workflow,
+                       workflow_ref, artifacts):
     """Validate independent API observations and return a non-admitted index.
 
     Expected identities and candidate are selected by the checker operator, not
@@ -1014,6 +1017,8 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
         raise ValueError("run, attempt, job and artifact IDs must be positive integers")
     if not isinstance(harness_sha, str) or not SHA.fullmatch(harness_sha):
         raise ValueError("a frozen harness commit SHA is required")
+    if workflow_ref != harness_sha or not isinstance(workflow, bytes) or not workflow:
+        raise ValueError("workflow bytes must be fetched at the frozen harness SHA")
     repository = run.get("repository") if isinstance(run, dict) else None
     if not isinstance(run, dict) or (not _positive_integer(run.get("id"))
             or not _positive_integer(run.get("run_attempt")) or run.get("id") != run_id
@@ -1045,6 +1050,15 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
             or not isinstance(artifact_run, dict) or not _positive_integer(artifact_run.get("id"))
             or artifact_run.get("id") != run_id):
         raise ValueError("API artifact identity or run differs")
+    if not isinstance(artifacts, list):
+        raise ValueError("API run artifact list is missing")
+    matches = [row for row in artifacts if isinstance(row, dict)
+               and row.get("name") == artifact["name"]]
+    if len(matches) != 1 or matches[0].get("id") != artifact_id:
+        raise ValueError("artifact name is absent or duplicated in the API run")
+    if (not isinstance(archive, bytes) or not _positive_integer(artifact.get("size_in_bytes"))
+            or artifact["size_in_bytes"] != len(archive)):
+        raise ValueError("API artifact size differs from downloaded archive")
     archive_hash = hashlib.sha256(archive).hexdigest()
     if artifact.get("digest") != "sha256:" + archive_hash:
         raise ValueError("API artifact digest differs from downloaded archive")
@@ -1057,6 +1071,7 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
         "runner_labels": labels, "runner_os": RUNNER_PROVENANCE[contract["runner"]][0],
         "artifact_id": artifact_id, "artifact_name": artifact["name"],
         "artifact_sha256": archive_hash, "harness_sha": harness_sha,
+        "artifact_size_bytes": len(archive), "workflow_sha256": hashlib.sha256(workflow).hexdigest(),
         "admitted": False, "reason": M4_6_ORIGIN_NEEDS,
     }
 
@@ -1066,7 +1081,9 @@ def collect_m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, arti
     """Fetch current API metadata and immutable artifact bytes, then veto admission."""
     if not token:
         raise ValueError("GH_TOKEN or GITHUB_TOKEN is required")
-    root = "https://api.github.com/repos/banodoco/astrid-agent/actions"
+    if not all(_positive_integer(n) for n in (run_id, attempt, job_id, artifact_id)):
+        raise ValueError("run, attempt, job and artifact IDs must be positive integers")
+    root = "https://api.github.com/repos/banodoco/astrid-agent"
 
     class SafeRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -1090,12 +1107,27 @@ def collect_m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, arti
             raise ValueError("API response exceeds 64 MiB")
         return data if binary else json.loads(data)
 
-    run = fetch(f"/runs/{run_id}")
+    if not isinstance(harness_sha, str) or not SHA.fullmatch(harness_sha):
+        raise ValueError("a frozen harness commit SHA is required")
+    workflow_data = fetch(f"/contents/.github/workflows/journey.yml?ref={harness_sha}")
+    if (not isinstance(workflow_data, dict) or workflow_data.get("type") != "file"
+            or workflow_data.get("path") != ".github/workflows/journey.yml"
+            or workflow_data.get("encoding") != "base64"
+            or not isinstance(workflow_data.get("content"), str)):
+        raise ValueError("malformed workflow contents API response")
+    try:
+        workflow = base64.b64decode("".join(workflow_data["content"].split()), validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("malformed workflow content encoding") from exc
+    blob = hashlib.sha1(b"blob " + str(len(workflow)).encode() + b"\0" + workflow).hexdigest()
+    if workflow_data.get("sha") != blob or workflow_data.get("size") != len(workflow):
+        raise ValueError("workflow contents do not match API blob identity")
+    run = fetch(f"/actions/runs/{run_id}")
     # The attempt-scoped jobs response may be paginated.
     jobs = []
     page = 1
     while True:
-        payload = fetch(f"/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page={page}")
+        payload = fetch(f"/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page={page}")
         rows = payload.get("jobs") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
             raise ValueError("malformed API jobs response")
@@ -1105,10 +1137,24 @@ def collect_m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, arti
         page += 1
         if page > 100:
             raise ValueError("too many API job pages")
-    artifact = fetch(f"/artifacts/{artifact_id}")
-    archive = fetch(f"/artifacts/{artifact_id}/zip", binary=True)
+    artifacts = []
+    page = 1
+    while True:
+        payload = fetch(f"/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
+        rows = payload.get("artifacts") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("malformed API artifacts response")
+        artifacts.extend(rows)
+        if len(rows) < 100:
+            break
+        page += 1
+        if page > 100:
+            raise ValueError("too many API artifact pages")
+    artifact = fetch(f"/actions/artifacts/{artifact_id}")
+    archive = fetch(f"/actions/artifacts/{artifact_id}/zip", binary=True)
     return m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
-                              harness_sha, run, jobs, artifact, archive)
+                              harness_sha, run, jobs, artifact, archive, workflow=workflow,
+                              workflow_ref=harness_sha, artifacts=artifacts)
 
 
 def _m4_6_local_row_errors(candidate, contract, row, path):

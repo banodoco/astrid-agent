@@ -1,5 +1,6 @@
 """The Actions index is diagnostic until a platform origin join exists."""
 import copy
+import base64
 import hashlib
 import json
 
@@ -13,6 +14,9 @@ from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
 
 def api_case():
     archive = b"synthetic archive"
+    artifact = {"id": 41, "name": "m4-6-direct-linux", "expired": False,
+                "workflow_run": {"id": 21}, "size_in_bytes": len(archive),
+                "digest": "sha256:" + hashlib.sha256(archive).hexdigest()}
     return dict(
         candidate=copy.deepcopy(PROVISIONAL_CANDIDATE), slot_id="direct-linux",
         run_id=21, attempt=2, job_id=31, artifact_id=41, harness_sha="a" * 40,
@@ -22,9 +26,8 @@ def api_case():
         jobs=[{"id": 31, "run_id": 21, "run_attempt": 2, "status": "completed",
                "conclusion": "success", "name": "produce / direct-linux",
                "runner_name": "GitHub Actions 123", "labels": ["ubuntu-24.04"]}],
-        artifact={"id": 41, "name": "m4-6-direct-linux", "expired": False,
-                  "workflow_run": {"id": 21}, "digest": "sha256:" + hashlib.sha256(archive).hexdigest()},
-        archive=archive,
+        artifact=artifact, artifacts=[copy.deepcopy(artifact)], archive=archive,
+        workflow=b"jobs: {}\n", workflow_ref="a" * 40,
     )
 
 
@@ -48,6 +51,58 @@ def test_attempt_scoped_api_response_need_not_repeat_attempt():
     assert checker.m4_6_actions_index(**case)["admitted"] is False
 
 
+def test_collector_fetches_pinned_workflow_and_all_api_observations(monkeypatch):
+    case = api_case()
+    workflow = case["workflow"]
+    blob = hashlib.sha1(b"blob " + str(len(workflow)).encode() + b"\0" + workflow).hexdigest()
+    seen = []
+    root = "https://api.github.com/repos/banodoco/astrid-agent"
+    responses = {
+        f"/contents/.github/workflows/journey.yml?ref={'a' * 40}": {
+            "type": "file", "path": ".github/workflows/journey.yml", "encoding": "base64",
+            "content": base64.b64encode(workflow).decode(), "size": len(workflow), "sha": blob},
+        "/actions/runs/21": case["run"],
+        "/actions/runs/21/attempts/2/jobs?per_page=100&page=1": {"jobs": case["jobs"]},
+        "/actions/runs/21/artifacts?per_page=100&page=1": {"artifacts": case["artifacts"]},
+        "/actions/artifacts/41": case["artifact"],
+        "/actions/artifacts/41/zip": case["archive"],
+    }
+
+    class Response:
+        def __init__(self, body):
+            self.body = body if isinstance(body, bytes) else json.dumps(body).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return self.body[:limit]
+
+    class Opener:
+        def open(self, request, timeout):
+            url = request.full_url
+            assert url.startswith(root)
+            path = url[len(root):]
+            seen.append(path)
+            return Response(responses[path])
+
+    monkeypatch.setattr(checker.urllib.request, "build_opener", lambda *args: Opener())
+    result = checker.collect_m4_6_actions_index(
+        case["candidate"], case["slot_id"], 21, 2, 31, 41, "a" * 40, "token")
+    assert result["admitted"] is False
+    assert result["workflow_sha256"] == hashlib.sha256(workflow).hexdigest()
+    assert result["artifact_size_bytes"] == len(case["archive"])
+    assert set(seen) == set(responses)
+
+    responses[f"/contents/.github/workflows/journey.yml?ref={'a' * 40}"]["sha"] = "b" * 40
+    with pytest.raises(ValueError, match="blob identity"):
+        checker.collect_m4_6_actions_index(
+            case["candidate"], case["slot_id"], 21, 2, 31, 41, "a" * 40, "token")
+
+
 @pytest.mark.parametrize("change", [
     lambda c: c["run"].update(id=22),
     lambda c: c["run"].update(run_attempt=1),
@@ -55,6 +110,9 @@ def test_attempt_scoped_api_response_need_not_repeat_attempt():
     lambda c: c["jobs"][0].update(run_attempt=1),
     lambda c: c["artifact"].update(id=42),
     lambda c: c["artifact"]["workflow_run"].update(id=22),
+    lambda c: c["artifact"].update(size_in_bytes=1),
+    lambda c: c["artifacts"].append(copy.deepcopy(c["artifacts"][0])),
+    lambda c: c.update(workflow_ref="b" * 40),
     lambda c: c.update(archive=b"altered"),
     lambda c: c.update(slot_id="direct-windows"),
     lambda c: c.update(harness_sha="b" * 40),
