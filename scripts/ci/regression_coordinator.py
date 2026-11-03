@@ -35,6 +35,10 @@ VERDICT_READY = "VERDICT_READY"
 TERMINAL = "TERMINAL"
 SUPERSEDED = "SUPERSEDED"
 
+# No independently authenticated evaluator revision is available yet. This
+# applies equally to a status being adopted and to a verdict already in SQLite.
+UNVERIFIED_PASS = "passing verdict refused: evaluator revision is not independently verified"
+
 TERMINAL_OUTCOMES = frozenset((
     "completed", "infrastructure_failed", "unstartable", "skipped",
     "cancelled", "timed_out", "missing_at_deadline", "collection_failed",
@@ -699,6 +703,8 @@ class Coordinator:
             }
             _require(all(status[key] == value for key, value in expected.items()),
                      "stale or wrong tuple finalizer status")
+            if status["result"] == "pass":
+                status = dict(status, result="fail", reasons=[UNVERIFIED_PASS])
             bindings = [json.loads(item[0]) for item in connection.execute(
                 "SELECT identity_json FROM source_bindings WHERE batch_id = ? ORDER BY producer_id", (batch_id,)
             )]
@@ -789,18 +795,30 @@ class Coordinator:
             return self._batch_value(connection, self._row(connection, batch_id))
 
     def _batch_value(self, connection, row):
+        verdict = json.loads(row["verdict_json"]) if row["verdict_json"] else None
+        if isinstance(verdict, dict) and verdict.get("result") == "pass":
+            # Older coordinators could have committed a green verdict before
+            # the upgrade. Quarantine it durably before returning it to any
+            # caller, including recovery and terminal-state reads.
+            verdict.update(result="fail", reasons=[UNVERIFIED_PASS])
+            value_digest = digest(verdict)
+            connection.execute("UPDATE batches SET verdict_json = ?, verdict_digest = ?, updated_at = ? "
+                               "WHERE batch_id = ?",
+                               (canonical_json(verdict), value_digest, _utc_now(), row["batch_id"]))
+            self._event(connection, row["batch_id"], "unverified_verdict_refused",
+                        {"reason": UNVERIFIED_PASS, "verdict_digest": value_digest})
         return {
             "batch_id": row["batch_id"], "generation": row["generation"], "state": row["state"],
             "tuple_digest": row["tuple_digest"], "target_sha": row["target_sha"],
             "invocation_id": row["invocation_id"],
             "sealed_results_digest": row["sealed_results_digest"],
-            "verdict": json.loads(row["verdict_json"]) if row["verdict_json"] else None,
+            "verdict": verdict,
             "terminal_reason": row["terminal_reason"],
         }
 
     def batch(self, batch_id):
-        with self._lock:
-            return self._batch_value(self._connection, self._row(self._connection, batch_id))
+        with self._transaction() as connection:
+            return self._batch_value(connection, self._row(connection, batch_id))
 
     def events(self, batch_id):
         with self._lock:

@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "ci"))
 
 import regression_coordinator as coordinator
 import regression_deployment as deployment
+import regression_finalizer as finalizer
 
 
 SHA_A = "a" * 40
@@ -175,6 +177,79 @@ class DeploymentAdapterTests(CoordinatorFixture):
         self.assertEqual(result["verdict"]["result"], "fail")
         self.assertIn("died", result["verdict"]["reasons"][0])
         self.assertEqual(called, [])
+
+    def legacy_pass(self, name):
+        """Write the unversioned pass format produced by the parent finalizer."""
+        self.ready_batch(name)
+        sealed = self.coordinator.begin_finalization(name)
+        directory = self.adapter.invocation_directory(sealed)
+        finalizer._start_marker(directory / "started.json", sealed)
+        status = finalizer.status_for(sealed, "pass", [])
+        finalizer._atomic_json(directory / "status.json", status)
+        return sealed, directory, status
+
+    def assert_refused(self, value):
+        self.assertEqual(value["state"], coordinator.VERDICT_READY)
+        self.assertEqual(value["verdict"]["result"], "fail")
+        self.assertEqual(value["verdict"]["reasons"], [coordinator.UNVERIFIED_PASS])
+
+    def test_parent_pass_after_restart_is_refused_without_replay(self):
+        _, directory, _ = self.legacy_pass("restart")
+        persisted = {name: (directory / name).read_bytes() for name in ("started.json", "status.json")}
+        self.adapter.close()
+        self.adapter = deployment.DeploymentAdapter(self.database, self.root / "invocations")
+        self.coordinator = self.adapter.coordinator
+        self.addCleanup(self.adapter.close)
+        with mock.patch.object(finalizer, "run", side_effect=AssertionError("finalizer replayed")):
+            self.assert_refused(self.adapter.recover("restart"))
+        self.assertEqual(self.coordinator.batch("restart")["verdict"]["result"], "fail")
+        self.assertEqual(persisted, {name: (directory / name).read_bytes() for name in persisted})
+
+    def test_parent_pass_after_already_started_is_refused_without_body_replay(self):
+        self.legacy_pass("already-started")
+        with mock.patch.object(finalizer.aggregate, "evaluate_sealed",
+                               side_effect=AssertionError("finalizer body replayed")) as evaluate:
+            self.assert_refused(self.adapter.finalise("already-started"))
+        evaluate.assert_not_called()
+
+    def test_recorded_parent_pass_is_quarantined_durably_on_recovery(self):
+        _, _, status = self.legacy_pass("recorded")
+        # Model the parent's durable host verdict: current record_verdict would
+        # refuse the same status before it reaches SQLite.
+        self.coordinator.fail_finalization("recorded", "fixture")
+        existing = self.coordinator.batch("recorded")["verdict"]
+        existing.update(status)
+        with self.coordinator._transaction() as connection:
+            connection.execute("UPDATE batches SET verdict_json = ?, verdict_digest = ? WHERE batch_id = ?",
+                               (coordinator.canonical_json(existing), coordinator.digest(existing), "recorded"))
+        self.adapter.close()
+        self.adapter = deployment.DeploymentAdapter(self.database, self.root / "invocations")
+        self.coordinator = self.adapter.coordinator
+        self.addCleanup(self.adapter.close)
+        with mock.patch.object(finalizer, "run", side_effect=AssertionError("finalizer replayed")):
+            self.assert_refused(self.adapter.recover("recorded"))
+            self.assert_refused(self.adapter.recover("recorded"))
+        row = self.coordinator._connection.execute(
+            "SELECT verdict_json, verdict_digest FROM batches WHERE batch_id = ?", ("recorded",)
+        ).fetchone()
+        self.assertEqual(json.loads(row["verdict_json"])["result"], "fail")
+        self.assertEqual(row["verdict_digest"], coordinator.digest(json.loads(row["verdict_json"])))
+        self.assertEqual(sum(event["event_type"] == "unverified_verdict_refused"
+                             for event in self.coordinator.events("recorded")), 1)
+
+    def test_coordinator_supervisor_refuses_parent_status_without_replay(self):
+        _, directory, _ = self.legacy_pass("supervised")
+        with mock.patch.object(finalizer, "run", side_effect=AssertionError("finalizer replayed")):
+            self.assert_refused(self.coordinator.recover_finalization(
+                "supervised", directory, directory / "status.json", worker_dead=True))
+
+    def test_caller_claimed_evaluator_revision_cannot_authorize_pass(self):
+        _, _, status = self.legacy_pass("claimed-revision")
+        status["evaluator_revision"] = SHA_A
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "invalid finalizer status fields"):
+            self.coordinator.record_verdict("claimed-revision", status)
+        self.assertEqual(self.coordinator.batch("claimed-revision")["state"], coordinator.FINALIZING)
+        self.assert_refused(self.adapter.recover("claimed-revision"))
 
     def test_finalizer_source_contains_no_subprocess_or_producer_plan_compatibility_path(self):
         source = (ROOT / "scripts" / "ci" / "regression_finalizer.py").read_text()
