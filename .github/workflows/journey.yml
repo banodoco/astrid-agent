@@ -726,6 +726,7 @@ jobs:
           $allowedNames = @(
             'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
+            'release1-update-bootstrap.log', 'release1-install-bootstrap.log', 'release1-start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',

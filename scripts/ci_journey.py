@@ -599,6 +599,21 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # Upgrade bootstrap runs in its own directory. Preserve its named logs
+    # separately so they cannot collide with top-level install evidence.
+    release1 = evidence / "release1"
+    if release1.is_dir() and not release1.is_symlink():
+        for name in ("update-bootstrap.log", "install-bootstrap.log", "start.log"):
+            source = release1 / name
+            if source.is_file() and not source.is_symlink():
+                try:
+                    with source.open("rb") as stream:
+                        stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                        (destination / f"release1-{name}").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+                except Exception as exc:
+                    print(f"Journey release1 evidence copy ({phase}) failed for {name}: "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
     # Numbering follows sorted relative paths so distinct invocations survive.
