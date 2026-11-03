@@ -107,8 +107,6 @@ def test_action_graph_binds_literal_dynamic_imports_and_scans_template_expressio
     app = _installed_app(tmp_path)
     actions = app / "pinokio"
     (actions / "update.js").write_text(
-        "// import('./comment-only.js')\n"
-        "const note = \"import('./string-only.js')\";\n"
         "const message = `plain text ${await import('./dynamic-helper.mjs')}`;\n",
         encoding="utf-8",
     )
@@ -123,8 +121,17 @@ def test_action_graph_binds_literal_dynamic_imports_and_scans_template_expressio
         "helper:pinokio/dynamic-helper.mjs",
         "helper:pinokio/dynamic-leaf.js",
     } <= {item.role for item in graph.files}
-    assert "helper:pinokio/comment-only.js" not in {item.role for item in graph.files}
-    assert "helper:pinokio/string-only.js" not in {item.role for item in graph.files}
+
+
+def test_action_graph_refuses_unaccounted_dynamic_import_text_in_regex(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    (app / "pinokio" / "update.js").write_text(
+        r"const pattern = /x\/\/import(modulePath)/; await import(modulePath);\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PinokioSourceMismatch, match="nonliteral dynamic import|ambiguous dynamic import"):
+        PinokioActionGraph.collect(app)
 
 
 @pytest.mark.parametrize(

@@ -64,6 +64,7 @@ _IMPORT_RE: Final = re.compile(
     re.MULTILINE,
 )
 _REQUIRE_CALL_RE: Final = re.compile(r"\brequire\s*\(")
+_DYNAMIC_IMPORT_RE: Final = re.compile(r"\bimport\s*\(")
 _MAX_ACTION_BYTES: Final = 8 * 1024 * 1024
 _MAX_GRAPH_FILES: Final = 128
 _PINOKIO_SESSION_ROWS: Final = {
@@ -407,9 +408,18 @@ class PinokioActionGraph:
                 helper = _resolve_helper(resolved, specifier, root=root)
                 if helper is not None:
                     pending.append((helper, f"helper:{helper.relative_to(root).as_posix()}"))
-            for specifier in _dynamic_import_specifiers(
+            dynamic_imports = _dynamic_import_specifiers(
                 text, relative_path=resolved.relative_to(root).as_posix()
-            ):
+            )
+            # Keep the old raw-text refusal as a completeness guard. If a
+            # regex literal or other unsupported JavaScript syntax confuses
+            # this small scanner, unaccounted import-shaped text still stops
+            # binding instead of disappearing from the closure.
+            if len(_DYNAMIC_IMPORT_RE.findall(text)) != len(dynamic_imports):
+                raise PinokioSourceMismatch(
+                    f"ambiguous dynamic import source cannot be bound: {resolved.relative_to(root)}"
+                )
+            for specifier in dynamic_imports:
                 if not specifier.startswith(("./", "../")):
                     raise PinokioSourceMismatch(
                         f"foreign dynamic import cannot be bound: {resolved.relative_to(root)} -> {specifier}"
