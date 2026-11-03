@@ -445,13 +445,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
         """Resolve whether the selected workspace belongs to source checkouts.
 
-        A live owner's captured identity is authoritative. When stopped, the
+        This diagnostic probe bypasses live identity for a managed selection.
+        Otherwise a live owner's captured identity is authoritative. When stopped, the
         retained Runtime source profile is admitted through Runtime's normal
         validator and its two paths must be Git checkout roots. A managed
         profile names the venv's installed product tree (``source_checkout``)
         and an unpacked Runtime archive (``runtime_checkout``); neither is a
         Git checkout root, so it cannot pass that check.
         """
+        # LOOKAHEAD ONLY: the selected managed install bypasses live identity.
+        if installed is not None:
+            return False
+
         from astrid_runtime.bootstrap import SourceProfile
         from astrid_runtime.identity import validate_live_owner_identity
         from astrid_runtime.paths import RuntimePaths
@@ -604,10 +609,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return True
 
     def publish_launch_admission(self, version: Version, data: Path) -> None:
-        """Refresh the selected install's launch action before its first C1 stop."""
-        if self.managed_by == "pinokio":
-            return
-        self.service.publish_launch_admission(version, data)
+        """Leave the old service definition untouched for this probe."""
+        # LOOKAHEAD ONLY: leave the existing R0 service definition untouched.
+        return
 
     def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
         """Run Runtime's single fenced stop and validated manager handoff.
@@ -683,7 +687,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                             if self.service.system == "darwin":
                                 checked_identity = self.service.validate_stop_target(
                                     version, data, owner_pid=owner_pid,
-                                    expected_identity=launchd_identity, require_stopped=True)
+                                    expected_identity=launchd_identity, require_stopped=True, allow_running=True)
                                 if launchd_identity is None and checked_identity is not None:
                                     self.service._validated_launchd_stop = None
                                     self.service._validated_launchd_stop_checked = False

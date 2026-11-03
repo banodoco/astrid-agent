@@ -549,7 +549,7 @@ class Service:
 
     def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None,
                              expected_identity: dict | None = None,
-                             require_stopped: bool = False) -> dict | None:
+                             require_stopped: bool = False, allow_running: bool = False) -> dict | None:
         """Read-only confirmation that the named OS job belongs to this owner.
 
         The install selection alone cannot authorize stopping a label that was
@@ -596,7 +596,7 @@ class Service:
             if expected_identity is not None and identity != expected_identity:
                 raise ValueError("The loaded launchd service changed during Runtime stop.")
             if require_stopped:
-                if state != "not running" or pid is not None:
+                if not allow_running and (state != "not running" or pid is not None):
                     raise ValueError("The launchd service did not remain stopped after Runtime exit.")
             elif state == "running":
                 if owner_pid is None or pid != owner_pid:
@@ -884,15 +884,18 @@ class Service:
                 record = self.recorded()
                 data = Path(record["data_root"])
                 latest = self.validate_stop_target(
-                    None, data, owner_pid=None, expected_identity=selected, require_stopped=True)
+                    None, data, owner_pid=None, expected_identity=selected, require_stopped=True,
+                    allow_running=True)  # LOOKAHEAD ONLY: boot out a KeepAlive restart.
                 if selected is None and latest is not None:
                     raise ValueError("A launchd service appeared after the C1 stop admission.")
                 if latest is None:
                     return  # Already unloaded after the C1 callback.
-                # Reprint and compare exact loaded identity immediately at
-                # the bootout boundary; C1 remains the only stop authority.
+                # LOOKAHEAD ONLY: unload the validated job even if KeepAlive
+                # restarted it after C1 stopped the original owner.
                 target = f"gui/{platform.current_user()}/{LABEL}"
                 self.run(["launchctl", "bootout", target])
+                self.validate_stop_target(
+                    None, data, owner_pid=None, expected_identity=selected, require_stopped=True)
             finally:
                 self._validated_launchd_stop = None
                 self._validated_launchd_stop_checked = False
