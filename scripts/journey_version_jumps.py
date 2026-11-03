@@ -438,6 +438,12 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         start = ["launchctl", "bootstrap", domain, service["service_path"]]
     elif manager != "task-scheduler":
         raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    if manager == "task-scheduler":
+        try:
+            journey.capture_windows_receipt(version, data, evidence, "before-stop")
+        except Exception:
+            # Diagnostic capture must not prevent the existing stop path.
+            pass
     try:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
@@ -451,6 +457,13 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
+        if manager == "task-scheduler":
+            try:
+                journey.capture_windows_receipt(
+                    version, data, evidence, "owner-exited-before-helper-and-restart")
+            except Exception:
+                # An incomplete observation must not alter the workspace or restart.
+                pass
         return workspace(version, data, evidence, action, request, realm=realm)
     finally:
         if manager == "task-scheduler":

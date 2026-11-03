@@ -467,6 +467,53 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def capture_windows_receipt(version: dict, data: Path, evidence: Path, phase: str) -> dict:
+    """Observe existing R0 authority without changing the journey's assertions.
+
+    Call only at the two admitted direct-workspace boundaries. Child errors and
+    timeouts are evidence of incomplete observation, never cleanup acceptance.
+    The observer has no stop/start or producer instrumentation capability.
+    """
+    if sys.platform != "win32":
+        return {"status": "not-applicable"}
+    if __package__:
+        from . import ci_journey_windows_capture as observer
+    else:
+        import ci_journey_windows_capture as observer
+    if phase not in observer.PHASES:
+        raise ValueError("unknown Windows receipt observation boundary")
+    if evidence.resolve().is_relative_to(data.resolve()):
+        raise ValueError("receipt evidence must be outside product data")
+    evidence.mkdir(parents=True, exist_ok=True)
+    helper = ROOT / "scripts" / "ci_journey_windows_capture.py"
+    name = f"runtime-service-service-w1-{phase}-{uuid.uuid4().hex}"
+    output, errors, status = (evidence / f"{name}{suffix}.log" for suffix in ("", "-stderr", "-exit"))
+    command = [str(version["python"]), "-B", "-I", str(helper),
+               "--support-root", str(data / "runtime"), "--phase", phase]
+    env = {key: value for key, value in os.environ.items()
+           if key.casefold() not in {"pythonpath", "pythonhome"}}
+    env.update(version["env"])
+    record = {"phase": phase, "command": command, "start": observer.clock(),
+              "helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(),
+              "stdout": output.name, "stderr": errors.name, "inner_exit_code": None,
+              "admission": "not-evaluated", "capture_complete": False}
+    try:
+        with output.open("x", encoding="utf-8") as stdout, errors.open("x", encoding="utf-8") as stderr:
+            completed = subprocess.run(command, env=env, stdout=stdout, stderr=stderr,
+                                       timeout=15, check=False)
+        record["inner_exit_code"] = completed.returncode
+        if completed.returncode == 0 and output.stat().st_size <= 2 * observer.BYTE_LIMIT + 65536:
+            captured = read_json(output)
+            record["capture_complete"] = captured.get("completeness", {}).get("snapshot_finished") is True
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        record["error"] = observer.error(exc)
+    record["end"] = observer.clock()
+    with status.open("x", encoding="utf-8") as stream:
+        json.dump(record, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    return record
+
+
 def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
     """Record small, named service-manager and unit observations around cleanup."""
     evidence.mkdir(parents=True, exist_ok=True)
