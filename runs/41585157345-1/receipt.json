@@ -1,0 +1,112 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "bash agent/diagnostics/systemd-native-proof/venue.sh",
+  "effective_tuple": {
+    "agent": "39b074167fe34e276f0a23c85af8ca4c27e5c526",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 911,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/SHA256SUMS",
+      "sha256": "6b7a5c6e02fa688b1d7cbf44c1d74843e43d3276be2fb9260dca915a5642940c"
+    },
+    {
+      "bytes": 9,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/case-exits.txt",
+      "sha256": "6c1bd038c3fa88324e2916556ba3dea7db363853ff53a167a58da38a804a69da"
+    },
+    {
+      "bytes": 115,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/cleanup.txt",
+      "sha256": "eab8f8cc1fb1dd0fbc29735e7df3390f9f9c3153a8db1c32f1f47deb6d71011b"
+    },
+    {
+      "bytes": 32,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/client-version.txt",
+      "sha256": "4036683cfe4ad68f3801974b85c83e03442e6975bdf80115266c33148db3e6ab"
+    },
+    {
+      "bytes": 2106,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/driver.log",
+      "sha256": "344ad3a5e77159aacbeca4ae54af4347351d3d7955d621dbbcb26cfc7df76e6e"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/inner-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 328,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/input-hashes.txt",
+      "sha256": "81206d22eaa5501af805478e44130a21d53802143a0be191db6393f248da5968"
+    },
+    {
+      "bytes": 53,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/manager-identity.txt",
+      "sha256": "a47a756009eda9a54896345c9c62cc208b3563316cc70d04ebc0e378c9bed758"
+    },
+    {
+      "bytes": 26,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/manager-version.txt",
+      "sha256": "702b53d9544bba7ab38d59b504eb54f05ce41bbde20febdcabc71c0345467e8f"
+    },
+    {
+      "bytes": 63,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/packages.txt",
+      "sha256": "4ee1e233c07da678b71c723c53e9e528e02845aca7c9f49ac04521bf3e43b5a7"
+    },
+    {
+      "bytes": 0,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/setup.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 190,
+      "path": "artifacts/suite-artifacts/systemd-native-proof/tuple.txt",
+      "sha256": "5f257f55cff887f8470b54e4b77eb1c9a9dba105d50d883593419eaf676709cd"
+    },
+    {
+      "bytes": 0,
+      "path": "command.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 367,
+      "path": "requested-inputs.json",
+      "sha256": "e1f68b7bf0de9b83146a2f286ea5b71e0bd3380f0503791e878862db828da876"
+    },
+    {
+      "bytes": 440,
+      "path": "tuple.txt",
+      "sha256": "a1915d6d816ecc60fd53ee3e592536321f07f71f8543cef258ed104e5a37efb1"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "39b074167fe34e276f0a23c85af8ca4c27e5c526",
+    "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "artifact_paths": "suite-artifacts/**",
+    "command": "bash agent/diagnostics/systemd-native-proof/venue.sh",
+    "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "slot": "6"
+  },
+  "run_attempt": "1",
+  "run_id": "41585157345",
+  "source_head": "9a133a7cd1f39a054a86c1ab0c29647b0fc3b35d",
+  "source_ref": "refs/heads/venue/M-R1FIX-R18-SYSTEMD-NATIVE-PROOF-1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R18-SYSTEMD-NATIVE-PROOF-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "9a133a7cd1f39a054a86c1ab0c29647b0fc3b35d"
+}

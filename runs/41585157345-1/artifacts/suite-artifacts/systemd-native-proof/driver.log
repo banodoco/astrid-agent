@@ -1,0 +1,39 @@
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/importlib/metadata/__init__.py", line 397, in from_name
+    return next(cls.discover(name=name))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+StopIteration
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/var/tmp/systemd-proof-41585157345-1-djGjRW/agent/astrid/version.py", line 27, in <module>
+    __version__ = version("astrid")
+                  ^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/metadata/__init__.py", line 889, in version
+    return distribution(distribution_name).version
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/metadata/__init__.py", line 862, in distribution
+    return Distribution.from_name(distribution_name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/metadata/__init__.py", line 399, in from_name
+    raise PackageNotFoundError(name)
+importlib.metadata.PackageNotFoundError: No package metadata was found for astrid
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/var/tmp/systemd-proof-41585157345-1-djGjRW/probe.py", line 10, in <module>
+    from astrid.installer import service
+  File "/var/tmp/systemd-proof-41585157345-1-djGjRW/agent/astrid/__init__.py", line 7, in <module>
+    from .version import __version__
+  File "/var/tmp/systemd-proof-41585157345-1-djGjRW/agent/astrid/version.py", line 29, in <module>
+    __version__ = _source_version()
+                  ^^^^^^^^^^^^^^^^^
+  File "/var/tmp/systemd-proof-41585157345-1-djGjRW/agent/astrid/version.py", line 17, in _source_version
+    with metadata_path.open("rb") as stream:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/var/tmp/systemd-proof-41585157345-1-djGjRW/agent/pyproject.toml'
