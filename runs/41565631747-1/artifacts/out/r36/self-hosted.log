@@ -1,0 +1,9 @@
+.                                                                        [100%]
+=============================== warnings summary ===============================
+../../../_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428
+  /home/runner/work/_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 1 warning in 0.52s

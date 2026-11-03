@@ -1,0 +1,3 @@
+verifier=0
+native=0
+self_hosted=0

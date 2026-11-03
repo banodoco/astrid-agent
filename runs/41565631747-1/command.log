@@ -1,0 +1,204 @@
+Ignoring colorama: markers 'sys_platform == "win32"' don't match your environment
+Ignoring httpx2-jsfetch: markers 'python_full_version >= "3.12" and sys_platform == "emscripten"' don't match your environment
+Collecting aiofiles==25.1.0 (from -r agent/requirements/proof.lock (line 3))
+  Downloading aiofiles-25.1.0-py3-none-any.whl (14 kB)
+Collecting annotated-types==0.8.0 (from -r agent/requirements/proof.lock (line 6))
+  Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+Collecting anthropic==1.0.0 (from -r agent/requirements/proof.lock (line 9))
+  Downloading anthropic-1.0.0-py3-none-any.whl (1.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 14.9 MB/s eta 0:00:00
+Collecting anyio==4.14.2 (from -r agent/requirements/proof.lock (line 12))
+  Downloading anyio-4.14.2-py3-none-any.whl (125 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 125.8/125.8 kB 27.6 MB/s eta 0:00:00
+Collecting asyncstdlib==3.14.0 (from -r agent/requirements/proof.lock (line 15))
+  Downloading asyncstdlib-3.14.0-py3-none-any.whl (44 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.3/44.3 kB 11.1 MB/s eta 0:00:00
+Collecting attrs==26.1.0 (from -r agent/requirements/proof.lock (line 18))
+  Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 22.6 MB/s eta 0:00:00
+Collecting certifi==2026.7.22 (from -r agent/requirements/proof.lock (line 21))
+  Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 137.0/137.0 kB 37.4 MB/s eta 0:00:00
+Collecting cffi==2.1.1 (from -r agent/requirements/proof.lock (line 24))
+  Downloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 221.8/221.8 kB 61.5 MB/s eta 0:00:00
+Collecting charset-normalizer==3.5.1 (from -r agent/requirements/proof.lock (line 125))
+  Downloading charset_normalizer-3.5.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (248 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 248.8/248.8 kB 70.1 MB/s eta 0:00:00
+Collecting click==8.4.2 (from -r agent/requirements/proof.lock (line 298))
+  Downloading click-8.4.2-py3-none-any.whl (119 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 119.2/119.2 kB 31.1 MB/s eta 0:00:00
+Collecting cryptography==48.0.1 (from -r agent/requirements/proof.lock (line 304))
+  Downloading cryptography-48.0.1-cp311-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.7/4.7 MB 103.7 MB/s eta 0:00:00
+Collecting distro==1.9.0 (from -r agent/requirements/proof.lock (line 354))
+  Downloading distro-1.9.0-py3-none-any.whl (20 kB)
+Collecting docstring-parser==0.18.0 (from -r agent/requirements/proof.lock (line 357))
+  Downloading docstring_parser-0.18.0-py3-none-any.whl (22 kB)
+Collecting fal-client==1.0.1 (from -r agent/requirements/proof.lock (line 360))
+  Downloading fal_client-1.0.1-py3-none-any.whl (26 kB)
+Collecting filelock==3.32.4 (from -r agent/requirements/proof.lock (line 363))
+  Downloading filelock-3.32.4-py3-none-any.whl (99 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 99.9/99.9 kB 34.5 MB/s eta 0:00:00
+Collecting fsspec==2026.9.0 (from -r agent/requirements/proof.lock (line 366))
+  Downloading fsspec-2026.9.0-py3-none-any.whl (221 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 221.7/221.7 kB 63.8 MB/s eta 0:00:00
+Collecting google-auth==2.56.3 (from -r agent/requirements/proof.lock (line 369))
+  Downloading google_auth-2.56.3-py3-none-any.whl (259 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 259.1/259.1 kB 73.2 MB/s eta 0:00:00
+Collecting google-genai==2.19.0 (from -r agent/requirements/proof.lock (line 372))
+  Downloading google_genai-2.19.0-py3-none-any.whl (1.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 140.2 MB/s eta 0:00:00
+Collecting h11==0.16.0 (from -r agent/requirements/proof.lock (line 375))
+  Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Collecting hf-xet==1.7.0 (from -r agent/requirements/proof.lock (line 378))
+  Downloading hf_xet-1.7.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.2/4.2 MB 166.9 MB/s eta 0:00:00
+Collecting httpcore==1.0.9 (from -r agent/requirements/proof.lock (line 396))
+  Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.8/78.8 kB 18.5 MB/s eta 0:00:00
+Collecting httpcore2==2.12.0 (from -r agent/requirements/proof.lock (line 399))
+  Downloading httpcore2-2.12.0-py3-none-any.whl (83 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 83.1/83.1 kB 26.8 MB/s eta 0:00:00
+Collecting httpx==0.28.1 (from -r agent/requirements/proof.lock (line 402))
+  Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.5/73.5 kB 22.5 MB/s eta 0:00:00
+Collecting httpx-sse==0.4.3 (from -r agent/requirements/proof.lock (line 405))
+  Downloading httpx_sse-0.4.3-py3-none-any.whl (9.0 kB)
+Collecting httpx2==2.12.0 (from -r agent/requirements/proof.lock (line 408))
+  Downloading httpx2-2.12.0-py3-none-any.whl (95 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 95.4/95.4 kB 33.4 MB/s eta 0:00:00
+Collecting huggingface-hub==2.3.0 (from -r agent/requirements/proof.lock (line 414))
+  Downloading huggingface_hub-2.3.0-py3-none-any.whl (855 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 855.2/855.2 kB 120.0 MB/s eta 0:00:00
+Collecting idna==3.19 (from -r agent/requirements/proof.lock (line 417))
+  Downloading idna-3.19-py3-none-any.whl (68 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 68.5/68.5 kB 20.9 MB/s eta 0:00:00
+Collecting iniconfig==2.3.0 (from -r agent/requirements/proof.lock (line 420))
+  Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Collecting jiter==0.16.0 (from -r agent/requirements/proof.lock (line 423))
+  Downloading jiter-0.16.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (343 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 343.8/343.8 kB 89.3 MB/s eta 0:00:00
+Collecting jsonschema==4.26.0 (from -r agent/requirements/proof.lock (line 529))
+  Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 25.7 MB/s eta 0:00:00
+Collecting jsonschema-specifications==2025.9.1 (from -r agent/requirements/proof.lock (line 532))
+  Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Collecting msgpack==1.2.1 (from -r agent/requirements/proof.lock (line 535))
+  Downloading msgpack-1.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (419 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 420.0/420.0 kB 97.1 MB/s eta 0:00:00
+Collecting numpy==1.26.4 (from -r agent/requirements/proof.lock (line 602))
+  Downloading numpy-1.26.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (18.0 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.0/18.0 MB 134.3 MB/s eta 0:00:00
+Collecting openai==2.54.0 (from -r agent/requirements/proof.lock (line 639))
+  Downloading openai-2.54.0-py3-none-any.whl (1.7 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/1.7 MB 155.6 MB/s eta 0:00:00
+Collecting opencv-python-headless==4.9.0.80 (from -r agent/requirements/proof.lock (line 642))
+  Downloading opencv_python_headless-4.9.0.80-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (49.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 49.6/49.6 MB 94.6 MB/s eta 0:00:00
+Collecting packaging==26.3 (from -r agent/requirements/proof.lock (line 650))
+  Downloading packaging-26.3-py3-none-any.whl (129 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 40.9 MB/s eta 0:00:00
+Collecting pillow==12.3.0 (from -r agent/requirements/proof.lock (line 653))
+  Downloading pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (6.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.9/6.9 MB 161.7 MB/s eta 0:00:00
+Collecting platformdirs==4.11.3 (from -r agent/requirements/proof.lock (line 741))
+  Downloading platformdirs-4.11.3-py3-none-any.whl (23 kB)
+Collecting pluggy==1.6.0 (from -r agent/requirements/proof.lock (line 744))
+  Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Collecting pyasn1==0.6.4 (from -r agent/requirements/proof.lock (line 747))
+  Downloading pyasn1-0.6.4-py3-none-any.whl (84 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 84.4/84.4 kB 31.3 MB/s eta 0:00:00
+Collecting pyasn1-modules==0.4.2 (from -r agent/requirements/proof.lock (line 750))
+  Downloading pyasn1_modules-0.4.2-py3-none-any.whl (181 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 181.3/181.3 kB 56.3 MB/s eta 0:00:00
+Collecting pycparser==3.0 (from -r agent/requirements/proof.lock (line 753))
+  Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.2/48.2 kB 17.0 MB/s eta 0:00:00
+Collecting pydantic==2.13.4 (from -r agent/requirements/proof.lock (line 756))
+  Downloading pydantic-2.13.4-py3-none-any.whl (472 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 472.3/472.3 kB 99.6 MB/s eta 0:00:00
+Collecting pydantic-core==2.46.4 (from -r agent/requirements/proof.lock (line 759))
+  Downloading pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 164.0 MB/s eta 0:00:00
+Collecting pygments==2.21.0 (from -r agent/requirements/proof.lock (line 880))
+  Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 141.6 MB/s eta 0:00:00
+Collecting pyjwt==2.13.0 (from -r agent/requirements/proof.lock (line 883))
+  Downloading pyjwt-2.13.0-py3-none-any.whl (31 kB)
+Collecting pytest==9.0.2 (from -r agent/requirements/proof.lock (line 886))
+  Downloading pytest-9.0.2-py3-none-any.whl (374 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 374.8/374.8 kB 82.0 MB/s eta 0:00:00
+Collecting pytest-timeout==2.4.0 (from -r agent/requirements/proof.lock (line 889))
+  Downloading pytest_timeout-2.4.0-py3-none-any.whl (14 kB)
+Collecting python-dotenv==1.2.4 (from -r agent/requirements/proof.lock (line 892))
+  Downloading python_dotenv-1.2.4-py3-none-any.whl (23 kB)
+Collecting pyyaml==6.0.3 (from -r agent/requirements/proof.lock (line 894))
+  Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 126.9 MB/s eta 0:00:00
+Collecting referencing==0.37.0 (from -r agent/requirements/proof.lock (line 968))
+  Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+Collecting requests==2.34.2 (from -r agent/requirements/proof.lock (line 971))
+  Downloading requests-2.34.2-py3-none-any.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.1/73.1 kB 24.4 MB/s eta 0:00:00
+Collecting rpds-py==2026.6.3 (from -r agent/requirements/proof.lock (line 974))
+  Downloading rpds_py-2026.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (366 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 366.2/366.2 kB 91.8 MB/s eta 0:00:00
+Collecting scenedetect==0.6.4 (from -r agent/requirements/proof.lock (line 1091))
+  Downloading scenedetect-0.6.4-py3-none-any.whl (121 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 122.0/122.0 kB 10.5 MB/s eta 0:00:00
+Collecting sniffio==1.3.1 (from -r agent/requirements/proof.lock (line 1094))
+  Downloading sniffio-1.3.1-py3-none-any.whl (10 kB)
+Collecting tenacity==9.1.4 (from -r agent/requirements/proof.lock (line 1097))
+  Downloading tenacity-9.1.4-py3-none-any.whl (28 kB)
+Collecting tqdm==4.70.0 (from -r agent/requirements/proof.lock (line 1100))
+  Downloading tqdm-4.70.0-py3-none-any.whl (80 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 80.2/80.2 kB 23.5 MB/s eta 0:00:00
+Collecting truststore==0.10.4 (from -r agent/requirements/proof.lock (line 1103))
+  Downloading truststore-0.10.4-py3-none-any.whl (18 kB)
+Collecting typing-extensions==4.16.0 (from -r agent/requirements/proof.lock (line 1106))
+  Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.6/45.6 kB 14.3 MB/s eta 0:00:00
+Collecting typing-inspection==0.4.4 (from -r agent/requirements/proof.lock (line 1109))
+  Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+Collecting urllib3==2.7.0 (from -r agent/requirements/proof.lock (line 1112))
+  Downloading urllib3-2.7.0-py3-none-any.whl (131 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 131.1/131.1 kB 44.7 MB/s eta 0:00:00
+Collecting websockets==16.1.1 (from -r agent/requirements/proof.lock (line 1115))
+  Downloading websockets-16.1.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (187 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 187.1/187.1 kB 57.3 MB/s eta 0:00:00
+Collecting xxhash==4.0.1 (from -r agent/requirements/proof.lock (line 1225))
+  Downloading xxhash-4.0.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (261 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 261.8/261.8 kB 70.8 MB/s eta 0:00:00
+Installing collected packages: xxhash, websockets, urllib3, typing-extensions, truststore, tqdm, tenacity, sniffio, rpds-py, pyyaml, python-dotenv, pyjwt, pygments, pycparser, pyasn1, pluggy, platformdirs, pillow, packaging, numpy, msgpack, jiter, iniconfig, idna, httpx-sse, hf-xet, h11, fsspec, filelock, docstring-parser, distro, click, charset-normalizer, certifi, attrs, asyncstdlib, annotated-types, aiofiles, typing-inspection, scenedetect, requests, referencing, pytest, pydantic-core, pyasn1-modules, opencv-python-headless, httpcore2, httpcore, cffi, anyio, pytest-timeout, pydantic, jsonschema-specifications, httpx2, httpx, cryptography, openai, jsonschema, huggingface-hub, google-auth, fal-client, anthropic, google-genai
+Successfully installed aiofiles-25.1.0 annotated-types-0.8.0 anthropic-1.0.0 anyio-4.14.2 asyncstdlib-3.14.0 attrs-26.1.0 certifi-2026.7.22 cffi-2.1.1 charset-normalizer-3.5.1 click-8.4.2 cryptography-48.0.1 distro-1.9.0 docstring-parser-0.18.0 fal-client-1.0.1 filelock-3.32.4 fsspec-2026.9.0 google-auth-2.56.3 google-genai-2.19.0 h11-0.16.0 hf-xet-1.7.0 httpcore-1.0.9 httpcore2-2.12.0 httpx-0.28.1 httpx-sse-0.4.3 httpx2-2.12.0 huggingface-hub-2.3.0 idna-3.19 iniconfig-2.3.0 jiter-0.16.0 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 msgpack-1.2.1 numpy-1.26.4 openai-2.54.0 opencv-python-headless-4.9.0.80 packaging-26.3 pillow-12.3.0 platformdirs-4.11.3 pluggy-1.6.0 pyasn1-0.6.4 pyasn1-modules-0.4.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pygments-2.21.0 pyjwt-2.13.0 pytest-9.0.2 pytest-timeout-2.4.0 python-dotenv-1.2.4 pyyaml-6.0.3 referencing-0.37.0 requests-2.34.2 rpds-py-2026.6.3 scenedetect-0.6.4 sniffio-1.3.1 tenacity-9.1.4 tqdm-4.70.0 truststore-0.10.4 typing-extensions-4.16.0 typing-inspection-0.4.4 urllib3-2.7.0 websockets-16.1.1 xxhash-4.0.1
+verifier=0
+native=0
+self_hosted=0
+....                                                                     [100%]
+=============================== warnings summary ===============================
+../../../_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428
+  /home/runner/work/_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+4 passed, 1 warning in 0.56s
+.                                                                        [100%]
+=============================== warnings summary ===============================
+../../../_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428
+  /home/runner/work/_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 1 warning in 0.52s
+...............................................                          [100%]
+=============================== warnings summary ===============================
+../../../_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428
+  /home/runner/work/_temp/r36-venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1428: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+47 passed, 1 warning in 0.29s

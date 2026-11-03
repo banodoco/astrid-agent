@@ -1,0 +1,97 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "mkdir -p out/r36\npython3 -m venv \"$RUNNER_TEMP/r36-venv\"\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pip install --require-hashes -r agent/requirements/proof.lock\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pip freeze > \"$GITHUB_WORKSPACE/out/r36/dependencies.txt\"\n\"$RUNNER_TEMP/r36-venv/bin/python\" --version > \"$GITHUB_WORKSPACE/out/r36/python-version.txt\"\nexport PYTEST_DISABLE_PLUGIN_AUTOLOAD=1\nexport PYTHONPATH=\"$GITHUB_WORKSPACE/runtime\"\ncd agent\nset +e\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q tests/test_journey_failure_modes.py --junitxml=\"$GITHUB_WORKSPACE/out/r36/verifier.xml\" > \"$GITHUB_WORKSPACE/out/r36/verifier.log\" 2>&1\nverifier=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_product_canonical_native_lifecycle_is_collected_but_fixture_is_inadmissible' 'tests/test_native_service_adapter.py::test_fixture_cannot_be_promoted_by_editing_scope_and_authentication' --junitxml=\"$GITHUB_WORKSPACE/out/r36/native.xml\" > \"$GITHUB_WORKSPACE/out/r36/native.log\" 2>&1\nnative=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_structural_validator_rejects_mutated_native_fields[path14-self-hosted-RUNNER_ENVIRONMENT]' --junitxml=\"$GITHUB_WORKSPACE/out/r36/self-hosted.xml\" > \"$GITHUB_WORKSPACE/out/r36/self-hosted.log\" 2>&1\nself_hosted=$?\nprintf 'verifier=%s\\nnative=%s\\nself_hosted=%s\\n' \"$verifier\" \"$native\" \"$self_hosted\" | tee \"$GITHUB_WORKSPACE/out/r36/inner-exits.txt\"\ncat \"$GITHUB_WORKSPACE/out/r36/\"*.log\n[ \"$verifier\" -eq 0 ] && [ \"$native\" -eq 0 ] && [ \"$self_hosted\" -eq 0 ]",
+  "effective_tuple": {
+    "agent": "5522523355063679ffb5c4db4e14e45d377410d4",
+    "app": "7302b2992976ce7ed016738f7fe1086937f99384",
+    "pinokio": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime": "8d208074669a31eed7efc4d964a602d6cd27e425"
+  },
+  "event": "push",
+  "inner_exit_code": 0,
+  "inventory": [
+    {
+      "bytes": 1125,
+      "path": "artifacts/out/r36/dependencies.txt",
+      "sha256": "57e9ae2a336a830ae38111338fbce3ca468be70cbf93affc26b806d504ae293d"
+    },
+    {
+      "bytes": 34,
+      "path": "artifacts/out/r36/inner-exits.txt",
+      "sha256": "def108807fed43ffa54705010daa6da2a05da0c0eae0b62367f2b81e66cebdfc"
+    },
+    {
+      "bytes": 568,
+      "path": "artifacts/out/r36/native.log",
+      "sha256": "808ea49244d5c495feedaa81c6f24f3f7c84b5496c56b3073e104acb0f368701"
+    },
+    {
+      "bytes": 916,
+      "path": "artifacts/out/r36/native.xml",
+      "sha256": "d516a739a7c147b5226809dc79de8e89e248bb74fe64c46b3c8d1c595b6d1d5f"
+    },
+    {
+      "bytes": 14,
+      "path": "artifacts/out/r36/python-version.txt",
+      "sha256": "5b3e43dc38ca01e3f5a7854ba50d4330864b0c1e0f646650b2c78cf072acc366"
+    },
+    {
+      "bytes": 568,
+      "path": "artifacts/out/r36/self-hosted.log",
+      "sha256": "4bbf390a4e4c388523632d4c5f5b4e5097e71fdadaf1e6238d6aa6daaa5a5751"
+    },
+    {
+      "bytes": 422,
+      "path": "artifacts/out/r36/self-hosted.xml",
+      "sha256": "74b46913ac695b46c561468fc026db918c0fdde1940e65e7c470dad39b61bf98"
+    },
+    {
+      "bytes": 569,
+      "path": "artifacts/out/r36/verifier.log",
+      "sha256": "58627c7e628f52605ef28ad9883f9fe7131b1993b1ab2980bed8101880965690"
+    },
+    {
+      "bytes": 7705,
+      "path": "artifacts/out/r36/verifier.xml",
+      "sha256": "0a18c50ee547cd8de2489a77137f52d412e7ce5cfe29f5629832a241d02cefab"
+    },
+    {
+      "bytes": 20010,
+      "path": "command.log",
+      "sha256": "5483f70059a8aec7d5e16929daf7137b62864a8ff5716278b75cbe3358b15395"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 1954,
+      "path": "requested-inputs.json",
+      "sha256": "3e582f57862c16e371c22e5b3b1ef493813eab9c48bafd5d8b0c25fb1873f290"
+    },
+    {
+      "bytes": 440,
+      "path": "tuple.txt",
+      "sha256": "bd13859e385e09f7ddf26c3246f57730eec54ae7fddb9c67c675dfd888858107"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "5522523355063679ffb5c4db4e14e45d377410d4",
+    "app_ref": "7302b2992976ce7ed016738f7fe1086937f99384",
+    "artifact_paths": "out/r36/**",
+    "command": "mkdir -p out/r36\npython3 -m venv \"$RUNNER_TEMP/r36-venv\"\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pip install --require-hashes -r agent/requirements/proof.lock\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pip freeze > \"$GITHUB_WORKSPACE/out/r36/dependencies.txt\"\n\"$RUNNER_TEMP/r36-venv/bin/python\" --version > \"$GITHUB_WORKSPACE/out/r36/python-version.txt\"\nexport PYTEST_DISABLE_PLUGIN_AUTOLOAD=1\nexport PYTHONPATH=\"$GITHUB_WORKSPACE/runtime\"\ncd agent\nset +e\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q tests/test_journey_failure_modes.py --junitxml=\"$GITHUB_WORKSPACE/out/r36/verifier.xml\" > \"$GITHUB_WORKSPACE/out/r36/verifier.log\" 2>&1\nverifier=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_product_canonical_native_lifecycle_is_collected_but_fixture_is_inadmissible' 'tests/test_native_service_adapter.py::test_fixture_cannot_be_promoted_by_editing_scope_and_authentication' --junitxml=\"$GITHUB_WORKSPACE/out/r36/native.xml\" > \"$GITHUB_WORKSPACE/out/r36/native.log\" 2>&1\nnative=$?\n\"$RUNNER_TEMP/r36-venv/bin/python\" -m pytest -q 'tests/test_native_service_adapter.py::test_structural_validator_rejects_mutated_native_fields[path14-self-hosted-RUNNER_ENVIRONMENT]' --junitxml=\"$GITHUB_WORKSPACE/out/r36/self-hosted.xml\" > \"$GITHUB_WORKSPACE/out/r36/self-hosted.log\" 2>&1\nself_hosted=$?\nprintf 'verifier=%s\\nnative=%s\\nself_hosted=%s\\n' \"$verifier\" \"$native\" \"$self_hosted\" | tee \"$GITHUB_WORKSPACE/out/r36/inner-exits.txt\"\ncat \"$GITHUB_WORKSPACE/out/r36/\"*.log\n[ \"$verifier\" -eq 0 ] && [ \"$native\" -eq 0 ] && [ \"$self_hosted\" -eq 0 ]",
+    "pinokio_ref": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime_ref": "8d208074669a31eed7efc4d964a602d6cd27e425",
+    "slot": "6"
+  },
+  "run_attempt": "1",
+  "run_id": "41565631747",
+  "source_head": "8becd68bb5faebefd96ed44a4fce8d0e3645d4a3",
+  "source_ref": "refs/heads/venue/M-QUAL-R-36-MACOS15-HOSTED-DEPS-R1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-QUAL-R-36-MACOS15-HOSTED-DEPS-R1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "8becd68bb5faebefd96ed44a4fce8d0e3645d4a3"
+}
