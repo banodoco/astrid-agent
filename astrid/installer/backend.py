@@ -1414,6 +1414,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("Refusing to remove an unowned installation directory.")
         realm_root = self.preflight_remove(root, data, delete_data=delete_data)
         remove_owned_command(self.service, marker.get("command_shim"), marker.get("command_path"))
+        if self.service.system != "win32":
+            command_shim = self.service.home / ".local" / "bin" / "astrid"
+            if os.path.lexists(command_shim):
+                # POSIX command shims live outside the program tree. Keep a
+                # retained foreign or edited file visible as uninstall residue.
+                residue.append(command_shim)
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:
             data_targets.insert(0, realm_root)
@@ -1494,10 +1500,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             except Exception as exc:  # noqa: BLE001 - optional command cleanup must not stop setup
                 error = type(exc).__name__
                 report(f"Astrid command cleanup failed ({error}); check the recorded shim and PATH entry.")
+            command_shim = (self.root / "astrid.cmd" if self.service.system == "win32" else
+                            self.service.home / ".local" / "bin" / "astrid")
+            preserved_shim = os.path.lexists(command_shim) and not removed["shim"]
+            if preserved_shim:
+                report(f"Astrid command shim preserved at {command_shim}; ownership could not be verified.")
             self.command_result = {
                 "action": "disabled", "path": None, "path_hint": None, "error": error,
                 "path_added": None, "path_present": False,
                 "removed_shim": removed["shim"], "removed_path": removed["path"],
+                "preserved_shim": preserved_shim,
             }
             if error is None:
                 write_json(marker, {**current_marker, "command_shim": None, "command_path": None})

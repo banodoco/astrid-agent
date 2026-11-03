@@ -141,17 +141,20 @@ def install_shim(service, *, say=print, manage_path: bool = True,
 
 
 def remove_owned_command(service, shim_path: str | None, path_entry: str | None) -> dict[str, bool]:
-    """Remove only the command artifacts named by this install's ownership receipt."""
+    """Remove receipt-backed artifacts or the exact install-bound legacy POSIX shim."""
     windows = service.system == "win32"
     expected = service.root.absolute() / "astrid.cmd" if windows else service.home / ".local" / "bin" / "astrid"
     removed_shim = False
-    if shim_path and Path(shim_path) == expected and owned_shim(expected):
-        contents = expected.read_text(encoding="utf-8").splitlines()
+    receipt_matches = bool(shim_path and Path(shim_path) == expected)
+    legacy_posix = not windows and shim_path is None
+    if (receipt_matches or legacy_posix) and owned_shim(expected):
         if windows:
+            contents = expected.read_text(encoding="utf-8").splitlines()
             valid = contents == ["@echo off", f"rem {SHIM_MARKER}", '"%~dp0run-astrid.cmd" %*']
         else:
-            valid = contents == ["#!/bin/sh", f"# {SHIM_MARKER}",
-                                 f'exec {shlex.quote(str(service.root.absolute() / "run-astrid"))} "$@"']
+            expected_content = (f'#!/bin/sh\n# {SHIM_MARKER}\n'
+                                f'exec {shlex.quote(str(service.root.absolute() / "run-astrid"))} "$@"\n')
+            valid = expected.read_bytes() == expected_content.encode("utf-8")
         if valid:
             expected.unlink()
             removed_shim = True

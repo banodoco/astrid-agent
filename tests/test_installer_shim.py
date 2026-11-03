@@ -13,6 +13,7 @@ import pytest
 
 from astrid.installer import launcher
 from astrid.installer.backend import Backend
+from astrid.installer.cli import _print_run_summary
 from astrid.installer.core import Installer, Version, read_json, write_json
 from astrid.installer.service import LABEL, Service
 from tests.test_installer_lifecycle import LifecycleBackend
@@ -333,6 +334,121 @@ def test_command_off_removes_only_recorded_artifacts_and_reports_actual_result(
     else:
         assert backend.command_result["removed_path"] is False
         assert not (backend.service.home / ".local/bin/astrid").exists()
+
+
+def test_command_off_removes_exact_legacy_posix_shim_without_receipt(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "program"
+    root.mkdir()
+    home = tmp_path / "home"
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.service.choices = {"command": False}
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.parent.mkdir(parents=True, exist_ok=True)
+    rc.write_bytes(b"# user's shell setup  \nexport X=1\n")
+    rc_before = rc.read_bytes()
+    path_before = "/existing/bin:/usr/bin"
+    monkeypatch.setenv("PATH", path_before)
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+
+    assert not shim.exists()
+    assert backend.command_result["removed_shim"] is True
+    assert backend.command_result["preserved_shim"] is False
+    _print_run_summary({"command": False}, mode="install", outcomes={"command": backend.command_result})
+    assert "Astrid's command shim removed" in capsys.readouterr().out
+    assert os.environ["PATH"] == path_before
+    assert rc.read_bytes() == rc_before
+
+
+@pytest.mark.parametrize("kind", ["foreign", "edited", "newline-edited", "other-install"])
+def test_command_off_preserves_and_reports_unverified_posix_shim(tmp_path, monkeypatch, kind, capsys):
+    root = tmp_path / "program"
+    root.mkdir()
+    home = tmp_path / "home"
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.service.choices = {"command": False}
+    monkeypatch.setenv("PATH", "")
+    if kind == "other-install":
+        other_service = Service(
+            tmp_path / "other-program", tmp_path / "other.log", Mock(), home=home, system="linux")
+        shim, _ = launcher.install_shim(other_service)
+    else:
+        shim, _ = launcher.install_shim(backend.service)
+    if kind == "edited":
+        shim.write_text(shim.read_text() + "# user edit\n")
+    elif kind == "newline-edited":
+        shim.write_bytes(shim.read_bytes().replace(b"\n", b"\r\n"))
+    elif kind == "foreign":
+        shim.write_text("#!/bin/sh\n# user command\nexit 0\n")
+    original = shim.read_bytes()
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.write_bytes(b"export KEEP=1  \n\n")
+    rc_before = rc.read_bytes()
+    monkeypatch.setenv("PATH", "/existing/bin:/usr/bin")
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+    _print_run_summary({"command": False}, mode="install", outcomes={"command": backend.command_result})
+
+    summary = capsys.readouterr().out
+    assert shim.read_bytes() == original
+    assert backend.command_result["removed_shim"] is False
+    assert backend.command_result["preserved_shim"] is True
+    assert f"preserved at {shim}" in backend.log.read_text()
+    assert "preserved because ownership could not be verified" in summary
+    assert os.environ["PATH"] == "/existing/bin:/usr/bin"
+    assert rc.read_bytes() == rc_before
+
+
+def test_uninstall_removes_exact_legacy_posix_shim_without_receipt(tmp_path, monkeypatch):
+    root, home = tmp_path / "program", tmp_path / "home"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.uv = tmp_path / "uv"
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
+
+    residue = backend.remove(root, tmp_path / "data", delete_data=False)
+
+    assert not shim.exists()
+    assert not root.exists()
+    assert residue == []
+
+
+def test_uninstall_reports_retained_edited_legacy_posix_shim(tmp_path, monkeypatch):
+    root, home = tmp_path / "program", tmp_path / "home"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.uv = tmp_path / "uv"
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    shim.write_text(shim.read_text() + "# user edit\n")
+    original = shim.read_bytes()
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.write_bytes(b"export KEEP=1  \n\n")
+    rc_before = rc.read_bytes()
+    path_before = "/existing/bin:/usr/bin"
+    monkeypatch.setenv("PATH", path_before)
+    monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
+
+    residue = backend.remove(root, tmp_path / "data", delete_data=False)
+
+    assert shim.read_bytes() == original
+    assert residue == [shim]
+    assert os.environ["PATH"] == path_before
+    assert rc.read_bytes() == rc_before
 
 
 @pytest.mark.parametrize("system", ["linux", "win32"])
