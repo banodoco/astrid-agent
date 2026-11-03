@@ -448,8 +448,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity could not be observed; refusing to change it.") from exc
         if identity is None:
             return "stale"  # Proven absent; Runtime startup owns reconciliation.
-        if (identity.get("pid") != pid
-                or not birth_ids_match(birth, identity.get("birth_id"), pid, identity.get("pid"))):
+        # The opt-in record uses only this comparison's existing values. Failure
+        # to enable or write diagnostics must not alter the decision.
+        try:
+            capture = sys.platform == "linux" and os.environ.get("ASTRID_LINUX_IDENTITY_CAPTURE") == "1"
+        except Exception:
+            capture = False
+        diagnostic = {} if capture else None
+        observed_pid = identity.get("pid")
+        if observed_pid != pid:
+            matches = False
+        elif diagnostic is None:
+            matches = birth_ids_match(birth, identity.get("birth_id"), pid, identity.get("pid"))
+        else:
+            matches = birth_ids_match(birth, identity.get("birth_id"), pid, identity.get("pid"),
+                                      diagnostic=diagnostic)
+        if capture:
+            try:
+                from .linux_identity_capture import record
+                record(pid, birth, identity, matches, diagnostic)
+            except Exception:
+                pass
+        if not matches:
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
