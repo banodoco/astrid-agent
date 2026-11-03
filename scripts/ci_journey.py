@@ -584,7 +584,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     for source in sorted(evidence.iterdir(), key=lambda path: path.name):
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
-                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+                not (name.startswith("runtime-service-service-") and name.endswith(".log")) and
+                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name)):
             continue
         if not source.is_file() or source.is_symlink():
             continue
@@ -1727,6 +1728,9 @@ def execute(args: argparse.Namespace) -> dict:
                         result_path = evidence / "journey-result.json"
                         try:
                             if (root / "current").is_file():
+                                if keep_going:
+                                    # Never uninstall a service whose current definition is not owned by this run.
+                                    assert_direct_service_ownership(root, data)
                                 _, _, installed = installation(root, data)
                                 installed_cli(installed, ["install", "--uninstall", "--root", str(root),
                                                           "--data-root", str(data)], evidence,
@@ -1774,6 +1778,25 @@ def execute(args: argparse.Namespace) -> dict:
                 return result
     except Exception as exc:
         # Context setup can fail before the lifecycle body has produced a receipt.
+        if keep_going:
+            report_path = evidence / "keepgoing-report.json"
+            report = read_json(report_path) if report_path.is_file() else keepgoing.initial(evidence, args)
+            report["stages"].append({"stage": "harness-or-cleanup", "result": "fail",
+                                     "forced_continuation_used": False,
+                                     "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
+            seen = {row["stage"] for row in report["stages"]}
+            report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
+                                     "first_error": "Unsafe or unavailable harness context", "evidence_path": str(evidence)}
+                                    for name in keepgoing.STAGES if name not in seen)
+            # Preserve any failure diagnostics already written to the result.
+            saved_path = evidence / "journey-result.json"
+            saved = read_json(saved_path) if saved_path.is_file() else {}
+            keepgoing.write(evidence, report)
+            diagnostic_receipt = read_json(saved_path)
+            for key in ("cleanup_error", "final_cleanup", "failure_diagnostics"):
+                if key in saved:
+                    diagnostic_receipt[key] = saved[key]
+            write_json(saved_path, diagnostic_receipt)
         result_path = evidence / "journey-result.json"
         recorded = read_json(result_path) if result_path.is_file() else {}
         if "before-cleanup" not in recorded.get("failure_diagnostics", {}) or recorded.get("status") != "fail":

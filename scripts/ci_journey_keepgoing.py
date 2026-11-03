@@ -54,7 +54,21 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             except Exception as exc:
                 row.update(result="fail", first_error=f"{type(exc).__name__}: {exc}")
                 # Continue to independent checks only; never force a service or delete a lock marker.
-                row["continuation"] = "verification skipped; unsafe service/lock forcing unsupported"
+                if "verify" in name:
+                    row["forced_continuation_used"] = True
+                    row["continuation"] = "FORCED: skip failed verification and attempt independently safe stages"
+                else:
+                    row["continuation"] = "unsafe service/lock forcing unsupported; dependent stages are not run"
+        if path.is_file() and not path.is_symlink() and path.suffix == ".log":
+            try:
+                artifact_name = f"keepgoing-stage-{len(report['stages']) + 1:02d}.log"
+                with path.open("rb") as stream:
+                    stream.seek(max(0, path.stat().st_size - journey.EVIDENCE_LOG_LIMIT))
+                    (evidence / artifact_name).write_bytes(stream.read(journey.EVIDENCE_LOG_LIMIT))
+                row["retained_evidence"] = f"before-cleanup/{artifact_name}"
+                row["retained_evidence_note"] = "log tail, at most 1 MiB"
+            except OSError as exc:
+                row["retained_evidence_error"] = f"{type(exc).__name__}: {exc}"
         report["stages"].append(row)
         write(evidence, report)
     def admission():
@@ -97,6 +111,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
         state.update(health0=health, pid0=pid, birth0=birth0)
     def update():
+        journey.assert_direct_service_ownership(root, data)
+        journey.assert_one_runtime(data)
         journey.bootstrap(state["app"], state["candidate_path"], args.shell, "update", evidence / "release1", root, data)
         state["updated"] = True
     def start1():
