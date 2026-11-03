@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import hashlib
+import json
 
 import pytest
 
@@ -32,6 +33,12 @@ def bind(root, row=ROWS[0], **kwargs):
         slot_id=row["job_id"], contract=row, app_root=root,
         source_commit=provider.U2_PINOKIO_COMMIT, **kwargs,
     )
+
+
+def run_cli(capsys, *arguments):
+    code = provider.main(list(arguments))
+    captured = capsys.readouterr()
+    return code, json.loads(captured.out)
 
 
 @pytest.mark.parametrize("row", ROWS, ids=lambda row: row["job_id"])
@@ -149,3 +156,96 @@ def test_source_profile_cannot_dispatch_or_add_install_to_generic_action_graph(s
         ("pinokio/update-stage.mjs", 137, "node:fs/promises"),
     ]
     assert "node:fs/promises" in provider.U2_NODE_BUILTINS
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["job_id"])
+def test_cli_reports_bounded_source_match_and_explicit_native_refusal(
+    source_fixture, row, monkeypatch, capsys
+):
+    monkeypatch.setattr(provider.os, "geteuid", lambda: 1001, raising=False)
+    code, result = run_cli(
+        capsys, "--slot-id", row["job_id"], "--app-root", str(source_fixture)
+    )
+    assert code == 0
+    assert result["status"] == "source_matched_native_refused"
+    assert result["source_status"] == "matched_and_rechecked"
+    assert result["source_match_is_install_authentication"] is False
+    assert result["native_status"] == "refused"
+    assert result["native_authority"] == "none"
+    assert result["schema"] == "astrid.m46.u2-source-predicate.v1"
+    assert result["action_mapping"]["install"] == (
+        "pinokio/install-local.js" if row["mode"] == "pinokio-fully-local"
+        else "pinokio/install.js"
+    )
+    assert len(result["inventory"]) == len(provider._U2_SOURCE_SHA256)
+    assert "selected_principal" in result["missing_native_identities"]
+    assert result["diagnostics"]["effective_uid"] == 1001
+
+
+def test_cli_refuses_wrong_source_unknown_slot_and_relative_root(source_fixture, monkeypatch, capsys):
+    monkeypatch.setattr(provider.os, "geteuid", lambda: 1001, raising=False)
+    common = ("--slot-id", ROWS[0]["job_id"], "--app-root", str(source_fixture))
+    code, result = run_cli(capsys, *common, "--source-commit", "0" * 40)
+    assert code == 2
+    assert result["source_status"] == "refused"
+    assert result["native_status"] == "refused"
+    assert result["native_authority"] == "none"
+    assert "exact selected Pinokio source commit" in result["source_refusal"]
+
+    code, result = run_cli(
+        capsys, "--slot-id", "pinokio-unknown", "--app-root", str(source_fixture)
+    )
+    assert code == 2
+    assert "fixed six Pinokio slots" in result["source_refusal"]
+
+    code, result = run_cli(capsys, "--slot-id", ROWS[0]["job_id"], "--app-root", "relative/app")
+    assert code == 2
+    assert "must be absolute" in result["source_refusal"]
+
+
+def test_cli_rechecks_source_bytes_and_refuses_drift(source_fixture, monkeypatch, capsys):
+    monkeypatch.setattr(provider.os, "geteuid", lambda: 1001, raising=False)
+    path = source_fixture / "pinokio/shell.mjs"
+    path.write_bytes(b"drifted fixture bytes\n")
+    code, result = run_cli(
+        capsys, "--slot-id", ROWS[0]["job_id"], "--app-root", str(source_fixture)
+    )
+    assert code == 2
+    assert result["source_status"] == "refused"
+    assert result["native_status"] == "refused"
+    assert result["native_authority"] == "none"
+    assert "selected source bytes differ" in result["source_refusal"]
+
+
+@pytest.mark.parametrize("uid", [None, True, -1, "1001"])
+def test_cli_refuses_unavailable_or_invalid_effective_uid(source_fixture, monkeypatch, capsys, uid):
+    monkeypatch.setattr(provider.os, "geteuid", lambda: uid, raising=False)
+    code, result = run_cli(
+        capsys, "--slot-id", ROWS[0]["job_id"], "--app-root", str(source_fixture)
+    )
+    assert code == 2
+    assert result["status"] == "source_matched_native_diagnostic_refused_uid"
+    assert result["source_status"] == "matched_and_rechecked"
+    assert result["native_status"] == "refused"
+    assert result["native_authority"] == "none"
+    assert "valid POSIX effective UID" in result["native_refusal"]
+
+
+def test_cli_rejects_unrecognized_fields_and_root_native_diagnostic(
+    source_fixture, monkeypatch, capsys
+):
+    with pytest.raises(SystemExit) as error:
+        provider.main(["--slot-id", ROWS[0]["job_id"], "--app-root", str(source_fixture), "--engine-id", "x"])
+    assert error.value.code == 2
+    capsys.readouterr()
+
+    monkeypatch.setattr(provider.os, "geteuid", lambda: 0, raising=False)
+    code, result = run_cli(
+        capsys, "--slot-id", ROWS[0]["job_id"], "--app-root", str(source_fixture)
+    )
+    assert code == 2
+    assert result["source_status"] == "matched_and_rechecked"
+    assert result["native_status"] == "refused"
+    assert result["native_authority"] == "none"
+    assert result["status"] == "source_matched_native_diagnostic_refused_root"
+    assert "UID 0" in result["native_refusal"]

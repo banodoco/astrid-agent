@@ -23,9 +23,11 @@ owner method raises before a provider can authorize or construct a receipt.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import stat
 import threading
@@ -371,6 +373,106 @@ class PinokioNativeServiceProfile:
             "U2 source profile has unbound native/external identities: "
             + ", ".join(self.unbound_identities)
         )
+
+
+def inspect_u2_source(
+    *, slot_id: str, app_root: Path, source_commit: str = U2_PINOKIO_COMMIT,
+) -> PinokioNativeServiceProfile:
+    """Return the bounded U2 source match for a fixed slot; no native authority."""
+    row = _PINOKIO_SESSION_ROWS.get(slot_id)
+    if row is None:
+        raise PinokioCustodyRefused("Pinokio provider only accepts the fixed six Pinokio slots")
+    profile = PinokioNativeServiceProfile.bind_source(
+        slot_id=slot_id,
+        contract={"job_id": slot_id, **row},
+        app_root=app_root,
+        source_commit=source_commit,
+    )
+    profile.verify_current_bytes()
+    return profile
+
+
+def _u2_cli_payload(
+    *, slot_id: str, app_root: str, source_commit: str, effective_uid: object,
+    platform_name: str,
+) -> tuple[dict[str, object], int]:
+    payload: dict[str, object] = {
+        "schema": "astrid.m46.u2-source-predicate.v1",
+        "status": "source_refused_native_refused",
+        "source_status": "refused",
+        "native_status": "refused",
+        "native_authority": "none",
+        "native_refusal": "source matching does not authenticate an installed app or bind native identities",
+        "slot_id": slot_id,
+        "selected_source_commit": source_commit,
+        "app_root": app_root,
+        "diagnostics": {"effective_uid": effective_uid, "platform": platform_name},
+    }
+    try:
+        root = Path(app_root)
+        if not root.is_absolute():
+            raise PinokioSourceMismatch("installed app root must be absolute")
+        profile = inspect_u2_source(slot_id=slot_id, app_root=root, source_commit=source_commit)
+    except (PinokioCustodyRefused, OSError, ValueError) as exc:
+        payload["source_refusal"] = str(exc)
+        return payload, 2
+
+    payload.update({
+        "status": "source_matched_native_refused",
+        "source_status": "matched_and_rechecked",
+        "source_match_is_install_authentication": False,
+        "mode": profile.mode,
+        "os": profile.os_name,
+        "pinokio_mode": profile.pinokio_mode,
+        "action_mapping": profile.action_roles,
+        "source_owner_mapping": profile.source_owner_mapping,
+        "runtime_command_shape": list(profile.runtime_command_shape),
+        "inventory": [
+            {"role": item.role, "path": item.path, "sha256": item.sha256}
+            for item in profile.files
+        ],
+        "missing_native_identities": list(profile.unbound_identities),
+    })
+    if os.name != "posix":
+        payload["status"] = "source_matched_native_diagnostic_refused_platform"
+        payload["native_refusal"] = "native diagnostic requires a POSIX effective UID observation"
+        return payload, 2
+    if type(effective_uid) is not int or effective_uid < 0:
+        payload["status"] = "source_matched_native_diagnostic_refused_uid"
+        payload["native_refusal"] = "native diagnostic has no valid POSIX effective UID observation"
+        return payload, 2
+    if effective_uid == 0:
+        payload["status"] = "source_matched_native_diagnostic_refused_root"
+        payload["native_refusal"] = "native diagnostic command refuses effective UID 0"
+        return payload, 2
+    return payload, 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Print the read-only U2 source predicate result as JSON."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read-only U2 source match. Exit 0 means bounded bytes matched; native "
+            "identities remain refused and no installed-app authentication is claimed."
+        )
+    )
+    parser.add_argument("--slot-id", required=True, help="one of the six fixed Pinokio slots")
+    parser.add_argument("--app-root", required=True, help="absolute installed app root")
+    parser.add_argument(
+        "--source-commit", default=U2_PINOKIO_COMMIT,
+        help="exact selected Pinokio commit (defaults to the reviewed U2 commit)",
+    )
+    args = parser.parse_args(argv)
+    effective_uid = getattr(os, "geteuid", lambda: None)()
+    payload, exit_code = _u2_cli_payload(
+        slot_id=args.slot_id,
+        app_root=args.app_root,
+        source_commit=args.source_commit,
+        effective_uid=effective_uid,
+        platform_name=platform.system(),
+    )
+    print(json.dumps(payload, sort_keys=True))
+    return exit_code
 
 
 @dataclass(frozen=True)
@@ -993,3 +1095,7 @@ class _PinokioCustodyProvider:
 
 
 PINOKIO_CUSTODY_PROVIDER = _PinokioCustodyProvider()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
