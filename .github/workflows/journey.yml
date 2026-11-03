@@ -663,8 +663,24 @@ jobs:
           if ('${{ matrix.mode }}' -eq 'pinokio-backend') {
             $configs = ConvertFrom-Json $env:M4_4A_EXECUTOR_CONFIGS
             $backendConfigPath = Join-Path $env:RUNNER_TEMP 'm4-4a-executor-config.json'
-            $backendConfigJson = $configs.'${{ matrix.os }}' | ConvertTo-Json -Depth 100 -Compress
-            [IO.File]::WriteAllText($backendConfigPath, $backendConfigJson, [Text.UTF8Encoding]::new($false))
+            $selectedConfig = $configs.'${{ matrix.os }}'
+            if (@($selectedConfig.PSObject.Properties).Count -eq 0) {
+              # Fetch the approved historical object into the candidate repository;
+              # the materializer verifies its identity and bytes before use.
+              git -C "$pwd/pinokio" fetch --no-tags --depth=1 origin '${{ needs.config.outputs.old_launcher_ref }}'
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              python -u agent/scripts/materialize_m4_4a_backend.py `
+                --candidate "$env:RUNNER_TEMP/candidate.json" `
+                --app-checkout "$pwd/app" --agent-checkout "$pwd/candidate-agent" `
+                --runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
+                --old-launcher-ref '${{ needs.config.outputs.old_launcher_ref }}' `
+                --os '${{ matrix.os }}' --runner '${{ matrix.runner }}' --shell '${{ matrix.shell }}' `
+                --output $backendConfigPath
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } else {
+              $backendConfigJson = $selectedConfig | ConvertTo-Json -Depth 100 -Compress
+              [IO.File]::WriteAllText($backendConfigPath, $backendConfigJson, [Text.UTF8Encoding]::new($false))
+            }
             $backendConfigArgs = @('--pinokio-backend-config', $backendConfigPath)
           }
           python -u agent/scripts/ci_journey.py `
