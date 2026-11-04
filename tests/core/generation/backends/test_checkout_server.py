@@ -1037,17 +1037,22 @@ def test_checkout_passes_verified_selected_inventory_into_real_approval(tmp_path
     from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle
 
     profile = _hc03_profile(tmp_path)
+    asset_path = tmp_path / 'models/auxiliary/fixture.safetensors'
+    asset_path.parent.mkdir()
+    (tmp_path / 'models/fixture.safetensors').rename(asset_path)
+    model_root = profile['launch']['model_root']
+    model_root['inventory'][0]['subdir'] = 'auxiliary'
+    model_root['inventory_digest'] = canonical_model_inventory_digest(model_root['inventory'])
     monkeypatch.setattr(backend_module, '_verify_owned_vibe_session', lambda *_: None)
     _patch_remote_open(monkeypatch)
     adapter = CheckoutServerAdapter.from_host_session(
         hc03_profile=profile, model_id='auxiliary-contract', template_id='auxiliary-contract',
         invocation_identity='task-asset',
     )
-    asset_path = tmp_path / 'models/fixture.safetensors'
-    asset = {'name': asset_path.name, 'subdir': '',
+    asset = {'name': asset_path.name, 'url': 'https://fixture.invalid/fixture.safetensors',
+             'subdir': 'auxiliary',
              'sha256': hashlib.sha256(asset_path.read_bytes()).hexdigest(),
-             'size_bytes': asset_path.stat().st_size,
-             'url': 'https://fixture.invalid/fixture.safetensors'}
+             'size_bytes': asset_path.stat().st_size}
     if change == 'sha256':
         asset['sha256'] = '0' * 64
     elif change == 'size':
@@ -1055,12 +1060,14 @@ def test_checkout_passes_verified_selected_inventory_into_real_approval(tmp_path
     elif change == 'target_bytes':
         asset_path.write_bytes(b'x' * asset_path.stat().st_size)
     workflow = VibeWorkflow('auxiliary-contract', WorkflowSource('auxiliary-contract'))
-    workflow.add_node('Integer', uid='one', value=7)
+    workflow.add_node('PrimitiveInt', uid='one', value=7)
     workflow.metadata['model_assets'] = [asset]
+    # Match ReadyMetadata's model declaration without importing unrelated template assets.
+    workflow.requirements.models = [asset]
     bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
-    definition = get_class('Integer')
+    definition = get_class('PrimitiveInt')
     assert definition is not None
-    info = {'Integer': {'input': definition['inputs'], 'input_order': definition['input_order'],
+    info = {'PrimitiveInt': {'input': definition['inputs'], 'input_order': definition['input_order'],
                        'output': [row['type'] for row in definition['outputs']]}}
     captured = []
 
@@ -1081,13 +1088,13 @@ def test_checkout_passes_verified_selected_inventory_into_real_approval(tmp_path
         approved, admitted = pair
         assert approved.api_digest and admitted is bundle
         assert captured[0].auxiliary_model_custody == 'target'
-        assert captured[0].target_model_asset(asset['name'], '')['sha256'] == hashlib.sha256(asset_path.read_bytes()).hexdigest()
+        assert captured[0].target_model_asset(asset['name'], asset['subdir'])['sha256'] == hashlib.sha256(asset_path.read_bytes()).hexdigest()
         raise ApprovalReached('stopped before target execution')
 
     monkeypatch.setattr(adapter, '_run_workflow', stop_before_execution)
     expected = ApprovalReached if change == 'match' else ValueError if change == 'target_bytes' else WorkflowBundleError
     message = 'stopped before target execution' if change == 'match' else 'model-root' if change == 'target_bytes' else 'identity mismatch'
     with pytest.raises(expected, match=message):
-        adapter.run_compiled_workflow(bundle, tmp_path / 'attempt', task_identity='task-asset')
+        adapter.run_compiled_workflow(bundle, tmp_path / 'outputs/attempt', task_identity='task-asset')
     if change == 'target_bytes':
         assert captured == []  # Target bytes are verified before constructing authority.
