@@ -283,11 +283,11 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
         baseline = evidence / DIAGNOSTIC_START_STAGE
         journey.verify("observe", journey.installation(root, data)[0], data, baseline)
         project = "tst-m4-3b-release0"
-        keys = direct_workspace(root, version, data, baseline, "seed", {
+        keys = live_workspace(root, data, baseline, "seed", {
             "project": project, "generation": "release0", "task_id": None, "create_project": True})
         result["checks"]["seed"] = "pass"
         keys["task_id"] = task_after_update(version, baseline / "release0-task", project)
-        direct_workspace(root, version, data, baseline, "snapshot", keys)
+        live_workspace(root, data, baseline, "snapshot", keys)
         result["checks"]["snapshot"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
@@ -321,14 +321,31 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
     return json.loads(output)
 
 
+def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict) -> dict:
+    """Observe or seed through the selected live owner without releasing it."""
+    journey.assert_direct_service_ownership(root, data)
+    instance = journey.healthy(data)["runtime_instance_id"]
+    evidence.mkdir(parents=True, exist_ok=True)
+    request_path = evidence / (action + "-request.json")
+    journey.write_json(request_path, request)
+    output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
+                          action, "--data", data, "--request", request_path],
+                         evidence / (action + ".json"), timeout=120)
+    if journey.healthy(data)["runtime_instance_id"] != instance:
+        raise RuntimeError("Runtime owner changed during live workspace access")
+    journey.assert_direct_service_ownership(root, data)
+    return json.loads(output)
+
+
 def assert_preserved(before: dict, after: dict) -> None:
     for key in ("project", "timeline", "preferences", "task", "cas_sha256"):
         if key not in before or key not in after:
             raise RuntimeError("Update did not retain seeded workspace " + key)
         if before[key] != after[key]:
             raise RuntimeError("Update changed seeded workspace " + key)
-    if after["schema_version"] != after["target_schema_version"]:
-        raise RuntimeError("Selected realm was not migrated to the candidate schema")
+    for observation in (before, after):
+        if observation["schema_version"] != observation["target_schema_version"]:
+            raise RuntimeError("Selected realm does not match its Runtime schema")
 
 
 def service_action(root: Path, data: Path, version: dict, old: dict | None = None) -> dict:
@@ -602,14 +619,11 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         baseline = evidence / "release0-api-seed"
         journey.verify("observe", old_path, data, baseline)
         project = "tst-m4-3b-release0"
-        keys = direct_workspace(root, old, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True},
-            release0_version_path=old_path)
+        keys = live_workspace(root, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = direct_workspace(root, old, data, baseline, "snapshot", keys,
-                                  release0_version_path=old_path)
-        # The helper temporarily stops the service, so identify the actual R0
-        # owner that the update must replace after the last offline observation.
+        before = live_workspace(root, data, baseline, "snapshot", keys)
+        # Identify the live R0 owner that the update must replace.
         old_health = journey.healthy(data)
         old_pid = int(old_health["pid"])
         old_birth = journey.process_birth(old_pid)
@@ -642,9 +656,11 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = direct_workspace(root, version, data, evidence / "release1-api-observe", "snapshot", keys)
+        after = live_workspace(root, data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
-        before_sha, after_sha = semantic_digest(before), semantic_digest(after)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
+        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
         if before_sha != after_sha:
             raise RuntimeError("Release-1 semantic snapshot digest differs after exact preservation")
         result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
