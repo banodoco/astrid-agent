@@ -1125,6 +1125,114 @@ def test_user_editing_deadline_includes_an_unanswered_post(connected):
         release.set()
 
 
+def test_user_editing_http_wait_uses_single_budget_and_saves_acknowledged_refusal(
+    connected, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import astrid.sdk.timeline.sync as sync
+
+    client, _, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=1, user_editing_interval=0.25,
+    )
+    command = session.queue_move("parent/clip:a", 5)
+    now = [10.0]
+    calls = []
+
+    def acknowledged_refusal(_client, _project, _timeline, body, key, deadline, _cancel):
+        flight = json.loads(path.read_bytes())["flight"]
+        calls.append((request_bytes(body), key, deadline, flight["fence"]))
+        now[0] = 11.25  # The POST returned an acknowledged user_editing refusal after the cap.
+        raise ApiError(409, "refused", "still editing",
+                       details={"status": "refused", "reason": "user_editing"})
+
+    monkeypatch.setattr(sync, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(sync, "_commit_request_until", acknowledged_refusal)
+    with pytest.raises(CommitRefused) as caught:
+        session.flush(idempotency_key="http-budget")
+
+    saved = json.loads(path.read_bytes())
+    record = saved["pending_changes"][caught.value.pending_id]
+    assert len(calls) == 1
+    assert calls[0][2] == 11.0
+    assert saved["flight"] is None
+    assert record["state"] == "pending"
+    assert record["flight"]["fence"] == calls[0][3]
+    assert record["flight"]["key"] == calls[0][1] == "http-budget"
+    assert json.loads(record["flight"]["body"])["commands"] == [command]
+    assert record["parts"][0]["base"] == {"revision_id": "r0", "publication_id": "pub0"}
+
+
+def test_user_editing_backoff_reaching_cap_does_not_resend(connected, monkeypatch):
+    from types import SimpleNamespace
+
+    import astrid.sdk.timeline.sync as sync
+
+    client, _, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=0.5, user_editing_interval=0.5,
+    )
+    session.queue_move("parent/clip:a", 5)
+    now = [20.0]
+    calls = []
+
+    def acknowledged_refusal(_client, _project, _timeline, _body, _key, deadline, _cancel):
+        calls.append(deadline)
+        raise ApiError(409, "refused", "still editing",
+                       details={"status": "refused", "reason": "user_editing"})
+
+    def advance(delay):
+        now[0] += delay
+
+    monkeypatch.setattr(sync, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=advance))
+    monkeypatch.setattr(sync.random, "uniform", lambda _low, _high: 1.0)
+    monkeypatch.setattr(sync, "_commit_request_until", acknowledged_refusal)
+    with pytest.raises(CommitRefused):
+        session.flush(idempotency_key="backoff-budget")
+
+    assert calls == [20.5]
+    saved = json.loads(path.read_bytes())
+    assert saved["flight"] is None
+    assert len(saved["pending_changes"]) == 1
+
+
+def test_user_editing_http_timeout_keeps_unknown_flight_with_single_budget(connected, monkeypatch):
+    from types import SimpleNamespace
+
+    import astrid.sdk.timeline.sync as sync
+
+    client, _, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=0.75, user_editing_interval=0.1,
+    )
+    session.queue_move("parent/clip:a", 5)
+    now = [30.0]
+    deadlines = []
+    flights = []
+
+    def unanswered(_client, _project, _timeline, _body, _key, deadline, _cancel):
+        deadlines.append(deadline)
+        flights.append(json.loads(path.read_bytes())["flight"])
+        now[0] = 30.75
+        raise TimeoutError("response exceeded deadline")
+
+    monkeypatch.setattr(sync, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(sync, "_commit_request_until", unanswered)
+    with pytest.raises(CommitOutcomeUnknown):
+        session.flush(idempotency_key="unknown-budget")
+
+    saved = json.loads(path.read_bytes())
+    assert deadlines == [30.75]
+    assert saved["flight"] == flights[0]
+    assert saved["flight"]["key"] == "unknown-budget"
+    assert json.loads(saved["flight"]["body"])["base_revision_id"] == "r0"
+    assert not saved["pending_changes"]
+
+
 def test_user_editing_does_not_rerun_commit_function(connected, monkeypatch):
     from astrid.sdk.timeline import Timeline
 

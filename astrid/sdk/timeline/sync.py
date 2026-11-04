@@ -1129,21 +1129,24 @@ class TimelineSession:
             flight = copy.deepcopy(flight)
         try:
             deadline = time.monotonic() + self.user_editing_timeout
-            response_deadline = deadline + self.user_editing_timeout
+            last_user_editing_refusal = None
             while True:
+                if last_user_editing_refusal is not None and time.monotonic() >= deadline:
+                    raise last_user_editing_refusal
                 try:
                     # The exact flight is already durable. Start its POST
                     # before observing cancellation so a cancellation racing
                     # this boundary cannot strand an unsent flight.
                     result = _commit_request_until(
                         self.client, self.project_id, self.timeline_id, body, flight["key"],
-                        response_deadline, self.cancel_event)
+                        deadline, self.cancel_event)
                     break
                 except Exception as exc:
                     details = getattr(exc, "details", {})
                     if not (isinstance(details, dict) and details.get("status") == "refused"
                             and details.get("reason") == "user_editing"):
                         raise
+                    last_user_editing_refusal = exc
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise
