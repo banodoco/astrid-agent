@@ -21,7 +21,7 @@ else:
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
-    {"job_id": "direct-windows", "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release0-to-release1"},
+    {"job_id": "direct-windows", "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "fresh-install"},
     {"job_id": "pinokio-backend-macos", "mode": "pinokio-backend", "runner": "macos-15", "shell": "sh", "os": "macos"},
     {"job_id": "pinokio-backend-linux", "mode": "pinokio-backend", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-backend-windows", "mode": "pinokio-backend", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
@@ -102,21 +102,26 @@ END_STATE_INVENTORY: Final = (
             "route": "ci_journey.py --leg fresh-install",
             # The current direct receipt is intentionally an authentic R0->R1
             # journey, not a substitute for a distinct fresh-R1 direct row.
-            "route_state": "execution-capable" if row["mode"] != "direct" else "unimplemented",
+            "route_state": "execution-capable" if row["mode"] != "direct" or row["job_id"] == "direct-windows" else "unimplemented",
             "dependency": ("authenticated Pinokio adapter and hosted receipt" if row["mode"] != "direct"
+                           else "hosted Windows fresh and refusal receipt" if row["job_id"] == "direct-windows"
                            else "distinct direct fresh-R1 receipt identity"),
             "predicate": "installed candidate, owned service, health, settled task, one Runtime, sentinel and cleanup",
             "source": "check_journey_evidence.py:evaluate_release1_matrix",
-            "evidence_kind": "release1" if row["mode"] != "direct" else "unsupported",
+            "evidence_kind": "release1" if row["mode"] != "direct" or row["job_id"] == "direct-windows" else "unsupported",
         } for row in RELEASE1_MATRIX
     ),
     *(
         {
-            "id": f"populated-r0-update:{row['job_id']}", "phase": "populated-r0-update",
+            "id": ("windows-r0-upgrade-refusal:direct-windows" if row["job_id"] == "direct-windows"
+                   else f"populated-r0-update:{row['job_id']}"), "phase": "populated-r0-update",
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"], "owner": "M-QUAL",
-            "route": "journey_version_jumps.py:execute_release0_to_release1",
+            "route": ("journey_version_jumps.py:execute_windows_refusal" if row["job_id"] == "direct-windows"
+                      else "journey_version_jumps.py:execute_release0_to_release1"),
             "route_state": "execution-capable", "dependency": "authentic hosted exact-tuple receipt",
-            "predicate": "frozen R0 provenance, seeded semantic data, R1 identity, native service, health, task and cleanup",
+            "predicate": ("frozen R0 provenance, refusal, preserved data marker and unchanged scheduled task; Windows upgrade deferred to R1.1"
+                          if row["job_id"] == "direct-windows" else
+                          "frozen R0 provenance, seeded semantic data, R1 identity, native service, health, task and cleanup"),
             "source": "check_journey_evidence.py:evaluate_release1_matrix", "evidence_kind": "release1",
         } for row in RELEASE1_MATRIX if row["mode"] == "direct"
     ),

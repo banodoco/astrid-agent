@@ -944,7 +944,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     expected_direct = {
         ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
         ("direct-macos", "direct", "macos-15", "release0-to-release1"),
-        ("direct-windows", "direct", "windows-2022", "release0-to-release1"),
+        ("direct-windows", "direct", "windows-2022", "fresh-install"),
     }
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"])
             for row in unrestricted if row["mode"] == "direct"} == expected_direct

@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.request
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 if __package__:
@@ -57,7 +57,7 @@ TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release0-to-release1")
+                     "release0-to-release1", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -67,7 +67,8 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
-    "preflight-scheduled-task.txt",
+    "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
+    "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
     "runtime-service-runtime.log",
@@ -1004,7 +1005,7 @@ def windows_task_owned(output: str, root: Path) -> bool:
     return ntpath.normcase(lines[1].replace("/", "\\")).startswith(root_prefix)
 
 
-def assert_host_available(leg: str, root: Path, data: Path) -> None:
+def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False) -> None:
     """Reject an existing real login install before changing any service."""
     default = program_root()
     selection_path = default.parent / "astrid-install.json"
@@ -1055,7 +1056,7 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                      and windows_task_owned("present\n" + tasks[0]["executables"][0], root))
             if fresh or not owned:
                 raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
-    if fresh and runtime_processes(data):
+    if fresh and not skip_process_check and runtime_processes(data):
         raise RuntimeError("A Runtime owner is already running on this host")
 
 
@@ -1805,6 +1806,14 @@ def execute(args: argparse.Namespace) -> dict:
         diagnostic_start_at=diagnostic_start_at,
     )
     windows.EVIDENCE = evidence
+    narrow_refusal = args.leg == "windows-upgrade-refusal"
+
+    def stage_evidence(phase):
+        if narrow_refusal:
+            # Stage the receipt only; generic failure diagnostics inspect live processes.
+            retain_named_evidence(evidence, phase)
+        else:
+            snapshot_failure_evidence(evidence, run_root, data, phase)
     keep_going = getattr(args, "diagnostic_keep_going", False)
     if keep_going:
         if __package__:
@@ -1844,7 +1853,11 @@ def execute(args: argparse.Namespace) -> dict:
                     "error": f"{type(manager_error).__name__}: {manager_error}",
                 }
                 raise
-        assert_host_available("fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg, root, data)
+        host_leg = "fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg
+        if narrow_refusal:
+            assert_host_available(host_leg, root, data, skip_process_check=True)
+        else:
+            assert_host_available(host_leg, root, data)
     except Exception as exc:
         if keep_going:
             report = keepgoing.initial(evidence, args)
@@ -1873,11 +1886,11 @@ def execute(args: argparse.Namespace) -> dict:
         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         write_json(failure_path, recorded)
         print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-        snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+        stage_evidence("before-cleanup")
         raise
     try:
         with isolated_environment(run_root, root, data):
-            with sentinel_process(run_root, evidence) as (sentinel, birth):
+            with (nullcontext((None, None)) if narrow_refusal else sentinel_process(run_root, evidence)) as (sentinel, birth):
                 primary_error = None
                 try:
                     result = (keepgoing.execute(args, root, data, evidence, sentinel, birth)
@@ -1895,7 +1908,7 @@ def execute(args: argparse.Namespace) -> dict:
                               file=sys.stderr, flush=True)
                     raise
                 finally:
-                    snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+                    stage_evidence("before-cleanup")
                     if not getattr(args, "retain_for_next_leg", False):
                         result_path = evidence / "journey-result.json"
                         try:
@@ -1907,15 +1920,18 @@ def execute(args: argparse.Namespace) -> dict:
                                 installed_cli(installed, ["install", "--uninstall", "--root", str(root),
                                                           "--data-root", str(data)], evidence,
                                               "final-uninstall.log", timeout=1800)
-                                if (root / "current").exists() or runtime_processes(data):
+                                if (root / "current").exists() or (not narrow_refusal and runtime_processes(data)):
                                     raise RuntimeError("Owned installation remained after final uninstall")
-                            cleanup_sentinel = sentinel_observation(sentinel, birth)
-                            if result_path.is_file():
+                            cleanup_sentinel = None if narrow_refusal else sentinel_observation(sentinel, birth)
+                            if result_path.is_file() and not narrow_refusal:
                                 recorded = read_json(result_path)
                                 recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
                                 write_json(result_path, recorded)
-                            assert_host_available("cleanup", root, data)
-                            if not cleanup_sentinel["alive"]:
+                            if narrow_refusal:
+                                assert_host_available("cleanup", root, data, skip_process_check=True)
+                            else:
+                                assert_host_available("cleanup", root, data)
+                            if not narrow_refusal and not cleanup_sentinel["alive"]:
                                 raise RuntimeError("Unrelated sentinel did not survive final uninstall")
                             if result_path.is_file():
                                 recorded = read_json(result_path)
@@ -1935,7 +1951,7 @@ def execute(args: argparse.Namespace) -> dict:
                             except Exception as receipt_error:
                                 print(f"Journey cleanup receipt failed: {type(receipt_error).__name__}: {receipt_error}",
                                       file=sys.stderr, flush=True)
-                            snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+                            stage_evidence("after-cleanup")
                             if primary_error is None:
                                 raise
                     else:
@@ -1952,7 +1968,7 @@ def execute(args: argparse.Namespace) -> dict:
                                                  "evidence_path": str(evidence / "final-uninstall.log"),
                                                  "preconditions": [], "postconditions": []})
                         keepgoing.write(evidence, result)
-                    snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
+                    stage_evidence("after-cleanup")
                 return result
     except Exception as exc:
         # Context setup can fail before the lifecycle body has produced a receipt.
@@ -1985,7 +2001,7 @@ def execute(args: argparse.Namespace) -> dict:
                 recorded.update(schema_version=2, receipt_kind="release1-installed-lifecycle")
             write_json(result_path, recorded)
             print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+            stage_evidence("before-cleanup")
         raise
 
 
@@ -2266,7 +2282,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--pinokio-backend-config is only valid for pinokio-backend")
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
-    if args.leg == "release0-to-release1":
+    if sys.platform == "win32" and args.leg == "release0-to-release1":
+        parser.error("Windows release-0 upgrade only admits the narrowed refusal leg")
+    if args.leg in {"release0-to-release1", "windows-upgrade-refusal"}:
+        if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
+            parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")
         if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
         if args.release0_fixture is None or not args.allow_release0_to_release1:

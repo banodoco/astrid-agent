@@ -13,6 +13,7 @@ import platform
 import re
 import secrets
 import stat
+import subprocess
 import sys
 import time
 
@@ -716,12 +717,93 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
     return result
 
 
+WINDOWS_REFUSAL = "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."
+
+
+def windows_task_definition(evidence: Path, phase: str) -> str:
+    """Export configuration only; do not query task readiness or process ownership."""
+    journey.windows.EVIDENCE = evidence
+    xml = journey.windows.powershell(
+        "$ErrorActionPreference='Stop'; Export-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
+        f"scheduled-task-{phase}.xml", show=False, timeout=30)
+    if not xml.strip():
+        raise RuntimeError("R0 scheduled task definition is absent")
+    return hashlib.sha256(xml.encode("utf-8")).hexdigest()
+
+
+def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Check refusal against an authentic R0 without exercising its runtime."""
+    result = {"schema_version": 1, "receipt_kind": "windows-upgrade-refusal",
+              "job_id": args.job_id, "scenario": args.leg, "mode": args.mode, "status": "not-run",
+              "shell": args.shell, **journey.runner_identity(), "os_build": platform.platform(),
+              "source_override_test_mode": False, "candidate_checkouts": args.candidate_checkouts,
+              "service_manager_prerequisite": args.service_manager_prerequisite,
+              "checks": {key: "not-run" for key in ("refusal", "data_marker", "r0_selected", "scheduled_task")}}
+    path = evidence / "journey-result.json"
+    journey.write_json(path, result)
+    try:
+        fixture, r0_manifest, result["release0_fixture"] = release0_admission(args)
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
+            raise RuntimeError("Refusal requires the frozen release-1 candidate")
+        bootstrap_release0(fixture, r0_manifest, args.shell, evidence / "release0", root, data)
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or installed_release(old) != 0:
+            raise RuntimeError("Frozen bootstrap did not select R0")
+        journey.selected_tuple(journey.read_json(r0_manifest), old)
+        # A run-owned marker proves a concrete file in the data root survived.
+        # It does not claim semantic coverage of an active workspace.
+        data.mkdir(parents=True, exist_ok=True)
+        marker = data / "tst-windows-refusal-marker.txt"
+        marker_value = secrets.token_hex(32)
+        with marker.open("x", encoding="ascii") as stream:
+            stream.write(marker_value)
+        before_task = windows_task_definition(evidence, "before")
+        env = {k: v for k, v in os.environ.items() if k.casefold() != "psmodulepath"}
+        env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+        log = evidence / "refusal-update-bootstrap.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("w", encoding="utf-8") as stream:
+            process = subprocess.run([args.shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                      str(app / "public" / "install.ps1"), "--manifest", str(candidate_path),
+                                      "--root", str(root), "--data-root", str(data), "--update"],
+                                     env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=3600, check=False)
+        output = log.read_text(encoding="utf-8-sig", errors="replace")
+        if process.returncode == 0 or WINDOWS_REFUSAL not in output.splitlines():
+            raise RuntimeError("Candidate update did not fail with the required Windows refusal")
+        result["refusal"] = {"exit_code": process.returncode, "message": WINDOWS_REFUSAL}
+        result["checks"]["refusal"] = "pass"
+        selected_path, selected_data, selected = journey.installation(root, data)
+        if selected_path != old_path or selected_data != old_data or installed_release(selected) != 0:
+            raise RuntimeError("Refusal did not retain the selected R0 installation and data root")
+        journey.selected_tuple(journey.read_json(r0_manifest), selected)
+        result["checks"]["r0_selected"] = "pass"
+        if marker.is_symlink() or not marker.is_file() or marker.read_text(encoding="ascii") != marker_value:
+            raise RuntimeError("Refusal did not retain the data marker")
+        result["data_marker"] = {"sha256": hashlib.sha256(marker_value.encode("ascii")).hexdigest()}
+        result["checks"]["data_marker"] = "pass"
+        after_task = windows_task_definition(evidence, "after")
+        if before_task != after_task:
+            raise RuntimeError("Refusal changed the R0 scheduled task definition")
+        result["scheduled_task"] = {"before_sha256": before_task, "after_sha256": after_task}
+        result["checks"]["scheduled_task"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(path, result)
+    return result
+
+
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    if args.leg == "windows-upgrade-refusal":
+        return execute_windows_refusal(args, root, data, evidence, sentinel, birth)
     if args.leg == "release0-to-release1":
-        # This lifts only the legacy C1 Windows harness refusal: the admitted
-        # path has exact release-0 bytes, an exact release-1 candidate, direct
-        # ownership and native-manager checks. The historical resolver below
-        # remains refused on Windows.
+        if sys.platform == "win32":
+            raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
         return execute_release0_to_release1(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
     result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",

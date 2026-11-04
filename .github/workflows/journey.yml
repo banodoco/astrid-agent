@@ -377,7 +377,7 @@ jobs:
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
+              {"job_id":"direct-windows", "mode":"direct", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
               {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
@@ -391,6 +391,9 @@ jobs:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           if journey_row and journey_row != "direct":
               matrix = [row for row in matrix if row["job_id"] == journey_row]
+          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg == "release0-to-release1":
+              for row in matrix:
+                  row["leg"] = diagnostic_leg
           if diagnostic_leg == "fresh-install":
               for row in matrix:
                   row["leg"] = diagnostic_leg
@@ -425,7 +428,7 @@ jobs:
     if: needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: ${{ matrix.job_id == 'direct-windows' && 300 || 150 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
@@ -737,7 +740,32 @@ jobs:
             --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $freshExit = $LASTEXITCODE
+          if ('${{ matrix.job_id }}' -eq 'direct-windows' -and '${{ inputs.diagnostic_keep_going }}' -ne 'true' -and $freshExit -eq 0) {
+            $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
+            python -u agent/scripts/ci_journey.py `
+              --job-id direct-windows --mode direct --leg windows-upgrade-refusal `
+              --candidate "$env:RUNNER_TEMP/candidate.json" `
+              --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
+              --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
+              --run-root $refusalRoot --root (Join-Path $refusalRoot program) --data-root (Join-Path $refusalRoot data) `
+              --shell powershell.exe --release0-fixture "$pwd/agent/tests/fixtures/release0" --allow-release0-to-release1
+            $refusalExit = $LASTEXITCODE
+            $freshReceipt = Join-Path $runRoot 'evidence-upload/after-cleanup/journey-result.json'
+            $refusalReceipt = Join-Path $refusalRoot 'evidence-upload/after-cleanup/journey-result.json'
+            if ((Test-Path -LiteralPath $freshReceipt) -and (Test-Path -LiteralPath $refusalReceipt)) {
+              $fresh = Get-Content -LiteralPath $freshReceipt -Raw | ConvertFrom-Json
+              $refusal = Get-Content -LiteralPath $refusalReceipt -Raw | ConvertFrom-Json
+              $fresh | Add-Member -NotePropertyName windows_upgrade_refusal -NotePropertyValue $refusal
+              [IO.File]::WriteAllText($freshReceipt, ($fresh | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
+            } else { $refusalExit = 1 }
+            foreach ($name in @('refusal-update-bootstrap.log', 'scheduled-task-before.xml', 'scheduled-task-after.xml')) {
+              $source = Join-Path (Split-Path $refusalReceipt) $name
+              if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Split-Path $freshReceipt) }
+            }
+            if ($refusalExit -ne 0) { exit $refusalExit }
+          }
+          if ($freshExit -ne 0) { exit $freshExit }
       - name: Publish diagnostic table or pre-driver failure
         if: always() && inputs.diagnostic_keep_going == true
         shell: pwsh
@@ -769,10 +797,11 @@ jobs:
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
-            'preflight-scheduled-task.txt',
+            'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
+            'scheduled-task-before.xml', 'scheduled-task-after.xml',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-workspace.json',
-            'runtime-owner-selection-context.json', 'runtime-service-runtime.log',
+            'runtime-owner-selection-context.json', 'runtime-service-runtime.log', 'runtime-service-native.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
@@ -1180,7 +1209,7 @@ jobs:
         with:
           pattern: journey-receipt-*
           path: receipts
-          merge-multiple: true
+          merge-multiple: false
       - name: Aggregate the exact Release-1 receipt matrix
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
         shell: bash

@@ -45,6 +45,16 @@ def release1_row(contract, pinned):
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
+    if contract["job_id"] == "direct-windows":
+        row["checks"]["workspace_content"] = "pass"
+        row["windows_upgrade_refusal"] = {
+            "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
+            "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
+            "release0_fixture": row["release0_fixture"], "data_marker": {"sha256": "b" * 64},
+            "scheduled_task": {"before_sha256": "c" * 64, "after_sha256": "c" * 64},
+            "refusal": {"exit_code": 1, "message": "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."},
+            "checks": {key: "pass" for key in ("refusal", "data_marker", "r0_selected", "scheduled_task")},
+        }
     return row
 
 

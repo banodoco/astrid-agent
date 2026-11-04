@@ -82,12 +82,12 @@ def test_release0_admission_is_narrow_and_rejects_general_bypasses(changes):
         jumps.release0_admission(argparse.Namespace(**values))
 
 
-def test_special_leg_lifts_only_its_windows_historical_refusal(monkeypatch, tmp_path):
+def test_seeded_release0_leg_is_not_admitted_on_windows(monkeypatch, tmp_path):
     args = argparse.Namespace(leg="release0-to-release1")
     monkeypatch.setattr(jumps.sys, "platform", "win32")
-    monkeypatch.setattr(jumps, "execute_release0_to_release1", lambda *unused: {"status": "special-windows-admitted"})
-    assert jumps.execute_owned(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
-                               argparse.Namespace(pid=1), "birth") == {"status": "special-windows-admitted"}
+    with pytest.raises(RuntimeError, match="narrowed refusal"):
+        jumps.execute_owned(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
+                            argparse.Namespace(pid=1), "birth")
 
 
 def test_semantic_snapshot_requires_every_seeded_data_class():
