@@ -321,10 +321,11 @@ def main(argv: list[str] | None = None) -> int:
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
                         raise ValueError("This Astrid runs from source checkouts; update those instead.")
                     # Preflight each fresh operation once, before install/selection
-                    # claims or staging. Every real stop still takes Runtime's fence.
+                    # claims or staging. Copy updates quit through the validated
+                    # native job; other operations retain Runtime's stop fence.
                     if mode in {"install", "update"} and installed and not recorded.get("r1_data_root"):
-                        realm = backend.source_workspace(data)
-                        backend.require_stopped_source(data, realm)
+                        backend.copy_preflight(data)
+                        backend.require_copy_receipt_contract()
                     else:
                         backend.preflight_stop(data)
                 if release_stale_selection:

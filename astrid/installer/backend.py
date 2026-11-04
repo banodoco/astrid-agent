@@ -879,22 +879,51 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         with stopped_source(self, data, realm):
             pass
 
-    def adopt(self, candidate: Version, new_data: Path, old_data: Path, realm: dict) -> dict:
-        """Require Runtime's explicit immutable-source contract; never fall back."""
-        self.require_stopped_source(old_data, realm)
-        result = self.runtime(candidate, new_data, "workspace", "adopt", "--from", str(old_data),
-                              "--realm-id", realm["realm_id"], "--read-only-source", "--no-start",
-                              profile=True)
-        expected = new_data / "runtime" / "realms" / realm["realm_id"]
-        if (result.get("ok") is not True or result.get("source_unchanged") is not True
-                or result.get("started") is not False
-                or result.get("realm_id") != realm["realm_id"]
-                or result.get("source") != realm["realm_root"]
-                or result.get("destination") != str(expected)):
-            raise RuntimeOperationError("Runtime did not establish safe read-only workspace adoption.")
-        if self.process_control:
-            self._write_process_control(new_data)
-        return {"realm_id": realm["realm_id"], "realm_root": str(expected)}
+    def copy_preflight(self, data: Path) -> None:
+        from .copy_update import BUSY
+        from .core import is_lifecycle_refusal
+        from .copy_preflight import inspect
+        try:
+            inspect(self, data)
+        except RuntimeOperationError:
+            raise
+        except Exception as cause:
+            exc = self._stop_failure(cause)
+            if is_lifecycle_refusal(exc):
+                raise RuntimeOperationError(BUSY, details=exc.details) from cause
+            raise exc from cause
+
+    def prepare_copy_stop(self, data: Path) -> dict:
+        from .copy_service import observe
+        self.copy_preflight(data)
+        return observe(self.service, data)
+
+    def quit_copy_source(self, data: Path, expected: dict) -> None:
+        from .copy_service import stop
+        # Repeat the read-only busy check immediately before the native job
+        # validation/control boundary. Never call Runtime.down in this flow.
+        self.copy_preflight(data)
+        stop(self.service, data, expected)
+
+    def restore_copy_source(self, data: Path, expected: dict) -> None:
+        from .copy_service import restore
+        restore(self.service, data, expected)
+
+    def require_copy_receipt_contract(self) -> None:
+        raise RuntimeOperationError(
+            "Safe read-only workspace adoption is unavailable: the versioned Runtime copy receipt contract is not installed. Both workspace roots are kept.")
+
+    def adopt(self, candidate: Version, new_data: Path, old_data: Path, realm: dict,
+              *, operation_id: str) -> dict:
+        """Fail before spawning an adopter without its qualified receipt API.
+
+        The historical six-field stdout result has no version, operation
+        correlation, durable record or inventory proof. Accepting it would
+        allow selection of an unverified copy. M-RT owns the replacement wire
+        contract; do not invent field names or silently downgrade here.
+        """
+        self.require_copy_receipt_contract()
+        raise RuntimeOperationError("No qualified Runtime copy receipt adapter is installed.")
 
     def register(self, version: Version, data: Path) -> None:
         if version.managed_by != self.managed_by:

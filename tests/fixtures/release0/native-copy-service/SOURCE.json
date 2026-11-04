@@ -1,0 +1,18 @@
+{
+  "linux-manager-state-before-cleanup.json": {
+    "sha256": "e42922af8518029dca3c902e00e51a3740d62375a521cbd36d5c853323020d2e",
+    "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-linux/before-cleanup/manager-state-before-cleanup.json"
+  },
+  "linux-unit-file-before-cleanup.txt": {
+    "sha256": "d64b8eebf61ef8e97c76a66b160c1d6dff68edcce206ca9e91b60e87a818338e",
+    "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-linux/before-cleanup/unit-file-before-cleanup.txt"
+  },
+  "macos-manager-state-before-cleanup.json": {
+    "sha256": "6627e0f75b5976bcd06d646417f4db6986302fe6a7ffc6c6d8c466e196a412c3",
+    "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-macos/before-cleanup/manager-state-before-cleanup.json"
+  },
+  "macos-unit-file-before-cleanup.txt": {
+    "sha256": "ede59039f7e9807de04e60b30350867e884cef856cfb8aee1fa183eeb2ba40b6",
+    "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-macos/before-cleanup/unit-file-before-cleanup.txt"
+  }
+}

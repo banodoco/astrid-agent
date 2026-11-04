@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,7 +19,9 @@ from runtime_protocol import platform
 from .core import RuntimeOperationError, absolute, current, linked, read_json, separate_roots, switch
 
 JOURNAL = "update-journal.r1.json"
-QUIT = "Quit Astrid to finish updating"
+QUIT = "Astrid could not be safely stopped to update; run the install line again"
+BUSY = "Finish or cancel running tasks, then run the install line again"
+CHANGED = "Astrid changed while updating; your data is untouched; run the install line again"
 
 
 def selected_data(record: dict):
@@ -32,7 +35,7 @@ def data_fields(record: dict, data: Path) -> dict:
 
 
 def _identity(value):
-    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid, value.st_nlink, value.st_size,
             value.st_mtime_ns, value.st_ctime_ns)
 
 
@@ -117,7 +120,8 @@ def source_workspace(backend, data: Path) -> dict:
         raise ValueError("The previous workspace has no unambiguous identity.")
     selected = realms[0]
     realm_id = selected.get("realm_id")
-    if not isinstance(realm_id, str) or catalog.get("selected_realm_id") != realm_id:
+    if (not isinstance(realm_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", realm_id)
+            or catalog.get("selected_realm_id") != realm_id):
         raise ValueError("The previous workspace selection is inconsistent.")
     realm_root = absolute(selected["data_root"])
     if realm_root == data or not realm_root.is_relative_to(data):
@@ -302,6 +306,8 @@ def rollback(root, data, backend, transaction, save):
                 switch(root, old)
             else:
                 (root / "current").unlink(missing_ok=True)
+        if transaction.get("native_stop_intent"):
+            backend.restore_copy_source(old_data, transaction["native_service"])
         save("rolled_back")
         return
     record = backend.service.recorded()
@@ -321,7 +327,8 @@ def rollback(root, data, backend, transaction, save):
         raise ValueError("The selected service changed; refusing to overwrite it during rollback.")
     if not transaction.get("candidate_stopped"):
         if candidate_owned:
-            backend.stop(candidate, new_data)  # fresh Runtime/process/manager identity checks
+            native = backend.prepare_copy_stop(new_data)
+            backend.quit_copy_source(new_data, native)
         else:
             # A crash before register published the selection cannot have
             # started Runtime via this policy. Unexpected publication refuses.
@@ -342,6 +349,8 @@ def rollback(root, data, backend, transaction, save):
         switch(root, old)
     else:
         (root / "current").unlink(missing_ok=True)
+    if transaction.get("native_stop_intent"):
+        backend.restore_copy_source(old_data, transaction["native_service"])
     save("rolled_back")
 
 

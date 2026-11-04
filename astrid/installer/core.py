@@ -513,7 +513,7 @@ class Installer:
 
     def _run_copy_update(self, old: Version, manifest: dict) -> None:
         from .copy_update import (candidate_selections, fingerprint, prepare_candidate_files,
-                                  publish_prepared_launchers, rollback, save_service, stopped_source)
+                                  publish_prepared_launchers, rollback, save_service, stopped_source, CHANGED)
         old_data = self.data
         original_current = current(self.root)
         new_data = absolute(old_data.with_name(old_data.name + "-r1"))
@@ -521,35 +521,56 @@ class Installer:
             raise ValueError("Keep program files and both workspaces in separate directories.")
         # An existing destination can contain accepted R1 work. Never resume by
         # re-adopting or deleting it, even after rollback or failed adoption.
-        if new_data.exists():
+        if os.path.lexists(new_data):
             raise ValueError(f"The retained R1 workspace already exists at {new_data}; both roots are kept. Contact support to select it safely.")
         pointer = absolute(self.root / "current")
         if pointer.exists() and pointer.stat().st_nlink != 1:
             raise ValueError("The current version pointer is not a private regular file.")
         realm = self.backend.source_workspace(old_data)
-        self.backend.require_stopped_source(old_data, realm)
-        with stopped_source(self.backend, old_data, realm):
-            before = fingerprint(old_data)
-            saved = save_service(self.backend)
+        self.backend.copy_preflight(old_data)
+        self.backend.require_copy_receipt_contract()
+        saved = save_service(self.backend)
         self.say("Installing Astrid.")
         candidate = self.backend.stage(manifest, self.root, new_data)
         candidate_service = prepare_candidate_files(self.backend, candidate, new_data, saved)
+        native = self.backend.prepare_copy_stop(old_data)
+        if save_service(self.backend) != saved or current(self.root) != original_current:
+            raise ValueError("The previous installation changed before installer quit.")
         transaction = {
             "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
             "transaction_kind": "copy", "candidate_service": candidate_service, "source_data_root": str(old_data),
-            "data_root": str(new_data), "source_fingerprint": before,
+            "data_root": str(new_data), "native_service": native,
             "old": old.document(), "candidate": candidate.document(), "realm": realm,
             "saved_service": saved,
-            "candidate_selections": candidate_selections(self.backend, candidate, new_data, realm, saved, before),
         }
         self._save_update(transaction, "staged")
         try:
+            self.say("Astrid will restart to update")
+            self._save_update(transaction, "stopping", native_stop_intent=True)
+            self.backend.quit_copy_source(old_data, native)
+            with stopped_source(self.backend, old_data, realm):
+                if self.backend.source_workspace(old_data) != realm:
+                    raise ValueError("The previous workspace selection changed during installer quit.")
+                before = fingerprint(old_data)
+                if save_service(self.backend) != saved:
+                    raise ValueError("The previous service selection changed during installer quit.")
+            self._save_update(transaction, "stopped", source_fingerprint=before,
+                candidate_selections=candidate_selections(self.backend, candidate, new_data, realm, saved, before))
             self._save_update(transaction, "adopting")
-            selected = self.backend.adopt(candidate, new_data, old_data, realm)
-            self._save_update(transaction, "adopted", adopted_realm=selected)
+            selected = self.backend.adopt(candidate, new_data, old_data, realm,
+                                          operation_id=transaction["operation_id"])
+            receipt = selected.get("receipt")
+            expected_realm = str(new_data / "runtime" / "realms" / realm["realm_id"])
+            if (selected.get("realm_id") != realm["realm_id"] or selected.get("realm_root") != expected_realm
+                    or not isinstance(receipt, dict) or type(receipt.get("version")) is not int
+                    or receipt["version"] != 1 or receipt.get("operation_id") != transaction["operation_id"]
+                    or not isinstance(receipt.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", receipt["sha256"])):
+                raise RuntimeOperationError("The verified copy receipt reference does not match this update.")
+            self._save_update(transaction, "adopted", adopted_realm=selected, receipt=receipt)
             with stopped_source(self.backend, old_data, realm):
                 if fingerprint(old_data) != before:
-                    raise ValueError("Previous workspace changed during the update; the update was refused before switching.")
+                    raise ValueError(CHANGED)
                 if save_service(self.backend) != saved:
                     raise ValueError("The previous service selection changed during the update.")
                 if current(self.root) != original_current:

@@ -994,11 +994,11 @@ class Service:
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
     def require_stopped_for_copy(self, data: Path) -> None:
-        """Read-only manager admission. The installer never quits R0 for users."""
+        """Read-only observation after native installer quit; never stop a PID."""
         from .copy_update import QUIT
         if self.system == "darwin":
             # Even a momentarily idle KeepAlive job can relaunch the source.
-            # Require the user's Quit to have unloaded it entirely.
+            # Require installer quit to have unloaded it entirely.
             try:
                 self.run(["launchctl", "print", f"gui/{platform.current_user()}/{LABEL}"])
             except subprocess.CalledProcessError as exc:

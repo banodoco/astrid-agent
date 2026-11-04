@@ -6,6 +6,7 @@ pinned CLI rejection test below guards the real de98a5aa boundary separately.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -20,7 +21,7 @@ import pytest
 from astrid.installer import core
 from astrid.installer.backend import Backend
 from astrid.installer.copy_update import (JOURNAL, data_fields, fingerprint, rollback,
-                                          selected_data, warn_divergence)
+                                          selected_data, warn_divergence, QUIT)
 from astrid.installer.service import LABEL, Service, launch_admission, render
 
 
@@ -75,6 +76,14 @@ def installation(tmp_path, monkeypatch):
     backend._discovery_owner_state = lambda marker: "stale"
     backend.open = lambda: None
     backend.stop = lambda version, data: stops.append((version, data))
+    # Explicit future-contract doubles. The production Backend.adopt remains
+    # closed until M-RT supplies the versioned receipt implementation.
+    backend.preflight_stop = lambda data: None
+    backend.copy_preflight = lambda data: None
+    backend.require_copy_receipt_contract = lambda: None
+    backend.prepare_copy_stop = lambda data: {"fixture": True, "data_root": str(data)}
+    backend.quit_copy_source = lambda data, expected: stops.append((candidate, data)) if data != source else None
+    backend.restore_copy_source = lambda data, expected: None
     backend.start = lambda version, data: None
     backend.verify = lambda *args, **kwargs: None
     runtime_calls = []
@@ -94,6 +103,24 @@ def installation(tmp_path, monkeypatch):
         return {"ok": True, "source_unchanged": True, "started": False,
             "source": str(realm), "destination": str(target), "realm_id": "realm-1"}
     backend.runtime = runtime
+
+    def adopt(version, data, old_data, selected, *, operation_id):
+        backend.require_stopped_source(old_data, selected)
+        before = fingerprint(old_data)
+        result = backend.runtime(version, data, "workspace", "adopt", "--from", str(old_data),
+            "--realm-id", selected["realm_id"], "--read-only-source", "--no-start", profile=True)
+        expected = data / "runtime/realms/realm-1"
+        if (result.get("ok") is not True or result.get("source_unchanged") is not True
+                or result.get("started") is not False or result.get("realm_id") != "realm-1"
+                or result.get("source") != str(realm) or result.get("destination") != str(expected)):
+            raise core.RuntimeOperationError("Runtime did not establish safe read-only workspace adoption.")
+        # This is internal Agent metadata, not a proposed Runtime wire schema.
+        receipt = {"version": 1, "operation_id": operation_id,
+                   "sha256": hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()}
+        if fingerprint(old_data) != before:
+            raise ValueError("Previous workspace changed during copy")
+        return {"realm_id": "realm-1", "realm_root": str(expected), "receipt": receipt}
+    backend.adopt = adopt
 
     def register(version, data):
         core.write_json(selection, {**service.recorded(), **data_fields(service.recorded(), data),
@@ -164,7 +191,7 @@ def test_mutation_during_adopt_never_switches_or_overwrites_external_edits(insta
         assert c.service.recorded() == {"owner": "other"}
 
 
-@pytest.mark.parametrize("step", ["staged", "adopting", "adopted", "switching", "switched", "activating"])
+@pytest.mark.parametrize("step", ["staged", "stopping", "stopped", "adopting", "adopted", "switching", "switched", "activating"])
 def test_crash_each_adopt_switch_intent_preserves_source_and_recovers(installation, step):
     c = installation
     before, original_unit = fingerprint(c.source), c.service_path.read_bytes()
@@ -277,10 +304,10 @@ def test_locked_or_uncertain_source_refuses_without_signalling(installation, mon
     def busy(*args, **kwargs):
         raise BlockingIOError("owned")
     monkeypatch.setattr("runtime_protocol.platform.lock_file", busy)
-    with pytest.raises(core.RuntimeOperationError, match="Quit Astrid to finish updating"):
+    with pytest.raises(core.RuntimeOperationError, match=QUIT):
         c.installer._run_copy_update(c.old, {"release": 1})
     assert c.runtime_calls == c.stops == []
-    assert not (c.root / JOURNAL).exists()
+    assert core.read_json(c.root / JOURNAL)["step"] == "rolled_back"
 
 
 def test_data_fields_never_labels_unchanged_r0_as_r1(tmp_path):
@@ -387,7 +414,7 @@ def test_recovery_rechecks_restarted_candidate_after_durable_stop(installation):
     target = Path(str(c.source) + "-r1")
     core.write_json(target / "runtime/discovery.json", {"pid": 234567, "process_birth_id": "new-owner"})
     c.backend._discovery_owner_state = lambda marker: "live"
-    with pytest.raises(core.RuntimeOperationError, match="Quit Astrid"):
+    with pytest.raises(core.RuntimeOperationError, match=QUIT):
         recover(c)
     assert core.current(c.root) == c.candidate
     assert len(c.stops) == 1
@@ -426,7 +453,7 @@ def test_real_systemd_copy_probe_never_stops_running_source(tmp_path, state):
     if state == "inactive":
         service.require_stopped_for_copy(tmp_path / "data")
     else:
-        with pytest.raises(ValueError, match="Quit Astrid to finish updating"):
+        with pytest.raises(ValueError, match=QUIT):
             service.require_stopped_for_copy(tmp_path / "data")
     assert len(calls) == 1 and calls[0][:3] == ["systemctl", "--user", "show"]
 
@@ -435,7 +462,7 @@ def test_loaded_idle_launchd_job_refuses_without_bootout(tmp_path):
     calls = []
     service = Service(tmp_path / "program", tmp_path / "log", lambda argv: calls.append(argv) or "state = not running",
                       home=tmp_path, system="darwin")
-    with pytest.raises(ValueError, match="Quit Astrid to finish updating"):
+    with pytest.raises(ValueError, match=QUIT):
         service.require_stopped_for_copy(tmp_path / "data")
     assert len(calls) == 1 and calls[0][:2] == ["launchctl", "print"]
 
