@@ -348,13 +348,14 @@ def _atomic_write_text(path: Path, value: str) -> None:
 
 
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
-           env_file: Path | None = None) -> str:
+           env_file: Path | None = None, _argv: list[str] | None = None,
+           _label: str = LABEL, _description: str = "Astrid Runtime") -> str:
     log = log.with_name("runtime-service.log")
-    argv = command(version, data, windows=system == "win32", log=log, env_file=env_file)
+    argv = _argv if _argv is not None else command(version, data, windows=system == "win32", log=log, env_file=env_file)
     service_env = dict(version.env)
     if system == "darwin":
         return plistlib.dumps({
-            "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
+            "Label": _label, "ProgramArguments": argv, "RunAtLoad": True,
             # KeepAlive's SuccessfulExit condition is false: launchd respawns
             # crashes, while an orderly Runtime exit stays stopped.
             "KeepAlive": {"SuccessfulExit": False}, "ExitTimeOut": 90,
@@ -364,7 +365,7 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
     if system == "linux":
         executable = " ".join(systemd_quote(s).replace("$", "$$") for s in argv)
         environment = "".join("Environment=" + systemd_quote(k + "=" + v) + "\n" for k, v in sorted(service_env.items()))
-        return ("[Unit]\nDescription=Astrid Runtime\n\n[Service]\n"
+        return (f"[Unit]\nDescription={_description}\n\n[Service]\n"
                 f"ExecStart={executable}\n{environment}Restart=on-failure\nRestartSec=5\n"
                 "KillMode=mixed\nTimeoutStopSec=90\n"
                 f"StandardOutput={systemd_quote('append:' + str(log))}\n"
@@ -377,7 +378,7 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
     # not encoded bytes. An encoding declaration makes Task Scheduler reject
     # that string because PowerShell cannot provide the declared byte encoding.
     return f'''<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>Astrid Runtime</Description></RegistrationInfo>
+  <RegistrationInfo><Description>{escape(_description)}</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Owner"><UserId>{escape(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>

@@ -5,14 +5,14 @@ module intentionally does not inspect R0 data or implement the stop protocol.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-import plistlib
 import re
-import subprocess
 from pathlib import Path
-from xml.sax.saxutils import escape
 
-from .service import systemd_quote
+from .core import Version, absolute, version_id
+from .service import SERVICE_SETTINGS, render
 
 R0_LINUX = "astrid.service"
 R1_LINUX = "astrid-r1.service"
@@ -36,19 +36,50 @@ def _create(path: Path, content: str, mode: int = 0o600) -> None:
         os.fsync(stream.fileno())
 
 
-def _wrapper(system: str) -> str:
+def _selected(root: Path, system: str) -> tuple[Version, str, str]:
+    """Pin one staged record; an update needs a new service definition."""
+    name = version_id((root / "current").read_text(encoding="utf-8").strip())
+    folder = absolute(root / "versions" / name)
+    record = absolute(folder / "version.json")
+    contents = record.read_bytes()
+    value = json.loads(contents)
+    if not isinstance(value, dict) or not isinstance(value.get("env"), dict):
+        raise ValueError("Invalid selected version record")
+    if any(not isinstance(k, str) or not isinstance(v, str) for k, v in value["env"].items()):
+        raise ValueError("Invalid selected version environment")
+    version = Version.load(value)
+    if (version.root != folder or not version.python.is_relative_to(folder)
+            or not version.profile.is_relative_to(folder)):
+        raise ValueError("Selected version paths must be inside its directory")
+    executable = version.python.with_name("pythonw.exe") if system == "win32" else version.python
+    if not executable.is_file() or not version.profile.is_file():
+        raise ValueError("Selected version interpreter or profile is missing")
+    return version, name, hashlib.sha256(contents).hexdigest()
+
+
+def _command(version: Version, data: Path, root: Path, name: str, digest: str,
+             log: Path, system: str) -> list[str]:
+    """Use the staged interpreter with a pinned manifest and environment."""
+    python = version.python.with_name("pythonw.exe") if system == "win32" else version.python
+    args = ["run", "--profile", "astrid", "--data-root", str(data),
+            "--source-manifest", str(version.profile)]
+    env_file = root / "service-env.json"
+    script = ("import hashlib,json,os,sys\nfrom pathlib import Path\n"
+              + f"root=Path({str(root)!r})\n"
+              + f"if (root.joinpath('current').read_text(encoding='utf-8').strip() != {name!r} or "
+              + f"hashlib.sha256(root.joinpath('versions',{name!r},'version.json').read_bytes()).hexdigest() != {digest!r}):\n"
+              + "    raise ValueError('R1 selected version changed; registration must be reconciled')\n"
+              + f"os.environ.update({version.env!r})\n")
     if system == "win32":
-        return ("$ErrorActionPreference = 'Stop'\n"
-                "$root = Split-Path -Parent $PSScriptRoot\n"
-                "$version = [IO.File]::ReadAllText((Join-Path $root 'current')).Trim()\n"
-                "if ($version -cnotmatch '^[A-Za-z0-9._-]+$' -or $version -in @('.', '..')) { exit 2 }\n"
-                "$target = Join-Path $root ('versions/' + $version + '/bin/runtime.exe')\n"
-                "& $target @args\nexit $LASTEXITCODE\n")
-    return ('#!/bin/sh\nset -eu\n'
-            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
-            'version=$(cat "$root/current")\n'
-            'case "$version" in ""|.|..|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
-            'exec "$root/versions/$version/bin/runtime" "$@"\n')
+        script += f"sys.stdout=sys.stderr=open({str(log.with_name('runtime-service.log'))!r},'a',encoding='utf-8',buffering=1)\n"
+    script += (f"path=Path({str(env_file)!r})\n"
+               "settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\n"
+               f"if (not isinstance(settings,dict) or set(settings)-set({sorted(SERVICE_SETTINGS)!r}) "
+               "or any(not isinstance(value,str) for value in settings.values())):\n"
+               "    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\n"
+               "os.environ.update(settings)\n"
+               f"from astrid_runtime.cli import main\nsys.exit(main({args!r}))")
+    return [str(python), "-X", "utf8", "-I", "-c", script]
 
 
 class BoundaryRegistration:
@@ -91,37 +122,33 @@ class BoundaryRegistration:
             resolved = target.resolve()
             if resolved == r0_data or r0_data in resolved.parents:
                 raise ValueError("R1 service files and logs must be outside R0 data")
-        name = (self.root / "current").read_text(encoding="utf-8").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name in {".", ".."}:
-            raise ValueError("Invalid current version")
-        selected = self.root / "versions" / name / "bin" / ("runtime.exe" if self.system == "win32" else "runtime")
-        if not selected.is_file():
-            raise ValueError("Selected version has no Runtime launcher")
-        args = [str(self.launcher), "run", "--profile", "astrid", "--data-root", str(r1_data)]
+        version, name, digest = _selected(self.root, self.system)
+        environment = dict(version.env)
+        environment["ASTRID_RUNTIME_DATA_ROOT"] = str(r1_data)
+        environment["ASTRID_RUNTIME_SOURCE_MANIFEST"] = str(version.profile)
+        version = Version(version.root, version.python, version.profile, environment,
+                          version.release, version.managed_by)
+        if self.system == "win32" and not user:
+            raise ValueError("A Windows user SID is required")
+        # A leftover wrapper from the earlier registration format is ambiguous.
+        if self.launcher.exists() or self.launcher.is_symlink():
+            raise FileExistsError(f"Existing R1 launcher: {self.launcher}")
+        if self.r1_path.exists() or self.r1_path.is_symlink():
+            raise FileExistsError(f"Existing R1 definition: {self.r1_path}")
         if self.system == "linux":
-            action = " ".join(systemd_quote(x).replace("$", "$$") for x in args)
-            output = systemd_quote("append:" + str(log.absolute()))
-            definition = ("[Unit]\nDescription=Astrid Runtime R1\n\n[Service]\n"
-                          f"ExecStart={action}\nRestart=on-failure\nRestartSec=5\nKillMode=mixed\n"
-                          f"TimeoutStopSec=90\nStandardOutput={output}\nStandardError={output}\n"
-                          "\n[Install]\nWantedBy=default.target\n")
+            state = self.run(["systemctl", "--user", "show", R1_LINUX, "--property=LoadState", "--value"]).strip()
+            if state != "not-found":
+                raise ValueError("R1 systemd definition exists or its state is ambiguous")
         elif self.system == "darwin":
-            definition = plistlib.dumps({"Label": R1_MAC, "ProgramArguments": args,
-                "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ExitTimeOut": 90,
-                "StandardOutPath": str(log.absolute()), "StandardErrorPath": str(log.absolute())}).decode()
-        else:
-            if not user:
-                raise ValueError("A Windows user SID is required")
-            cmd = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
-            arguments = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-File", *args])
-            definition = ('<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
-                '<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' + escape(user) + '</UserId></LogonTrigger></Triggers>'
-                '<Principals><Principal id="Owner"><UserId>' + escape(user) + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>'
-                '<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
-                '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'
-                '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>'
-                '<Actions Context="Owner"><Exec><Command>' + escape(cmd) + '</Command><Arguments>' + escape(arguments) + '</Arguments></Exec></Actions></Task>')
-        _create(self.launcher, _wrapper(self.system), 0o755)
+            listing = self.run(["launchctl", "list"])
+            lines = listing.splitlines()
+            if not lines or lines[0].strip() != "PID\tStatus\tLabel":
+                raise ValueError("Cannot determine existing launchd definitions")
+            if any(line.split("\t")[-1].strip() == R1_MAC for line in lines[1:]):
+                raise ValueError("R1 launchd definition already exists")
+        args = _command(version, r1_data, self.root, name, digest, log.absolute(), self.system)
+        definition = render(self.system, version, r1_data, log.absolute(), user=user,
+                            _argv=args, _label=R1_MAC, _description="Astrid Runtime R1")
         _create(self.r1_path, definition)
         if self.system == "linux":
             self.run(["systemctl", "--user", "daemon-reload"])
