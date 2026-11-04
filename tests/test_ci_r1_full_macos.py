@@ -16,7 +16,7 @@ def test_manual_workflow_embeds_exact_harness_and_two_choices():
     workflow = (root / '.github/workflows/journey.yml').read_text()
     match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)", validate=True\)', workflow)
     assert match and base64.b64decode(match.group(1)) == (root / 'scripts/ci_r1_full_macos.py').read_bytes()
-    assert 'options: [agent, runtime]' in workflow and 'workflow_dispatch:' in workflow
+    assert 'options: [runtime]' in workflow and 'workflow_dispatch:' in workflow
     assert 'actions/checkout' not in workflow
 
 
@@ -54,5 +54,5 @@ def test_requested_install_commands_are_exact_and_test_scope_unfiltered():
     source = Path(full.__file__).read_text()
     assert "'install', '-e', '.[dev]'" in source
     assert "'install', '-e', '../astrid-agent', '-e', '.[test]'" in source
-    assert "[str(py), '-m', 'pytest', '-q']" in source
+    assert "[str(py), '-m', 'pytest', '-q', 'tests/test_db_final_r1_rework.py', '-k', 'backup']" in source
     assert '--basetemp=' in source and 'PYTEST_ADDOPTS' in source
