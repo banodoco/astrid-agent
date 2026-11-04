@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import io
 import json
 import ntpath
@@ -21,6 +22,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -67,11 +69,22 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
     "runtime-service-runtime.log",
+    "project.json", "project-create-request.json", "sdk-request.json",
+    "project-create-response.raw", "project-create-capture-status.json",
+    "sdk-invocation.json", "sdk-response.raw", "sdk-capture-context.json", "sdk-capture-status.json",
+    "runtime-task-log-observation.json",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+SDK_CAPTURE_LIMIT = 128 * 1024
+SDK_CAPTURE_FILES = frozenset({
+    "project.json", "project-create-request.json", "project-create-response.raw",
+    "project-create-capture-status.json", "sdk-request.json", "sdk-response.raw",
+    "sdk-invocation.json", "sdk-capture-context.json", "sdk-capture-status.json",
+    "runtime-task-log-observation.json",
+})
 
 
 def journey_os_label() -> str:
@@ -587,6 +600,10 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
             continue
         if not source.is_file() or source.is_symlink():
+            continue
+        if name in SDK_CAPTURE_FILES and source.stat().st_size > SDK_CAPTURE_LIMIT:
+            print(f"Journey SDK evidence omitted for {name}: exceeds {SDK_CAPTURE_LIMIT} bytes",
+                  file=sys.stderr, flush=True)
             continue
         target = destination / name
         try:
@@ -1203,6 +1220,91 @@ def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
                env=env, timeout=timeout)
 
 
+def installed_cli_capture(version: dict, argv: list[str], evidence: Path, name: str,
+                          *, raw_name: str, status_name: str, module: str,
+                          timeout: int = 300) -> tuple[str, dict]:
+    """Run one synthetic SDK call and retain its exact bounded combined response bytes."""
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(version["env"])
+    evidence.mkdir(parents=True, exist_ok=True)
+    command = [str(version["python"]), "-I", "-m", module, *argv]
+    completed = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=timeout, check=False)
+    output = completed.stdout
+    (evidence / name).write_bytes(output)
+    raw_path = evidence / raw_name
+    status = {"exit_code": completed.returncode, "response_bytes": len(output),
+              "response_capture": "captured" if len(output) <= SDK_CAPTURE_LIMIT else "over_limit",
+              "response_limit_bytes": SDK_CAPTURE_LIMIT}
+    if len(output) <= SDK_CAPTURE_LIMIT:
+        raw_path.write_bytes(output)
+    else:
+        raw_path.unlink(missing_ok=True)
+    write_json(evidence / status_name, status)
+    rendered = output.decode("utf-8-sig", errors="replace")
+    if completed.returncode:
+        raise RuntimeError(f"{name}: exit {completed.returncode}; see {evidence / name}")
+    return rendered, status
+
+
+def capture_sdk_context(version: dict, data: Path, project: str, evidence: Path,
+                        *, create_project: bool) -> None:
+    """Record only fixed, non-secret fields for this disposable journey invocation."""
+    root = Path(version["root"])
+    manifest_path = root / "manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        installed = json.loads(manifest_bytes)
+    except (UnicodeError, ValueError):
+        installed = {}
+    discovery_path = data / "runtime" / "discovery.json"
+    discovery = {}
+    def loopback_endpoint(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = urllib.parse.urlsplit(value)
+            host = parsed.hostname
+            is_loopback = host == "localhost" or bool(host and ipaddress.ip_address(host).is_loopback)
+            if (parsed.scheme not in {"http", "https"} or not is_loopback or
+                    parsed.username is not None or parsed.password is not None or
+                    parsed.query or parsed.fragment):
+                return None
+            return value
+        except (ValueError, UnicodeError):
+            return None
+    if discovery_path.is_file() and not discovery_path.is_symlink():
+        try:
+            raw = json.loads(discovery_path.read_text(encoding="utf-8"))
+            for key in ("endpoint", "door_endpoint"):
+                endpoint = loopback_endpoint(raw.get(key))
+                if endpoint is not None:
+                    discovery[key] = endpoint
+            if isinstance(raw.get("runtime_instance_id"), str):
+                discovery["runtime_instance_id"] = raw["runtime_instance_id"]
+        except (OSError, UnicodeError, ValueError):
+            pass
+    endpoint_env = ((version.get("env") or {}).get("ASTRID_RUNTIME_ENDPOINT") or
+                    os.environ.get("ASTRID_RUNTIME_ENDPOINT"))
+    write_json(evidence / "sdk-capture-context.json", {
+        "schema": "astrid.sdk-capture-context.v1",
+        "operations": (["projects.create", "astrid.omp_invoke"] if create_project
+                       else ["astrid.omp_invoke"]),
+        "project_create_attempted": create_project,
+        "project": project,
+        "data_root": str(data),
+        "runtime_discovery": discovery,
+        "sdk_endpoint_env": loopback_endpoint(endpoint_env),
+        "installed_root": str(root),
+        "installed_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "installed_tuple": {
+            "agent": (installed.get("agent") or {}).get("sha"),
+            "runtime": (installed.get("runtime") or {}).get("sha"),
+            "schema_digest": (installed.get("runtime") or {}).get("schema_digest"),
+        },
+    })
+
+
 def healthy(data: Path) -> dict:
     request = urllib.request.Request(HEALTH_URL, headers={"Origin": "https://astrid.haus"})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
@@ -1409,18 +1511,38 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
+def task(version: dict, evidence: Path, project: str, *, data: Path,
+         create_project: bool = True) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output."""
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
+    capture_sdk_context(version, data, project, evidence, create_project=create_project)
     if create_project:
-        created = json.loads(installed_cli(version, ["projects", "create", project, "--name", project,
-                                                   "--json"], evidence, "project.json"))
+        write_json(evidence / "project-create-request.json", {
+            "argv": ["projects", "create", project, "--name", project, "--json"],
+            "project": project,
+        })
+        create_text, _create_status = installed_cli_capture(
+            version, ["projects", "create", project, "--name", project, "--json"], evidence,
+            "project.json", raw_name="project-create-response.raw",
+            status_name="project-create-capture-status.json", module="astrid")
+        created = json.loads(create_text)
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
-    invocation = json.loads(installed_cli(version, [json.dumps(request)], evidence,
-                                          "sdk-invocation.json", module="astrid.omp_invoke"))
+    write_json(evidence / "sdk-request.json", request)
+    invocation_text, _capture_status = installed_cli_capture(
+        version, [json.dumps(request)], evidence, "sdk-invocation.json", raw_name="sdk-response.raw",
+        status_name="sdk-capture-status.json", module="astrid.omp_invoke")
+    capture_runtime_service_logs(evidence, data.parent, "release1-task")
+    log_path = evidence / "runtime-service-runtime.log"
+    write_json(evidence / "runtime-task-log-observation.json", {
+        "phase": "immediately-after-release1-task-response",
+        "status": "captured" if log_path.is_file() else "unavailable",
+        "bytes": log_path.stat().st_size if log_path.is_file() else None,
+        "limit_bytes": EVIDENCE_LOG_LIMIT,
+    })
+    invocation = json.loads(invocation_text)
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")
@@ -1602,7 +1724,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             windows.snapshot("processes-host-ready.json")
             windows.task(task_project)
         else:
-            task(version, evidence, task_project)
+            task(version, evidence, task_project, data=data)
         result["checks"]["task_settled"] = "pass"
         if args.leg == "fresh-install":
             marker = workspace_root(data) / "tst-b1-workspace-marker.txt"

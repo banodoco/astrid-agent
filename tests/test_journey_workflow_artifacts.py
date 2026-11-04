@@ -33,6 +33,11 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     names_block = guard.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
     staged_names = set(re.findall(r"'([^']+)'", names_block))
     assert "release0-bootstrap.log" in staged_names
+    assert {"project.json", "project-create-request.json", "project-create-response.raw",
+            "sdk-request.json", "sdk-response.raw", "sdk-capture-context.json",
+            "sdk-invocation.json", "sdk-capture-status.json",
+            "runtime-task-log-observation.json"} <= staged_names
+    assert "SDK capture evidence exceeds 131072 bytes" in guard
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
     assert {"runtime-owner-selection.json", "runtime-owner-selection-context.json"} <= collector_names

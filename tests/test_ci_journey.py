@@ -36,6 +36,65 @@ def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(t
     assert not (tmp_path / "evidence").exists()
 
 
+def test_sdk_capture_keeps_exact_bounded_cli_bytes_and_tuple_context(tmp_path, monkeypatch):
+    version_root = tmp_path / "program" / "versions" / "v1"
+    version_root.mkdir(parents=True)
+    manifest = {"agent": {"sha": "a" * 40},
+                "runtime": {"sha": "b" * 40, "schema_digest": "sha256:test"}}
+    (version_root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    data = tmp_path / "data"
+    (data / "runtime").mkdir(parents=True)
+    (data / "runtime" / "discovery.json").write_text(json.dumps({
+        "endpoint": "http://127.0.0.1:43123", "runtime_instance_id": "synthetic-instance",
+        "token": "must-not-be-captured",
+    }), encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    response = b'{"ok":false,"error":{"code":"not_found"}}\n'
+    monkeypatch.setattr(journey.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(stdout=response, returncode=0))
+    rendered, status = journey.installed_cli_capture(
+        {"python": sys.executable, "env": {}, "root": str(version_root)},
+        ['{"project":"synthetic-project"}'], evidence, "sdk-invocation.json",
+        raw_name="sdk-response.raw", status_name="sdk-capture-status.json",
+        module="astrid.omp_invoke")
+    journey.capture_sdk_context(
+        {"root": str(version_root), "env": {}}, data, "synthetic-project", evidence,
+        create_project=True)
+
+    assert rendered == response.decode()
+    assert status["response_capture"] == "captured"
+    assert (evidence / "sdk-invocation.json").read_bytes() == response
+    assert (evidence / "sdk-response.raw").read_bytes() == response
+    context = json.loads((evidence / "sdk-capture-context.json").read_text())
+    assert context["runtime_discovery"]["endpoint"] == "http://127.0.0.1:43123"
+    assert context["data_root"] == str(data)
+    assert context["operations"] == ["projects.create", "astrid.omp_invoke"]
+    assert context["installed_tuple"] == {"agent": "a" * 40, "runtime": "b" * 40,
+                                          "schema_digest": "sha256:test"}
+    assert "token" not in json.dumps(context)
+
+
+def test_sdk_capture_omits_over_limit_raw_bytes_and_stages_only_allowlisted_files(tmp_path, monkeypatch):
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    response = b"x" * (journey.SDK_CAPTURE_LIMIT + 1)
+    monkeypatch.setattr(journey.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(stdout=response, returncode=0))
+    _, status = journey.installed_cli_capture(
+        {"python": sys.executable, "env": {}}, ["synthetic"], evidence,
+        "sdk-invocation.json", raw_name="sdk-response.raw", status_name="sdk-capture-status.json",
+        module="astrid.omp_invoke")
+    journey.write_json(evidence / "sdk-request.json", {"synthetic": True})
+    journey.write_json(evidence / "unlisted-private.json", {"value": "not staged"})
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert status["response_capture"] == "over_limit"
+    assert not (evidence / "sdk-response.raw").exists()
+    assert not (staged / "sdk-response.raw").exists()
+    assert (staged / "sdk-request.json").is_file()
+    assert not (staged / "unlisted-private.json").exists()
+
+
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
     app, shipped = app_checkout(tmp_path)
     with pytest.raises(ValueError, match="--source-override"):

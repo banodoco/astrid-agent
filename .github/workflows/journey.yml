@@ -715,8 +715,11 @@ jobs:
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
-            'runtime-owner-workspace.json',
-            'runtime-owner-selection-context.json', 'runtime-service-runtime.log',
+            'runtime-owner-workspace.json', 'runtime-owner-selection-context.json',
+            'runtime-service-runtime.log',
+            'project.json', 'project-create-request.json', 'project-create-response.raw',
+            'project-create-capture-status.json', 'sdk-request.json', 'sdk-invocation.json', 'sdk-response.raw',
+            'sdk-capture-context.json', 'sdk-capture-status.json', 'runtime-task-log-observation.json',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
@@ -734,6 +737,13 @@ jobs:
               $name = $Matches[2]
               if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
                 throw "Unexpected staged evidence filename: $relative"
+              }
+              if ($name -in @(
+                'project.json', 'project-create-request.json', 'project-create-response.raw',
+                'project-create-capture-status.json', 'sdk-request.json', 'sdk-invocation.json', 'sdk-response.raw',
+                'sdk-capture-context.json', 'sdk-capture-status.json', 'runtime-task-log-observation.json'
+              ) -and $file.Length -gt 131072) {
+                throw "SDK capture evidence exceeds 131072 bytes: $relative"
               }
               if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "Staged evidence must be a regular file: $relative"
