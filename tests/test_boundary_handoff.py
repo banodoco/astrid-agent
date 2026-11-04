@@ -772,3 +772,76 @@ def test_mac_uninstall_with_disabled_output(case, monkeypatch, separator, disabl
     assert not manager['r0_enabled'] and not manager['r1_enabled']
     actions = [cmd[1] for cmd in manager['calls'] if cmd[1] not in ('print', 'print-disabled')]
     assert actions == ['disable', 'bootout', 'disable']
+
+
+@pytest.mark.parametrize('outcome', ['disappears', 'timeout', 'foreign', 'unknown', 'reappears'])
+def test_mac_uninstall_waits_for_owned_launchd_entry(case, monkeypatch, outcome):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    before = snapshot(c.data), snapshot(c.destination), c.service.path.read_bytes()
+    registration_path = c.tx.registration.r1_path
+    registration_bytes = registration_path.read_bytes()
+    run = c.service.run
+    target = f'gui/{c.tx.registration.uid}/{registration.R1_MAC}'
+    stopped = False
+    observations = []
+    waits = []
+
+    def launchctl(argv, **options):
+        nonlocal stopped
+        argv = list(map(str, argv))
+        if argv == ['launchctl', 'bootout', target]:
+            result = run(argv, **options)
+            manager['r1_loaded'] = True  # launchd still reports SIGTERMed
+            stopped = True
+            return result
+        if stopped and argv == ['launchctl', 'print', target]:
+            observations.append(True)
+            if outcome in ('disappears', 'reappears') and len(observations) == 2:
+                manager['r1_loaded'] = False
+            if outcome == 'unknown' and len(observations) == 2:
+                raise subprocess.CalledProcessError(1, argv, output='manager unavailable')
+            output = run(argv, **options)
+            if outcome == 'foreign' and len(observations) == 2:
+                output = output.replace(str(c.root / 'bin/runtime'), '/foreign/runtime')
+            return output.replace('\targuments = {', '\tstate = SIGTERMed\n\targuments = {')
+        return run(argv, **options)
+
+    wait_for_lock = r0_stop._wait_for_owner_lock
+    def observe_lock(path, *args):
+        assert not manager['r1_loaded']
+        assert registration_path.exists()
+        waits.append(path)
+        result = wait_for_lock(path, *args)
+        if outcome == 'reappears':
+            manager['r1_loaded'] = True
+        return result
+
+    monkeypatch.setattr(c.service, 'run', launchctl)
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', observe_lock)
+    clock = [0.0]
+    sleeps = []
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+    monkeypatch.setattr(handoff, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    if outcome == 'timeout':
+        wait = handoff._wait_for_mac_unload
+        monkeypatch.setattr(handoff, '_wait_for_mac_unload', lambda reg, bound: wait(reg, bound, timeout=.4))
+
+    if outcome == 'disappears':
+        handoff.uninstall_complete(c.backend, c.data, say=lambda _: None)
+        assert len(observations) >= 2 and waits == [c.destination / 'runtime/realms/r0']
+        assert (snapshot(c.data), snapshot(c.destination)) == before[:2]
+    else:
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            handoff.uninstall_complete(c.backend, c.data, say=lambda _: None)
+        assert observations
+        assert bool(waits) == (outcome == 'reappears')
+        if outcome == 'timeout':
+            assert len(observations) == 3 and sleeps == [.2, .2]
+        assert (snapshot(c.data), snapshot(c.destination), c.service.path.read_bytes()) == before
+        assert c.root.exists() and registration_path.read_bytes() == registration_bytes
+        assert c.tx.journal.exists() and c.tx.registration.journal.exists()
+        assert [cmd for cmd in manager['calls'] if cmd[1] in ('disable', 'bootout')] == [
+            ['launchctl', 'disable', target], ['launchctl', 'bootout', target]]

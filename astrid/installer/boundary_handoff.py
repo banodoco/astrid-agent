@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import time
 
 from . import adoption_receipt, boundary_registration as registration, r0_stop
 from .core import Version, absolute, current, pending_transaction, read_json, separate_roots, version_id
@@ -317,6 +318,16 @@ def _mac_disabled(output, label):
                           + r'"\s*(?:=>|=)\s*(?:true|disabled)\s*$', output))
 
 
+def _wait_for_mac_unload(reg, bound, timeout=90, poll_interval=.2):
+    """Wait for the owned launchd entry to disappear, refusing changed entries."""
+    deadline = time.monotonic() + timeout
+    while reg._mac_state(bound):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("R1 stop is uncertain; both roots were kept.")
+        time.sleep(min(poll_interval, remaining))
+
+
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
     """Remove a completed, bound handoff without ever restarting R0.
 
@@ -385,6 +396,7 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
         target = f"gui/{reg.uid}/{registration.R1_MAC}"
         reg._run(["launchctl", "disable", target])
         reg._run(["launchctl", "bootout", target])
+        _wait_for_mac_unload(reg, bound)
         disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
         if (reg._mac_state(bound)
                 or not _mac_disabled(disabled, registration.R1_MAC)):
@@ -399,6 +411,10 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
             raise ValueError("R1 registration is missing; both roots were kept.")
         if r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]:
             raise ValueError("R0 service changed; both roots were kept.")
+        if tx.service.system == "darwin":
+            disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
+            if reg._mac_state(bound) or not _mac_disabled(disabled, registration.R1_MAC):
+                raise ValueError("R1 stop is uncertain; both roots were kept.")
         reg.r1_path.unlink()
         r0_stop._sync_directory(reg.r1_path.parent)
         if tx.service.system == "linux":
