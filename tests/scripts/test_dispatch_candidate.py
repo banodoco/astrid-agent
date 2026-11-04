@@ -80,6 +80,45 @@ def test_candidate_keeps_manifest_and_relay_pins_paired(tmp_path):
     assert git("--git-dir", str(app_remote), "cat-file", "-t", candidate["app"]) == "commit"
 
 
+def test_default_candidate_uses_current_remote_int_r1_heads(tmp_path):
+    agent_remote, _, agent_sha = make_repo(tmp_path, "agent-current")
+    runtime_remote, _, runtime_sha = make_repo(tmp_path, "runtime-current")
+    app_remote, app_work, _ = make_repo(
+        tmp_path,
+        "app-current",
+        {
+            "public/install-manifest.json": '{"agent":{"sha":"old-agent"},"runtime":{"sha":"old-runtime"}}\n',
+            "public/install": "install\n",
+            "public/install.sh": "#!/bin/sh\n",
+            "public/install.ps1": "Write-Output install\n",
+        },
+    )
+    output_dir = tmp_path / "current-inputs"
+    dispatch_candidate.main(
+        [
+            "direct-linux",
+            "current-candidate.json",
+            "--agent-remote",
+            str(agent_remote),
+            "--runtime-remote",
+            str(runtime_remote),
+            "--app-repo",
+            str(app_work),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    envelope = json.loads((output_dir / "current-candidate.json").read_text(encoding="utf-8"))
+    candidate = json.loads(envelope["candidate"])
+    pinned_manifest = json.loads(
+        git("--git-dir", str(app_remote), "show", f"{candidate['app']}:public/install-manifest.json")
+    )
+    assert candidate["agent"] == pinned_manifest["agent"]["sha"] == envelope["stopped_path_agent_ref"] == agent_sha
+    assert candidate["runtime"] == pinned_manifest["runtime"]["sha"] == runtime_sha
+    assert envelope["row"] == "direct-linux"
+
+
 def test_unfetchable_agent_sha_fails_before_app_push_or_input(tmp_path, capsys):
     agent_remote, _, _ = make_repo(tmp_path, "agent")
     runtime_remote, _, runtime_sha = make_repo(tmp_path, "runtime")

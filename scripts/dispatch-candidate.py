@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish an App commit pinned to fetchable Agent and Runtime commits."""
+"""Publish an App commit pinned to current or explicitly selected commits."""
 import argparse
 import hashlib
 import json
@@ -40,10 +40,39 @@ def verify_remote_commit(remote, sha, label, run_command=run):
             )
 
 
+def resolve_remote_int_r1(remote, label, run_command=run):
+    """Resolve the current int/r1 head from the remote, not a local cache."""
+    with tempfile.TemporaryDirectory(prefix="qual-remote-head-") as tmp:
+        probe = Path(tmp) / "probe.git"
+        try:
+            run_command("git", "init", "--bare", "--quiet", str(probe))
+            run_command(
+                "git", "-C", str(probe), "fetch", "--quiet", "--no-tags",
+                remote, "refs/heads/int/r1",
+            )
+            resolved = run_command(
+                "git", "-C", str(probe), "rev-parse", "FETCH_HEAD^{commit}"
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            detail = getattr(exc, "output", "") or str(exc)
+            raise ValueError(
+                f"cannot resolve current int/r1 head for {label} from {remote}: {detail.strip()}"
+            ) from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise ValueError(
+            f"remote int/r1 head for {label} did not resolve to a full commit SHA: {resolved}"
+        )
+    return resolved
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("agent")
-    parser.add_argument("runtime")
+    parser.add_argument(
+        "agent", nargs="?", help="explicit Agent commit; default is the current int/r1 head"
+    )
+    parser.add_argument(
+        "runtime", nargs="?", help="explicit Runtime commit; default is the current int/r1 head"
+    )
     parser.add_argument("row", choices=("direct-linux", "direct-macos", "direct-windows", "direct"))
     parser.add_argument("name", help="unique filename without manager prefix")
     parser.add_argument("--mac-runner", choices=("hosted", "astrid-mac"), default="hosted")
@@ -52,9 +81,15 @@ def main(argv=None):
     parser.add_argument("--agent-remote", default=AGENT_REMOTE)
     parser.add_argument("--runtime-remote", default=RUNTIME_REMOTE)
     args = parser.parse_args(argv)
+    if (args.agent is None) != (args.runtime is None):
+        parser.error(
+            "provide both explicit Agent and Runtime SHAs, or omit both to use current int/r1 heads"
+        )
     if args.mac_runner == "astrid-mac" and args.row != "direct-macos":
         parser.error("astrid-mac requires the direct-macos diagnostic row")
-    if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (args.agent, args.runtime)):
+    if args.agent is not None and not all(
+        re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (args.agent, args.runtime)
+    ):
         parser.error("agent and runtime must be full lowercase SHAs")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.name) or args.name.startswith("M-QUAL-"):
         parser.error("name must be a JSON filename without the manager prefix")
@@ -64,9 +99,13 @@ def main(argv=None):
     if not args.app_repo.is_dir():
         parser.error(f"App repository directory does not exist: {args.app_repo}; pass --app-repo")
 
-    # Do this before touching App or creating the relay input.  The workflow
-    # must be able to fetch both exact commits from their canonical remotes.
+    # Default workflow candidates follow today's int/r1 heads. Explicit pins
+    # remain available for diagnostic use. In either case, verify exact
+    # fetchability before touching App or creating the relay input.
     try:
+        if args.agent is None:
+            args.agent = resolve_remote_int_r1(args.agent_remote, "Agent")
+            args.runtime = resolve_remote_int_r1(args.runtime_remote, "Runtime")
         verify_remote_commit(args.agent_remote, args.agent, "Agent")
         verify_remote_commit(args.runtime_remote, args.runtime, "Runtime")
     except ValueError as exc:
