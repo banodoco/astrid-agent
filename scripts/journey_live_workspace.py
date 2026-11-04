@@ -5,9 +5,41 @@ import argparse
 import hashlib
 import json
 import re
+import traceback
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
+
+ERROR_CODES = frozenset({"runtime_error", "unauthorized", "conflict", "validation_error", "forbidden",
+                         "unavailable", "not_found", "retired_route", "owner_busy", "realm_admission_failed",
+                         "lease_fenced", "protocol_error", "invalid_request"})
+ERROR_TYPES = frozenset({"HTTPError", "URLError", "TimeoutError", "JSONDecodeError", "KeyError", "ValueError",
+                         "TypeError", "RuntimeError", "OSError", "FileNotFoundError", "PermissionError"})
+FAILURE_FUNCTIONS = frozenset({"main", "execute", "selection_for", "check_selection", "request", "seed", "snapshot"})
+
+
+def failure_diagnostic(exc):
+    """Only fixed vocabulary and source locations cross the artifact boundary."""
+    frames = [{"function": frame.name, "line": frame.lineno}
+              for frame in traceback.extract_tb(exc.__traceback__)
+              if Path(frame.filename).name == "journey_live_workspace.py" and frame.name in FAILURE_FUNCTIONS]
+    kind = type(exc).__name__
+    return {"schema": "astrid.live-workspace-failure.v1", "error_type": kind if kind in ERROR_TYPES else "other",
+            "frames": frames[-10:], "http_status": exc.code if isinstance(exc, HTTPError) and type(exc.code) is int and 100 <= exc.code <= 599 else None,
+            "runtime_code": getattr(exc, "safe_runtime_code", None) if isinstance(exc, HTTPError) else None}
+
+
+def valid_failure_diagnostic(value):
+    return (isinstance(value, dict) and set(value) == {"schema", "error_type", "frames", "http_status", "runtime_code"}
+            and value["schema"] == "astrid.live-workspace-failure.v1"
+            and isinstance(value["error_type"], str) and value["error_type"] in ERROR_TYPES | {"other"}
+            and isinstance(value["frames"], list) and len(value["frames"]) <= 10
+            and all(isinstance(frame, dict) and set(frame) == {"function", "line"}
+                    and isinstance(frame["function"], str) and frame["function"] in FAILURE_FUNCTIONS and type(frame["line"]) is int
+                    and 0 < frame["line"] < 10000 for frame in value["frames"])
+            and (value["http_status"] is None or type(value["http_status"]) is int and 100 <= value["http_status"] <= 599)
+            and (value["runtime_code"] is None or isinstance(value["runtime_code"], str) and value["runtime_code"] in ERROR_CODES))
 
 
 class LiveWorkspace:
@@ -29,8 +61,18 @@ class LiveWorkspace:
             else:
                 headers["Content-Type"] = "application/json"
                 body = json.dumps(body).encode()
-        with urlopen(Request(self.endpoint + path, data=body, headers=headers, method=method), timeout=120) as response:
-            value = response.read()
+        try:
+            with urlopen(Request(self.endpoint + path, data=body, headers=headers, method=method), timeout=120) as response:
+                value = response.read()
+        except HTTPError as exc:
+            try:
+                detail = json.loads(exc.read(16384))
+                code = detail.get("code") if isinstance(detail, dict) else None
+                if isinstance(code, str) and code in ERROR_CODES:
+                    exc.safe_runtime_code = code
+            except (ValueError, OSError):
+                pass
+            raise
         return value if binary else json.loads(value)
 
 
@@ -162,7 +204,20 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--request", type=Path, required=True)
+    parser.add_argument("--diagnostic", type=Path)
     args = parser.parse_args()
+    try:
+        execute(args)
+    except Exception as exc:
+        if args.diagnostic:
+            try:
+                args.diagnostic.write_text(json.dumps(failure_diagnostic(exc), sort_keys=True) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+        raise
+
+
+def execute(args):
     data, root = args.data, args.root
     selection = json.loads(args.selection.read_text(encoding="utf-8"))
     check_selection(data, root, selection)

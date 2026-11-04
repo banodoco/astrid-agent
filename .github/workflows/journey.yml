@@ -709,7 +709,7 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'project-create-capture-status.json', 'sdk-capture-status.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'project-create-capture-status.json', 'sdk-capture-status.json', 'live-seed-failure.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',

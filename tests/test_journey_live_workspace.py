@@ -3,6 +3,8 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,16 @@ def test_preservation_rejects_changed_data_and_wrong_schema():
 def test_live_client_refuses_non_loopback():
     with pytest.raises(ValueError, match="loopback"):
         live.LiveWorkspace("https://example.com", "secret")
+
+
+def test_failure_diagnostic_rejects_untrusted_fields():
+    good = {"schema": "astrid.live-workspace-failure.v1", "error_type": "KeyError",
+            "frames": [{"function": "seed", "line": 42}], "http_status": None, "runtime_code": None}
+    assert live.valid_failure_diagnostic(good)
+    for bad in ({**good, "detail": "secret"}, {**good, "error_type": ["secret"]},
+                {**good, "frames": [{"function": "secret", "line": 42}]},
+                {**good, "http_status": True}, {**good, "runtime_code": {"secret": 1}}):
+        assert not live.valid_failure_diagnostic(bad)
 
 
 def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeypatch):
@@ -127,3 +139,64 @@ def test_existing_project_preferences_are_not_overwritten():
             return {}
     with pytest.raises(ValueError, match="already has preferences"):
         live.seed(Client(), "project", "generation", create_project=True)
+
+
+def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_path, monkeypatch):
+    from scripts import ci_journey as journey
+
+    secret = "sensitive-token-for-test"
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok","runtime_instance_id":"instance"}')
+        def do_POST(self):
+            assert self.headers["Authorization"] == "Bearer " + secret
+            self.send_response(422)
+            self.end_headers()
+            self.wfile.write(json.dumps({"code": "validation_error", "message": secret}).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        run_root = tmp_path / "run"
+        root, data, realm = (run_root / name for name in ("program", "data", "realm"))
+        for directory in (root, data / "runtime", realm):
+            directory.mkdir(parents=True)
+        credential = data / "token"
+        credential.write_text(secret)
+        (run_root / "tst-b1-owner.json").write_text(json.dumps({
+            "schema_version": 1, "run_id": "a" * 32, "root": str(root), "data_root": str(data)}))
+        discovery = {"endpoint": f"http://127.0.0.1:{server.server_port}", "realm_root": str(realm),
+                     "active_realm": "realm", "runtime_instance_id": "instance", "pid": 1,
+                     "process_birth_id": "birth", "credential_file": str(credential)}
+        (data / "runtime/discovery.json").write_text(json.dumps(discovery))
+        evidence = run_root / "evidence" / "release0-to-release1"
+        monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: None)
+        monkeypatch.setattr(journey, "healthy", lambda *_: discovery)
+        monkeypatch.setattr(journey, "workspace_root", lambda *_: realm)
+        with pytest.raises(RuntimeError, match="seed.json: exit 1"):
+            jumps.live_workspace(root, data, evidence / "release0-api-seed", "seed",
+                                 {"project": "p", "generation": "release0", "create_project": True})
+        for phase in ("before-cleanup", "after-cleanup"):
+            journey.retain_named_evidence(evidence, phase)
+            staged = run_root / "evidence-upload" / phase
+            diagnostic = json.loads((staged / "live-seed-failure.json").read_text())
+            assert diagnostic["error_type"] == "HTTPError"
+            assert diagnostic["http_status"] == 422
+            assert diagnostic["runtime_code"] == "validation_error"
+            assert any(frame["function"] == "seed" for frame in diagnostic["frames"])
+            assert all(secret.encode() not in file.read_bytes() for file in staged.iterdir())
+            assert not (staged / "seed.json").exists()
+        # Reject an unexpected or malformed diagnostic rather than uploading it.
+        source = evidence / "release0-api-seed" / "live-seed-failure.json"
+        source.write_text(json.dumps({**diagnostic, "runtime_code": secret}))
+        journey.retain_named_evidence(evidence, "after-cleanup")
+        assert not (run_root / "evidence-upload/after-cleanup/live-seed-failure.json").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

@@ -337,10 +337,14 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
     selection_path = evidence / (action + "-selection.json")
     journey.write_json(request_path, request)
     journey.write_json(selection_path, selection)
+    diagnostic_path = evidence / "live-seed-failure.json"
+    if action == "seed":
+        diagnostic_path.unlink(missing_ok=True)
+    diagnostic_args = ["--diagnostic", diagnostic_path] if action == "seed" else []
     try:
         output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
                               action, "--data", data, "--root", root, "--selection", selection_path,
-                              "--request", request_path], evidence / (action + ".json"), timeout=120)
+                              "--request", request_path, *diagnostic_args], evidence / (action + ".json"), timeout=120)
     except RuntimeError:
         # Preserve the helper's normal failure while giving turnover a clear error.
         live.check_selection(data, root, selection)
