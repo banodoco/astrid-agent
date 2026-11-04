@@ -234,9 +234,14 @@ class BoundaryRegistration:
             return False
         args = plistlib.loads(self._definition(Path(value["r1_data_root"]), Path(value["log"])).encode())["ProgramArguments"]
         head, sep, rest = output.partition("\targuments = {\n")
-        paths = re.findall(r"(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$", head)
         expected = "".join("\t\t" + arg + "\n" for arg in args) + "\t}\n"
-        if (not output.startswith(target + " = {\n") or paths != [str(self.r1_path)]
+        metadata = head + (rest[len(expected):] if rest.startswith(expected) else "")
+        def fields(name):
+            return re.findall(r"(?m)^[ \t]*" + name + r"(?:[ \t]|=)[^\r\n]*$", metadata)
+        if (not output.startswith(target + " = {\n")
+                or fields("path") != ["\tpath = " + str(self.r1_path)]
+                or fields("program") != ["\tprogram = " + args[0]]
+                or fields("arguments")
                 or not sep or not rest.startswith(expected) or not self.r1_path.is_file()):
             raise ValueError("R1 launchd action changed; recovery intent retained.")
         return True

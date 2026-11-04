@@ -734,7 +734,7 @@ def mac_ready(c, monkeypatch):
             path = svc.path.with_name(registration.R1_MAC + '.plist') if is_r1 else svc.path
             args = plistlib.loads(path.read_bytes())['ProgramArguments']
             body = ''.join('\t\t' + arg + '\n' for arg in args)
-            return f'{target} = {{\n\tpath = {path}\n\targuments = {{\n{body}\t}}\n}}\n'
+            return f'{target} = {{\n\tpath = {path}\n\tprogram = {args[0]}\n\targuments = {{\n{body}\t}}\n}}\n'
         if action == 'print-disabled':
             return 'disabled services = {\n' + ''.join(f'\t"{label}" {manager["separator"]} {(manager["disabled_value"] if not manager[key + "_enabled"] else "false")}\n' for key, label in [('r0', registration.R0_MAC), ('r1', registration.R1_MAC)]) + '}\n'
         if action in ('enable', 'disable'):
@@ -845,3 +845,153 @@ def test_mac_uninstall_waits_for_owned_launchd_entry(case, monkeypatch, outcome)
         assert c.tx.journal.exists() and c.tx.registration.journal.exists()
         assert [cmd for cmd in manager['calls'] if cmd[1] in ('disable', 'bootout')] == [
             ['launchctl', 'disable', target], ['launchctl', 'bootout', target]]
+
+
+@pytest.mark.parametrize('change', ['missing', 'foreign', 'duplicate', 'empty', 'malformed', 'duplicate-arguments', 'duplicate-path'])
+def test_mac_uninstall_rejects_uncertain_loaded_action(case, monkeypatch, change):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    run = c.service.run
+    target = f'gui/{c.tx.registration.uid}/{registration.R1_MAC}'
+    original_program = f'\tprogram = {c.root / "bin/runtime"}\n'
+    def altered(argv, **kw):
+        output = run(argv, **kw)
+        if list(argv) == ['launchctl', 'print', target]:
+            changes = {
+                'missing': '',
+                'foreign': '\tprogram = /foreign/executable\n',
+                'duplicate': original_program * 2,
+                'empty': original_program + '\tprogram =\n',
+                'malformed': original_program + '\tprogram unknown\n',
+                'duplicate-arguments': original_program + '\targuments = {}\n',
+                'duplicate-path': original_program + f'\tpath = {c.tx.registration.r1_path}\n',
+            }
+            output = output.replace(original_program, changes[change])
+        return output
+    monkeypatch.setattr(c.service, 'run', altered)
+    before = snapshot(c.data), snapshot(c.destination), c.tx.journal.read_bytes()
+    with pytest.raises(ValueError):
+        handoff.uninstall_complete(c.backend, c.data, delete_data=True, say=lambda _: None)
+    assert not [cmd for cmd in manager['calls'] if cmd[1] in ('disable', 'bootout')]
+    assert (snapshot(c.data), snapshot(c.destination), c.tx.journal.read_bytes()) == before
+    assert c.tx.registration.r1_path.exists()
+
+
+def test_mac_uninstall_rechecks_action_after_disable(case, monkeypatch):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    run = c.service.run
+    target = f'gui/{c.tx.registration.uid}/{registration.R1_MAC}'
+    replaced = False
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    def launchctl(argv, **kw):
+        nonlocal replaced
+        if list(argv) == ['launchctl', 'bootout', target] and replaced:
+            child.terminate()
+            child.wait(timeout=5)
+        output = run(argv, **kw)
+        if list(argv) == ['launchctl', 'disable', target]:
+            replaced = True
+        if replaced and list(argv) == ['launchctl', 'print', target]:
+            output = output.replace(f'\tprogram = {c.root / "bin/runtime"}', '\tprogram = /foreign/executable')
+        return output
+    monkeypatch.setattr(c.service, 'run', launchctl)
+    before = snapshot(c.data), snapshot(c.destination)
+    try:
+        with pytest.raises(ValueError):
+            handoff.uninstall_complete(c.backend, c.data, delete_data=True, say=lambda _: None)
+        assert child.poll() is None
+        assert (snapshot(c.data), snapshot(c.destination)) == before
+        assert c.tx.registration.r1_path.exists() and c.tx.journal.exists()
+        assert not [cmd for cmd in manager['calls'] if cmd[1] == 'bootout']
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize('cut', ['disable', 'bootout', 'poll', 'owner-lock'])
+def test_mac_uninstall_interrupted_stop_retries_with_durable_intent(case, monkeypatch, cut):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    before = snapshot(c.data), snapshot(c.destination)
+    evidence = {p: p.read_bytes() for p in (c.service.path, c.tx.registration.r1_path,
+                c.tx.journal, c.tx.registration.journal, r0_stop._marker_path(c.service))}
+    statefile = c.root.parent / 'persistent-launchd.json'
+    statefile.write_text(json.dumps(manager))
+    run, wait = c.service.run, r0_stop._wait_for_owner_lock
+    target = f'gui/{c.tx.registration.uid}/{registration.R1_MAC}'
+    stopped = False
+    def launchctl(argv, **kw):
+        nonlocal stopped
+        manager.update(json.loads(statefile.read_text()))
+        try:
+            output = run(argv, **kw)
+        finally:
+            statefile.write_text(json.dumps(manager))
+        if argv[1] == 'bootout':
+            stopped = True
+        if argv[1] == cut and argv[-1] == target:
+            die()
+        if cut == 'poll' and stopped and argv[1] == 'print' and argv[-1] == target:
+            die()
+        if cut == 'poll' and argv[1] == 'bootout':
+            manager['r1_loaded'] = True
+            statefile.write_text(json.dumps(manager))
+        return output
+    def locked(path, *args):
+        wait(path, *args)
+        if cut == 'owner-lock':
+            die()
+    monkeypatch.setattr(c.service, 'run', launchctl)
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', locked)
+    kill_child(lambda: handoff.uninstall_complete(c.backend, c.data, delete_data=True, say=lambda _: None))
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+    assert all(p.read_bytes() == content for p, content in evidence.items())
+    manager.update(json.loads(statefile.read_text()))
+    if cut != 'disable':
+        manager['r1_loaded'] = False
+    monkeypatch.setattr(c.service, 'run', run)
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', wait)
+    handoff.uninstall_complete(c.backend, c.data, say=lambda _: None)
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+    assert not c.tx.journal.with_name('astrid-r1-uninstall-stop.json').exists()
+
+
+@pytest.mark.parametrize('problem', ['no-intent', 'changed-intent', 'enabled', 'duplicate-disabled'])
+def test_mac_uninstall_absent_resume_requires_bound_intent_and_disabled_state(case, monkeypatch, problem):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    run = c.service.run
+    target = f'gui/{c.tx.registration.uid}/{registration.R1_MAC}'
+    if problem != 'no-intent':
+        def interrupt(argv, **kw):
+            result = run(argv, **kw)
+            if list(argv) == ['launchctl', 'bootout', target]:
+                raise RuntimeError('interrupted after bootout')
+            return result
+        monkeypatch.setattr(c.service, 'run', interrupt)
+        with pytest.raises(RuntimeError):
+            handoff.uninstall_complete(c.backend, c.data, say=lambda _: None)
+        monkeypatch.setattr(c.service, 'run', run)
+    else:
+        manager['r1_loaded'] = False
+        manager['r1_enabled'] = False
+    if problem == 'changed-intent':
+        c.tx.journal.with_name('astrid-r1-uninstall-stop.json').write_text('{}\n')
+    elif problem == 'enabled':
+        manager['r1_enabled'] = True
+    elif problem == 'duplicate-disabled':
+        def ambiguous(argv, **kw):
+            result = run(argv, **kw)
+            if argv[1] == 'print-disabled':
+                result += f'  "{registration.R1_MAC}" => false\n'
+            return result
+        monkeypatch.setattr(c.service, 'run', ambiguous)
+    before = snapshot(c.data), snapshot(c.destination)
+    manager['calls'].clear()
+    with pytest.raises(ValueError):
+        handoff.uninstall_complete(c.backend, c.data, delete_data=True, say=lambda _: None)
+    assert not [cmd for cmd in manager['calls'] if cmd[1] in ('disable', 'bootout')]
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+    assert c.tx.registration.r1_path.exists() and c.tx.journal.exists()

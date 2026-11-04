@@ -314,8 +314,22 @@ def _require_inactive_r0_linux(reg, service):
 
 
 def _mac_disabled(output, label):
-    return bool(re.search(r'(?m)^\s*"' + re.escape(label)
-                          + r'"\s*(?:=>|=)\s*(?:true|disabled)\s*$', output))
+    entries = re.findall(r'(?m)^[ \t]*"' + re.escape(label) + r'"([^\r\n]*)$', output)
+    return len(entries) == 1 and bool(re.fullmatch(r'[ \t]*(?:=>|=)[ \t]*(?:true|disabled)[ \t]*', entries[0]))
+
+
+def _mac_stop_intent(tx, bound, intent_path):
+    """Bind a durable stop request to the unchanged handoff and stop evidence."""
+    path = tx.journal.with_name("astrid-r1-uninstall-stop.json")
+    content = _json({"version": 1, "uid": tx.registration.uid,
+                     "handoff_sha256": hashlib.sha256(registration._regular(tx.journal).read_bytes()).hexdigest(),
+                     "registration_sha256": hashlib.sha256(registration._regular(tx.registration.journal).read_bytes()).hexdigest(),
+                     "r0_intent_sha256": hashlib.sha256(registration._regular(intent_path).read_bytes()).hexdigest()})
+    if os.path.lexists(path):
+        if registration._finish_publication(path, bound, content).read_text(encoding="utf-8") != content:
+            raise ValueError("R1 uninstall stop intent changed; both roots were kept.")
+        return path, content, True
+    return path, content, False
 
 
 def _wait_for_mac_unload(reg, bound, timeout=90, poll_interval=.2):
@@ -391,12 +405,21 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
         disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
         if not _mac_disabled(disabled, registration.R0_MAC):
             raise ValueError("R0 service state is uncertain; both roots were kept.")
-        if not reg._mac_state(bound):
-            raise ValueError("R1 service is missing; both roots were kept.")
+        stop_path, stop_content, resuming = _mac_stop_intent(tx, bound, intent_path)
+        loaded = reg._mac_state(bound)
+        if not loaded and (not resuming or not _mac_disabled(disabled, registration.R1_MAC)):
+            raise ValueError("R1 service is missing or its stop is uncertain; both roots were kept.")
         target = f"gui/{reg.uid}/{registration.R1_MAC}"
-        reg._run(["launchctl", "disable", target])
-        reg._run(["launchctl", "bootout", target])
-        _wait_for_mac_unload(reg, bound)
+        if loaded:
+            if not resuming:
+                registration._publish(stop_path, stop_content,
+                    alias=registration._publication_alias(stop_path, bound))
+            reg._run(["launchctl", "disable", target])
+            # The label may have changed during disable. launchctl offers no
+            # atomic compare-and-bootout; external replacement remains a race.
+            if reg._mac_state(bound):
+                reg._run(["launchctl", "bootout", target])
+            _wait_for_mac_unload(reg, bound)
         disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
         if (reg._mac_state(bound)
                 or not _mac_disabled(disabled, registration.R1_MAC)):
@@ -412,6 +435,8 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
         if r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]:
             raise ValueError("R0 service changed; both roots were kept.")
         if tx.service.system == "darwin":
+            if not _mac_stop_intent(tx, bound, intent_path)[2]:
+                raise ValueError("R1 uninstall stop intent is missing; both roots were kept.")
             disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
             if reg._mac_state(bound) or not _mac_disabled(disabled, registration.R1_MAC):
                 raise ValueError("R1 stop is uncertain; both roots were kept.")
@@ -446,6 +471,9 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
             selection.pop(key, None)
         selection.update(uninstalled=True, retained_r1_data_root=str(destination))
         registration._publish(tx.service.selection, _json(selection), exclusive=False)
+        if tx.service.system == "darwin":
+            stop_path.unlink()
+            r0_stop._sync_directory(stop_path.parent)
         for path in (reg.journal, intent_path, tx.journal):
             path.unlink()
             r0_stop._sync_directory(path.parent)

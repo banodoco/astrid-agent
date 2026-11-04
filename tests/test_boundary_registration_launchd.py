@@ -47,7 +47,7 @@ def mac_case(tmp_path, monkeypatch):
                 args = plistlib.loads(path.read_bytes())["ProgramArguments"]
                 if manager.foreign_r1:
                     args[0] = "/foreign/runtime"
-                return (target + " = {\n\tpath = " + str(path) + "\n\targuments = {\n"
+                return (target + " = {\n\tpath = " + str(path) + "\n\tprogram = " + args[0] + "\n\targuments = {\n"
                         + "".join("\t\t" + arg + "\n" for arg in args) + "\t}\n}\n")
             if argv[1] == "bootout":
                 manager.r1_loaded = False
