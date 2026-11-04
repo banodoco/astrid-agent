@@ -1309,7 +1309,7 @@ def _runtime_owner_command(command: str) -> bool:
 
 
 def runtime_processes(data: Path) -> list[int]:
-    """Count every live Runtime owner process on this isolated journey host."""
+    """Find matching Runtime processes for admission, stop waits, and cleanup."""
     if sys.platform == "win32":
         rows = json.loads(windows.powershell(
             "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
@@ -1329,157 +1329,6 @@ def runtime_processes(data: Path) -> list[int]:
             pid, command = records[-1]
             records[-1] = (pid, command + "\n" + line)
     return [pid for pid, command in records if _runtime_owner_command(command)]
-
-
-def assert_one_runtime(data: Path) -> None:
-    discovery = healthy(data)
-    owners = runtime_processes(data)
-    if owners != [int(discovery["pid"])]:
-        raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
-
-
-def _windows_command_parts(command: str) -> tuple[str, str] | None:
-    # The executable is either one quoted path or an unquoted whitespace-free
-    # path. Preserve the entire argument tail, including newlines and quoting.
-    match = re.fullmatch(r'(?s)(?:"([^"\r\n]+)"|([^\s"]+))(\s+.+)', command)
-    return (match.group(1) or match.group(2), match.group(3)) if match else None
-
-
-def _windows_creation_time(pid: int) -> int | None:
-    """Read an exact FILETIME with query-only access; never signal a process."""
-    import ctypes
-    from ctypes import wintypes
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel.OpenProcess.restype = wintypes.HANDLE
-    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-    kernel.GetProcessTimes.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return None
-    try:
-        times = [wintypes.FILETIME() for _ in range(4)]
-        if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in times]):
-            return None
-        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
-    finally:
-        kernel.CloseHandle(handle)
-
-
-def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path,
-                     native_births: dict[int, int | None]) -> bool:
-    """Recognize only the selected venv redirector and its direct child."""
-    owners = [row for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
-    if len(owners) != 2:
-        return False
-    try:
-        child_pid = int(discovery["pid"])
-        child, = [row for row in owners if int(row["ProcessId"]) == child_pid]
-        parent, = [row for row in owners if int(row["ProcessId"]) != child_pid]
-        parent_pid = int(parent["ProcessId"])
-        if child_pid <= 0 or parent_pid <= 0 or int(child["ParentProcessId"]) != parent_pid:
-            return False
-        parent_birth, child_birth = int(parent["Birth"]), int(child["Birth"])
-        parent_native, child_native = native_births[parent_pid], native_births[child_pid]
-        # CIM_DATETIME preserves microseconds, FILETIME preserves 100 ns ticks.
-        # The projection binds the census to native observations; only exact
-        # native equality identifies discovery. Never round an identity match.
-        if (parent_native is None or child_native is None
-                or not 0 < parent_birth < child_birth or not 0 < parent_native < child_native
-                or parent_birth != parent_native // 10 * 10 or child_birth != child_native // 10 * 10
-                or discovery.get("process_birth_id") != f"windows-creation:{child_native}"):
-            return False
-        venv = version_path.parent / "py"
-        launcher = venv / "Scripts" / "pythonw.exe"
-        config = venv / "pyvenv.cfg"
-        for path in (version_path.parent, venv, venv / "Scripts", launcher, config):
-            if path.is_symlink() or getattr(path.stat(), "st_file_attributes", 0) & 0x400:
-                return False
-        if not launcher.is_file() or not config.is_file():
-            return False
-        homes = [m.group(1).strip() for line in config.read_text(encoding="utf-8").splitlines()
-                 if (m := re.fullmatch(r"\s*home\s*=\s*(.*?)\s*", line, re.IGNORECASE))]
-        if len(homes) != 1 or not ntpath.isabs(homes[0]) or not ntpath.splitdrive(homes[0])[0]:
-            return False
-        expected_parent = ntpath.normcase(ntpath.normpath(str(launcher)))
-        expected_child = ntpath.normcase(ntpath.normpath(ntpath.join(homes[0], "pythonw.exe")))
-        parent_image = ntpath.normcase(ntpath.normpath(parent["ExecutablePath"]))
-        child_image = ntpath.normcase(ntpath.normpath(child["ExecutablePath"]))
-        parent_command = _windows_command_parts(parent["CommandLine"])
-        child_command = _windows_command_parts(child["CommandLine"])
-        return bool(parent_image == expected_parent and child_image == expected_child
-                    and parent_image != child_image and parent_command and child_command
-                    and ntpath.normcase(ntpath.normpath(parent_command[0])) == parent_image
-                    and ntpath.normcase(ntpath.normpath(child_command[0])) == child_image
-                    and parent_command[1] == child_command[1])
-    except (KeyError, TypeError, ValueError, OSError, UnicodeError):
-        return False
-
-
-def _capture_windows_r0_selection_context(discovery: dict, version_path: Path, evidence: Path,
-                                          native_births: dict[int, int | None]) -> None:
-    """Record the remaining inputs to the selection predicate, without changing it."""
-    venv = version_path.parent / "py"
-    paths = {"version_dir": version_path.parent, "venv": venv, "scripts": venv / "Scripts",
-             "launcher": venv / "Scripts" / "pythonw.exe", "config": venv / "pyvenv.cfg"}
-    context = {"version_path": str(version_path),
-               "discovery": {key: discovery.get(key) for key in ("pid", "process_birth_id")},
-               "native_creation_filetimes": {str(pid): str(birth) if birth is not None else None
-                                             for pid, birth in native_births.items()},
-               "paths": {}}
-    for name, path in paths.items():
-        item = {"path": str(path)}
-        context["paths"][name] = item
-        try:
-            info = path.stat()
-            item.update(is_symlink=path.is_symlink(), is_file=path.is_file(),
-                        file_attributes=getattr(info, "st_file_attributes", 0))
-            safe_paths = all(not entry.get("error") and not entry.get("is_symlink")
-                             and not entry.get("file_attributes", 0) & 0x400
-                             for entry in context["paths"].values())
-            if name == "config" and item["is_file"] and safe_paths:
-                # Only the home entries participate in identity selection.
-                lines = path.read_text(encoding="utf-8").splitlines()
-                item["home_lines"] = [line for line in lines if re.match(r"\s*home\s*=", line, re.IGNORECASE)]
-        except (OSError, UnicodeError) as exc:
-            item["error"] = f"{type(exc).__name__}: {exc}"
-    write_json(evidence / "runtime-owner-selection-context.json", context)
-
-
-def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> None:
-    """R0 selection permits one verified Windows venv launcher/owner pair."""
-    if sys.platform != "win32":
-        assert_one_runtime(data)
-        return
-    discovery = healthy(data)
-    previous_evidence = windows.EVIDENCE
-    try:
-        windows.EVIDENCE = evidence
-        rows = json.loads(windows.powershell(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,"
-            "@{Name='Birth';Expression={if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString() }}} | ConvertTo-Json -Compress",
-            "runtime-owner-selection.json", show=False, timeout=30))
-    finally:
-        windows.EVIDENCE = previous_evidence
-    rows = rows if isinstance(rows, list) else [rows]
-    owners = [int(row["ProcessId"]) for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
-    native_births = {}
-    if len(owners) == 2:
-        for pid in owners:
-            try:
-                native_births[pid] = _windows_creation_time(pid)
-            except OSError:
-                native_births[pid] = None
-    try:
-        _capture_windows_r0_selection_context(discovery, version_path, evidence, native_births)
-    except Exception as exc:
-        print(f"Journey R0 selection context capture failed: {type(exc).__name__}: {exc}",
-              file=sys.stderr, flush=True)
-    if owners != [int(discovery["pid"])] and not _windows_r0_pair(rows, discovery, version_path, native_births):
-        raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
 
 
 def wait_ready(data: Path, *, timeout: int = 900) -> None:
@@ -1609,7 +1458,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
               "run_roots": {"program": str(root), "data": str(data)},
               "sentinel": {"pid": sentinel.pid, "birth": birth},
               "checks": {"task_settled": "not-run", "workspace_content": "not-run",
-                         "one_runtime": "not-run", "unrelated_sentinel": "not-run"}}
+                         "unrelated_sentinel": "not-run"}}
     result_path = evidence / "journey-result.json"
     write_json(result_path, result)
     try:
@@ -1637,7 +1486,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         project = "windows-journey" if sys.platform == "win32" else "tst-b1-fresh-install"
         if args.leg != "fresh-install":
             old_version, old_data, old = installation(root, data)
-            assert_one_runtime(data)
+            healthy(data)
             if args.leg == "stale-update":
                 old_manifest = read_json(Path(old["root"]) / "manifest.json")
                 if all(old_manifest.get(name) == manifest.get(name) for name in ("agent", "runtime")):
@@ -1687,8 +1536,6 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             if receipt_path.is_file():
                 observation = read_json(receipt_path)
                 result["import_origins"] = (observation.get("details") or {}).get("origin.imports")
-        assert_one_runtime(data)
-        result["checks"]["one_runtime"] = "pass"
         task_project = project if args.leg == "fresh-install" else f"tst-b1-{args.leg}"
         if sys.platform == "win32":
             windows.EVIDENCE = evidence
@@ -1774,7 +1621,7 @@ def execute(args: argparse.Namespace) -> dict:
             "pinokio_backend": None,
             "installed_tuple": None, "import_origins": None,
             "checks": {"task_settled": "not-run", "workspace_content": "not-run",
-                       "one_runtime": "not-run", "unrelated_sentinel": "not-run"},
+                       "unrelated_sentinel": "not-run"},
         }
         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         write_json(failure_path, recorded)

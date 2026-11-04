@@ -83,3 +83,8 @@ def test_semantic_snapshot_requires_every_seeded_data_class():
                                           (before, {**after, "schema_version": 1})):
         with pytest.raises(RuntimeError, match="does not match its Runtime schema"):
             jumps.assert_preserved(invalid_before, invalid_after)
+    for snapshot in (before, after):
+        invalid = {**snapshot, "target_schema_version": 999}
+        with pytest.raises(RuntimeError, match="Runtime schema"):
+            jumps.assert_preserved(invalid if snapshot is before else before,
+                                   invalid if snapshot is after else after)

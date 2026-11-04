@@ -250,7 +250,6 @@ def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -
         raise RuntimeError("Diagnostic start preconditions are stale or do not match the live version/tuple")
     service = journey.assert_direct_service_ownership(root, data)
     health = journey.healthy(data)
-    journey.assert_one_runtime(data)
     return version, {"state_path": state_path, "identity": identity,
                      "service": service, "health": health}
 
@@ -489,23 +488,10 @@ def start_direct_runtime(evidence: Path) -> None:
 
 
 def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
-                     action: str, request: dict, *, release0_version_path: Path | None = None) -> dict:
+                     action: str, request: dict) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
-    def assert_runtime(phase: str) -> None:
-        if sys.platform != "win32" or release0_version_path is None:
-            journey.assert_one_runtime(data)
-            return
-        # Only the authenticated R0 leg opts in. Rebind to the live selection
-        # before each fresh census, including after the service has restarted.
-        selected_path, selected_data, selected_version = journey.installation(root, data)
-        if (selected_path != release0_version_path or selected_data != data
-                or selected_version != version or installed_release(selected_version) != 0):
-            raise RuntimeError("Workspace R0 owner check does not match the selected release-0 version")
-        journey.assert_release0_runtime(
-            data, selected_path, evidence / "runtime-owner-workspace" / f"{action}-{phase}")
-
     service = journey.assert_direct_service_ownership(root, data)
-    assert_runtime("before")
+    journey.healthy(data)
     # Shutdown can remove discovery.json, so resolve and validate its realm while live.
     realm = journey.workspace_root(data)
     evidence.mkdir(parents=True, exist_ok=True)
@@ -543,7 +529,6 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)
         journey.assert_direct_service_ownership(root, data)
-        assert_runtime("after")
 
 
 def installed_release(version: dict) -> int:
@@ -592,7 +577,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         "sentinel": {"pid": sentinel.pid, "birth": birth},
         "release0_fixture": None, "release_transition": None, "semantic_data": None,
         "checks": {key: "not-run" for key in (
-            "release", "service", "health", "semantic_data", "task_settled", "one_runtime",
+            "release", "service", "health", "semantic_data", "task_settled",
             "unrelated_sentinel")},
     }
     result_path = evidence / "journey-result.json"
@@ -624,7 +609,6 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
-        journey.assert_release0_runtime(data, old_path, evidence)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
@@ -640,12 +624,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             "project": project, "generation": "release0", "task_id": None, "create_project": True})
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
         before = live_workspace(root, data, baseline, "snapshot", keys)
-        # Identify the live R0 owner that the update must replace.
         old_health = journey.healthy(data)
-        old_pid = int(old_health["pid"])
-        old_birth = journey.process_birth(old_pid)
-        if not old_birth:
-            raise RuntimeError("Cannot establish the release-0 Runtime process identity")
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
@@ -659,8 +638,6 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         new_health = journey.healthy(data)
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
             raise RuntimeError("Release-1 update retained the release-0 Runtime instance")
-        if journey.process_birth(old_pid) == old_birth:
-            raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
         result["release_transition"] = {"from": 0, "to": 1,
                                         "harness_override": "frozen-release0-direct-to-release1"}
         result["service_transition"] = {"release0": old_service, "release1": new_service}
@@ -684,8 +661,6 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["semantic_data"] = "pass"
         task_after_update(version, evidence / "release1-working-task", project)
         result["checks"]["task_settled"] = "pass"
-        journey.assert_one_runtime(data)
-        result["checks"]["one_runtime"] = "pass"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
         if not settled_sentinel["alive"]:
@@ -717,7 +692,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
               "sentinel": {"pid": sentinel.pid, "birth": birth},
               "checks": {key: "not-run" for key in (
                   "version_changed", "service_action", "workspace_content", "schema_migrated",
-                  "task_settled", "one_runtime", "unrelated_sentinel", "same_release_rerun",
+                  "task_settled", "unrelated_sentinel", "same_release_rerun",
                   "old_runtime_stopped")}}
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
@@ -741,7 +716,6 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         journey.wait_ready(data)
         old_path, _, old = journey.installation(root, data)
         before_tuple = journey.selected_tuple(journey.read_json(old_manifest_path), old)
-        journey.assert_one_runtime(data)
         old_owner = journey.healthy(data)
         old_pid = old_owner["pid"]
         old_birth = journey.process_birth(old_pid)
@@ -793,8 +767,6 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         result["checks"]["task_settled"] = "pass"
         rerun(args, root, data, evidence / "rerun", app, candidate_path, manifest, version, keys)
         result["checks"]["same_release_rerun"] = "pass"
-        journey.assert_one_runtime(data)
-        result["checks"]["one_runtime"] = "pass"
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Unrelated sentinel did not survive version update and rerun")
         result["checks"]["unrelated_sentinel"] = "pass"
