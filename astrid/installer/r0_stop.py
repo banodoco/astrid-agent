@@ -93,13 +93,24 @@ def _selected_realm(data):
     return selected, absolute(matches[0]["data_root"])
 
 
-def is_r0_installation(root):
-    from .core import current, read_json
+def is_r0_installation(root, service):
+    from .core import current
     version = current(root)
     if version is not None:
         return version.release == 0
-    marker = read_json(root / "install.json")
-    return marker.get("owner") == LABEL and marker.get("managed_by") is None
+    # The CLI writes install.json before Installer.run, so its ownership alone
+    # cannot distinguish R0 from a fresh or interrupted R1 installation.
+    if service is None:
+        raise R0StopError("Cannot determine whether an R0 service exists; installation was not changed.")
+    if service.system in {"linux", "darwin"}:
+        try:
+            Path(service.path).lstat()
+        except FileNotFoundError:
+            return False
+        return True  # Include unsafe or dangling entries; the handoff will refuse them.
+    if service.system == "win32":
+        return service.login_service_exists()  # Propagate manager query failures.
+    raise R0StopError(f"Unsupported R0 service manager: {service.system}")
 
 
 def refuse_legacy_r0_recovery(root):
