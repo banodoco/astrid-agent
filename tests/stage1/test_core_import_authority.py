@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -403,3 +405,68 @@ def test_sdk_orchestrator_dry_run_is_manifest_only(tmp_path: Path) -> None:
         check=True,
     )
     assert result.stdout.splitlines() == ["True", "[]", "[]", "False"]
+
+
+def test_core_pack_boundary_ratchet_passes() -> None:
+    """Core-facing pack coupling stays at or below the committed baseline."""
+
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "scripts/check_core_pack_boundary.py"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "baseline only shrinks" in result.stdout
+
+
+def test_core_pack_boundary_ratchet_counts_imports_literals_and_duplicates(tmp_path: Path) -> None:
+    """A new pack import, capability id, or repeated pack-name literal is visible."""
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "core_pack_boundary", root / "scripts" / "check_core_pack_boundary.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    source = (
+        "import astrid.packs.demo.actions\n"
+        "from astrid import packs\n"
+        "PACK = 'demo'\n"
+        "PREFIX = 'demo.'\n"
+        "CAPABILITY = 'demo.run'\n"
+        "DYNAMIC = 'astrid.packs.demo.actions.run'\n"
+        "PACK_PATH = 'astrid/packs/demo/actions/run.py'\n"
+    )
+    findings = module.scan_source(
+        "astrid/core/example.py", source, {"demo"}, {"demo.run"}
+    )
+    expected = {
+        ("astrid/core/example.py", "pack_import", "astrid.packs.demo.actions"),
+        ("astrid/core/example.py", "pack_import", "astrid.packs"),
+        ("astrid/core/example.py", "pack_name_literal", "demo"),
+        ("astrid/core/example.py", "capability_id", "demo.run"),
+        ("astrid/core/example.py", "dynamic_pack_import", "astrid.packs.demo.actions.run"),
+        ("astrid/core/example.py", "repo_pack_path", "astrid/packs/demo/actions/run.py"),
+    }
+    assert expected <= set(findings)
+
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(json.dumps({"schema": 1, "findings": module._serialized(findings)}))
+    assert module.check_baseline(findings, baseline_path) == []
+    added_findings = (
+        ("astrid/core/example.py", "pack_import", "astrid.packs.demo.actions"),
+        ("astrid/core/example.py", "capability_id", "demo.run"),
+        ("astrid/core/example.py", "dynamic_pack_import", "astrid.packs.demo.actions.run"),
+        ("astrid/core/example.py", "repo_pack_path", "astrid/packs/demo/actions/run.py"),
+        ("astrid/core/example.py", "pack_name_literal", "demo"),
+    )
+    for key in added_findings:
+        findings[key] += 1
+    issues = module.check_baseline(findings, baseline_path)
+    assert len(issues) == len(added_findings)
+    assert all("x1" in issue for issue in issues)

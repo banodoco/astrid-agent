@@ -852,6 +852,18 @@ actions:
       runtime_file: actions/session/run.py
       runtime_module: astrid.packs.runpod.actions.session.run
 resources:
+- kind: engine-recipe
+  path: recipe.linux-cu130.json
+- kind: engine-recipe
+  path: recipe.windows-cu130.json
+- kind: engine-data
+  path: pins.json
+- kind: engine-data
+  path: models.lock.json
+- kind: engine-data
+  path: requirements.linux-cu130.lock
+- kind: engine-data
+  path: environment.windows-nvidia.json
 - kind: implementation
   path: shared/common.py
 - kind: dependency
