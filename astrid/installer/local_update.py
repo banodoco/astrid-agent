@@ -28,6 +28,8 @@ from .core import (
     owned_by_local_update,
     pending_transaction,
     read_json,
+    require_boundary_available,
+    require_recovery_boundary,
     recover_transaction,
     separate_roots,
     switch,
@@ -213,6 +215,7 @@ def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
     if (old is None or not old.python.is_file()
             or old.root.parent != root / "versions"):
         raise ValueError("The installed Astrid Runtime is incomplete.")
+    require_boundary_available(old)
     if backend.source_checkout_ownership(data, old):
         raise ValueError("This Astrid runs from source checkouts; update those instead.")
     realm = backend.workspace(old, data)
@@ -255,6 +258,7 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
     transaction = read_json(root / "update-transaction.json")
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return False
+    require_recovery_boundary(transaction)
     owner = transaction.get("transaction_context")
     if not owned_by_local_update(transaction):
         return False

@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, NoReturn
 from runtime_protocol import platform
 
 from . import tools
-from .core import TERMINAL_STEPS, current, pending_transaction
+from .core import (TERMINAL_STEPS, current, pending_transaction,
+                   require_boundary_available, require_recovery_boundary)
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -504,6 +505,7 @@ def _validate_request(request: dict, root: Path) -> dict:
     old = current(root)
     if old is None or not old.python.is_file():
         raise ValueError("The selected Astrid installation is no longer available.")
+    require_boundary_available(old)
     old_version = request.get("old_version")
     if isinstance(old_version, dict):
         expected_version = Version.load(old_version).document()
@@ -690,6 +692,7 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
                 or proof.get("claim_state") == "claimed"
                 and job.get("state") not in {"active", "recovery-needed"}):
             _busy("The update claim state does not match its durable bootstrap proof.")
+        require_boundary_available(old)
         if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
             _busy("The accepted update worker command cannot be proved.")
         selection = read_json(_selection_path())
@@ -1125,6 +1128,12 @@ def accept(request: dict) -> dict:
             if unresolved:
                 raise _BusyRefusal("The unresolved update journal cannot be read.") from failure
             raise
+        if pending and pending.get("step") not in TERMINAL_STEPS:
+            require_recovery_boundary(pending)
+        selected = current(root)
+        if selected is None:
+            raise ValueError("The selected Astrid installation is unavailable.")
+        require_boundary_available(selected)
         recovered_unfinished = bool(unresolved and isinstance(pending, dict)
                                     and pending.get("step") not in TERMINAL_STEPS)
         reconciled, continued = _reconcile_existing(root, marker, request)
@@ -1273,6 +1282,7 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     old = current(root)
     if old is None or old.document() != job.get("old_version"):
         raise ValueError("The selected installation has no current version.")
+    require_boundary_available(old)
     if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
         raise ValueError("The accepted worker command changed after acceptance.")
     selected_identity = selected.get("identity")
@@ -1872,6 +1882,13 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
     stream = _locked(root, blocking=True)
     try:
         job = _read_job(root, operation_id)
+        journal = pending_transaction(root)
+        if journal:
+            require_recovery_boundary(journal)
+        selected = current(root)
+        if selected is None:
+            raise ValueError("The selected Astrid installation is unavailable.")
+        require_boundary_available(selected)
         direct_call = epoch is None and nonce is None
         if direct_call:
             epoch, nonce = _attempt_tuple(job)

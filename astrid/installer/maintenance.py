@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from .backend import Backend
-from .core import Version, absolute, current, inspect_schema, read_json, separate_roots, write_json
+from .core import (Version, absolute, current, inspect_schema, read_json, separate_roots, write_json,
+                   require_boundary_available, require_recovery_boundary)
 from .service import LABEL, install_selection
 
 PLAN_FORMAT = "astrid-update-maintenance-plan/v1"
@@ -159,6 +160,14 @@ def plan_update_recovery(root: Path | str, data_root: Path | str, *, recovery_bu
     _validate_paths(root_path, data)
     marker = _load_owned_marker(root_path, data, selection)
     selected = _selected_version(root_path)
+    try:
+        require_boundary_available(selected)
+        journal = read_json(root_path / "update-transaction.json")
+        if journal:
+            require_recovery_boundary(journal)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise MaintenanceRefusal("r0-boundary-unavailable",
+                                 "The retained update cannot be recovered until its data boundary is available.") from error
     evidence, _ = _evidence(root_path, selection)
     data_manifest = _tree_manifest(data)
     operation = marker.get("update_job")

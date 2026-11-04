@@ -103,6 +103,30 @@ def owned_by_local_update(journal: dict) -> bool:
     return isinstance(context, dict) and context.get("owner") == "local-update"
 
 
+def require_boundary_available(version: "Version") -> None:
+    """Refuse legacy login-service updates until offline adoption is wired."""
+    if version.managed_by != "pinokio" and version.release == 0:
+        raise ValueError("This Astrid update needs the R0 data adoption boundary, which is not available yet. Your existing installation has not been changed.")
+
+
+def require_recovery_boundary(transaction: dict) -> None:
+    """Do not replay a legacy transaction using the old in-place restore path."""
+    old = Version.load(transaction["old"])
+    require_boundary_available(old)
+
+
+def require_known_update_selection(root: Path, data: Path, version: "Version | None", *,
+                                   allow_fresh_claim: bool = False) -> None:
+    """An existing but unidentifiable installation must not become a fresh install."""
+    if version is not None:
+        require_boundary_available(version)
+        if not version.python.is_file():
+            raise ValueError("The selected Astrid installation is incomplete; update is unavailable.")
+    elif ((root / "current").exists() or ((root / "install.json").exists() and not allow_fresh_claim)
+          or (data.exists() and any(p.name != "logs" for p in data.iterdir()))):
+        raise ValueError("The existing Astrid installation cannot be identified safely; update is unavailable.")
+
+
 def separate_roots(root: Path, data: Path) -> bool:
     """Return whether program files and the workspace are disjoint directories."""
     return not (data == root or data in root.parents or root in data.parents)
@@ -264,6 +288,7 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
                         stop, switch_old, activate_old, save,
                         restore_workspace: bool = True) -> None:
     """Apply the shared stop, optional restore, selection and ready rollback."""
+    require_recovery_boundary(transaction)
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
     realm = transaction["realm"]
@@ -301,6 +326,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     transaction = read_json(absolute(root / "update-transaction.json"))
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
+    require_recovery_boundary(transaction)
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
@@ -349,9 +375,11 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
 
 
 class Installer:
-    def __init__(self, root: Path, data: Path, backend, *, say=print, managed_by: str | None = None):
+    def __init__(self, root: Path, data: Path, backend, *, say=print, managed_by: str | None = None,
+                 allow_fresh_claim: bool = False):
         self.root, self.data, self.backend, self.say = root, data, backend, say
         self.managed_by = managed_by
+        self.allow_fresh_claim = allow_fresh_claim
 
     def _activate(self, version: Version, realm_id: str) -> None:
         self.backend.register(version, self.data)
@@ -432,6 +460,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
+        require_boundary_available(old)
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {
@@ -538,6 +567,9 @@ class Installer:
         if mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)
+        if self.managed_by != "pinokio" and mode in {"install", "update", "repair"}:
+            require_known_update_selection(self.root, self.data, old,
+                                           allow_fresh_claim=self.allow_fresh_claim)
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)

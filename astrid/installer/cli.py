@@ -21,6 +21,8 @@ from .core import (
     current,
     pending_transaction,
     read_json,
+    require_known_update_selection,
+    require_recovery_boundary,
     separate_roots,
     write_json,
 )
@@ -252,6 +254,12 @@ def main(argv: list[str] | None = None) -> int:
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
                 pending_update = pending_transaction(root)
+                fresh_claim = not marker and not recorded.get("program_root")
+                if managed_by != "pinokio" and mode in {"install", "update", "app-update"}:
+                    if pending_update:
+                        require_recovery_boundary(pending_update)
+                    else:
+                        require_known_update_selection(root, data, current(root))
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.
@@ -317,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
                 bundle = None
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
-                options = {"managed_by": managed_by} if managed_by else {}
+                options = {"managed_by": managed_by} if managed_by else {"allow_fresh_claim": fresh_claim}
                 installer = Installer(root, data, backend, **options)
                 if args.update_job:
                     if update_job_record is None:

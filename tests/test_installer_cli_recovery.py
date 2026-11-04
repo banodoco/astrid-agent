@@ -944,3 +944,25 @@ def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failu
     assert fixture._backup_bytes(backup_root) == backup_before
     assert current(backend.root) == old
     assert read_json(journal_path)["step"] == "rolled_back"
+
+
+def test_r0_cli_refuses_before_preflight_discovery_and_manifest_fetch(tmp_path, monkeypatch, capsys):
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    backend = _cli_backend(tmp_path, root, data)
+    _prepare_cli(monkeypatch, tmp_path, root, data, backend)
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    profile = old_root / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    old = Version(old_root, Path(sys.executable), profile, {}, release=0)
+    write_json(old_root / "version.json", old.document())
+    switch(root, old)
+    backend.source_checkout_ownership = lambda *_: pytest.fail("discovery invoked")
+    backend.preflight_stop = lambda *_: pytest.fail("preflight invoked")
+    monkeypatch.setattr(cli, "download", lambda *_: pytest.fail("manifest downloaded"))
+    marker = (root / "install.json").read_bytes()
+    pointer = (root / "current").read_bytes()
+    assert cli.main(["--root", str(root)]) == 1
+    assert "adoption boundary" in capsys.readouterr().out
+    assert (root / "install.json").read_bytes() == marker
+    assert (root / "current").read_bytes() == pointer
