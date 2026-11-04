@@ -74,8 +74,12 @@ def test_special_leg_lifts_only_its_windows_historical_refusal(monkeypatch, tmp_
 
 def test_semantic_snapshot_requires_every_seeded_data_class():
     before = {"project": "project", "timeline": "timeline", "preferences": "preferences",
-              "task": "task", "cas_sha256": "cas"}
+              "task": "task", "cas_sha256": "cas", "schema_version": 1, "target_schema_version": 1}
     after = {**before, "schema_version": 2, "target_schema_version": 2}
     jumps.assert_preserved(before, after)
     with pytest.raises(RuntimeError, match="seeded workspace task"):
         jumps.assert_preserved({key: value for key, value in before.items() if key != "task"}, after)
+    for invalid_before, invalid_after in (({**before, "schema_version": 0}, after),
+                                          (before, {**after, "schema_version": 1})):
+        with pytest.raises(RuntimeError, match="does not match its Runtime schema"):
+            jumps.assert_preserved(invalid_before, invalid_after)
