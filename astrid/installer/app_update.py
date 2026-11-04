@@ -25,6 +25,7 @@ from .core import (
     owned_by_local_update,
     pending_transaction,
     read_json,
+    require_recovery_manager,
     recover_transaction,
     separate_roots,
     switch,
@@ -441,6 +442,10 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
     selected, data, _identity = selection(root, backend, allow_transaction=True)
     if absolute(pending["data_root"]) != data:
         raise ValueError("The interrupted app update workspace does not match the selected installation.")
+    # The shared recovery function checks this too, but this adapter validates
+    # lifecycle code and publishes a runner before calling it. Refuse an R0
+    # login journal before either of those operations can have effects.
+    require_recovery_manager(root, data, pending)
     previous = Version.load(pending["old"])
     candidate = Version.load(pending["candidate"]) if pending.get("candidate") else None
     if selected not in (previous, candidate):

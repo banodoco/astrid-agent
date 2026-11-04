@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.installer import core, local_update, update_job
+from astrid.installer import app_update, core, local_update, update_job
 
 
 # Captured from action 41625801442, before-cleanup/unit-file-before-cleanup.txt.
@@ -239,3 +239,53 @@ def test_pinokio_recovery_manager_requires_matching_workspace(tmp_path):
     (root / 'install.json').write_text(json.dumps({'owner': 'haus.astrid.runtime',
         'managed_by': 'pinokio', 'data_root': str(data)}))
     core.require_recovery_manager(root, data, {'old': old.document()})
+
+
+def test_pinokio_adapter_refuses_login_r0_journal_before_lifecycle_or_runner(tmp_path, monkeypatch):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    data.mkdir()
+    (data / 'owner.lock').write_bytes(b'opaque')
+    (data / 'realm.sqlite3').write_bytes(b'user data')
+    service = tmp_path / 'service.plist'
+    service.write_bytes((CAPTURES / 'macos.txt').read_bytes())
+    old = version(root / 'versions' / 'r0')
+    candidate = version(root / 'versions' / 'r1', release=1, managed_by='pinokio')
+    (candidate.root / 'version.json').write_text(json.dumps(candidate.document()))
+    (root / 'current').write_text('r1\n')
+    marker = {'owner': 'haus.astrid.runtime', 'managed_by': 'pinokio', 'data_root': str(data)}
+    (root / 'install.json').write_text(json.dumps(marker))
+    journal = {'format': 'astrid-install-update/v1', 'operation_id': 'a' * 32,
+               'step': 'stopping', 'data_root': str(data), 'old': old.document(),
+               'candidate': candidate.document(), 'realm': {'realm_root': str(data)},
+               'transaction_kind': 'migration'}
+    (root / 'update-transaction.json').write_text(json.dumps(journal))
+    backend = SimpleNamespace(service=SimpleNamespace(home=tmp_path, system='darwin',
+        recorded=lambda: {**marker, 'program_root': str(root)}))
+    calls = []
+    lifecycle = SimpleNamespace(validate=lambda *_: calls.append('validate'))
+    monkeypatch.setattr(app_update, 'publish_runtime_runner', lambda *_: calls.append('publish'))
+    before = manifest(tmp_path)
+    with pytest.raises(ValueError, match='adoption boundary'):
+        app_update._recover_app_locked(root, backend, lifecycle=lifecycle)
+    assert calls == []
+    assert manifest(tmp_path) == before
+
+
+def test_pinokio_adapter_still_admits_matching_r0_recovery(tmp_path):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    data.mkdir()
+    old = version(root / 'versions' / 'r0', managed_by='pinokio')
+    (old.root / 'version.json').write_text(json.dumps(old.document()))
+    (root / 'current').write_text('r0\n')
+    marker = {'owner': 'haus.astrid.runtime', 'managed_by': 'pinokio', 'data_root': str(data)}
+    (root / 'install.json').write_text(json.dumps(marker))
+    (root / 'update-transaction.json').write_text(json.dumps({
+        'step': 'stopping', 'data_root': str(data), 'old': old.document(),
+        'realm': {'realm_root': str(data)}, 'transaction_kind': 'migration'}))
+    backend = SimpleNamespace(service=SimpleNamespace(home=tmp_path, system='darwin',
+        recorded=lambda: {**marker, 'program_root': str(root)}))
+    def validated(selected):
+        assert selected == old
+        raise RuntimeError('matching Pinokio recovery admitted')
+    with pytest.raises(RuntimeError, match='matching Pinokio recovery admitted'):
+        app_update._recover_app_locked(root, backend, lifecycle=SimpleNamespace(validate=validated))
