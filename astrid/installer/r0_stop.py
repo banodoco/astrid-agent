@@ -172,8 +172,13 @@ def _write_marker(service, data_root):
         _sync_directory(path.parent)
 
 
-def recover_r0(service):
-    """Restore the recorded R0 after an interrupted stop, under installer lock."""
+def recover_r0(service, *, r1_inactive=None):
+    """Restore R0 only with a manager-backed R1 exclusion under the installer lock.
+
+    The future R1 handoff must supply a callable which checks its registered
+    manager entry and prevents R1 starting until recovery has completed. An
+    unavailable or ambiguous check is not evidence that R1 is inactive.
+    """
     path = _marker_path(service)
     if not path.exists() and not path.is_symlink():
         return False
@@ -187,6 +192,8 @@ def recover_r0(service):
             raise ValueError("marker or service changed")
         if not Path(payload["data_root"]).is_absolute():
             raise ValueError("invalid data root")
+        if r1_inactive is None or r1_inactive() is not True:
+            raise ValueError("R1 service inactivity cannot be established; refusing to restart R0")
         uid = _launchd_uid() if service.system == "darwin" else None
         if service.system == "linux":
             _validate_manager(service, uid)
@@ -233,7 +240,10 @@ def stop_r0_and_wait(service, realm_root: Path, *, data_root: Path | None = None
         _wait_for_owner_lock(realm_root, timeout, poll_interval)
     except BaseException as exc:
         try:
-            recover_r0(service)
+            # This call is still inside the serialized stop, before any R1
+            # handoff can have started. Interrupted invocations need the R1
+            # manager-backed exclusion described by recover_r0 instead.
+            recover_r0(service, r1_inactive=lambda: True)
         except BaseException as recovery:
             raise R0StopError(f"R0 stop failed ({exc}); automatic re-enable also failed ({recovery}). Re-enable the Astrid service in the OS service manager, then run the install line again.") from recovery
         if isinstance(exc, R0StopError) or not isinstance(exc, Exception):

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import plistlib
 import shutil
 from pathlib import Path
@@ -71,8 +73,12 @@ def setup_case(tmp_path, system):
 
 
 def snapshot(path):
-    return {str(p.relative_to(path)): (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_size)
-            for p in path.rglob("*") if p.is_file()}
+    result = {}
+    for p in [path, *path.rglob("*")]:
+        info = p.lstat()
+        digest = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+        result[str(p.relative_to(path))] = (info.st_mode, info.st_size, info.st_mtime_ns, digest)
+    return result
 
 
 @pytest.mark.parametrize("system", ["linux", "darwin"])
@@ -216,6 +222,18 @@ def test_collision_refuses_before_manager_mutation(tmp_path):
     assert (destination / "user-file").read_text() == "preserve"
 
 
+def test_claimed_completed_adoption_still_refuses_without_verified_contract(tmp_path):
+    manager, realm = setup_case(tmp_path, "linux")
+    destination = Path(str(realm) + "-r1")
+    destination.mkdir()
+    (destination / "receipt.json").write_text(json.dumps({"ok": True, "source": str(realm)}))
+    before = snapshot(realm.parent)
+    with pytest.raises(R0StopError, match="already exists"):
+        stop_r0_and_wait(manager, realm)
+    assert manager.calls == []
+    assert snapshot(realm.parent) == before
+
+
 def test_launchd_foreign_loaded_arguments_refused(tmp_path):
     manager, realm = setup_case(tmp_path, "darwin")
     original = manager.run
@@ -278,7 +296,7 @@ def test_killed_after_disable_next_invocation_recovers(tmp_path):
                 state.write_text("enabled")
             return output
         manager.run = recover_run
-        assert r0_stop.recover_r0(manager)
+        assert r0_stop.recover_r0(manager, r1_inactive=lambda: True)
         assert state.read_text() == "enabled"
         assert snapshot(realm) == before
         assert not r0_stop._marker_path(manager).exists()
@@ -292,12 +310,28 @@ def test_recovery_refuses_changed_unit(tmp_path):
     manager.path.write_text("foreign replacement")
     before = len(manager.calls)
     with pytest.raises(R0StopError, match="marker was retained"):
-        r0_stop.recover_r0(manager)
+        r0_stop.recover_r0(manager, r1_inactive=lambda: True)
     assert len(manager.calls) == before
     assert r0_stop._marker_path(manager).exists()
 
 
-def test_install_entry_recovers_marker_before_update_preflight(tmp_path, monkeypatch):
+@pytest.mark.parametrize("r1_state", [None, False])
+def test_recovery_refuses_without_r1_exclusion(tmp_path, r1_state):
+    manager, realm = setup_case(tmp_path, "linux")
+    before = snapshot(realm)
+    stop_r0_and_wait(manager, realm)
+    if r1_state is False:
+        Path(str(realm) + "-r1").mkdir()  # Model a registered, running R1.
+    manager.calls.clear()
+    check = None if r1_state is None else lambda: r1_state
+    with pytest.raises(R0StopError, match="R1 service inactivity cannot be established"):
+        r0_stop.recover_r0(manager, r1_inactive=check)
+    assert manager.calls == []
+    assert r0_stop._marker_path(manager).exists()
+    assert snapshot(realm) == before
+
+
+def test_install_entry_refuses_unverified_recovery_before_update_preflight(tmp_path, monkeypatch):
     import sys
     from types import SimpleNamespace
     from astrid.installer import cli
@@ -318,6 +352,6 @@ def test_install_entry_recovers_marker_before_update_preflight(tmp_path, monkeyp
     monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(parents=True, exist_ok=True))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    assert cli.main(["--root", str(manager.root)]) == 0
-    assert ["systemctl", "--user", "enable", "--now", "astrid.service"] in manager.calls
-    assert not r0_stop._marker_path(manager).exists()
+    assert cli.main(["--root", str(manager.root)]) == 1
+    assert manager.calls == []
+    assert r0_stop._marker_path(manager).exists()
