@@ -182,3 +182,50 @@ def test_fresh_install_failure_blocks_dependent_stages(tmp_path, monkeypatch):
     assert rows['release1-start']['result'] == 'not-run'
     assert rows['release1-task']['result'] == 'not-run'
     assert rows['sentinel']['result'] == 'pass'
+
+
+@pytest.mark.parametrize('exit_code,output', [
+    (0, b'{"ok":true,"data":{"slug":"tst-m4-3b-release0","path":"/home/private","token":"secret"}}'),
+    (3, b'{"ok":false,"error":{"code":"not_found","message":"secret /home/private"}}'),
+    (1, b'not json secret /home/private'),
+])
+def test_project_observation_is_reduced_and_retained(tmp_path, monkeypatch, exit_code, output):
+    called = []
+    def run(argv, **kwargs):
+        called.append((argv, kwargs))
+        return SimpleNamespace(returncode=exit_code, stdout=output)
+    monkeypatch.setattr(keepgoing.subprocess, 'run', run)
+    task_dir = tmp_path / 'run/evidence/fresh-install/release1-working-task'
+    keepgoing.observe_project_create({'python': 'python', 'env': {}}, task_dir, 'tst-m4-3b-release0')
+    observation = json.loads((task_dir / 'project-create-observation.json').read_text())
+    assert observation['exit_code'] == exit_code and observation['phase'] == 'after-failed-task'
+    assert called[0][0][-4:] == ['tst-m4-3b-release0', '--name', 'tst-m4-3b-release0', '--json']
+    assert 'secret' not in json.dumps(observation) and '/home/private' not in json.dumps(observation)
+    journey.retain_named_evidence(task_dir.parent, 'before-cleanup')
+    assert json.loads((tmp_path / 'run/evidence-upload/before-cleanup/project-create-observation.json').read_text()) == observation
+
+
+def test_fresh_probe_follows_failed_task_without_changing_result(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.leg = 'fresh-install'
+    monkeypatch.setattr(journey, 'installation', lambda *a: (tmp_path / 'v1', tmp_path / 'data', {'release': 1}))
+    monkeypatch.setattr(journey, 'wait_ready', lambda *a, **kw: None)
+    def fail_task(*a):
+        calls.append('task-failed')
+        raise RuntimeError('Installed SDK did not admit exactly one task')
+    monkeypatch.setattr(jumps, 'task_after_update', fail_task)
+    monkeypatch.setattr(keepgoing, 'observe_project_create', lambda *a: calls.append('probe'))
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    row = next(r for r in report['stages'] if r['stage'] == 'release1-task')
+    assert row['result'] == 'fail' and row['first_error'] == 'RuntimeError: Installed SDK did not admit exactly one task'
+    assert calls.index('task-failed') < calls.index('probe') < calls.index('one')
+    assert report['status'] == 'fail' and report['qualification']['eligible'] is False
+
+
+def test_project_observation_failure_is_best_effort(tmp_path, monkeypatch):
+    def fail(*a, **kw):
+        raise OSError('secret /home/private')
+    monkeypatch.setattr(keepgoing.subprocess, 'run', fail)
+    keepgoing.observe_project_create({'python': 'python', 'env': {}}, tmp_path, 'tst-m4-3b-release0')
+    assert json.loads((tmp_path / 'project-create-observation.json').read_text()) == {
+        'phase': 'after-failed-task', 'project': 'tst-m4-3b-release0', 'status': 'unavailable'}

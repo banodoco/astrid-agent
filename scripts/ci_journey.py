@@ -604,7 +604,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     # manifest; other task directories may represent a different version.
     task_dir = evidence / "release1-working-task"
     if task_dir.is_dir() and not task_dir.is_symlink():
-        for name in ("sdk-invocation.json", "installed-manifest.json"):
+        for name in ("sdk-invocation.json", "installed-manifest.json", "project-create-observation.json"):
             source = task_dir / name
             if source.is_file() and not source.is_symlink():
                 try:

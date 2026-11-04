@@ -33,7 +33,7 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     names_block = guard.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
     staged_names = set(re.findall(r"'([^']+)'", names_block))
     assert "release0-bootstrap.log" in staged_names
-    assert {"sdk-invocation.json", "installed-manifest.json"} <= staged_names
+    assert {"sdk-invocation.json", "installed-manifest.json", "project-create-observation.json"} <= staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'^\s*"([^\"]+)"\s*,?\s*$', collector_block, re.M))
     assert collector_names <= staged_names

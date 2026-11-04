@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import subprocess
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -21,6 +22,49 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
                 "release1-verify-install", "release1-task", "one-runtime", "sentinel")
+
+
+def observe_project_create(version, evidence, project):
+    """After the failed task, probe creation in the disposable fresh realm only.
+
+    Keep a deliberately reduced response: CLI output may contain paths or secrets.
+    No probe result is allowed to change the original journey's failure.
+    """
+    result = {"phase": "after-failed-task", "project": project, "status": "unavailable"}
+    try:
+        env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+        env.update(version["env"])
+        proc = subprocess.run([version["python"], "-I", "-m", "astrid", "projects", "create",
+                               project, "--name", project, "--json"], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=300)
+        result.update(status="completed", exit_code=proc.returncode)
+        try:
+            value = json.loads(proc.stdout)
+            if isinstance(value, dict):
+                result["json_object"] = True
+                if type(value.get("ok")) is bool:
+                    result["ok"] = value["ok"]
+                error = value.get("error")
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    result["error_code"] = code if code in {
+                        "not_found", "conflict", "invalid_argument", "internal_error",
+                        "unavailable", "permission_denied", "already_exists"} else "other"
+                data = value.get("data")
+                if isinstance(data, dict):
+                    result["data_present"] = True
+                    result["project_matches"] = any(data.get(k) == project for k in ("slug", "project_id", "id"))
+            else:
+                result["json_object"] = False
+        except (ValueError, UnicodeDecodeError):
+            result["json_object"] = False
+    except Exception:
+        pass
+    try:
+        evidence.mkdir(parents=True, exist_ok=True)
+        journey.write_json(evidence / "project-create-observation.json", result)
+    except OSError:
+        pass
 
 
 def initial(evidence, args):
@@ -152,6 +196,14 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
         stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
+        # The old fresh diagnostic did not create the project. Observe creation
+        # only *after* its original task has failed; never retry that task.
+        if (args.job_id == "direct-linux" and report["stages"][-1].get("first_error") ==
+                "RuntimeError: Installed SDK did not admit exactly one task"):
+            try:
+                observe_project_create(state["version"], evidence / "release1-working-task", project)
+            except Exception:
+                pass  # Observation is never allowed to alter journey behavior.
         stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(data), evidence)
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
