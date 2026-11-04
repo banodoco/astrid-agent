@@ -43,3 +43,13 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert "No staged journey-result.json receipt" in guard
     assert "Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force" in guard
     assert "-ge $maxArtifactBytes" in guard
+
+
+def test_sdk_capture_upload_requires_closed_receipts():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    guard = text.split("      - name: Validate the named lifecycle evidence artifact boundary", 1)[1].split(
+        "      - name: Retain only the named lifecycle evidence", 1)[0]
+    assert "'project-create-capture-status.json', 'sdk-capture-status.json'" in guard
+    for required in ("$file.Length -gt 1024", "ConvertFrom-Json", "$keys.Count -ne $expectedKeys.Count",
+                     "$keys -cnotcontains $key", "Invalid SDK capture values", "-isnot [bool]"):
+        assert required in guard

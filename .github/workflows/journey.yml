@@ -709,7 +709,7 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'project-create-capture-status.json', 'sdk-capture-status.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
@@ -737,6 +737,31 @@ jobs:
               }
               if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "Staged evidence must be a regular file: $relative"
+              }
+              if ($name -in @('project-create-capture-status.json', 'sdk-capture-status.json')) {
+                if ($file.Length -gt 1024) { throw "Oversized SDK capture receipt: $relative" }
+                try { $capture = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
+                catch { throw "Malformed SDK capture receipt: $relative" }
+                $keys = @($capture.PSObject.Properties.Name)
+                $expectedKeys = @('schema', 'exit_condition', 'response_size', 'json_object', 'ok', 'task_refs')
+                if ($capture -isnot [PSCustomObject] -or $keys.Count -ne $expectedKeys.Count) {
+                  throw "Invalid SDK capture receipt: $relative"
+                }
+                foreach ($key in $expectedKeys) {
+                  if ($keys -cnotcontains $key) { throw "Invalid SDK capture fields: $relative" }
+                }
+                if ($capture.schema -isnot [string] -or
+                    $capture.schema -cne 'astrid.sdk-capture-status.v1' -or
+                    $capture.exit_condition -isnot [string] -or
+                    @('success', 'failure', 'timeout') -cnotcontains $capture.exit_condition -or
+                    $capture.response_size -isnot [string] -or
+                    @('empty', 'within_limit', 'over_limit', 'unavailable') -cnotcontains $capture.response_size -or
+                    ($null -ne $capture.json_object -and $capture.json_object -isnot [bool]) -or
+                    ($null -ne $capture.ok -and $capture.ok -isnot [bool]) -or
+                    $capture.task_refs -isnot [string] -or
+                    @('zero', 'one', 'multiple', 'unknown') -cnotcontains $capture.task_refs) {
+                  throw "Invalid SDK capture values: $relative"
+                }
               }
               if ($name -eq 'journey-result.json') { $receiptCount++ }
               $estimatedArtifactBytes += [long]$file.Length + 1024
