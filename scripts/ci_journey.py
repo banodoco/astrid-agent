@@ -621,6 +621,18 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 workspace_owners[stage] = observations
     if workspace_owners:
         write_json(destination / "runtime-owner-workspace.json", workspace_owners)
+    # Flatten only the release-1 task's named response and its installed
+    # manifest; other task directories may represent a different version.
+    task_dir = evidence / "release1-working-task"
+    if task_dir.is_dir() and not task_dir.is_symlink():
+        for name in ("sdk-invocation.json", "installed-manifest.json"):
+            source = task_dir / name
+            if source.is_file() and not source.is_symlink():
+                try:
+                    shutil.copyfile(source, destination / name)
+                except OSError as exc:
+                    print(f"Journey task evidence copy ({phase}) failed for {name}: "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
