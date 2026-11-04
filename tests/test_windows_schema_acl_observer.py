@@ -82,6 +82,7 @@ def test_failed_install_still_observes_and_keeps_failure(tmp_path, monkeypatch):
                               source_override=False, app_checkout=tmp_path, agent_checkout=None,
                               runtime_checkout=None, shell='powershell.exe')
     monkeypatch.setattr(journey.sys, 'platform', 'win32')
+    monkeypatch.setenv('ASTRID_CI_SCHEMA_ACL_DIAGNOSTIC', 'true')
     monkeypatch.setattr(journey, 'runner_identity', lambda: {})
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (tmp_path / 'manifest', {}))
     monkeypatch.setattr(journey, 'git_source', lambda *a: {'sha': 'a'})
@@ -97,7 +98,9 @@ def test_failed_install_still_observes_and_keeps_failure(tmp_path, monkeypatch):
         journey._execute_owned(args, tmp_path / 'program', tmp_path / 'data', evidence,
                                SimpleNamespace(pid=123), 'birth')
     assert calls == ['before-install', 'install', 'after-install']
-    assert json.loads((evidence / 'journey-result.json').read_text())['status'] == 'fail'
+    receipt = json.loads((evidence / 'journey-result.json').read_text())
+    assert receipt['status'] == 'fail'
+    assert receipt['evidence_class'] == 'diagnostic-only'
 
 
 def test_named_evidence_staged_and_workflow_upload_is_always(tmp_path):

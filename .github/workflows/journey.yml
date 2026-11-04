@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      schema_acl_diagnostic:
+        description: Run the direct Windows fresh-install schema ACL observer as diagnostic evidence only
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -93,6 +98,11 @@ on:
         type: string
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
+      schema_acl_diagnostic:
+        description: Run the direct Windows fresh-install schema ACL observer as diagnostic evidence only
         required: false
         default: false
         type: boolean
@@ -255,6 +265,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          SCHEMA_ACL_DIAGNOSTIC: ${{ inputs.schema_acl_diagnostic || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
@@ -302,6 +313,9 @@ jobs:
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           journey_row = os.environ["JOURNEY_ROW"].strip()
+          schema_acl_diagnostic = os.environ.get("SCHEMA_ACL_DIAGNOSTIC", "false").lower() == "true"
+          if schema_acl_diagnostic and journey_row != "direct-windows":
+              raise SystemExit("schema_acl_diagnostic requires row direct-windows")
           valid_rows = {"", "direct-linux", "direct-macos", "direct-windows", "direct"}
           if journey_row not in valid_rows:
               raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
@@ -364,6 +378,8 @@ jobs:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
+          if schema_acl_diagnostic:
+              matrix[0]["leg"] = "fresh-install"
           wait_timeout = "180" if journey_row in {
               "direct-linux", "direct-macos", "direct-windows"
           } else "900"
@@ -668,6 +684,7 @@ jobs:
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_CI_SCHEMA_ACL_DIAGNOSTIC: ${{ inputs.schema_acl_diagnostic || false }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
