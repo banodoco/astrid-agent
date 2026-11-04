@@ -296,6 +296,10 @@ def validate_transaction(root, data, transaction):
 
 
 def rollback(root, data, backend, transaction, save):
+    # Historical phases/stop booleans do not prove that a producer or owner
+    # is gone. Refuse before validating/restoring files, selecting R0 or
+    # persisting recovery progress, including direct rollback callers.
+    backend.require_copy_recovery_contract()
     old_data, new_data, old, candidate = validate_transaction(root, data, transaction)
     selected = current(root)
     if not transaction.get("activation_intent"):

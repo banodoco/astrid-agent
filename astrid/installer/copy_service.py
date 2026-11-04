@@ -1,8 +1,8 @@
 """Native job control for copy updates. Never use a PID as stop authority.
 
-These observations bind the named job to its installed configuration. They are
-not writer exclusion, and do not authenticate against a hostile same-user job
-replacement in the native manager between its last query and control request.
+Control remains unavailable until admission, manager identity and recovery are
+qualified. Observations alone cannot fence work or bind a reusable job name
+through the final query/control interval.
 """
 from __future__ import annotations
 
@@ -15,10 +15,16 @@ import subprocess
 
 from runtime_protocol import platform
 
-from .core import absolute
+from .core import RuntimeOperationError, absolute
 
 LABEL = "haus.astrid.runtime"
 UNIT = "astrid.service"
+
+
+def require_native_copy_control():
+    """Independent of receipt support; no runtime/configuration escape hatch."""
+    raise RuntimeOperationError(
+        "Safe native copy control is unavailable until work admission, native job identity and recovery are qualified. Both workspace roots, selection and recovery journal are kept.")
 
 
 def binding(path, *, optional=False):
@@ -116,6 +122,11 @@ def observe(service, data):
     _selection(service, data)
     before = files(service)
     if service.system == "darwin":
+        # Validate execution semantics even when the old job is still loaded
+        # with different bytes, or absent. A hash cannot authorize arbitrary
+        # initial plist content for a later bootstrap.
+        document = plistlib.loads(service.path.read_bytes())
+        service._launchd_configuration(document, data)
         target = f"gui/{platform.current_user()}/{LABEL}"
         try:
             value = service.run(["launchctl", "print", target])
@@ -127,20 +138,11 @@ def observe(service, data):
                 raise ValueError("The previous launchd state cannot be established.") from exc
         else:
             loaded, observation = service._launchd_stop_identity(value, data)
-            document = plistlib.loads(service.path.read_bytes())
             if list(loaded["arguments"]) != document["ProgramArguments"]:
                 raise ValueError("The loaded launchd action differs from the exact plist.")
             identity = {"target": target, "path": loaded["path"], "program": loaded["program"],
                         "arguments": list(loaded["arguments"])}
             state = observation["state"]
-        # Validate the on-disk identity even for an unloaded job, before any
-        # later bootstrap. A missing job is never a reason to trust a label.
-        document = plistlib.loads(service.path.read_bytes())
-        action = document.get("ProgramArguments")
-        script = action[-1] if isinstance(action, list) and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
-        if (document.get("Label") != LABEL or not isinstance(action, list)
-                or not service._known_launch_action(action, data, windows=False, script=script)):
-            raise ValueError("The previous launchd plist is not owned by this installation.")
     elif service.system == "linux" and service.systemd():
         _systemd_file(service, data)
         value = service.run(["systemctl", "--user", "show", UNIT,
@@ -167,6 +169,7 @@ def observe(service, data):
 
 
 def stop(service, data, expected):
+    require_native_copy_control()
     latest = observe(service, data)
     if latest != expected:
         raise ValueError("The previous native service changed before installer quit.")
@@ -188,6 +191,7 @@ def restore(service, data, expected):
     bytes/modes/owner and a fresh native observation before starting anything.
     No stop intent/receipt is reconstructed from a saved PID.
     """
+    require_native_copy_control()
     if (expected.get("format") != "astrid-copy-service/v1"
             or expected.get("system") != service.system or expected.get("data_root") != str(data)
             or expected.get("target") != (f"gui/{platform.current_user()}/{LABEL}" if service.system == "darwin" else UNIT)):

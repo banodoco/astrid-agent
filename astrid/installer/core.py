@@ -334,6 +334,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
 
     if transaction.get("transaction_kind") == "copy":
         from .copy_update import rollback
+        backend.require_copy_recovery_contract()
         say("Recovering the interrupted Astrid update. Both workspace roots are kept.")
         rollback(root, data, backend, transaction, write_step)
         return
@@ -622,6 +623,10 @@ class Installer:
 
     def _run_locked(self, mode: str, manifest: dict, *, delete_data: bool = False,
                     bundle: Path | None = None) -> None:
+        if mode == "uninstall":
+            pending = pending_transaction(self.root)
+            if pending and pending.get("transaction_kind") == "copy":
+                self.backend.require_copy_recovery_contract()
         if mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)

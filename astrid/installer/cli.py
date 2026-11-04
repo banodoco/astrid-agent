@@ -279,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
                 pending_update = pending_transaction(root)
+                if (mode != "doctor" and pending_update
+                        and pending_update.get("transaction_kind") == "copy"):
+                    backend.require_copy_recovery_contract()
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.

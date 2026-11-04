@@ -53,7 +53,8 @@ def native(request, tmp_path, monkeypatch):
     uid = str(os.getuid())
     capture["stdout"] = capture["stdout"].replace("gui/501", f"gui/{uid}")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
-    service = Service(root, base / "log", None, home=home,
+    service_log = Path(document["StandardErrorPath"]) if name == "macos" else base / "log"
+    service = Service(root, service_log, None, home=home,
                       system="linux" if name == "linux" else "darwin")
     service.path.parent.mkdir(parents=True)
     service.path.write_text(raw)
@@ -101,6 +102,17 @@ def controls(case):
     return [call for call in case.calls if any(word in call for word in ("stop", "bootout", "start", "bootstrap"))]
 
 
+@pytest.fixture
+def simulated_native_control(monkeypatch):
+    """Exercise the historical controller algorithm, not native qualification.
+
+    Production stop/recovery remain closed. Safety regressions use the real
+    guard and must not request this fixture.
+    """
+    monkeypatch.setattr(copy_service, "require_native_copy_control", lambda: None)
+
+
+@pytest.mark.usefixtures("simulated_native_control")
 def test_real_r0_label_path_stop_and_restore_without_pid_control(native):
     c = native
     original = c.service.path.read_bytes()
@@ -141,6 +153,7 @@ def test_native_job_substitution_refuses_before_stop(native, substitution):
 
 
 @pytest.mark.parametrize("race", ["configuration", "selection", "manager", "environment"])
+@pytest.mark.usefixtures("simulated_native_control")
 def test_substitution_between_validation_and_stop_is_refused(native, race):
     c = native
     observed = copy_service.observe(c.service, c.data)
@@ -182,6 +195,7 @@ def test_aliased_native_configuration_never_controls_job(native, alias):
     assert controls(c) == []
 
 
+@pytest.mark.usefixtures("simulated_native_control")
 def test_external_edit_after_stop_blocks_r0_restart(native):
     c = native
     observed = copy_service.observe(c.service, c.data)
@@ -192,6 +206,7 @@ def test_external_edit_after_stop_blocks_r0_restart(native):
     assert len(controls(c)) == 1
 
 
+@pytest.mark.usefixtures("simulated_native_control")
 def test_native_stop_applied_then_error_can_restore_exact_r0(native):
     c = native
     observed = copy_service.observe(c.service, c.data)
@@ -364,6 +379,7 @@ def test_r0_restart_failure_remains_recoverable(installation):
     assert core.read_json(c.root / JOURNAL)["step"] == "rolled_back"
 
 
+@pytest.mark.usefixtures("simulated_native_control")
 def test_restore_failure_after_manager_ack_does_not_claim_recovery(native):
     c = native
     observed = copy_service.observe(c.service, c.data)

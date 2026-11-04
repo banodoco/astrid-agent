@@ -81,6 +81,7 @@ def installation(tmp_path, monkeypatch):
     backend.preflight_stop = lambda data: None
     backend.copy_preflight = lambda data: None
     backend.require_copy_receipt_contract = lambda: None
+    backend.require_copy_recovery_contract = lambda: None
     backend.prepare_copy_stop = lambda data: {"fixture": True, "data_root": str(data)}
     backend.quit_copy_source = lambda data, expected: stops.append((candidate, data)) if data != source else None
     backend.restore_copy_source = lambda data, expected: None

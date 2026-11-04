@@ -899,19 +899,27 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return observe(self.service, data)
 
     def quit_copy_source(self, data: Path, expected: dict) -> None:
-        from .copy_service import stop
+        from .copy_service import require_native_copy_control, stop
+        require_native_copy_control()
         # Repeat the read-only busy check immediately before the native job
         # validation/control boundary. Never call Runtime.down in this flow.
         self.copy_preflight(data)
         stop(self.service, data, expected)
 
     def restore_copy_source(self, data: Path, expected: dict) -> None:
-        from .copy_service import restore
+        from .copy_service import require_native_copy_control, restore
+        require_native_copy_control()
         restore(self.service, data, expected)
 
     def require_copy_receipt_contract(self) -> None:
         raise RuntimeOperationError(
             "Safe read-only workspace adoption is unavailable: the versioned Runtime copy receipt contract is not installed. Both workspace roots are kept.")
+
+    def require_copy_recovery_contract(self) -> None:
+        # Receipt support alone cannot establish surviving producer/owner
+        # disposition or authorize selection changes and native restart.
+        raise RuntimeOperationError(
+            "Safe copy update recovery is unavailable until producer disposition, workspace ownership and native control are qualified. Both workspace roots, selection and recovery journal are kept. Contact support.")
 
     def adopt(self, candidate: Version, new_data: Path, old_data: Path, realm: dict,
               *, operation_id: str) -> dict:
@@ -1141,6 +1149,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     def preflight_remove(self, root: Path, data: Path, *, delete_data: bool) -> Path | None:
         """Prove that removing programs cannot also remove a workspace."""
+        from .core import pending_transaction
+        pending = pending_transaction(absolute(root))
+        if pending and pending.get("transaction_kind") == "copy":
+            self.require_copy_recovery_contract()
         root, data = absolute(root), absolute(data)
         trees = [root]
         bootstrap = bootstrap_root(self.service.home, self.service.system)
