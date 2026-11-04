@@ -192,7 +192,7 @@ def test_prestop_runs_before_update_and_retains_nonproof(tmp_path, monkeypatch):
     rows = {row['stage']: row for row in report['stages']}
     assert calls.index('prestop') < calls.index('update')
     assert rows['release0-prestop']['result'] == 'pass'
-    assert rows['release1-task']['result'] == rows['one-runtime']['result'] == rows['sentinel']['result'] == 'pass'
+    assert all(rows[name]['result'] == 'pass' for name in ('release1-release', 'release1-service', 'release1-health', 'semantic-preservation', 'release1-task', 'one-runtime', 'sentinel'))
     assert report['prestop_r0']['owner_lock_free'] and report['status'] == 'fail'
     assert report['proof_mode'] == 'keep-going-diagnostic' and not report['qualification']['eligible']
 
@@ -295,3 +295,19 @@ def test_prestop_cli_rejects_other_modes(tmp_path, mode, leg):
                       '--data-root', str(tmp_path / 'run/data'), '--diagnostic-prestop-r0'])
     assert exc.value.code == 2
     assert not (tmp_path / 'run').exists()
+
+
+def test_prestop_seven_checks_continue_after_service_check_failure(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.diagnostic_prestop_r0 = True
+    monkeypatch.setattr(keepgoing, 'prestop_r0', lambda *a: {'owner_lock_free': True})
+    seen = []
+    def service(*a):
+        seen.append('service')
+        if len(seen) == 2:
+            raise RuntimeError('service assertion failed')
+    monkeypatch.setattr(journey, 'assert_direct_service_ownership', service)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-service']['result'] == 'fail'
+    assert all(rows[name]['result'] == 'pass' for name in ('release1-release', 'release1-health', 'semantic-preservation', 'release1-task', 'one-runtime', 'sentinel'))
