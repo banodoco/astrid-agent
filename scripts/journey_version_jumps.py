@@ -17,11 +17,12 @@ import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
-    from . import ci_journey as journey, upgrade_release
+    from . import ci_journey as journey, upgrade_release, journey_workspace
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import upgrade_release
+    import journey_workspace
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -787,7 +788,12 @@ def rerun(args, root, data, evidence, app, manifest_path, manifest, version, old
 
 def busy_refusal(args, root, data, evidence, manifest_path, old,
                  old_pid, old_birth, sentinel, birth, result):
-    keys = workspace(old, data, evidence / "busy", "busy", {})
+    realm = journey.workspace_root(data)
+    identity = journey_workspace.realm_identity(realm)
+    keys = workspace(old, data, evidence / "busy", "busy", {"realm_identity": identity}, realm=realm)
+    def cleanup():
+        workspace(old, data, evidence / "busy-release", "release",
+                  {"keys": keys, "realm_identity": identity}, realm=realm)
     try:
         protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
                                                          data / "runtime/discovery.json")}
@@ -806,6 +812,17 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Busy refusal disturbed the unrelated sentinel")
         journey.assert_one_runtime(data)
+    except BaseException as primary:
+        try:
+            cleanup()
+        except Exception as cleanup_error:
+            result["busy_cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            raise primary from cleanup_error
+        raise
+    else:
+        try:
+            cleanup()
+        except Exception as cleanup_error:
+            result["busy_cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            raise
         result["checks"].update(busy_refusal="pass", one_runtime="pass", unrelated_sentinel="pass")
-    finally:
-        workspace(old, data, evidence / "busy-release", "release", keys)

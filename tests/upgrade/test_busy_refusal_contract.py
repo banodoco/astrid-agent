@@ -20,16 +20,21 @@ def busy_case(tmp_path, monkeypatch):
     calls = []
     keys = {"task_id": "task-123"}
 
-    def workspace(_old, _data, _evidence, action, request):
+    identity = {"realm_id": "fixture"}
+    realm = data / "realm"
+
+    def workspace(_old, _data, _evidence, action, request, *, realm):
         calls.append(action)
         if action == "busy":
             return keys
-        assert action == "release" and request == keys
+        assert action == "release" and request == {"keys": keys, "realm_identity": identity}
         return {}
 
     def refusal(*_args):
         raise RuntimeError("bootstrap exited nonzero")
 
+    monkeypatch.setattr(jumps.journey, "workspace_root", lambda _data: realm)
+    monkeypatch.setattr(jumps.journey_workspace, "realm_identity", lambda _realm: identity)
     monkeypatch.setattr(jumps, "workspace", workspace)
     monkeypatch.setattr(jumps.journey, "bootstrap", refusal)
     monkeypatch.setattr(jumps.journey, "process_birth", lambda _pid: "birth")
@@ -106,3 +111,29 @@ def test_busy_refusal_rejects_lost_sentinel_and_releases(busy_case, monkeypatch)
         busy_case.run()
     assert busy_case.calls == ["busy", "release"]
     assert busy_case.result["checks"] == {}
+
+
+def test_primary_error_survives_cleanup_failure(busy_case, monkeypatch):
+    busy_case.protected[0].unlink()
+    def fail_cleanup(*args, **kwargs):
+        if args[3] == "busy":
+            return {"task_id": "task-123"}
+        raise RuntimeError("cleanup broke")
+    monkeypatch.setattr(jumps, "workspace", fail_cleanup)
+    with pytest.raises(FileNotFoundError) as caught:
+        busy_case.run()
+    assert str(caught.value.__cause__) == "cleanup broke"
+    assert busy_case.result["busy_cleanup_error"] == "RuntimeError: cleanup broke"
+    assert busy_case.result["checks"] == {}
+
+
+def test_cleanup_failure_does_not_report_success(busy_case, monkeypatch):
+    def fail_cleanup(*args, **kwargs):
+        if args[3] == "busy":
+            return {"task_id": "task-123"}
+        raise RuntimeError("cleanup broke")
+    monkeypatch.setattr(jumps, "workspace", fail_cleanup)
+    with pytest.raises(RuntimeError, match="cleanup broke"):
+        busy_case.run()
+    assert busy_case.result["checks"] == {}
+    assert busy_case.result["busy_cleanup_error"] == "RuntimeError: cleanup broke"
