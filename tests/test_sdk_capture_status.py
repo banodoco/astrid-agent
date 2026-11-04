@@ -9,6 +9,7 @@ from scripts import ci_journey as journey
 
 
 STATUS = "sdk-capture-status.json"
+POPEN = subprocess.Popen
 
 
 def receipt(evidence, name=STATUS):
@@ -16,10 +17,11 @@ def receipt(evidence, name=STATUS):
 
 
 def call_capture(monkeypatch, evidence, code, timeout=5):
-    def cli(_version, _argv, evidence, name, **_kwargs):
-        return journey.run([sys.executable, "-c", code], evidence / name, timeout=timeout)
-    monkeypatch.setattr(journey, "installed_cli", cli)
-    return journey.installed_cli_with_capture({}, [], evidence, "sdk-invocation.json", status_name=STATUS)
+    def synthetic(_command, **kwargs):
+        return POPEN([sys.executable, "-c", code], **kwargs)
+    monkeypatch.setattr(journey.subprocess, "Popen", synthetic)
+    return journey.installed_cli_with_capture({"python": sys.executable, "env": {}}, [], evidence,
+                                              "sdk-invocation.json", status_name=STATUS, timeout=timeout)
 
 
 def test_success_classifies_without_publishing_response(monkeypatch, tmp_path):
@@ -40,9 +42,12 @@ def test_success_classifies_without_publishing_response(monkeypatch, tmp_path):
     assert journey.read_json(staged / "journey-result.json") == {"status": "pass", "job_id": "example"}
 
 
-def test_over_limit_does_not_change_success_or_parse_prefix(monkeypatch, tmp_path):
-    output = call_capture(monkeypatch, tmp_path, f"print('x' * {journey.SDK_CAPTURE_LIMIT + 10})")
-    assert len(output) > journey.SDK_CAPTURE_LIMIT
+@pytest.mark.parametrize("stream", [1, 2])
+def test_over_limit_is_bounded_and_fails_closed(monkeypatch, tmp_path, stream):
+    with pytest.raises(RuntimeError, match="over limit"):
+        call_capture(monkeypatch, tmp_path,
+                     f"import os; os.write({stream}, b'x' * {journey.SDK_CAPTURE_LIMIT + 10})")
+    assert (tmp_path / "sdk-invocation.json").stat().st_size == journey.SDK_CAPTURE_LIMIT
     status = receipt(tmp_path)
     assert status["response_size"] == "over_limit"
     assert status["exit_condition"] == "success"
@@ -50,16 +55,26 @@ def test_over_limit_does_not_change_success_or_parse_prefix(monkeypatch, tmp_pat
     assert status["task_refs"] == "unknown"
 
 
-@pytest.mark.parametrize("code,timeout,exception,condition", [
-    ("import sys; print('private'); sys.exit(4)", 5, RuntimeError, "failure"),
-    ("import time; print('private', flush=True); time.sleep(5)", 0.1, subprocess.TimeoutExpired, "timeout"),
-])
-def test_failures_keep_original_exception_and_hide_partial_output(monkeypatch, tmp_path, code, timeout, exception, condition):
-    with pytest.raises(exception):
-        call_capture(monkeypatch, tmp_path, code, timeout)
+def test_failure_classifies_complete_json_without_publishing_content(monkeypatch, tmp_path):
+    code = "import sys; print('{\"ok\": false, \"secret\": \"private\"}'); sys.exit(4)"
+    with pytest.raises(RuntimeError, match="exit 4"):
+        call_capture(monkeypatch, tmp_path, code)
     status = receipt(tmp_path)
-    assert status["exit_condition"] == condition
-    assert status["response_size"] == "unavailable"
+    assert status["exit_condition"] == "failure"
+    assert status["response_size"] == "within_limit"
+    assert status["json_object"] is True and status["ok"] is False
+    assert "private" not in json.dumps(status)
+
+
+def test_timeout_records_partial_size_without_interpreting_or_exposing_it(monkeypatch, tmp_path):
+    with pytest.raises(subprocess.TimeoutExpired) as exc:
+        call_capture(monkeypatch, tmp_path, "import time; print('private', flush=True); time.sleep(5)", 0.2)
+    assert exc.value.output is None
+    assert (tmp_path / "sdk-invocation.json").read_text() == "private\n"
+    status = receipt(tmp_path)
+    assert status["exit_condition"] == "timeout"
+    assert status["response_size"] == "within_limit"
+    assert status["json_object"] is None and status["task_refs"] == "unknown"
     assert "private" not in json.dumps(status)
 
 
@@ -96,13 +111,46 @@ def test_task_clears_previous_capture_before_failed_start(monkeypatch, tmp_path)
             (staged / name).write_text("stale")
     for name in journey.SDK_CAPTURE_STATUS_NAMES:
         (evidence / name).write_text("stale")
+    for name in ("project.json", "sdk-invocation.json"):
+        (evidence / name).write_text("stale private data")
     def failed_start(*_args, **_kwargs):
         raise FileNotFoundError("synthetic start failure")
-    monkeypatch.setattr(journey, "installed_cli", failed_start)
+    monkeypatch.setattr(journey.subprocess, "Popen", failed_start)
     with pytest.raises(FileNotFoundError, match="synthetic start failure"):
-        journey.task({}, evidence, "project")
+        journey.task({"python": sys.executable, "env": {}}, evidence, "project")
+    assert not (evidence / "project.json").exists()
+    assert not (evidence / "sdk-invocation.json").exists()
     assert receipt(evidence, "project-create-capture-status.json")["exit_condition"] == "failure"
     assert STATUS not in journey.SDK_CAPTURE_RECEIPTS[evidence.absolute()]
     for phase in ("before-cleanup", "after-cleanup"):
         for name in journey.SDK_CAPTURE_STATUS_NAMES:
             assert not (tmp_path / "evidence-upload" / phase / name).exists()
+
+
+def test_inherited_open_pipe_is_unavailable(monkeypatch, tmp_path):
+    code = ("import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)']); "
+            "print('private')")
+    with pytest.raises(RuntimeError, match="incomplete"):
+        call_capture(monkeypatch, tmp_path, code)
+    status = receipt(tmp_path)
+    assert status["exit_condition"] == "success"
+    assert status["response_size"] == "unavailable"
+    assert status["json_object"] is None
+    assert not (tmp_path / "sdk-invocation.json").exists()
+
+
+@pytest.mark.parametrize("code,timeout,error", [
+    ("import sys; print('private'); sys.exit(7)", 5, RuntimeError),
+    ("import time; print('private', flush=True); time.sleep(5)", 0.2, subprocess.TimeoutExpired),
+])
+def test_local_write_failure_does_not_replace_child_failure(monkeypatch, tmp_path, code, timeout, error):
+    from pathlib import Path
+    def fail_write(_path, _data):
+        raise OSError("synthetic write failure")
+    monkeypatch.setattr(Path, "write_bytes", fail_write)
+    with pytest.raises(error) as exc:
+        call_capture(monkeypatch, tmp_path, code, timeout)
+    if error is RuntimeError:
+        assert "exit 7" in str(exc.value)
+    assert receipt(tmp_path)["response_size"] == "within_limit"
