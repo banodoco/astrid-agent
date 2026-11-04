@@ -239,71 +239,62 @@ def guarded_remove(target, parent, label, empty_only, retained, record, save):
 
 
 def main():
-    if os.getuid()!=UID or os.environ.get('RUNNER_NAME')!='hannah-mac' or sys.platform!='darwin': raise RuntimeError('Unexpected runner identity')
-    home=Path(pwd.getpwuid(UID).pw_dir)
-    if home.is_symlink() or home.resolve()!=home or home.stat().st_uid!=UID: raise RuntimeError('Unsafe runner home')
+    if os.getuid()!=UID or os.environ.get('RUNNER_NAME')!='hannah-mac' or sys.platform!='darwin': raise RuntimeError('Unexpected runner')
+    home=Path(pwd.getpwuid(UID).pw_dir); base=home/'.astrid-r1fix-stopped'; safe_private_dir(base)
     temp=Path(os.environ['RUNNER_TEMP'])
-    if temp != home/'actions-runner/_work/_temp' or temp.resolve()!=temp or temp.stat().st_uid!=UID: raise RuntimeError('Unexpected temp')
-    out=temp/'r1-owned-clean'; out.mkdir(mode=0o700)
-    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('R1FIX_CLEAN_UPLOAD='+str(out)+'\n')
-    audit={'schema':'runner-task-audit-clean/v1','before':shutil.disk_usage(home).free,'targets':{},'status':'checking'}
-    auditpath=out/'audit.json'
-    def save(): checkpoint(auditpath,audit)
+    if temp!=home/'actions-runner/_work/_temp' or temp.resolve()!=temp or temp.stat().st_uid!=UID: raise RuntimeError('Unexpected temp')
+    output=temp/'ws05-cancel-audit'; output.mkdir(mode=0o700)
+    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('WS05_CANCEL_UPLOAD='+str(output)+'\n')
+    audit={'status':'checking','target':'cancelled-task','before':shutil.disk_usage(home).free}
+    path=output/'audit.json'
+    def save(): checkpoint(path,audit)
     save()
-    p=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
+    target=base/'task.tjj7y4z8'; identity=target_identity(target,base)
+    if identity is None: raise RuntimeError('Expected task absent')
+    script=target/'diagnostic.py'
+    if script.is_symlink() or not script.is_file() or script.stat().st_uid!=UID or hashlib.sha256(script.read_bytes()).hexdigest()!='51e4a54db34755eb60088d9a320eafa9c5cf8f2dcbd50470c9f5ae1c98e08b1e': raise RuntimeError('Task provenance differs')
+    state=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
     missing='Could not find service "haus.astrid.runtime" in domain for user gui: 503'
-    if p.returncode!=113 or p.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Runtime service absence unverified')
-    targets=(('prelaunch-audit',home/'.astrid-prelaunch-clean-audits','41655746843-1','prelaunch-clean-owned/v1'),
-             ('r25-stop-audit',home/'.astrid-r25-stop-audits','41654092124-1','r25-exact-stop/v2'))
-    for label,parent,name,schema in targets:
-        record=audit['targets'][label]={'status':'checking'}; save()
-        try:
-            safe_private_dir(parent); target=parent/name; identity=target_identity(target,parent)
-            if identity is None: record['status']='already-absent'; save(); continue
-            evidence=target/'audit.json'
-            if evidence.is_symlink() or not evidence.is_file() or evidence.stat().st_uid!=UID: raise RuntimeError('Audit identity file unsafe')
-            value=json.loads(evidence.read_text())
-            if value.get('schema')!=schema or value.get('runner')!='hannah-mac': raise RuntimeError('Audit identity differs')
-            if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Target busy or unverified')
-            before=scan_tree(target,identity,'source-only'); record['before']=before; save()
-            if not no_process_reference(target) or not no_open_files(target) or scan_tree(target,identity,'source-only')['tree_sha256']!=before['tree_sha256']: raise RuntimeError('Target changed or became busy')
-            if not shutil.rmtree.avoids_symlink_attacks: raise RuntimeError('Safe rmtree unavailable')
-            fd=os.open(str(parent),FLAGS)
-            try:
-                st=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                if (st.st_dev,st.st_ino,st.st_uid)!=identity: raise RuntimeError('Target identity changed')
-                record['status']='removal-started'; save(); shutil.rmtree(name,dir_fd=fd); os.fsync(fd)
-            finally: os.close(fd)
-            record['status']='removed'
-        except Exception as exc:
-            record['status']='failed'; record['reason']=str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__
-        save()
-    label='r1fix-audit'; record=audit['targets'][label]={'status':'checking'}; save()
+    if state.returncode!=113 or state.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Service absence unverified')
+    if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Task busy or not verified')
+    processes=subprocess.run(['/bin/ps','-ww','-u',str(UID),'-o','command='],capture_output=True,text=True,timeout=20,check=True).stdout
+    if any('-m runtime_protocol start' in row or ('from astrid_runtime.cli import main' in row and 'run' in row) for row in processes.splitlines()): raise RuntimeError('Runner Runtime owner present')
+    disabled=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
+    if 'disabled services' not in disabled.stdout: raise RuntimeError('Disabled state unverified')
+    found=re.search(r'(?m)^\s*"haus\.astrid\.runtime"\s*=>\s*(\w+)\s*$',disabled.stdout)
+    label=found.group(1) if found else 'not-listed'; audit['label_before']=label; save()
+    if label in {'disabled','true'}:
+        log=target/'private-logs/capture-private.log'
+        if log.is_symlink() or not log.is_file() or log.stat().st_uid!=UID or log.stat().st_size>5000000: raise RuntimeError('Disable provenance log unavailable')
+        data=log.read_bytes()
+        if b'STAGE launchagent-disable pass' not in data and b'STAGE r1-launchagent-disable pass' not in data: raise RuntimeError('No proof this task disabled the label')
+        audit['disable_provenance']='task stage log'; save()
+        subprocess.run(['/bin/launchctl','enable','gui/503/haus.astrid.runtime'],check=True,timeout=30)
+        audit['label_recovery']='enabled'; save()
+    elif label not in {'enabled','false','not-listed'}: raise RuntimeError('Unknown disabled state')
+    check=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
+    if 'disabled services' not in check.stdout: raise RuntimeError('Restored state unverified')
+    m=re.search(r'(?m)^\s*"haus\.astrid\.runtime"\s*=>\s*(\w+)\s*$',check.stdout)
+    final=m.group(1) if m else 'not-listed'
+    if final not in {'enabled','false','not-listed'}: raise RuntimeError('Label remains disabled')
+    audit['label_after']=final
+    result=target/'evidence/result.json'
+    if result.is_file() and not result.is_symlink() and result.stat().st_uid==UID:
+        value=json.loads(result.read_text()); audit['task_result']={'outcome':value.get('outcome'),'stages':value.get('stages'),'cleanup':value.get('cleanup')}
+    first=scan_tree(target,identity,'source-only'); audit['tree']=first; save()
+    if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Task became busy')
+    if scan_tree(target,identity,'source-only')['tree_sha256']!=first['tree_sha256']: raise RuntimeError('Task changed during verification')
+    if not shutil.rmtree.avoids_symlink_attacks: raise RuntimeError('Safe removal unavailable')
+    fd=os.open(str(base),FLAGS)
     try:
-        parent=home/'.astrid-r1fix-clean-audits'; safe_private_dir(parent)
-        name='41793673435-1.json'; target=parent/name; st=target.lstat()
-        if not stat.S_ISREG(st.st_mode) or st.st_uid!=UID or target.is_symlink(): raise RuntimeError('Audit file identity unsafe')
-        value=json.loads(target.read_text())
-        if value.get('schema')!='r1fix-source-clean/v1' or value.get('status')!='complete': raise RuntimeError('Audit file provenance differs')
-        if not no_process_reference(target): raise RuntimeError('Audit file busy or unverified')
-        open_check=subprocess.run(['/usr/sbin/lsof','-n',str(target)],capture_output=True,text=True,timeout=30)
-        if open_check.returncode!=1 or open_check.stdout.strip() or open_check.stderr.strip(): raise RuntimeError('Audit file open or unverified')
-        fd=os.open(str(parent),FLAGS)
-        try:
-            current=os.stat(name,dir_fd=fd,follow_symlinks=False)
-            if (current.st_dev,current.st_ino,current.st_uid)!=(st.st_dev,st.st_ino,st.st_uid): raise RuntimeError('Audit file changed')
-            record['bytes']=st.st_size; record['status']='removal-started'; save(); os.unlink(name,dir_fd=fd); os.fsync(fd)
-        finally: os.close(fd)
-        record['status']='removed'
-    except Exception as exc:
-        record['status']='failed'; record['reason']=str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__
-    save()
-    audit['after']=shutil.disk_usage(home).free
-    audit['status']='complete' if all(r['status'] in {'removed','already-absent'} for r in audit['targets'].values()) else 'partial'
-    save(); print(json.dumps(audit))
-    if audit['status']!='complete': raise SystemExit(1)
+        st=os.stat(target.name,dir_fd=fd,follow_symlinks=False)
+        if (st.st_dev,st.st_ino,st.st_uid)!=identity: raise RuntimeError('Task identity changed')
+        audit['status']='removal-started'; save(); shutil.rmtree(target.name,dir_fd=fd); os.fsync(fd)
+    finally: os.close(fd)
+    audit['status']='complete'; audit['after']=shutil.disk_usage(home).free; save()
+    print(json.dumps(audit))
 
 if __name__=='__main__':
     try: main()
     except Exception as exc:
-        print(json.dumps({'status':'preflight-failed','error_type':type(exc).__name__})); raise SystemExit(1)
+        print(json.dumps({'status':'preflight-failed','error_type':type(exc).__name__,'reason':str(exc) if isinstance(exc,RuntimeError) else 'unverified'})); raise SystemExit(1)
