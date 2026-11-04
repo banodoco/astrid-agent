@@ -72,6 +72,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+SDK_CAPTURE_LIMIT = 128 * 1024
+SDK_CAPTURE_STATUS_NAMES = ("project-create-capture-status.json", "sdk-capture-status.json")
+SDK_CAPTURE_RECEIPTS: dict[Path, dict[str, dict]] = {}
 
 
 def journey_os_label() -> str:
@@ -581,6 +584,16 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         return
+    # Rebuild capture receipts from this process's current task attempt only.
+    for name in SDK_CAPTURE_STATUS_NAMES:
+        try:
+            target = destination / name
+            target.unlink(missing_ok=True)
+            value = SDK_CAPTURE_RECEIPTS.get(evidence.absolute(), {}).get(name)
+            if valid_sdk_capture_status(value):
+                write_json(target, value)
+        except (OSError, ValueError, TypeError):
+            pass
     for source in sorted(evidence.iterdir(), key=lambda path: path.name):
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
@@ -1203,6 +1216,64 @@ def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
                env=env, timeout=timeout)
 
 
+def valid_sdk_capture_status(value: object) -> bool:
+    return (isinstance(value, dict) and set(value) == {
+        "schema", "exit_condition", "response_size", "json_object", "ok", "task_refs"
+    } and value["schema"] == "astrid.sdk-capture-status.v1"
+        and value["exit_condition"] in ("success", "failure", "timeout")
+        and value["response_size"] in ("empty", "within_limit", "over_limit", "unavailable")
+        and (value["json_object"] is None or type(value["json_object"]) is bool)
+        and (value["ok"] is None or type(value["ok"]) is bool)
+        and value["task_refs"] in ("zero", "one", "multiple", "unknown"))
+
+
+def installed_cli_with_capture(version: dict, argv: list[str], evidence: Path, name: str,
+                               *, status_name: str, module: str = "astrid") -> str:
+    """Observe a bounded prefix after the existing CLI call; never publish its bytes."""
+    condition = "failure"
+    try:
+        output = installed_cli(version, argv, evidence, name, module=module)
+        condition = "success"
+        return output
+    except subprocess.TimeoutExpired:
+        condition = "timeout"
+        raise
+    finally:
+        try:
+            status = {"schema": "astrid.sdk-capture-status.v1", "exit_condition": condition,
+                      "response_size": "unavailable", "json_object": None,
+                      "ok": None, "task_refs": "unknown"}
+            # A failed start could leave an old output file, so only interpret output
+            # following a successful call. The existing CLI owns all task semantics.
+            if condition == "success":
+                try:
+                    with (evidence / name).open("rb") as stream:
+                        raw = stream.read(SDK_CAPTURE_LIMIT + 1)
+                except OSError:
+                    raw = None
+                if raw is not None:
+                    status["response_size"] = ("over_limit" if len(raw) > SDK_CAPTURE_LIMIT else
+                                               "within_limit" if raw else "empty")
+                if raw is not None and len(raw) <= SDK_CAPTURE_LIMIT:
+                    try:
+                        value = json.loads(raw.decode("utf-8-sig", errors="replace"))
+                        status["json_object"] = isinstance(value, dict)
+                        if isinstance(value, dict):
+                            if type(value.get("ok")) is bool:
+                                status["ok"] = value["ok"]
+                            details = value.get("details")
+                            refs = details.get("astridTaskRefs") if isinstance(details, dict) else None
+                            if isinstance(refs, list):
+                                status["task_refs"] = ("zero" if not refs else
+                                                       "one" if len(refs) == 1 else "multiple")
+                    except (ValueError, UnicodeError):
+                        status["json_object"] = False
+            SDK_CAPTURE_RECEIPTS.setdefault(evidence.absolute(), {})[status_name] = status
+        except (OSError, ValueError, TypeError, RecursionError):
+            # Diagnostics cannot replace the original result or exception.
+            pass
+
+
 def healthy(data: Path) -> dict:
     request = urllib.request.Request(HEALTH_URL, headers={"Origin": "https://astrid.haus"})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
@@ -1411,16 +1482,25 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
 
 def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output."""
+    SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
+    for phase in ("before-cleanup", "after-cleanup"):
+        for name in SDK_CAPTURE_STATUS_NAMES:
+            try:
+                (evidence.parent.parent / "evidence-upload" / phase / name).unlink(missing_ok=True)
+            except OSError:
+                pass
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
     if create_project:
-        created = json.loads(installed_cli(version, ["projects", "create", project, "--name", project,
-                                                   "--json"], evidence, "project.json"))
+        created = json.loads(installed_cli_with_capture(version, ["projects", "create", project, "--name", project,
+                                                   "--json"], evidence, "project.json",
+                                                   status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
-    invocation = json.loads(installed_cli(version, [json.dumps(request)], evidence,
-                                          "sdk-invocation.json", module="astrid.omp_invoke"))
+    invocation = json.loads(installed_cli_with_capture(version, [json.dumps(request)], evidence,
+                                          "sdk-invocation.json", module="astrid.omp_invoke",
+                                          status_name="sdk-capture-status.json"))
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")

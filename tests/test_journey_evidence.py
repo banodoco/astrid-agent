@@ -231,3 +231,34 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def test_release1_aggregate_accepts_full_staged_receipts_with_capture_status(tmp_path):
+    from scripts import ci_journey as journey
+    import shutil
+
+    source = tmp_path / "source"
+    source.mkdir()
+    candidate = release1_receipts(source)
+    staged_root = tmp_path / "staged"
+    aggregate_root = tmp_path / "artifacts"
+    aggregate_root.mkdir()
+    for contract in gate.RELEASE1_MATRIX:
+        job = contract["job_id"]
+        evidence_dir = staged_root / job / "evidence" / "fresh"
+        evidence_dir.mkdir(parents=True)
+        original = (source / job / "journey-result.json").read_bytes()
+        (evidence_dir / "journey-result.json").write_bytes(original)
+        journey.SDK_CAPTURE_RECEIPTS[evidence_dir.absolute()] = {
+            "sdk-capture-status.json": {
+                "schema": "astrid.sdk-capture-status.v1", "exit_condition": "success",
+                "response_size": "within_limit", "json_object": True,
+                "ok": True, "task_refs": "one",
+            }
+        }
+        journey.retain_named_evidence(evidence_dir, "after-cleanup")
+        stage = staged_root / job / "evidence-upload" / "after-cleanup"
+        assert (stage / "journey-result.json").read_bytes() == original
+        assert (stage / "sdk-capture-status.json").is_file()
+        shutil.copytree(stage, aggregate_root / job)
+    assert not gate.evaluate_release1_matrix(candidate, aggregate_root)
