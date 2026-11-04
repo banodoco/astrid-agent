@@ -245,61 +245,49 @@ def main():
     base=home/'.astrid-r1fix-stopped'; safe_private_dir(base)
     temp=Path(os.environ['RUNNER_TEMP'])
     if temp != home/'actions-runner/_work/_temp' or temp.resolve()!=temp or temp.stat().st_uid!=UID: raise RuntimeError('Unexpected temp')
-    output=temp/'r1fix-clean'; output.mkdir(mode=0o700)
-    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('R1FIX_CLEAN_UPLOAD='+str(output)+'\n')
-    auditdir=home/'.astrid-r1fix-clean-audits'; safe_private_dir(auditdir,create=True)
-    runid=os.environ.get('GITHUB_RUN_ID','')+'-'+os.environ.get('GITHUB_RUN_ATTEMPT','')
-    if not re.fullmatch(r'[0-9]+-[0-9]+',runid): raise RuntimeError('Invalid run id')
-    auditpath=auditdir/(runid+'.json')
-    audit={'schema':'r1fix-source-clean/v1','before':shutil.disk_usage(home).free,'runs':{},'preserved':['task workspace and installed program','task evidence and private logs'],'status':'checking'}
+    out=temp/'r1-owned-clean'; out.mkdir(mode=0o700)
+    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('R1FIX_CLEAN_UPLOAD='+str(out)+'\n')
+    audit={'schema':'r1fix-owned-state-clean/v1','before':shutil.disk_usage(home).free,'targets':{},'status':'checking'}
+    auditpath=out/'audit.json'
     def save(): checkpoint(auditpath,audit)
     save()
-    runs=sorted(base.iterdir())
-    if len(runs)!=2 or any(not re.fullmatch(r'task\.[A-Za-z0-9_]{8}',p.name) for p in runs): raise RuntimeError('Task root inventory differs')
-    expected={'driver':'997d8c3d95971170b812b8c415fbbf5c1656edd0','agent':'30761f4a3916ce6e5822669dd5865f65a4e6654a','runtime':'de98a5aa44768419656bfeffcdaa1b2eda9e9845','int-app':'878c28df7a6c80fa9aaa6540c5fccad95473e7c1','candidate-app':'37ac4d709e9bb211f88b8df6520a0d0e2de0228e','r0-launcher':'bbba620e3d89eeff8021417f365e6ea584203105'}
-    identified={}
-    for run in runs:
-        safe_private_dir(run)
-        result=run/'evidence/result.json'
-        if result.is_symlink() or not result.is_file() or result.stat().st_uid!=UID: raise RuntimeError('Missing task result')
-        value=json.loads(result.read_text())
-        stages=value.get('stages',{})
-        label='retry' if stages.get('r0-stopped-and-lock-free')=='pass' else 'first' if stages.get('r0-observe')=='pass' and stages.get('seed')!='pass' else None
-        if not label or label in identified or value.get('cleanup')!='owned service stopped; workspace retained': raise RuntimeError('Task result identity differs')
-        identified[label]=run
-        for name,sha in expected.items():
-            target=run/name
-            identity=target_identity(target,run)
-            if identity is None: raise RuntimeError('Expected checkout absent')
-            found=subprocess.run(['/usr/bin/git','-C',str(target),'-c','core.hooksPath=/dev/null','rev-parse','HEAD'],capture_output=True,text=True,timeout=20,env={'PATH':'/usr/bin:/bin','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_SYSTEM':'/dev/null','GIT_NO_REPLACE_OBJECTS':'1'},check=True).stdout.strip()
-            if found!=sha: raise RuntimeError('Checkout source identity differs')
-    if set(identified)!={'first','retry'}: raise RuntimeError('Expected two distinct task receipts')
-    for label,run in sorted(identified.items()):
-        audit['runs'][label]={}
-        for name in expected:
-            target=run/name; record=audit['runs'][label][name]={'status':'checking'}; save()
+    p=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
+    missing='Could not find service "haus.astrid.runtime" in domain for user gui: 503'
+    if p.returncode!=113 or p.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Runtime service absence unverified')
+    expected={'task.gob70ofe':'first','task.y8ycyqhp':'retry'}
+    if {p.name for p in base.iterdir()} != set(expected): raise RuntimeError('Task root inventory differs')
+    for name,label in expected.items():
+        target=base/name; identity=target_identity(target,base)
+        if identity is None: raise RuntimeError('Expected task absent')
+        receipt=target/'evidence/result.json'
+        if receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_uid!=UID: raise RuntimeError('Task receipt unsafe')
+        value=json.loads(receipt.read_text()); stages=value.get('stages',{})
+        if value.get('cleanup')!='owned service stopped; workspace retained' or stages.get('r0-observe')!='pass': raise RuntimeError('Task receipt differs')
+        if label=='retry' and stages.get('r0-stopped-and-lock-free')!='pass': raise RuntimeError('Retry receipt differs')
+        if label=='first' and stages.get('seed')=='pass': raise RuntimeError('First receipt differs')
+    for name,label in expected.items():
+        target=base/name; record=audit['targets'][label]={'status':'checking'}; save()
+        try:
+            identity=target_identity(target,base)
+            if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Target busy or not verified')
+            before=scan_tree(target,identity,'source-only'); record['before']=before; save()
+            if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Target became busy')
+            after=scan_tree(target,identity,'source-only')
+            if before['tree_sha256']!=after['tree_sha256']: raise RuntimeError('Target changed')
+            if not shutil.rmtree.avoids_symlink_attacks: raise RuntimeError('Safe rmtree unavailable')
+            fd=os.open(str(base),FLAGS)
             try:
-                identity=target_identity(target,run)
-                if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Target busy or not verified')
-                first=scan_tree(target,identity,'source-only'); record['before']=first; save()
-                if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Target became busy')
-                second=scan_tree(target,identity,'source-only')
-                if first['tree_sha256']!=second['tree_sha256']: raise RuntimeError('Target changed')
-                if not shutil.rmtree.avoids_symlink_attacks: raise RuntimeError('Safe rmtree unavailable')
-                fd=os.open(str(run),FLAGS)
-                try:
-                    st=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                    if (st.st_dev,st.st_ino,st.st_uid)!=identity: raise RuntimeError('Target identity changed')
-                    record['status']='removal-started'; save(); shutil.rmtree(name,dir_fd=fd); os.fsync(fd)
-                finally: os.close(fd)
-                record['status']='removed'
-            except Exception as exc:
-                record['status']='failed'; record['reason']=str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__
-            save()
+                st=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                if (st.st_dev,st.st_ino,st.st_uid)!=identity: raise RuntimeError('Target identity changed')
+                record['status']='removal-started'; save(); shutil.rmtree(name,dir_fd=fd); os.fsync(fd)
+            finally: os.close(fd)
+            record['status']='removed'
+        except Exception as exc:
+            record['status']='failed'; record['reason']=str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__
+        save()
     audit['after']=shutil.disk_usage(home).free
-    audit['status']='complete' if all(r['status']=='removed' for tasks in audit['runs'].values() for r in tasks.values()) else 'partial'
-    save(); shutil.copyfile(auditpath,output/'audit.json')
-    print(json.dumps({'status':audit['status'],'before':audit['before'],'after':audit['after'],'runs':audit['runs']}))
+    audit['status']='complete' if all(r['status']=='removed' for r in audit['targets'].values()) else 'partial'
+    save(); print(json.dumps(audit))
     if audit['status']!='complete': raise SystemExit(1)
 
 if __name__=='__main__':
