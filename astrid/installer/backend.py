@@ -618,6 +618,42 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             return
         self.service.publish_launch_admission(version, data)
 
+    def _release0_owner_context(self, data: Path) -> tuple[dict | None, dict]:
+        active = getattr(self, "_update_transaction", None)
+        transaction = active[0] if active is not None else None
+        if transaction is None:
+            path = self.root / "update-transaction.json"
+            if os.path.lexists(path):
+                if linked(path) or not path.is_file():
+                    raise ValueError("The update journal must be a regular, unlinked file.")
+                transaction = read_json(path)
+        if transaction is not None:
+            if transaction.get("step") in {"complete", "rolled_back"}:
+                return None, {}
+            if (transaction.get("format") != "astrid-install-update/v1"
+                    or transaction.get("data_root") != str(data)):
+                raise ValueError("The R0 owner handoff has no matching update journal.")
+            return transaction, transaction.get("transaction_context", {})
+        return None, getattr(self, "_release0_owner", {})
+
+    def _handoff_release0_runtime(self, version: Version, data: Path, purpose: str) -> None:
+        registration = self.service.release0_registration(data)
+        if registration is None:
+            return
+        self.service.validate_release0_inactive(data, registration)
+        self.service.guard_release0(data, registration)
+        transaction, context = self._release0_owner_context(data)
+        if transaction is not None:
+            context = transaction.setdefault("transaction_context", {})
+            if context.get("release0_service") != registration:
+                raise ValueError("The installer owner has no retained R0 registration.")
+        context["release0_runtime_owner"] = {"version": version.document(), "purpose": purpose}
+        if transaction is not None:
+            # Intent precedes Runtime up/upgrade, including failure/crash paths.
+            write_json(self.root / "update-transaction.json", transaction)
+        else:
+            self._release0_owner = context
+
     @staticmethod
     def _wait_owner_lock_free(realm: Path, *, timeout: float = 100) -> None:
         """Try-lock the existing inode; never read, copy, create or remove it."""
@@ -666,6 +702,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             with interruption_fence(root) as idle:
                 self.service.stop_release0(data, registration)
                 self._wait_owner_lock_free(root)
+                # This durable gate must precede every backup. A crash before
+                # publication cannot have a backup eligible for later restore.
+                self.service.guard_release0(data, registration)
                 if stop_manager is not None:
                     stop_manager()
         # R0 has already stopped. Calling down() here would re-admit stale R0
@@ -685,15 +724,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                            or record.get("program_root") != str(self.root)
                            or record.get("data_root") != str(data)):
                 raise ValueError("The service record does not match the selected installation.")
+            installer_registration = None
             if self.managed_by != "pinokio":
                 registration = self.service.release0_registration(data)
                 if registration is not None:
-                    return self._stop_release0(data, registration, stop_manager=stop_manager)
+                    _transaction, context = self._release0_owner_context(data)
+                    handoff = context.get("release0_runtime_owner")
+                    restore_selection = self._pending_restore_selection(data)
+                    candidate_cleanup = version is not None and version.document() != registration["version"]
+                    if handoff is None and restore_selection is None and not candidate_cleanup:
+                        return self._stop_release0(data, registration, stop_manager=stop_manager)
+                    if handoff is not None and (
+                            not isinstance(handoff, dict) or handoff.get("purpose") not in {"backup", "upgrade"}
+                            or not isinstance(handoff.get("version"), dict)):
+                        raise ValueError("Invalid installer Runtime owner context.")
+                    installer_registration = registration
+                    self.service.validate_release0_inactive(data, registration)
+                    self.service.guard_release0(data, registration)
                 if (version is not None and version.release == 0
                         and self.service.system in {"linux", "darwin"}
                         and version.python == version.root / "py/bin/python"
                         and os.path.lexists(self.service.path)
-                        and record.get("foreground") is None):
+                        and record.get("foreground") is None and registration is None):
                     raise ValueError("The R0 service registration cannot be validated; refusing PID stop.")
             paths = RuntimePaths.current(data_root=data)
             if (self.managed_by != "pinokio" and self.service.system == "linux"
@@ -733,7 +785,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # refusals are downstream-classified. C1 busy admission runs later in
             # down(), so a probe refusal can be reported before the busy message.
             launchd_identity = None
-            if self.managed_by != "pinokio":
+            if self.managed_by != "pinokio" and installer_registration is None:
                 launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
                 current_record = self.service.recorded()
@@ -744,7 +796,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 if ((current_record or {}).get("foreground") != foreground
                         or (record and not current_record)):
                     raise ValueError("The selected service owner changed before manager stop.")
-                if self.managed_by != "pinokio":
+                if installer_registration is not None:
+                    # C1 owns the independent daemon. An inactive R0 manager
+                    # must stay inactive and receives no stop/bootout command.
+                    self.service.validate_release0_inactive(data, installer_registration)
+                elif self.managed_by != "pinokio":
                     if not current_record:
                         if self.service.login_service_exists():
                             raise ValueError("No selected service record authorizes this stop.")
@@ -862,6 +918,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 # The backup CLI uses authenticated RPC. Start only the neutral
                 # daemon (no foreground service supervisor and no browser door).
                 try:
+                    self._handoff_release0_runtime(version, data, "backup")
                     self.runtime(version, data, "up", "--hosted-origin", "off", profile=True)
                     self.runtime(version, data, "backup", "--destination", str(destination / "realm"))
                 finally:
@@ -1163,6 +1220,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return bundle
 
     def upgrade(self, version: Version, data: Path) -> None:
+        self._handoff_release0_runtime(version, data, "upgrade")
         self.runtime(version, data, "upgrade", profile=True)
         if self.process_control:
             # Runtime upgrade preserves support metadata. Apply the latest
@@ -1188,6 +1246,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             saved = ((active[0].get("transaction_context") or {}).get("release0_service")
                      if active is not None and active[1] else None)
             if saved is not None and version.document() == saved.get("version"):
+                context = active[0]["transaction_context"]
+                context.pop("release0_runtime_owner", None)
+                write_json(self.root / "update-transaction.json", active[0])
                 self.service.restore_release0(version, data, saved)
             else:
                 self.service.register(version, data)

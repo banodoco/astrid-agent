@@ -269,6 +269,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
     realm = transaction["realm"]
     backup = transaction.get("backup")
     kind = transaction.get("transaction_kind", "migration")
+    # rollback_selected durably commits the restored workspace. An old service
+    # may have accepted work during activation before the updater crashed;
+    # replaying the backup here would discard that work from the active realm.
+    restore_committed = transaction.get("step") == "rollback_selected"
     with update_context(backend, transaction, recovering=True):
         # Before migration the old version owns manager cleanup. A later
         # migration can run the candidate before publishing its pointer.
@@ -279,8 +283,9 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
         else:
             stop_version = candidate or old
         stop(stop_version, data)
-        save("recovering")
-        if backup is not None and restore_workspace and kind == "migration":
+        if not restore_committed:
+            save("recovering")
+        if backup is not None and restore_workspace and kind == "migration" and not restore_committed:
             backend.restore(old, data, realm, backup)
         switch_old(old, candidate)
         save("rollback_selected")

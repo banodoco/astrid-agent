@@ -317,11 +317,23 @@ def _release0_service_command(version: Version, data: Path, *, windows: bool, lo
     return [str(python), "-X", "utf8", "-I", "-c", script]
 
 
+def _release0_guarded_command(version: Version, data: Path, log: Path, env_file: Path) -> list[str]:
+    version = Version(version.root, version.python, version.profile,
+                      dict(sorted(version.env.items())), version.release, version.managed_by)
+    argv = _release0_service_command(version, data, windows=False, log=log, env_file=env_file)
+    source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
+    argv[-1] = (source + "\n"
+                + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}))\n"
+                + argv[-1])
+    return argv
+
+
 def _release0_render(system: str, version: Version, data: Path, log: Path,
-                     env_file: Path) -> str:
+                     env_file: Path, *, guarded: bool = False) -> str:
     """The frozen POSIX renderer from R0 (3204bb00), for admission/rollback."""
     log = log.with_name("runtime-service.log")
-    argv = _release0_service_command(version, data, windows=False, log=log, env_file=env_file)
+    argv = (_release0_guarded_command(version, data, log, env_file) if guarded else
+            _release0_service_command(version, data, windows=False, log=log, env_file=env_file))
     environment = {key: value for key, value in version.env.items()
                    if key not in {"ASTRID_INSTALL_RELEASE", "ASTRID_INSTALL_MANAGED_BY"}}
     if system == "darwin":
@@ -348,13 +360,14 @@ def systemd_quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
 
 
-def _atomic_write_text(path: Path, value: str) -> None:
+def _atomic_write_text(path: Path, value: str, *, mode: int | None = None) -> None:
     """Publish service text without exposing a partially written definition."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-    except FileNotFoundError:
-        mode = None
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            pass
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -581,9 +594,6 @@ class Service:
         if not stat.S_ISREG(info.st_mode):
             return None
         raw = self.path.read_bytes().decode("utf-8")
-        # Ordinary R1 registrations and foreground-only installs retain C1.
-        if "settings=json.loads(path.read_text" not in raw:
-            return None
         record = self.recorded()
         for folder in (self.root / "versions").glob("*"):
             if folder.is_symlink() or not (folder / "version.json").is_file():
@@ -594,58 +604,159 @@ class Service:
             if version.release != 0 or version.managed_by is not None:
                 continue
             for env_file in (self.env_file, version.root / "service-env.json"):
-                if raw != _release0_render(self.system, version, data, self.log, env_file):
+                original = _release0_render(self.system, version, data, self.log, env_file)
+                if raw not in {original, _release0_render(
+                        self.system, version, data, self.log, env_file, guarded=True)}:
                     continue
                 if not owned_by_current_user(self.path, info):
                     raise ValueError("The R0 service file is not installer-owned.")
                 if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
                         or record.get("data_root") != str(data) or record.get("foreground") is not None):
                     raise ValueError("The R0 service has no matching install selection.")
-                return {"version": version.document(), "text": raw, "path": str(self.path),
+                return {"version": version.document(), "text": original, "path": str(self.path),
                         "mode": stat.S_IMODE(info.st_mode)}
         return None
 
-    def _validate_release0_stop(self, data: Path, registration: dict) -> bool:
+    def _release0_actions(self, data: Path, registration: dict) -> list[list[str]]:
+        version = Version.load(registration["version"])
+        for env_file in (self.env_file, version.root / "service-env.json"):
+            if registration["text"] == _release0_render(self.system, version, data, self.log, env_file):
+                return [_release0_service_command(version, data, windows=False, log=self.log, env_file=env_file),
+                        _release0_guarded_command(version, data, self.log, env_file)]
+        raise ValueError("Invalid retained R0 service definition.")
+
+    def guard_release0(self, data: Path, registration: dict) -> None:
+        if self.release0_registration(data) != registration:
+            raise ValueError("The R0 service changed before startup exclusion.")
+        version = Version.load(registration["version"])
+        for env_file in (self.env_file, version.root / "service-env.json"):
+            if registration["text"] == _release0_render(self.system, version, data, self.log, env_file):
+                _atomic_write_text(self.path, _release0_render(
+                    self.system, version, data, self.log, env_file, guarded=True), mode=registration["mode"])
+                if self.system == "linux":
+                    self.run(["systemctl", "--user", "daemon-reload"], timeout=10)
+                    start = self._systemd_exec("ExecStart")
+                    if not start or start[0][1] != _release0_guarded_command(version, data, self.log, env_file):
+                        raise ValueError("The systemd manager has not loaded startup exclusion.")
+                return
+        raise ValueError("Invalid retained R0 service definition.")
+
+    def _systemd_exec(self, name: str) -> list:
+        # D-Bus supplies typed argv arrays. The human ExecStart rendering is
+        # ambiguous for multiline Python source and must not authorize a stop.
+        value = json.loads(self.run([
+            "busctl", "--user", "--json=short", "get-property", "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1/unit/astrid_2eservice",
+            "org.freedesktop.systemd1.Service", name], timeout=10))
+        if value.get("type") != "a(sasbttttuii)" or not isinstance(value.get("data"), list):
+            raise ValueError("Cannot validate systemd's loaded command arrays.")
+        return value["data"]
+
+    @staticmethod
+    def _linux_process_root(pid: int) -> Path:
+        return Path("/proc") / str(pid)
+
+    @staticmethod
+    def _systemd_process(pid: int, actions: list[list[str]], cgroup: str) -> dict:
+        identity = platform.process_identity(pid)
+        if (not identity or identity.get("uid") != platform.current_user()
+                or not identity.get("birth_id")
+                or ";boot:" not in identity["birth_id"] or ";pidns:" not in identity["birth_id"]):
+            raise ValueError("The systemd invocation has no complete process identity.")
+        proc = Service._linux_process_root(pid)
+        argv = (proc / "cmdline").read_bytes().split(b"\0")
+        if not argv or argv.pop() != b"":
+            raise ValueError("The systemd invocation has malformed arguments.")
+        matching = [action for action in actions if argv == [os.fsencode(part) for part in action]]
+        executable = (proc / "exe").resolve(strict=True)
+        membership = (proc / "cgroup").read_text().splitlines()
+        groups = [line.split(":", 2) for line in membership]
+        if (not matching or executable != Path(matching[0][0]).resolve(strict=True)
+                or not cgroup.startswith("/") or cgroup == "/"
+                or not any(len(group) == 3 and group[1] in {"", "name=systemd"}
+                           and group[2] == cgroup for group in groups)
+                or platform.process_identity(pid) != identity):
+            raise ValueError("The running systemd process does not match the retained R0 invocation.")
+        return {"process": identity, "argv": argv, "executable": str(executable), "cgroup": cgroup}
+
+    def _systemd_release0_identity(self, data: Path, registration: dict) -> dict:
+        value = self.run(["systemctl", "--user", "show", "astrid.service",
+                          "--property=FragmentPath,DropInPaths,LoadState,MainPID,ControlPID,"
+                          "ActiveState,SubState,InvocationID,ControlGroup,KillMode"], timeout=10)
+        fields = {}
+        for line in value.splitlines():
+            key, sep, item = line.partition("=")
+            if not sep or key in fields:
+                raise ValueError("Malformed systemd invocation observation.")
+            fields[key] = item
+        if set(fields) != {"FragmentPath", "DropInPaths", "LoadState", "MainPID", "ControlPID",
+                           "ActiveState", "SubState", "InvocationID", "ControlGroup", "KillMode"}:
+            raise ValueError("Incomplete systemd invocation observation.")
+        if (fields.get("FragmentPath") != str(self.path) or fields.get("LoadState") != "loaded"
+                or fields.get("DropInPaths") != "" or fields.get("ControlPID") != "0"
+                or fields.get("KillMode") != "mixed"):
+            raise ValueError("The systemd service does not match the selected R0 registration.")
+        actions = self._release0_actions(data, registration)
+        start = self._systemd_exec("ExecStart")
+        if (len(start) != 1 or not isinstance(start[0], list) or len(start[0]) != 10
+                or start[0][0] != actions[0][0] or start[0][1] not in actions
+                or start[0][2] is not False
+                or self._systemd_exec("ExecStop") or self._systemd_exec("ExecStopPost")):
+            raise ValueError("The loaded systemd action does not match the retained R0 service.")
+        if (fields.get("MainPID") == "0" and fields.get("ActiveState") in {"inactive", "failed"}
+                and fields.get("SubState") in {"dead", "failed"}):
+            return {"inactive": True}
+        if (fields.get("ActiveState") != "active" or fields.get("SubState") != "running"
+                or re.fullmatch(r"[0-9a-f]{32}", fields.get("InvocationID", "")) is None):
+            raise ValueError("Cannot establish the active systemd invocation.")
+        pid = int(fields["MainPID"])
+        if pid <= 0:
+            raise ValueError("Cannot establish the active systemd PID.")
+        return {"invocation": fields["InvocationID"],
+                **self._systemd_process(pid, actions, fields.get("ControlGroup", ""))}
+
+    def _validate_release0_stop(self, data: Path, registration: dict) -> dict | None:
         if self.release0_registration(data) != registration:
             raise ValueError("The R0 service changed before manager stop.")
         if self.system == "linux":
-            value = self.run(["systemctl", "--user", "show", "astrid.service",
-                              "--property=FragmentPath,DropInPaths,LoadState"], timeout=10)
-            fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
-            if (fields.get("FragmentPath") != str(self.path)
-                    or fields.get("LoadState") != "loaded" or fields.get("DropInPaths") != ""):
-                raise ValueError("The systemd service does not match the selected R0 registration.")
+            identity = self._systemd_release0_identity(data, registration)
         else:
             target = f"gui/{platform.current_user()}/{LABEL}"
             try:
                 value = self.run(["launchctl", "print", target], timeout=10)
             except subprocess.CalledProcessError as exc:
                 if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
-                    return False  # Already unloaded; the lifetime lock must still be free.
+                    return None  # Already unloaded; the lifetime lock must still be free.
                 raise
             identity, _observation = self._launchd_stop_identity(value, data)
-            action = plistlib.loads(registration["text"].encode())["ProgramArguments"]
-            if list(identity["arguments"]) != action:
+            if list(identity["arguments"]) not in self._release0_actions(data, registration):
                 raise ValueError("The loaded launchd service does not match the selected R0 registration.")
         if self.release0_registration(data) != registration:
             raise ValueError("The R0 service changed before manager stop.")
-        return True
+        return identity
+
+    def validate_release0_inactive(self, data: Path, registration: dict) -> None:
+        identity = self._validate_release0_stop(data, registration)
+        if identity is not None and not (self.system == "linux" and identity == {"inactive": True}):
+            raise ValueError("The R0 manager is still active; refusing installer-owner cleanup.")
 
     def stop_release0(self, data: Path, registration: dict) -> None:
         """Stop R0 through its validated manager, never through a PID."""
-        loaded = self.validate_stop_target(None, data, owner_pid=None, registration=registration)
+        loaded = self._validate_release0_stop(data, registration)
         if self.system == "linux":
             # Reload only the validated, unchanged file. Reject overrides before
             # and after reload, so the manager executes the admitted R0 action.
             self.run(["systemctl", "--user", "daemon-reload"], timeout=10)
-            self.validate_stop_target(None, data, owner_pid=None, registration=registration)
-            self.run(["systemctl", "--user", "stop", "astrid.service"], timeout=100)
+            if self._validate_release0_stop(data, registration) != loaded:
+                raise ValueError("The systemd invocation changed across reload; refusing manager stop.")
+            if loaded != {"inactive": True}:
+                self.run(["systemctl", "--user", "stop", "astrid.service"], timeout=100)
         elif loaded:
             target = f"gui/{platform.current_user()}/{LABEL}"
             self.run(["launchctl", "bootout", target], timeout=100)
 
     def restore_release0(self, version: Version, data: Path, registration: dict) -> None:
-        """Restore the exact saved R0 unit after a failed candidate activation."""
+        """Restore saved R0 settings with durable admission after activation fails."""
         if (registration.get("version") != version.document()
                 or registration.get("path") != str(self.path)
                 or type(registration.get("mode")) is not int
@@ -657,9 +768,13 @@ class Service:
         if self.release0_registration(data) != registration:
             # Reuse the owned-action validator for the stopped candidate file.
             self._publish_posix_launch_admission(version, data, validate_only=True)
-        if self.path.read_bytes().decode("utf-8") != registration["text"]:
-            _atomic_write_text(self.path, registration["text"])
-            self.path.chmod(registration["mode"])
+        # Never republish an unguarded action while rollback can be replayed.
+        # The exact original is retained in the journal, rather than activated.
+        for env_file in (self.env_file, version.root / "service-env.json"):
+            if registration["text"] == _release0_render(self.system, version, data, self.log, env_file):
+                _atomic_write_text(self.path, _release0_render(
+                    self.system, version, data, self.log, env_file, guarded=True), mode=registration["mode"])
+                break
         if self.system == "darwin":
             self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         else:
@@ -784,6 +899,8 @@ class Service:
                     env_file=release0_env_file,
                 )
                 if action == encode(release0):
+                    return True
+                if not windows and action == _release0_guarded_command(retained, data, self.log, release0_env_file):
                     return True
             for env_file in (None, self.env_file):
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file)

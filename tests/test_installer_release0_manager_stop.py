@@ -16,7 +16,7 @@ from runtime_protocol import platform
 
 from astrid.installer.backend import Backend
 from astrid.installer.core import RuntimeOperationError, Version, update_context, write_json
-from astrid.installer.service import LABEL, Service
+from astrid.installer.service import LABEL, Service, _release0_service_command, _release0_guarded_command
 from tests.test_installer_busy_fence import realm_fixture
 
 pytestmark = pytest.mark.posix_native
@@ -54,14 +54,31 @@ def installation(tmp_path, monkeypatch, system, *, busy=False, held=True):
     manager.path.parent.mkdir(parents=True, exist_ok=True)
     manager.path.write_text(text)
     write_json(manager.selection, {"owner": LABEL, "program_root": str(backend.root),
-                                   "data_root": str(data), "preferences": {"autostart": True}})
+                                   "data_root": str(data), "realm_id": "selected", "realm_root": str(realm),
+                                   "preferences": {"autostart": True}})
     lock = realm / "owner.lock"
     lock.write_bytes(b"opaque R0 lock: do not read or replace\n")
     descriptor = os.open(lock, os.O_RDONLY)
     if held:
         platform.lock_file(descriptor, blocking=False)
     calls = []
-    state = {"loaded": True, "release": True}
+    action = _release0_service_command(old, data, windows=False, log=log, env_file=manager.env_file)
+    state = {"loaded": True, "release": True, "action": action, "process_action": action,
+             "birth": "proc-start-ticks:101;boot:test;pidns:55", "invocation": "a" * 32,
+             "hooks": {}, "pid": 555, "cgroup": "/user.slice/astrid.service"}
+    # Exercise the production read-only /proc observer against independent OS
+    # evidence. The running process does not change on daemon-reload.
+    python.parent.mkdir(parents=True)
+    python.touch()
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "exe").symlink_to(python)
+    monkeypatch.setattr(Service, "_linux_process_root", staticmethod(lambda _pid: proc))
+    def identity(pid):
+        (proc / "cmdline").write_bytes(b"\0".join(os.fsencode(arg) for arg in state["process_action"]) + b"\0")
+        (proc / "cgroup").write_text("0::" + state["cgroup"] + "\n")
+        return {"pid": pid, "uid": platform.current_user(), "birth_id": state["birth"]}
+    monkeypatch.setattr(platform, "process_identity", identity)
 
     def run(argv, **kwargs):
         args = [str(arg) for arg in argv]
@@ -69,7 +86,20 @@ def installation(tmp_path, monkeypatch, system, *, busy=False, held=True):
         if args[:3] == ["systemctl", "--user", "show-environment"]:
             return ""
         if args[:3] == ["systemctl", "--user", "show"]:
-            return f"FragmentPath={manager.path}\nDropInPaths=\nLoadState=loaded"
+            return (f"FragmentPath={manager.path}\nDropInPaths=\nLoadState=loaded\n"
+                    f"MainPID={state['pid'] if state['loaded'] else 0}\nControlPID=0\n"
+                    f"ActiveState={'active' if state['loaded'] else 'inactive'}\n"
+                    f"SubState={'running' if state['loaded'] else 'dead'}\n"
+                    f"InvocationID={state['invocation']}\nControlGroup=/user.slice/astrid.service\nKillMode=mixed")
+        if args[0] == "busctl":
+            rows = ([[state["action"][0], state["action"], False, 0, 0, 0, 0, 0, 0, 0]]
+                    if args[-1] == "ExecStart" else state["hooks"].get(args[-1], []))
+            return json.dumps({"type": "a(sasbttttuii)", "data": rows})
+        if args[:3] == ["systemctl", "--user", "daemon-reload"]:
+            registration = manager.release0_registration(data)
+            if registration is not None:
+                actions = manager._release0_actions(data, registration)
+                state["action"] = actions[0] if manager.path.read_text() == registration["text"] else actions[1]
         if args[:2] == ["launchctl", "print"]:
             if not state["loaded"]:
                 raise subprocess.CalledProcessError(113, args, output="Could not find service")
@@ -78,7 +108,7 @@ def installation(tmp_path, monkeypatch, system, *, busy=False, held=True):
                     f"\tstate = running\n\tprogram = {action[0]}\n\tpid = 555\n"
                     "\targuments = {\n" + "\n".join(action) + "\n\t}\n}")
         if args[:3] == ["systemctl", "--user", "stop"] or args[:2] == ["launchctl", "bootout"]:
-            if state["release"]:
+            if state["loaded"] and state["release"]:
                 platform.unlock_file(descriptor)
             state["loaded"] = False
         return ""
@@ -95,11 +125,11 @@ def installation(tmp_path, monkeypatch, system, *, busy=False, held=True):
 
 @pytest.mark.parametrize("system", ["linux", "darwin"])
 @pytest.mark.parametrize("held", [True, False])
-def test_real_r0_manager_stop_preserves_unit_and_lock(tmp_path, monkeypatch, system, held):
+def test_real_r0_manager_stop_guards_unit_and_preserves_lock(tmp_path, monkeypatch, system, held):
     backend, old, data, paths, realm, lock, fd, calls, state = installation(
         tmp_path, monkeypatch, system, held=held)
     before = {p: (p.read_bytes(), p.stat().st_ino) for p in
-              (lock, backend.service.path, paths.discovery_path, paths.instance_lock_path)}
+              (lock, paths.discovery_path, paths.instance_lock_path)}
     try:
         # Guard the opaque owner lock against reads as well as PID signaling.
         read_bytes = Path.read_bytes
@@ -113,6 +143,7 @@ def test_real_r0_manager_stop_preserves_unit_and_lock(tmp_path, monkeypatch, sys
             assert result["status"] == "stopped"
             backend.stop(old, data)  # Idempotent after manager stop / bootout.
         assert {p: (p.read_bytes(), p.stat().st_ino) for p in before} == before
+        assert "launch_admission(Version.load(" in backend.service.path.read_text()
         assert not state["loaded"]
         stop = (["systemctl", "--user", "stop", "astrid.service"] if system == "linux" else
                 ["launchctl", "bootout", f"gui/{platform.current_user()}/{LABEL}"])
@@ -171,10 +202,13 @@ def test_lock_probe_refuses_unsafe_inode(tmp_path, monkeypatch, kind):
 
 
 @pytest.mark.parametrize("system", ["linux", "darwin"])
-def test_rollback_restores_exact_captured_r0_unit(tmp_path, monkeypatch, system):
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+def test_rollback_restores_guarded_captured_r0_unit(tmp_path, monkeypatch, system, mode):
     backend, old, data, _paths, _realm, _lock, fd, calls, _state = installation(tmp_path, monkeypatch, system)
+    backend.service.path.chmod(mode)
     before = backend.service.path.read_bytes()
-    transaction = {"transaction_context": {}}
+    transaction = {"format": "astrid-install-update/v1", "data_root": str(data),
+                   "step": "stopping", "transaction_context": {}}
     try:
         with update_context(backend, transaction):
             backend.publish_launch_admission(old, data)
@@ -188,10 +222,14 @@ def test_rollback_restores_exact_captured_r0_unit(tmp_path, monkeypatch, system)
         # Candidate registration can replace the unit. Rollback uses the
         # durable transaction copy even through a fresh Service controller.
         backend.service.register(candidate, data)
+        backend.service.path.chmod(0o644)
         manager = Service(backend.root, backend.log, backend.service.run,
                           home=backend.service.home, system=system)
         manager.restore_release0(old, data, saved)
-        assert manager.path.read_bytes() == before
+        assert manager.path.read_bytes() != before
+        assert manager.path.stat().st_mode & 0o777 == mode
+        assert manager.release0_registration(data)["text"].encode() == before
+        assert "launch_admission(Version.load(" in manager.path.read_text()
         assert manager.recorded()["preferences"]["autostart"] is True
         assert any("bootstrap" in call if system == "darwin" else "daemon-reload" in call for call in calls)
     finally:
@@ -280,7 +318,8 @@ def test_shared_transaction_restarts_untouched_r0_after_backup_failure(tmp_path,
                 backup=fail_backup, restore_workspace=False,
             )
         assert current(backend.root) == old
-        assert backend.service.path.read_bytes() == before
+        assert backend.service.path.read_bytes() != before
+        assert backend.service.release0_registration(data)["text"].encode() == before
         journal = json.loads((backend.root / "update-transaction.json").read_text())
         assert journal["step"] == "rolled_back"
         assert journal["transaction_context"]["release0_service"]["text"].encode() == before
