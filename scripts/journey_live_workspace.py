@@ -217,12 +217,24 @@ def main():
         raise
 
 
+def credential_token(credential):
+    # Discovery advertises the Astrid profile JSON, not the daemon owner token.
+    try:
+        value = json.loads(credential.read_text(encoding="utf-8"))
+        token = value.get("token") if isinstance(value, dict) else None
+        if not isinstance(token, str) or not re.fullmatch(r"[!-~]+", token):
+            raise ValueError
+    except (ValueError, UnicodeError):
+        raise ValueError("Invalid Astrid credential") from None
+    return token
+
+
 def execute(args):
     data, root = args.data, args.root
     selection = json.loads(args.selection.read_text(encoding="utf-8"))
     check_selection(data, root, selection)
     credential = Path(selection["credential_file"])
-    client = LiveWorkspace(selection["endpoint"], credential.read_text(encoding="utf-8").strip(),
+    client = LiveWorkspace(selection["endpoint"], credential_token(credential),
                            guard=lambda: check_selection(data, root, selection))
     request = json.loads(args.request.read_text(encoding="utf-8"))
     result = seed(client, **request) if args.action == "seed" else snapshot(client, request)

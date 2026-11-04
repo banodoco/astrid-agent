@@ -141,10 +141,20 @@ def test_existing_project_preferences_are_not_overwritten():
         live.seed(Client(), "project", "generation", create_project=True)
 
 
+@pytest.mark.parametrize("contents", ["not json", "[]", "{}", '{"token": null}',
+                                      '{"token": ""}', '{"token": "bad\\nsecret"}'])
+def test_invalid_astrid_credential_is_rejected_without_disclosing_contents(tmp_path, contents):
+    credential = tmp_path / "astrid.json"
+    credential.write_text(contents)
+    with pytest.raises(ValueError, match="^Invalid Astrid credential$") as error:
+        live.credential_token(credential)
+    assert contents not in str(error.value)
+
+
 def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_path, monkeypatch):
     from scripts import ci_journey as journey
 
-    secret = "sensitive-token-for-test"
+    secret = "a" * 64
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -167,7 +177,8 @@ def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_pa
         for directory in (root, data / "runtime", realm):
             directory.mkdir(parents=True)
         credential = data / "token"
-        credential.write_text(secret)
+        credential.write_text(json.dumps({"version": 1, "scope": "astrid", "actor_id": "astrid-test",
+                                          "token": secret}, sort_keys=True, indent=2) + "\n")
         (run_root / "tst-b1-owner.json").write_text(json.dumps({
             "schema_version": 1, "run_id": "a" * 32, "root": str(root), "data_root": str(data)}))
         discovery = {"endpoint": f"http://127.0.0.1:{server.server_port}", "realm_root": str(realm),
