@@ -13,6 +13,7 @@ import platform
 import re
 import stat
 import sys
+import tempfile
 import time
 
 if __package__:
@@ -532,6 +533,33 @@ def release0_admission(args) -> tuple[Path, Path, dict]:
     return verified_release0_fixture(args.release0_fixture)
 
 
+def _checkpoint_release0_selection(path: Path, result: dict) -> None:
+    """Best-effort checkpoint without truncating the previous receipt."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=".journey-result-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(result, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except Exception as exc:
+        # Diagnostics must not introduce another failure into the journey.
+        try:
+            detail = str(exc).replace("\n", " ").replace("\r", " ")[:300]
+            print(f"Release-0 selection checkpoint failed: {type(exc).__name__[:100]}: {detail}",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
     """Authentic release-0 direct install, API seed, and frozen release-1 update."""
     evidence.mkdir(parents=True, exist_ok=True)
@@ -545,12 +573,14 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         "run_roots": {"program": str(root), "data": str(data)},
         "sentinel": {"pid": sentinel.pid, "birth": birth},
         "release0_fixture": None, "release_transition": None, "semantic_data": None,
+        "release0_selection": {"result": "not-run", "error": None},
         "checks": {key: "not-run" for key in (
             "release", "service", "health", "semantic_data", "task_settled", "one_runtime",
             "unrelated_sentinel")},
     }
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
+    selecting_release0 = False
     try:
         fixture, release0_manifest, fixture_receipt = release0_admission(args)
         result["release0_fixture"] = fixture_receipt
@@ -571,6 +601,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
         start_direct_runtime(evidence / "release0")
         journey.wait_ready(data)
+        selecting_release0 = True
         old_path, old_data, old = journey.installation(root, data)
         if old_data != data or installed_release(old) != 0:
             # Release 0 predates identity-bearing version records; only its
@@ -579,6 +610,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
         journey.assert_release0_runtime(data, old_path, evidence)
+        result["release0_selection"]["result"] = "pass"
+        selecting_release0 = False
+        _checkpoint_release0_selection(result_path, result)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
@@ -648,6 +682,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
+        if selecting_release0:
+            result["release0_selection"].update(result="fail", error=f"{type(exc).__name__}: {exc}")
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         raise
     finally:
