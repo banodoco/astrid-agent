@@ -682,6 +682,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["release_transition"] = {"from": 0, "to": 1,
                                         "harness_override": "frozen-release0-direct-to-release1"}
         result["service_transition"] = {"release0": old_service, "release1": new_service}
+        result["service_manager"] = new_service
         result["health_transition"] = {
             "release0_runtime_instance_id": old_health["runtime_instance_id"],
             "release1_runtime_instance_id": new_health["runtime_instance_id"],
