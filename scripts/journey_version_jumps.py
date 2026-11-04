@@ -336,10 +336,10 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
     selection_path = evidence / (action + "-selection.json")
     journey.write_json(request_path, request)
     journey.write_json(selection_path, selection)
-    diagnostic_path = evidence / "live-seed-failure.json"
-    if action == "seed":
+    diagnostic_path = evidence / f"live-{action}-failure.json"
+    if action in {"seed", "snapshot"}:
         diagnostic_path.unlink(missing_ok=True)
-    diagnostic_args = ["--diagnostic", diagnostic_path] if action == "seed" else []
+    diagnostic_args = ["--diagnostic", diagnostic_path] if action in {"seed", "snapshot"} else []
     try:
         output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
                               action, "--data", data, "--root", root, "--selection", selection_path,
