@@ -1013,5 +1013,7 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         code = exc.code if isinstance(exc.code, str) and exc.code in _STATUS_ERROR_CODES else EngineError.code
         return replace(receipt, status="failed", health=HealthEvidence("unhealthy", _now(), None, False),
                        error_code=code,
-                       failed_step_id=failed_step_id if failed_step_id in _status_step_ids(plan) else None)
+                       failed_step_id=failed_step_id if failed_step_id in _status_step_ids(plan) else None,
+                       # The prior inventory describes the last install, not this failed revalidation.
+                       models=(), steps=())
     return replace(receipt, steps=tuple(runner.steps), models=tuple(runner.models), health=runner.health)

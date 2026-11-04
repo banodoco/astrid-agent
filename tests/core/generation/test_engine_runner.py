@@ -361,10 +361,14 @@ def test_protocol_shapes_exactly_match_v1():
 def test_plan_is_complete_deterministic_and_has_real_names(setup):
     plan, context, *_ = setup
     assert plan == runner.plan_install(context.recipe, root=ROOT, placement="local")
-    assert [s.id for s in plan.steps] == [
-        "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
-        "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",
-        "model:h3-video-vae", "model:h3-audio-vae", "model:h3-turbo-lora", "start", "health"]
+    expected_ids = [
+        *("source:" + source.name for source in context.recipe.sources),
+        *("environment:" + environment.name for environment in context.recipe.environments),
+        *("model:" + model.name for model in runner.recipes.load_model_lock(context.recipe.models_lock).models),
+        "start", "health",
+    ]
+    assert [s.id for s in plan.steps] == expected_ids
+    assert len(plan.steps) == 41
     seen = set()
     for step in plan.steps:
         assert set(step.depends_on) <= seen
@@ -459,8 +463,9 @@ def test_clean_rerun_skips_every_step_but_reads_sha_and_current_health(setup):
     assert first.status == second.status == "installed"
     assert all(s.action == "skipped" and s.validation == "passed" for s in second.steps)
     assert context.bootstrap_count == 1
-    assert len([e for e in context.events if e[0] == "download"]) == 5
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
+    assert len([e for e in context.events if e[0] == "download"]) == expected_model_count
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
     assert len([e for e in context.events if e[0] == "service:health"]) >= 1
     assert not [e for e in context.events if e[0] == "service:start"]
     assert not [e for e in context.events if e[0] == "argv" and ("fetch" in e[1] or "install" in e[1] or "sync" in e[1])]
@@ -1185,7 +1190,8 @@ def test_status_revalidates_models_and_health_readonly(setup):
     current = status(setup)
     assert current.status == "installed" and current.receipt_id == receipt.receipt_id
     assert current.failed_step_id is None
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
     assert [e for e in context.events if e[0] == "service:health"]
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
     context.health_objects["new-node"] = {}
@@ -1324,7 +1330,8 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
     assert [{k: v for k, v in m.items() if k != "action"} for m in old["models"]] == [
         {k: v for k, v in m.items() if k != "action"} for m in new["models"]]
     assert context.server == owner and context.bootstrap_count == 1
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
     assert any(e[0] == "service:health" for e in context.events)
     assert not [e for e in context.events if e[0] in {"service:start", "service:stop"}]
     assert not [e for e in context.events if e[0] == "argv" and
@@ -1386,6 +1393,7 @@ def test_status_failure_keeps_only_trusted_gate_and_code(setup, monkeypatch, gat
     assert report.status == "failed" and report.error_code == "integrity_failed"
     assert report.failed_step_id == gate
     assert report.health.status == "unhealthy" and report.health.required_nodes_present is False
+    assert report.models == () and report.steps == ()
     # Exercise the public status serializer, rather than just inspecting the exception.
     from astrid.core.engine_cli import _plain
     output = json.dumps(_plain(report))
@@ -1472,7 +1480,7 @@ print(len(p.steps))
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "12"
+    assert result.stdout.strip() == "41"
 
 
 def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setup):
@@ -1614,6 +1622,8 @@ def pip_free_model_environment(tmp_path):
         for relative in distribution.files:
             assert not relative.is_absolute() and ".." not in relative.parts
             assert relative.parts[0] in {"packaging", f"packaging-{distribution.version}.dist-info"}
+            if "__pycache__" in relative.parts and relative.suffix == ".pyc" and relative.hash is None:
+                continue
             data = distribution.locate_file(relative).read_bytes()
             if relative.hash:
                 assert relative.hash.mode == "sha256"
@@ -2212,9 +2222,12 @@ def test_three_source_build_policy_does_not_leak_to_other_syncs(setup, monkeypat
         context.platform = recipe.platform
         adapter.key = recipe.platform
     else:
+        # Preserve a valid resolve-once contract: mode requires source inputs
+        # and an exact cutoff. Changing only the mode creates exclude_newer=None,
+        # which correctly fails the public argv validation before sync policy.
+        requirements = _resolve_once_recipe().environments[0].requirements
         recipe = replace(recipe, environments=(replace(
-            recipe.environments[0], requirements=replace(
-                recipe.environments[0].requirements, mode="resolve-once")),))
+            recipe.environments[0], requirements=requirements),))
     monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
     monkeypatch.setattr(runner, "helper_manifest", lambda _recipe: {})
     context.recipe = recipe

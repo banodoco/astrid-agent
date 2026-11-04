@@ -438,14 +438,19 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
 def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "_module_available", lambda name: True)
-    readiness = Mock(return_value=True)
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", readiness)
+    registered = Mock(return_value={"owner": "astrid", "endpoint": "http://127.0.0.1:8188",
+                                   "root": str(tmp_path / "managed-engine")})
+    monkeypatch.setattr(preflight, "_registered_managed_engine", registered)
+    legacy_probe = Mock(side_effect=AssertionError("managed used legacy runtime probe"))
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", legacy_probe)
     monkeypatch.setattr(ComfyTargetClient, "request_json", Mock(side_effect=AssertionError("managed probed attached")))
     admitted = Mock(return_value=terminal_result(tmp_path))
     runtime, _ = storage_client()
     monkeypatch.setattr(GenerationFacade, "workflow", admitted)
     assert GenerationFacade().image(target="managed", client=runtime, project="demo", prompt="one boat").ok
-    readiness.assert_called_once_with()
+    assert registered.call_count >= 1
+    assert all(call.args == () and call.kwargs == {} for call in registered.call_args_list)
+    legacy_probe.assert_not_called()
     assert admitted.call_args.kwargs["comfy_url"] is None
     assert admitted.call_args.kwargs["generation_intent"]["modality"] == "image"
 
