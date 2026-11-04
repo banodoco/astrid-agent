@@ -9,7 +9,11 @@ from scripts import ci_journey_keepgoing as keepgoing
 from scripts import journey_version_jumps as jumps
 
 
-def test_failed_release0_observation_is_reported_without_gating_continuation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wrong_selection,change_at", [
+    (None, 0),
+    *((kind, stage) for kind in ("path", "data", "release", "version") for stage in (1, 2)),
+])
+def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeypatch, wrong_selection, change_at):
     evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
     app = tmp_path / "app"
     app.mkdir()
@@ -20,7 +24,7 @@ def test_failed_release0_observation_is_reported_without_gating_continuation(tmp
     args = SimpleNamespace(job_id="direct-linux", mode="direct", leg="release0-to-release1",
                            shell="sh", app_checkout=app, candidate=candidate)
     calls = []
-    state = {"release": 0}
+    state = {"release": 0, "pid": 1, "snapshot": False, "checks": 0}
     manifest = {"release": 1}
     monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest0, {}))
     monkeypatch.setattr(journey, "selected_manifest", lambda *a, **k: (candidate, manifest))
@@ -29,8 +33,15 @@ def test_failed_release0_observation_is_reported_without_gating_continuation(tmp
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: calls.append("bootstrap0"))
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: calls.append("start"))
     monkeypatch.setattr(journey, "wait_ready", lambda *a: None)
-    monkeypatch.setattr(journey, "installation", lambda *a: (tmp_path / ("v" + str(state["release"])),
-                                                               tmp_path / "data", {"release": state["release"]}))
+    def installation(*_):
+        if state["snapshot"] and state["release"] == 0:
+            state["checks"] += 1
+        wrong = wrong_selection if state["checks"] >= change_at and state["release"] == 0 else None
+        return (tmp_path / ("wrong" if wrong == "path" else "v" + str(state["release"])),
+                tmp_path / ("other-data" if wrong == "data" else "data"),
+                {"release": 1 if wrong == "release" else state["release"],
+                 "identity": "wrong" if wrong == "version" else "selected"})
+    monkeypatch.setattr(journey, "installation", installation)
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a: calls.append("ownership"))
@@ -45,14 +56,24 @@ def test_failed_release0_observation_is_reported_without_gating_continuation(tmp
         return receipt
     monkeypatch.setattr(journey, "verify", verify)
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **k: None)
-    monkeypatch.setattr(jumps, "direct_workspace", lambda *a: {"project": "p"} if a[4] == "seed" else {"snapshot": True})
+    def workspace(*args):
+        if state["release"] == 0:
+            state["pid"] += 1  # Each offline workspace operation restarts the Runtime.
+            if args[4] == "snapshot":
+                state["snapshot"] = True
+        return {"project": "p"} if args[4] == "seed" else {"snapshot": True}
+    monkeypatch.setattr(jumps, "direct_workspace", workspace)
     monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
-    monkeypatch.setattr(journey, "healthy", lambda *a: {"pid": state["release"] + 1,
-                                                         "runtime_instance_id": str(state["release"])} )
-    monkeypatch.setattr(journey, "process_birth", lambda pid: "birth" if state["release"] == 0 else None)
+    monkeypatch.setattr(journey, "healthy", lambda *a: {"pid": state["pid"],
+                                                         "runtime_instance_id": str(state["pid"])} )
+    def process_birth(pid):
+        calls.append(("birth", pid))
+        return f"birth-{pid}" if state["release"] == 0 else None
+    monkeypatch.setattr(journey, "process_birth", process_birth)
     def bootstrap(*args):
         calls.append("update")
         state["release"] = 1
+        state["pid"] = 4
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
     monkeypatch.setattr(jumps, "selected_candidate", lambda *a: {})
     monkeypatch.setattr(jumps, "assert_preserved", lambda *a: None)
@@ -60,6 +81,20 @@ def test_failed_release0_observation_is_reported_without_gating_continuation(tmp
     report = keepgoing.execute(args, tmp_path / "program", tmp_path / "data", evidence,
                                SimpleNamespace(pid=1), "birth")
     rows = {row["stage"]: row for row in report["stages"]}
+    assert report["classification"] == "NON-PROOF"
+    assert report["qualification"]["eligible"] is False
+    assert json.loads((evidence / "journey-result.json").read_text())["receipt_kind"] == "diagnostic-only"
+    if wrong_selection:
+        failed_stage = "release0-owner" if change_at == 1 else "release1-update"
+        assert rows[failed_stage]["result"] == "fail"
+        assert "Selected installation changed" in rows[failed_stage]["first_error"]
+        if change_at == 1:
+            assert rows["release1-update"]["result"] == "not-run"
+        assert "update" not in calls
+        return
+    assert rows["release0-owner"]["result"] == "pass"
+    assert rows["release1-selection"]["result"] == "pass"
+    assert ("birth", 3) in calls[calls.index("update") + 1:]
     observation = rows["release0-verify"]
     assert observation["result"] == "observed-failed"
     assert observation["observation"] == {

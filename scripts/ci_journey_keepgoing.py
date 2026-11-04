@@ -215,7 +215,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         path, selected_data, old = journey.installation(root, data)
         if selected_data != data or jumps.installed_release(old) != 0:
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
-        state["selected_owner"] = release0_owner(root, data)
+        release0_owner(root, data)
         old_tuple = journey.selected_tuple(journey.read_json(state["manifest0"]), old)
         jumps.write_diagnostic_release0_preconditions(
             args, root, data, fixture_receipt=report["release0_fixture"],
@@ -229,11 +229,17 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         state["task0"] = True
     def snap0():
         state["before"] = release0_workspace(root, state["old"], data, evidence / "release0-api-seed", "snapshot", state["keys"])
+    def assert_selection0():
+        path, selected_data, version = journey.installation(root, data)
+        if (selected_data != data or path != state["old_path"] or version != state["old"]
+                or jumps.installed_release(version) != 0):
+            raise RuntimeError("Selected installation changed from release 0 before the direct release-1 update")
     def owner0():
-        health = assert_release0_owner(root, data, state["selected_owner"])
-        state.update(health0=health, pid0=state["selected_owner"]["pid"],
-                     birth0=state["selected_owner"]["birth"])
+        assert_selection0()
+        owner = release0_owner(root, data)
+        state.update(health0=owner["health"], pid0=owner["pid"], birth0=owner["birth"])
     def update():
+        assert_selection0()
         assert_release0_owner(root, data, {"health": state["health0"],
                                            "pid": state["pid0"], "birth": state["birth0"]})
         journey.bootstrap(state["app"], state["candidate_path"], args.shell, "update", evidence / "release1", root, data)
