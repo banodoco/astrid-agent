@@ -9,8 +9,11 @@ from __future__ import annotations
 import math
 import os
 import re
+import signal
 import stat
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from runtime_protocol import platform
@@ -20,6 +23,25 @@ from .service import LABEL, TASK
 
 class R0StopError(RuntimeError):
     """R0 could not be stopped safely; the upgrade must be refused."""
+
+
+@contextmanager
+def _recoverable_termination():
+    # Preserve a host application's own SIGTERM policy. Python can install a
+    # handler only on its main thread; the default would otherwise terminate
+    # immediately without running the recovery below.
+    install = (threading.current_thread() is threading.main_thread()
+               and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL)
+    if install:
+        def terminate(signum, frame):
+            raise SystemExit(128 + signum)
+
+        signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        if install:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
 def _launchd_uid():
@@ -46,15 +68,17 @@ def _validate_manager(service, uid):
         raise R0StopError(f"Unsupported R0 service manager: {service.system}")
 
 
-def _disable_and_stop(service, uid):
+def _disable_and_stop(service, uid, stop_attempted):
     if service.system == "linux":
         service.run(["systemctl", "--user", "disable", "--now", "astrid.service"])
     elif service.system == "darwin":
         target = f"gui/{uid}/{LABEL}"
         service.run(["launchctl", "disable", target])
+        stop_attempted[0] = True
         service.run(["launchctl", "bootout", target])
     else:
         service.powershell(f"Disable-ScheduledTask -TaskName '{TASK}' -TaskPath '\\' | Out-Null")
+        stop_attempted[0] = True
         service.powershell(f"Stop-ScheduledTask -TaskName '{TASK}' -TaskPath '\\'")
 
 
@@ -65,7 +89,14 @@ def _reenable(service, uid, *, stopped):
         target = f"gui/{uid}/{LABEL}"
         service.run(["launchctl", "enable", target])
         if stopped:
-            service.run(["launchctl", "bootstrap", f"gui/{uid}", service.path])
+            try:
+                service.run(["launchctl", "bootstrap", f"gui/{uid}", service.path])
+            except Exception:
+                # Bootout may have failed before removing the job, or it may
+                # have completed before its caller was interrupted. Only a
+                # still-loaded job at the expected path makes bootstrap's
+                # failure safe to tolerate.
+                _validate_manager(service, uid)
             service.run(["launchctl", "kickstart", target])
     else:
         service.powershell(f"Enable-ScheduledTask -TaskName '{TASK}' -TaskPath '\\' | Out-Null")
@@ -110,9 +141,8 @@ def stop_r0_and_wait(service, realm_root: Path, *, timeout: float = 90.0, poll_i
     """Disable/stop R0 via its OS manager, then wait boundedly for its lock.
 
     Success leaves R0 disabled and releases the observed lock; the caller must
-    promptly perform the read-only adoption and handle later rollback. Failure
-    after a stop attempt re-enables R0 and refuses. No service or data files
-    are changed by this operation.
+    handle later rollback. Failure after a stop attempt re-enables R0 and
+    refuses. No service or data files are changed by this operation.
     """
     if not math.isfinite(timeout) or timeout < 0 or not math.isfinite(poll_interval) or poll_interval <= 0:
         raise ValueError("A finite nonnegative timeout and positive poll interval are required.")
@@ -121,16 +151,16 @@ def stop_r0_and_wait(service, realm_root: Path, *, timeout: float = 90.0, poll_i
         raise ValueError("The selected R0 realm root must be absolute.")
     uid = _launchd_uid() if service.system == "darwin" else None
     _validate_manager(service, uid)
-    stopped = False
-    try:
-        _disable_and_stop(service, uid)
-        stopped = True
-        _wait_for_owner_lock(realm_root, timeout, poll_interval)
-    except Exception as exc:
+    stop_attempted = [False]
+    with _recoverable_termination():
         try:
-            _reenable(service, uid, stopped=stopped)
-        except Exception as recovery:
-            raise R0StopError(f"R0 stop failed ({exc}); automatic re-enable also failed ({recovery}). Re-enable the Astrid service in the OS service manager, then run the install line again.") from recovery
-        if isinstance(exc, R0StopError):
-            raise
-        raise R0StopError(f"R0 stop or owner-lock check failed: {exc}. Run the install line again after checking the Astrid service.") from exc
+            _disable_and_stop(service, uid, stop_attempted)
+            _wait_for_owner_lock(realm_root, timeout, poll_interval)
+        except BaseException as exc:
+            try:
+                _reenable(service, uid, stopped=stop_attempted[0])
+            except BaseException as recovery:
+                raise R0StopError(f"R0 stop failed ({exc}); automatic re-enable also failed ({recovery}). Re-enable the Astrid service in the OS service manager, then run the install line again.") from recovery
+            if isinstance(exc, R0StopError) or not isinstance(exc, Exception):
+                raise
+            raise R0StopError(f"R0 stop or owner-lock check failed: {exc}. Run the install line again after checking the Astrid service.") from exc

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import signal
 from pathlib import Path
 
 import pytest
@@ -95,11 +96,12 @@ def test_busy_timeout_reenables_and_preserves_data(tmp_path, system):
     fd = os.open(realm / "owner.lock", os.O_RDONLY)
     platform.lock_file(fd, blocking=False)
     try:
-        with pytest.raises(R0StopError, match="Finish or cancel running tasks"):
+        with pytest.raises(R0StopError) as caught:
             stop_r0_and_wait(manager, realm, timeout=0.02, poll_interval=0.005)
     finally:
         platform.unlock_file(fd)
         os.close(fd)
+    assert str(caught.value) == "R0 is still busy. Finish or cancel running tasks, then run the install line again."
     assert snapshot(realm) == before
     assert manager.path.read_bytes() == unit_before
     if system == "linux":
@@ -140,7 +142,93 @@ def test_manager_partial_failure_attempts_reenable(tmp_path):
     manager.fail = "bootout"
     with pytest.raises(R0StopError, match="injected manager failure"):
         stop_r0_and_wait(manager, realm)
-    assert manager.calls[-1][1] == "enable"
+    assert [call[1] for call in manager.calls[-3:]] == ["enable", "bootstrap", "kickstart"]
+
+
+@pytest.mark.parametrize("system,stop_command", [
+    ("linux", "disable"), ("darwin", "bootout"), ("win32", "Stop-ScheduledTask"),
+])
+def test_interrupted_stop_attempt_restores_service(tmp_path, system, stop_command):
+    manager, realm = setup_case(tmp_path, system)
+    original_run, original_powershell = manager.run, manager.powershell
+
+    def interrupt_once(command):
+        result = original_run(command) if isinstance(command, list) else original_powershell(command)
+        if stop_command in command:
+            raise KeyboardInterrupt()
+        return result
+
+    if system == "win32":
+        manager.powershell = interrupt_once
+    else:
+        manager.run = interrupt_once
+    with pytest.raises(KeyboardInterrupt):
+        stop_r0_and_wait(manager, realm)
+    if system == "linux":
+        assert manager.calls[-1] == ["systemctl", "--user", "enable", "--now", "astrid.service"]
+    elif system == "darwin":
+        assert [call[1] for call in manager.calls[-3:]] == ["enable", "bootstrap", "kickstart"]
+    else:
+        assert "Enable-ScheduledTask" in manager.calls[-2]
+        assert "Start-ScheduledTask" in manager.calls[-1]
+
+
+def test_launchd_bootstrap_failure_checks_loaded_job_before_kickstart(tmp_path):
+    manager, realm = setup_case(tmp_path, "darwin")
+    (realm / "owner.lock").unlink()
+    manager.fail = "bootstrap"
+    with pytest.raises(R0StopError, match="owner-lock check failed"):
+        stop_r0_and_wait(manager, realm)
+    assert [call[1] for call in manager.calls[-4:]] == ["enable", "bootstrap", "print", "kickstart"]
+
+
+def test_launchd_bootstrap_failure_with_no_matching_job_reports_recovery_failure(tmp_path):
+    manager, realm = setup_case(tmp_path, "darwin")
+    original_run = manager.run
+
+    def run(command):
+        if command[1] == "bootstrap":
+            manager.mismatch = True
+            raise RuntimeError("bootstrap failed")
+        return original_run(command)
+
+    manager.run = run
+    (realm / "owner.lock").unlink()
+    with pytest.raises(R0StopError, match="automatic re-enable also failed"):
+        stop_r0_and_wait(manager, realm)
+    assert not any(call[1] == "kickstart" for call in manager.calls)
+
+
+def test_interrupt_during_wait_restores_service(tmp_path, monkeypatch):
+    manager, realm = setup_case(tmp_path, "linux")
+
+    def interrupt(*args):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(r0_stop, "_wait_for_owner_lock", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        stop_r0_and_wait(manager, realm)
+    assert manager.calls[-1] == ["systemctl", "--user", "enable", "--now", "astrid.service"]
+
+
+def test_sigterm_during_wait_restores_service_and_handler(tmp_path, monkeypatch):
+    manager, realm = setup_case(tmp_path, "linux")
+    real_getsignal = signal.getsignal
+    previous = real_getsignal(signal.SIGTERM)
+    monkeypatch.setattr(signal, "getsignal", lambda _: signal.SIG_DFL)
+
+    def terminate(*args):
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(r0_stop, "_wait_for_owner_lock", terminate)
+    try:
+        with pytest.raises(SystemExit) as caught:
+            stop_r0_and_wait(manager, realm)
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert manager.calls[-1] == ["systemctl", "--user", "enable", "--now", "astrid.service"]
+        assert real_getsignal(signal.SIGTERM) == signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def test_reenable_failure_is_actionable(tmp_path):
