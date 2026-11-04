@@ -626,14 +626,18 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
             )
         return result
     if status == "conflict":
-        packet = clash.explain(timeline.session, record)
+        # A saved editing refusal has no conflicts. Explain the current probe
+        # without replacing the durable refusal or its original request flight.
+        explanation = copy.deepcopy(record)
+        explanation["failure"] = {**failure, "details": copy.deepcopy(details)}
+        packet = clash.explain(timeline.session, explanation)
         already_applied = _already_applied(timeline, path, record, packet)
         if already_applied is not None:
             return already_applied
         result = {"status": "re_derive", "pending_id": record["id"],
                   "data": {"conflicts": copy.deepcopy(details.get("conflicts", [])),
                            "receipts": copy.deepcopy(packet.get("receipts"))},
-                  "summary": _summary_rederive(record, packet, timeline.session),
+                  "summary": _summary_rederive(explanation, packet, timeline.session),
                   "next": (f'# make_edit is your function; re-run it on the newest timeline and review the preview.\n'
                          f'preview = tl.commit(make_edit, label={record.get("label")!r}, dry_run=True)\n'
                          f'tl.commit(preview["data"]["commands"], label={record.get("label")!r},\n'
