@@ -61,7 +61,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
-    "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
+    "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log", "installed-manifest.json",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",

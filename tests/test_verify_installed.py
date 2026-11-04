@@ -7,9 +7,11 @@ import sys
 import time
 
 import pytest
-from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from scripts.verify_installed import bridge_observation, evaluate
 from tests.lanes import unavailable
+
+LEGACY_VIBECOMFY_DEFAULT = 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'
+IDENTITY_AWARE_VIBECOMFY_DEFAULT = 'e2905d068d5851b9c32856d32b8251852a01d6dd'
 
 
 def test_update_only_fails_regressions_and_reports_preexisting():
@@ -162,7 +164,6 @@ def test_pinned_bootstrap_python_link_allowed_but_external_or_wrong_pin_rejected
 
 
 def _legacy_identity_fixture(tmp_path):
-    import base64
     fixture = json.loads((Path(__file__).parent / 'fixtures/upgrade/legacy_identityless_v31.json').read_text())
     program = tmp_path / 'program'
     root = program / 'versions' / '3204bb00-6d53a190-legacy01'
@@ -185,7 +186,7 @@ def _legacy_identity_fixture(tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text('fixture python')
     installed_manifest = dict(fixture['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': LEGACY_VIBECOMFY_DEFAULT}
     (root / 'manifest.json').write_text(json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n')
     version_path = root / 'version.json'
     fixture['version'] = {'root': str(root), 'python': str(python), 'profile': str(profile), 'env': {}}
@@ -195,9 +196,10 @@ def _legacy_identity_fixture(tmp_path):
 
 def _identity_aware_fixture(tmp_path):
     import base64
+    import hashlib
     source = json.loads((Path(__file__).parent / 'fixtures/upgrade/identity_aware_version_v1.json').read_text())
     program = tmp_path / 'program'
-    root = program / 'versions' / 'e8d04151-d8704b7a-identityaware'
+    root = program / 'versions' / '30761f4a-de98a5aa-identityaware'
     root.mkdir(parents=True)
     (root / 'r').mkdir()
     (root / 'a').mkdir()
@@ -217,8 +219,10 @@ def _identity_aware_fixture(tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text('fixture python')
     raw = base64.b64decode(source['manifest_base64'])
+    assert hashlib.sha256(raw).hexdigest() == source['source_refs']['manifest_sha256']
+    assert json.loads(raw) == source['manifest']
     installed_manifest = dict(source['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': IDENTITY_AWARE_VIBECOMFY_DEFAULT}
     raw = (json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n').encode()
     (root / 'manifest.json').write_bytes(raw)
     version_path = root / 'version.json'
@@ -230,7 +234,7 @@ def _identity_aware_fixture(tmp_path):
         'version': {'root': str(root), 'python': str(python), 'profile': str(profile), 'env': {}, 'identity': identity},
     }
     runtime = {'protocol': source['health_shape']['protocol'], 'schema_digest': source['manifest']['runtime']['schema_digest'],
-               'workspace_schema_version': 31}
+               'workspace_schema_version': 33}
     return fixture, version_path, runtime, raw
 
 
@@ -249,7 +253,7 @@ def test_supported_legacy_schema_accepts_matching_instance_and_exact_provenance(
     assert details['discovery_identity'] is None
     assert details['version_identity'] is None
     assert details['version_record_fields'] == ['env', 'profile', 'python', 'root']
-    assert json.loads(raw)['vibecomfy']['sha'] == VIBECOMFY_ENGINE_REVISION
+    assert json.loads(raw)['vibecomfy']['sha'] == LEGACY_VIBECOMFY_DEFAULT
 
 
 def test_source_backed_identity_aware_schema_accepts_synthetic_matching_identity_shape(tmp_path):
@@ -297,8 +301,43 @@ def test_installed_manifest_noncanonical_writer_representation_fails(tmp_path):
     assert 'installed manifest representation does not match reviewed installer writer' in details['problems']
 
 
+@pytest.mark.parametrize('mutation', ['content', 'representation'])
+def test_identity_aware_installed_manifest_mutation_fails_closed(tmp_path, mutation):
+    from scripts.verify_installed import legacy_identity_observation
+    fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path)
+    if mutation == 'content':
+        fixture['manifest']['unreviewed_field'] = True
+        installed = {**fixture['manifest'], 'vibecomfy': {'sha': IDENTITY_AWARE_VIBECOMFY_DEFAULT}}
+        raw = (json.dumps(installed, indent=2, sort_keys=True) + '\n').encode()
+        expected = 'installed manifest content does not match reviewed schema'
+    else:
+        raw = raw.replace(b'  "agent"', b'    "agent"', 1)
+        expected = 'installed manifest representation does not match reviewed installer writer'
+    (Path(fixture['version']['root']) / 'manifest.json').write_bytes(raw)
+    ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
+                                               fixture['manifest'], raw, version_path, runtime)
+    assert not ok
+    assert expected in details['problems']
+
+
+@pytest.mark.parametrize('component', ['agent', 'runtime'])
+def test_identity_aware_source_pin_mismatch_fails_closed(tmp_path, component):
+    from scripts.verify_installed import legacy_identity_observation
+    fixture, version_path, runtime, _ = _identity_aware_fixture(tmp_path)
+    fixture['manifest'][component]['sha'] = 'f' * 40
+    installed = {**fixture['manifest'], 'vibecomfy': {'sha': IDENTITY_AWARE_VIBECOMFY_DEFAULT}}
+    raw = (json.dumps(installed, indent=2, sort_keys=True) + '\n').encode()
+    (Path(fixture['version']['root']) / 'manifest.json').write_bytes(raw)
+    ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
+                                               fixture['manifest'], raw, version_path, runtime)
+    assert not ok
+    assert f'manifest {component} source does not match reviewed schema' in details['problems']
+    assert 'installed manifest content does not match reviewed schema' in details['problems']
+
+
 @pytest.mark.parametrize('unknown_schema', [
     {'workspace_schema_version': 32},
+    {'workspace_schema_version': 34},
     {'schema_digest': 'sha256:' + 'f' * 64},
 ])
 def test_identity_aware_unknown_or_newer_schema_fails_closed_with_matching_identity(tmp_path, unknown_schema):

@@ -161,6 +161,7 @@ def test_failed_downstream_verification_after_bypass_is_suspect(tmp_path, monkey
 def test_fresh_install_continues_independent_checks_after_verify_failure(tmp_path, monkeypatch):
     args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
     args.leg = 'fresh-install'
+    (tmp_path / 'manifest.json').write_bytes(b'actual manifest bytes\n')
     monkeypatch.setattr(journey, 'wait_ready', lambda *a, **kw: None)
     monkeypatch.setattr(journey, 'installation', lambda *a: (tmp_path / 'v1', tmp_path / 'data', {'release': 1}))
     def fail_verify(*a, **kw):
@@ -173,6 +174,56 @@ def test_fresh_install_continues_independent_checks_after_verify_failure(tmp_pat
     assert rows['release1-task']['result'] == 'pass' and 'task' in calls
     assert rows['one-runtime']['result'] == 'pass' and rows['sentinel']['result'] == 'pass'
     assert report['qualification']['eligible'] is False and report['status'] == 'fail'
+
+
+def test_fresh_selection_captures_exact_bytes_before_verify_and_retains_after_task_failure(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.leg = 'fresh-install'
+    version_dir = tmp_path / 'selected'
+    version_dir.mkdir()
+    raw = b'{ "installed": true }\r\n\xff'
+    (version_dir / 'manifest.json').write_bytes(raw)
+    monkeypatch.setattr(journey, 'wait_ready', lambda *a, **kw: None)
+    monkeypatch.setattr(journey, 'installation', lambda *a: (version_dir / 'version.json', tmp_path / 'data', {'release': 1}))
+    def verify(*a, **kw):
+        assert (evidence / 'installed-manifest.json').read_bytes() == raw
+        calls.append('verify')
+    def fail_task(*a):
+        raise RuntimeError('task failed')
+    monkeypatch.setattr(journey, 'verify', verify)
+    monkeypatch.setattr(jumps, 'task_after_update', fail_task)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-selection']['result'] == 'pass' and 'verify' in calls
+    assert rows['release1-task']['result'] == 'fail'
+    journey.retain_named_evidence(evidence, 'before-cleanup')
+    assert (evidence.parent.parent / 'evidence-upload' / 'before-cleanup' / 'installed-manifest.json').read_bytes() == raw
+
+
+@pytest.mark.parametrize('kind', ['missing', 'symlink', 'directory'])
+def test_fresh_selection_rejects_unsafe_manifest_and_blocks_dependents(tmp_path, monkeypatch, kind):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.leg = 'fresh-install'
+    version_dir = tmp_path / 'selected'
+    version_dir.mkdir()
+    manifest = version_dir / 'manifest.json'
+    if kind == 'symlink':
+        target = tmp_path / 'elsewhere.json'
+        target.write_bytes(b'not selected')
+        try:
+            manifest.symlink_to(target)
+        except OSError:
+            pytest.skip('symlinks unavailable')
+    elif kind == 'directory':
+        manifest.mkdir()
+    monkeypatch.setattr(journey, 'wait_ready', lambda *a, **kw: None)
+    monkeypatch.setattr(journey, 'installation', lambda *a: (version_dir / 'version.json', tmp_path / 'data', {'release': 1}))
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-selection']['result'] == 'fail'
+    assert rows['release1-verify-install']['result'] == 'not-run'
+    assert rows['release1-task']['result'] == 'not-run'
+    assert not (evidence / 'installed-manifest.json').exists()
 
 
 def test_fresh_install_failure_blocks_dependent_stages(tmp_path, monkeypatch):

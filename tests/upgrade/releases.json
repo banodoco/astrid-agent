@@ -45,24 +45,30 @@
     "reason": "Initial review of workspace schema, upgrade journal, and version record formats.",
     "supported_runtime_schemas": [
       {
-        "id": "app-fcf33d8-release1-v31-version-identity",
-        "mode": "identity-aware-version-record",
-        "reviewed_source_refs": {
-          "app_manifest": "fcf33d82234183d54dd537ad7752ec71b9e9f819",
-          "agent": "e8d0415100c48ef3836231d26f156d0e320e63ed",
-          "runtime": "d8704b7a590bf0e74d2ab410f8fceab989cbee6d"
-        },
-        "installed_manifest_sha256": "41d33bd6cbe886fdf6958e11182f131d4c9e3d7e88fa5604c1998c36a499c92b",
-        "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
-        "install_manifest_schema_version": 1,
-        "manifest_release": 1,
-        "protocol": "workspace.v1",
-        "schema_digest": "sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194",
-        "workspace_schema_version": 31,
-        "version_id_prefix": "e8d04151-d8704b7a-",
-        "version_record_keys": ["env", "identity", "profile", "python", "root"],
+        "discovery_identity_emitted": true,
         "health_identity_emitted": true,
-        "discovery_identity_emitted": true
+        "id": "diagnostic-37ac4d70-30761f4a",
+        "install_manifest_schema_version": 1,
+        "installed_manifest_sha256": "194406e6744a822e8e68c64d266f303ef9dc6bba263f93ce03295e55faafbd0c",
+        "installed_manifest_vibecomfy_default_sha": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+        "manifest_release": 1,
+        "mode": "identity-aware-version-record",
+        "protocol": "workspace.v1",
+        "reviewed_source_refs": {
+          "agent": "30761f4a3916ce6e5822669dd5865f65a4e6654a",
+          "app_manifest": "37ac4d709e9bb211f88b8df6520a0d0e2de0228e",
+          "runtime": "de98a5aa44768419656bfeffcdaa1b2eda9e9845"
+        },
+        "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+        "version_id_prefix": "30761f4a-de98a5aa-",
+        "version_record_keys": [
+          "env",
+          "identity",
+          "profile",
+          "python",
+          "root"
+        ],
+        "workspace_schema_version": 33
       },
       {
         "id": "served-runtime-6d53-identityless-v31",

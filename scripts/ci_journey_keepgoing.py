@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import stat
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -21,6 +22,24 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
                 "release1-verify-install", "release1-task", "one-runtime", "sentinel")
+
+
+def capture_installed_manifest(version_path: Path, evidence: Path):
+    """Retain the selected file's actual bytes, rejecting links and special files."""
+    source = version_path.parent / "manifest.json"
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise RuntimeError("Selected installed manifest must be a regular file, not a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(source, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise RuntimeError("Selected installed manifest changed or is not a regular file")
+        content = stream.read()
+    # Exclusive creation also prevents following or silently replacing a stale artifact.
+    with (evidence / "installed-manifest.json").open("xb") as target:
+        target.write(content)
 
 
 def initial(evidence, args):
@@ -142,6 +161,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Fresh install did not select release 1 and the requested data root")
             journey.selected_tuple(state["manifest"], version)
             journey.assert_direct_service_ownership(root, data)
+            capture_installed_manifest(path, evidence)
             state.update(version=version, version_path=path)
         def fresh_sentinel():
             if not journey.sentinel_observation(sentinel, birth)["alive"]:

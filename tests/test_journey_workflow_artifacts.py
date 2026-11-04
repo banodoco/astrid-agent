@@ -35,6 +35,7 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert "release0-bootstrap.log" in staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
+    assert "installed-manifest.json" in collector_names and "installed-manifest.json" in staged_names
     assert {"runtime-owner-selection.json", "runtime-owner-selection-context.json"} <= collector_names
     assert collector_names <= staged_names
     assert "^runtime-service-service-.+\\.log$" in guard
