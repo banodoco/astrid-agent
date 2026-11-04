@@ -442,6 +442,156 @@ def _capture_pack_host_marker(path, logical_name):
     return {"source": logical_name, "status": "captured", "bytes": details["bytes"],
             "content": _pack_host_marker_projection(value)}
 
+# Fixed strings from frozen R0 host_bootstrap.py; no log fragments are emitted.
+_EXIT_SIGNATURES = {
+    "missing_matching_job_drain_receipt": b"legacy Windows host registration lacks a matching Runtime Job-drain receipt; automatic retirement is blocked",
+    "no_retained_job_custody": b"registered Windows host has no retained Job custody; retirement blocked",
+    "foreign_identity": b"registered Windows host identity is foreign; retirement blocked",
+    "foreign_pid_identity": b"registered pid is not this Astrid pack host; not signalled",
+}
+_EXIT_PHASES = frozenset({
+    "module_import_begin", "module_import_done", "cli_args_parsed",
+    "startup_identity_begin", "startup_identity_done", "host_constructor_begin",
+    "host_constructor_done", "discovery_begin", "discovery_done", "preflight_begin",
+    "preflight_done", "registration_begin", "registration_done", "ready_written",
+})
+
+
+def _exit_log_classification(path):
+    details, content, _ = _read_pack_host_file(
+        path, limit=PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES, tail=True)
+    result = {"source": "service-pack-host.log", **details, "content_retained": False,
+              "categories": [], "phases": [], "absence_is_inconclusive": True}
+    if content is None:
+        result["classification"] = "unavailable"
+        return result
+    # This is a tail of an append-only, shared supervisor log, potentially containing
+    # several attempts. A hit is an observation, not attribution to this exit.
+    categories = {name for name, signature in _EXIT_SIGNATURES.items() if signature in content}
+    phases = set()
+    for line in content.splitlines():
+        try:
+            value = json.loads(line)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        phase = value.get("phase")
+        if value.get("diagnostic") == "astrid.host_startup_phase" and isinstance(phase, str) and phase in _EXIT_PHASES:
+            phases.add(phase)
+        error = value.get("error")
+        if (value.get("status") == "failed" and value.get("terminal") is True
+                and isinstance(error, dict) and all(k in error for k in ("code", "request_id", "message"))):
+            categories.add("registration_failure_record")
+    result.update(classification="recognized" if categories or phases else "other",
+                  categories=sorted(categories), phases=sorted(phases))
+    return result
+
+
+def _projection_object(path):
+    details, content, _ = _read_pack_host_file(path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False)
+    if content is None:
+        return details, None
+    def unique_pairs(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate key")
+            obj[key] = value
+        return obj
+    try:
+        value = json.loads(content.decode("utf-8"), object_pairs_hook=unique_pairs)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return {"status": "malformed"}, None
+    if not isinstance(value, dict):
+        return {"status": "invalid_type"}, None
+    return {"status": "read"}, value
+
+
+def _same_projection_path(left, right):
+    # Lexical match is a safe subset of R0's normpath-or-samefile check. Never
+    # follow an arbitrary registration path to establish a match.
+    if not isinstance(left, str) or not left or len(left) > 4096:
+        return False
+    return ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(ntpath.normpath(str(right)))
+
+
+def _exit_registration_receipt_projection(root):
+    reg_details, state = _projection_object(root / "generic-host.json")
+    receipt_details, record = _projection_object(root / "pack-host-job-cleanup.json")
+    result = {
+        "registration": {**reg_details, "schema": "unknown", "process_status": "unknown"},
+        "receipt": {**receipt_details, "schema": "unknown", "owner_only": "unknown",
+                    "lock_and_atomicity": "unknown", "drained_match": "unknown"},
+        "limitation": "sequential unlocked reads; permissions and birth-aware process status unverified; no custody inference",
+    }
+    reg = result["registration"]
+    receipt = result["receipt"]
+    if state is not None:
+        pid, birth, launch = state.get("pid"), state.get("process_birth_id"), state.get("runtime_service_launch_id")
+        valid = (type(pid) is int and pid > 1 and isinstance(birth, str) and bool(birth)
+                 and isinstance(state.get("support_root"), str) and bool(state["support_root"])
+                 and (launch is None or isinstance(launch, str) and re.fullmatch(r"[0-9a-f]{32}", launch) is not None))
+        reg.update(schema="valid_for_match" if valid else "invalid",
+                   runtime_instance_id_sha256=_diagnostic_identity(state.get("runtime_instance_id")),
+                   launch_id_sha256=_diagnostic_identity(launch),
+                   support_root_matches_observed=_same_projection_path(state.get("support_root"), root))
+    else:
+        valid = False
+    if record is None:
+        return result
+    entries = record.get("receipts")
+    if (type(record.get("version")) is not int or record.get("version") != 1
+            or record.get("service_name") != "pack-host" or not isinstance(entries, list)
+            or not isinstance(record.get("support_root"), str) or not record["support_root"]):
+        receipt["schema"] = "invalid"
+        return result
+    # Accept only the R0 Runtime producer's entry schema. The guard accepts a
+    # broader set; unsupported entries stay unknown rather than becoming a miss.
+    for entry in entries:
+        if (not isinstance(entry, dict)
+                or set(entry) != {"pid", "process_birth_id", "runtime_service_launch_id", "job_drained"}
+                or not isinstance(entry.get("runtime_service_launch_id"), str)
+                or re.fullmatch(r"[0-9a-f]{32}", entry["runtime_service_launch_id"]) is None
+                or entry.get("job_drained") is not True
+                or not ((entry.get("pid") is None and entry.get("process_birth_id") is None)
+                        or (type(entry.get("pid")) is int and entry["pid"] > 0
+                            and isinstance(entry.get("process_birth_id"), str)))):
+            receipt["schema"] = "invalid_or_unsupported_entry"
+            return result
+    receipt["schema"] = "valid_for_r0_producer"
+    receipt["support_root_matches_observed"] = _same_projection_path(record.get("support_root"), root)
+    if not valid or not reg["support_root_matches_observed"]:
+        return result
+    if not receipt["support_root_matches_observed"]:
+        # R0 may additionally accept samefile aliases, which we do not resolve.
+        return result
+    # Equivalent R0 item predicate for lexically matching observed support root;
+    # permission and lock gates are deliberately not asserted.
+    matched = False
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        item_root = item.get("support_root", state["support_root"])
+        if not _same_projection_path(item_root, root):
+            return result
+        if launch is not None:
+            ipid, ibirth = item.get("pid"), item.get("process_birth_id")
+            identity_valid = ((ipid is None and ibirth is None) or
+                              (type(ipid) is int and ipid > 1 and isinstance(ibirth, str) and bool(ibirth)))
+            identity_match = item.get("runtime_service_launch_id") == launch
+        else:
+            ipid, ibirth = item.get("pid"), item.get("process_birth_id")
+            identity_valid = type(ipid) is int and ipid > 1 and isinstance(ibirth, str) and bool(ibirth)
+            identity_match = ipid == pid and ibirth == birth
+        if (identity_valid and identity_match and item.get("job_drained") is True
+                and item.get("service_name", "pack-host") == "pack-host"):
+            matched = True
+            break
+    receipt["drained_match"] = "match_unverified_permissions_and_race" if matched else "no_match_lexical_only"
+    return result
+
+
 def _pack_host_service(value):
     if not isinstance(value, dict) or not isinstance(value.get("services"), list):
         return None
@@ -545,19 +695,30 @@ def capture_pack_host_readiness(health_value, accepted):
         return
     service = _pack_host_service(health_value)
     root = data_root() / "runtime"
-    observations = ["first-failed-poll", "last-failed-poll"]
+    observations = []
     if _pack_host_service_exit_observed(service):
         observations.append("first-service-exit")
+    observations.extend(["first-failed-poll", "last-failed-poll"])
     for observation in observations:
         manifest = EVIDENCE / f"pack-host-readiness-{observation}.json"
         if observation != "last-failed-poll" and manifest.exists():
             continue
         EVIDENCE.mkdir(parents=True, exist_ok=True)
+        native = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+        discriminator = None
+        if observation == "first-service-exit":
+            discriminator = {
+                "child_log": (_exit_log_classification(Path(native) / "service-pack-host.log")
+                              if native and Path(native).is_absolute() else
+                              {"source": "service-pack-host.log", "classification": "unavailable",
+                               "status": "unavailable", "content_retained": False,
+                               "absence_is_inconclusive": True}),
+                "registration_and_receipt": _exit_registration_receipt_projection(root),
+            }
         ready_path = root / "generic-host.ready.json"
         details, ready = _load_pack_host_json(ready_path)
         # The marker read follows the original predicate. It may race a writer;
         # the exact predicate result is recorded separately from this projection.
-        native = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
         local = os.environ.get("LOCALAPPDATA")
         sources = [(root / "generic-host.log", "runtime-support-root")]
         if native and Path(native).is_absolute():
@@ -581,6 +742,8 @@ def capture_pack_host_readiness(health_value, accepted):
             "logs": [_capture_pack_host_log(path, path.name, observation, selection)
                      for path, selection in sources],
         }
+        if discriminator is not None:
+            capture["exit_discriminator"] = discriminator
         encoded = (json.dumps(capture, indent=2, ensure_ascii=True) + "\n").encode("utf-8")
         if len(encoded) > PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES:
             # Never stage an oversized or partial JSON document.
