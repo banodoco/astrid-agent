@@ -75,7 +75,7 @@ class LifecycleBackend:
         folder = root / "versions" / "candidate"
         folder.mkdir(parents=True)
         self.candidate = Version(folder, folder / "py/bin/python", folder / "profile.json", {},
-                                release=manifest.get("release", 0))
+                                release=manifest.get("release", 1))
         self.candidate.python.parent.mkdir(parents=True)
         self.candidate.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         write_json(folder / "version.json", self.candidate.document())
@@ -235,7 +235,7 @@ def test_upgrade_runs_skills_sync_after_verify(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     old_root = root / "versions" / "old"
     old_root.mkdir(parents=True)
-    old = Version(old_root, old_root / "py/bin/python", old_root / "profile.json", {})
+    old = Version(old_root, old_root / "py/bin/python", old_root / "profile.json", {}, release=1)
     old.python.parent.mkdir(parents=True)
     old.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     write_json(old_root / "version.json", old.document())
@@ -364,7 +364,7 @@ def test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
-    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=1)
     old.python.parent.mkdir(parents=True)
     old.python.write_text("python")
     write_json(folder / "version.json", old.document())
@@ -490,20 +490,17 @@ def test_legacy_terminal_survives_public_install_final_stop_refusal(tmp_path, mo
         assert handoffs[-1][2]["ASTRID_INSTALL_PROGRAM_ROOT"] == str(root)
 
     invoke_terminal()
-    with pytest.raises(RuntimeOperationError, match="Astrid is busy") as raised:
+    # R0 is refused before the legacy prelude, stop or journal writer.
+    with pytest.raises(ValueError, match="copy-only upgrade boundary"):
         Installer(root, data, backend, say=lambda _line: None).run("install", {"release": release})
-
-    assert is_lifecycle_refusal(raised.value)
-    assert len(stops) == 1
+    assert admission == [] and stops == []
     assert (root / "current").read_text(encoding="utf-8") == "old\n"
     assert read_json(folder / "version.json") == legacy
     assert read_json(root / "install.json") == marker
-    if release:
-        transaction = read_json(root / "update-transaction.json")
-        assert transaction["step"] == "complete"
-        assert transaction["outcome"] == "stop_refused"
-    elif operation == "recovery":
+    if operation == "recovery":
         assert read_json(root / "update-transaction.json") == pending
+    else:
+        assert not (root / "update-transaction.json").exists()
     invoke_terminal()
     assert len(handoffs) == 2
     assert all(path.read_bytes() == content for path, content in retained_command.items())
@@ -513,7 +510,7 @@ def test_post_stop_failure_runs_update_recovery(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
-    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=1)
     old.python.parent.mkdir(parents=True)
     old.python.write_text("python")
     write_json(folder / "version.json", old.document())
@@ -537,7 +534,9 @@ def test_post_stop_failure_runs_update_recovery(tmp_path):
     assert current(root) == old
 
 
-def _installed_lifecycle_backend(tmp_path, *, release=0):
+# The legacy transaction tests below now describe R1-to-R1 updates. R0
+# entry, manager stop and recovery are covered by test_installer_r0_entry.
+def _installed_lifecycle_backend(tmp_path, *, release=1):
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
@@ -572,6 +571,13 @@ def test_install_dispatches_by_numeric_release(installed, candidate, agent_sha, 
     if candidate is not None:
         manifest["release"] = candidate
 
+    if installed == 0:
+        with pytest.raises(ValueError, match="copy-only upgrade boundary"):
+            Installer(root, data, backend).run("install", manifest)
+        assert backend.calls == []
+        assert current(root).release == 0
+        return
+
     if candidate is not None and candidate < installed:
         with pytest.raises(ValueError, match="This Astrid is newer than astrid.haus offers"):
             Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
@@ -602,6 +608,13 @@ def test_legacy_version_record_release_dispatch_matrix(tmp_path, installed, cand
     write_json(old.root / "version.json", legacy_record)
     write_json(old.root / "manifest.json", {} if installed is None else {"release": installed})
     manifest = {} if candidate is None else {"release": candidate}
+
+    if effective_installed == 0:
+        with pytest.raises(ValueError, match="copy-only upgrade boundary"):
+            Installer(root, data, backend).run("install", manifest)
+        assert backend.calls == []
+        assert read_json(old.root / "version.json") == legacy_record
+        return
 
     effective_candidate = candidate or 0
     if effective_candidate < effective_installed:
@@ -789,7 +802,7 @@ def test_repair_stop_refusal_does_not_persist_identity(tmp_path):
 
     backend.stop = refuse
     with pytest.raises(RuntimeOperationError, match="Astrid is busy"):
-        Installer(root, data, backend, say=lambda _line: None).run("install", {})
+        Installer(root, data, backend, say=lambda _line: None).run("install", {"release": old.release})
 
     assert persisted == []
 
@@ -936,7 +949,7 @@ def test_reinstall_ignores_current_pointer_to_removed_interpreter(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     stale = root / "versions" / "removed"
     stale.mkdir(parents=True)
-    old = Version(stale, stale / "py/bin/python", stale / "profile.json", {})
+    old = Version(stale, stale / "py/bin/python", stale / "profile.json", {}, release=1)
     write_json(stale / "version.json", old.document())
     switch(root, old)
     catalog = data / "runtime" / "catalog.json"
@@ -987,7 +1000,7 @@ def test_doctor_uses_installed_version_and_prints_bundle_path(tmp_path):
 def test_successful_update_prints_retained_backup_location(tmp_path):
     root, data = tmp_path / "program", tmp_path / "workspace"
     folder = root / "versions" / "installed"
-    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=1)
     old.python.parent.mkdir(parents=True)
     old.python.write_text("python")
     write_json(folder / "version.json", old.document())
@@ -1082,8 +1095,10 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     monkeypatch.setattr(cli, "Backend", no_space)
 
     assert cli.main(["--root", str(tmp_path / "program")]) == 1
-    assert capsys.readouterr().out.splitlines() == [FAILURE_MESSAGE, message, f"Details: {tmp_path / 'logs/install.log'}"]
-    assert message in (tmp_path / "logs/install.log").read_text()
+    output = capsys.readouterr()
+    assert output.out.splitlines() == [FAILURE_MESSAGE, message]
+    assert message in output.err
+    assert not (tmp_path / "logs").exists()  # selection was never resolved
 
 
 def test_cli_shows_safe_verification_context_but_not_raw_diagnostics(tmp_path, monkeypatch, capsys):
@@ -1126,7 +1141,7 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     )
     stale = root / "versions" / "removed"
     stale.mkdir(parents=True)
-    old = Version(stale, stale / "py/bin/python", stale / "profile.json", {})
+    old = Version(stale, stale / "py/bin/python", stale / "profile.json", {}, release=1)
     write_json(stale / "version.json", old.document())
     switch(root, old)
     catalog = data / "runtime" / "catalog.json"
@@ -1142,7 +1157,8 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     class CliBackend(LifecycleBackend):
         def __new__(cls, *_args, **kwargs):
             process_controls.append(kwargs["process_control"])
-            backend.service = SimpleNamespace(recorded=lambda: record)
+            backend.service = SimpleNamespace(recorded=lambda: record, home=home, system=sys.platform,
+                                              path=tmp_path / "service", selection=tmp_path / "selection.json")
             return backend
 
     monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(parents=True, exist_ok=True))

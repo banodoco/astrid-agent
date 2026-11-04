@@ -398,6 +398,13 @@ class Installer:
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
+        if self.managed_by != "pinokio":
+            from .r0_stop import refuse_legacy_r0_recovery, refuse_unintegrated_r1_handoff
+
+            service = getattr(self.backend, "service", None)
+            if service is not None:
+                refuse_unintegrated_r1_handoff(self.root, service)
+            refuse_legacy_r0_recovery(self.root)
         pending = read_json(absolute(self.root / "update-transaction.json"))
         if pending and pending.get("step") not in TERMINAL_STEPS and owned_by_local_update(pending):
             raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
@@ -432,6 +439,10 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
+        if old.release == 0 and self.managed_by != "pinokio":
+            from .r0_stop import R0StopError
+
+            raise R0StopError("R0 cannot enter the legacy in-place update transaction; use the copy-only upgrade boundary.")
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {
@@ -522,6 +533,17 @@ class Installer:
 
             return update_pinokio(self.root, self.backend, manifest, say=self.say,
                                   force=mode == "update")
+        if self.managed_by != "pinokio" and mode in {"install", "update"}:
+            from .r0_stop import R0StopError, is_r0_installation, refuse_unintegrated_r1_handoff
+
+            service = getattr(self.backend, "service", None)
+            if service is not None:
+                refuse_unintegrated_r1_handoff(self.root, service)
+            if is_r0_installation(self.root):
+                # Public CLI performs Piece A under the per-user installer
+                # lock. Programmatic callers cannot bypass that boundary or
+                # create the legacy journal/launcher on R0.
+                raise R0StopError("R0 requires the copy-only upgrade boundary. Run the install line again.")
         # App updates use the same durable journal but have a separate entry
         # point. Serialize operations that recover or write that journal. Doctor
         # and uninstall do not run journal recovery; a first install has no
@@ -541,6 +563,11 @@ class Installer:
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
+        if (old is not None and old.release == 0 and self.managed_by != "pinokio"
+                and mode in {"install", "update"}):
+            from .r0_stop import R0StopError
+
+            raise R0StopError("R0 requires the copy-only upgrade boundary. Run the install line again.")
         # The public install path is also the normal update check. Compare
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.
