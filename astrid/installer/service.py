@@ -425,7 +425,19 @@ class Service:
 
     def login_service_exists(self) -> bool:
         if self.system == "win32":
-            return bool(self.powershell(TASK_QUERY + "if ($t) { $t.TaskName }").strip())
+            # Empty or diagnostic output is not evidence of absence. Enumerate
+            # the root folder and require one explicit result from the query.
+            # This is only an existence check, never task ownership authority.
+            result = self.powershell(
+                "$tasks=@(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | "
+                f"Where-Object {{ $_.TaskName -eq '{TASK}' -and $_.TaskPath -eq '\\' }}); "
+                '"ASTRID_TASK_COUNT=$($tasks.Count)"'
+            ).strip()
+            if result == "ASTRID_TASK_COUNT=0":
+                return False
+            if result == "ASTRID_TASK_COUNT=1":
+                return True
+            raise ValueError("The Astrid sign-in task query was ambiguous or malformed.")
         return self.path.exists()
 
     def systemd(self) -> bool:
