@@ -29,6 +29,16 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      diagnostic_leg:
+        description: NON-PROOF diagnostic leg (release0-to-release1 or fresh-install)
+        required: false
+        default: release0-to-release1
+        type: string
+      diagnostic_keep_going:
+        description: NON-PROOF disposable direct keep-going diagnostic
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -91,6 +101,16 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      diagnostic_leg:
+        description: NON-PROOF diagnostic leg (release0-to-release1 or fresh-install)
+        required: false
+        default: release0-to-release1
+        type: string
+      diagnostic_keep_going:
+        description: NON-PROOF disposable direct keep-going diagnostic
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -254,6 +274,8 @@ jobs:
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
+          DIAGNOSTIC_LEG: ${{ inputs.diagnostic_leg || 'release0-to-release1' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
@@ -307,7 +329,14 @@ jobs:
               raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
           if journey_row:
               direct_only = True
+          diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
+          if diagnostic_leg not in {"release0-to-release1", "fresh-install", "both"}:
+              raise SystemExit("invalid diagnostic_leg")
+          if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
+              raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
+              raise SystemExit("diagnostic_keep_going requires direct_only")
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
@@ -362,6 +391,11 @@ jobs:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           if journey_row and journey_row != "direct":
               matrix = [row for row in matrix if row["job_id"] == journey_row]
+          if diagnostic_leg == "fresh-install":
+              for row in matrix:
+                  row["leg"] = diagnostic_leg
+          elif diagnostic_leg == "both":
+              matrix = matrix + [dict(row, leg="fresh-install") for row in matrix]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
           wait_timeout = "180" if journey_row in {
@@ -662,7 +696,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-manager-${{ matrix.job_id }}
+          name: journey-manager-${{ matrix.job_id }}-${{ matrix.leg }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
@@ -694,14 +728,35 @@ jobs:
             [IO.File]::WriteAllText($backendConfigPath, $backendConfigJson, [Text.UTF8Encoding]::new($false))
             $backendConfigArgs = @('--pinokio-backend-config', $backendConfigPath)
           }
+          $keepGoingArgs = @()
+          if ('${{ inputs.diagnostic_keep_going }}' -eq 'true') { $keepGoingArgs = @('--diagnostic-keep-going') }
           python -u agent/scripts/ci_journey.py `
             --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg '${{ matrix.leg }}' `
             --candidate "$env:RUNNER_TEMP/candidate.json" `
             --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
             --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
-            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
+            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish diagnostic table or pre-driver failure
+        if: always() && inputs.diagnostic_keep_going == true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload/before-cleanup"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $report = Join-Path $dir 'keepgoing-report.json'
+          $table = Join-Path $dir 'keepgoing-report.md'
+          if (-not (Test-Path -LiteralPath $report)) {
+            $errorText = 'Driver report unavailable; inspect preceding job steps for the exact error.'
+            $row = @{stage='pre-driver-or-scope'; result='not-run'; forced_continuation_used=$false; first_error=$errorText; evidence_path='GitHub Actions job log'}
+            $value = @{schema_version=1; proof_mode='keep-going-diagnostic'; classification='NON-PROOF'; status='fail'; qualification=@{eligible=$false}; job_id='${{ matrix.job_id }}'; stages=@($row)}
+            $json = $value | ConvertTo-Json -Depth 10
+            [IO.File]::WriteAllText($report, $json, [Text.UTF8Encoding]::new($false))
+            $value.receipt_kind = 'diagnostic-only'
+            [IO.File]::WriteAllText((Join-Path $dir 'journey-result.json'), ($value | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($table, "NON-PROOF`n`n| stage | result | forced-continuation-used | first error |`n| --- | --- | --- | --- |`n| pre-driver-or-scope | not-run | false | $errorText |`n", [Text.UTF8Encoding]::new($false))
+          }
+          if (Test-Path -LiteralPath $table) { Get-Content -LiteralPath $table | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
@@ -709,7 +764,7 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
@@ -732,7 +787,7 @@ jobs:
                 throw "Unexpected staged evidence path: $relative"
               }
               $name = $Matches[2]
-              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$' -and $name -notmatch '^keepgoing-stage-[0-9]{2}\.log$') {
                 throw "Unexpected staged evidence filename: $relative"
               }
               if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -754,7 +809,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-receipt-${{ matrix.job_id }}
+          name: journey-receipt-${{ matrix.job_id }}-${{ matrix.leg }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
@@ -1017,6 +1072,7 @@ jobs:
       - name: Reject skipped, cancelled, or failed matrix dependencies
         shell: bash
         env:
+          DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
           CONFIG_RESULT: ${{ needs.config.result }}
           JOURNEY_RESULT: ${{ needs.journey.result }}
           M4_5_ENABLED: ${{ needs.config.outputs.m4_5_enabled }}
@@ -1027,6 +1083,7 @@ jobs:
           M4_6_RESULT: ${{ needs.failure_modes.result }}
           RELEASE2_RESULT: ${{ needs.release2.result }}
         run: |
+          test "$DIAGNOSTIC_KEEP_GOING" != true # NON-PROOF, even when artifacts are absent
           test "$CONFIG_RESULT" = success
           if [ "$M4_5_ONLY" != true ]; then test "$JOURNEY_RESULT" = success; fi
           if [ "$M4_5_ENABLED" = true ]; then test "$RELEASE2_RESULT" = success; fi
