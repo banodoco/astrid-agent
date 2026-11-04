@@ -15,3 +15,5 @@
 *.ps1 text eol=lf
 # Preserve the reviewed diff verbatim; its context prefixes precede source tabs.
 astrid/installer/omp/source.patch -text -whitespace
+# Hosted R0 service evidence is retained byte-for-byte, including CRLF.
+tests/fixtures/release0/services/hosted-41756671212-task.xml -text

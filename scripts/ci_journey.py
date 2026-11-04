@@ -23,6 +23,7 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 if __package__:
@@ -65,6 +66,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
     "runtime-owner-processes.json",
+    "runtime-owner-selection.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
@@ -1192,24 +1194,42 @@ def healthy(data: Path) -> dict:
     return discovery
 
 
+@lru_cache(maxsize=1)
+def _windows_owner_rule():
+    # Load the checked-out rule even when the journey runs as a standalone
+    # script and the selected installed Agent is the authentic old release.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "journey_windows_owner", ROOT / "astrid/installer/windows_owner.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _runtime_owner_command(command: str) -> bool:
-    # Installed services run the Runtime CLI through a Python -c prelude. Keep
-    # recognizing the older runtime_protocol form for other running owners.
-    return ("-m runtime_protocol start" in command or
-            (re.search(r"(?:^|\s)-c(?:\s|$)", command) is not None and
-             "from astrid_runtime.cli import main" in command and
-             re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
+    return _windows_owner_rule().runtime_command(command)
 
 
-def runtime_processes(data: Path) -> list[int]:
+def runtime_processes(data: Path, *, root: Path | None = None) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
+        rule = _windows_owner_rule()
         rows = json.loads(windows.powershell(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-            "runtime-owner-processes.json", show=False, timeout=30))
+            rule.PROCESS_QUERY, "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
-        return [int(row["ProcessId"]) for row in rows if
-                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+        venv = None
+        if root is not None:
+            _, _, version = installation(root, data)
+            venv = Path(version["root"]) / "py"
+            if ntpath.normcase(ntpath.normpath(version["python"])) != ntpath.normcase(
+                    ntpath.normpath(str(venv / "Scripts" / "python.exe"))):
+                raise RuntimeError("Selected Windows interpreter is outside its installed venv")
+        owners = rule.owner_pids(rows, venv)
+        if venv is not None:
+            windows.save("runtime-owner-selection.json", {
+                "venv": str(venv), "owners": owners, "matches": rule.runtime_rows(rows),
+            })
+        return owners
     # The installed prelude can be long and can contain newlines. Ask ps for
     # the full command, then keep continuation lines with their process.
     output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
@@ -1224,11 +1244,37 @@ def runtime_processes(data: Path) -> list[int]:
     return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
-def assert_one_runtime(data: Path) -> None:
+def assert_one_runtime(data: Path, *, root: Path | None = None) -> None:
     discovery = healthy(data)
-    owners = runtime_processes(data)
+    owners = runtime_processes(data, root=root) if root is not None else runtime_processes(data)
     if owners != [int(discovery["pid"])]:
         raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
+
+
+def stop_windows_runtime(version: dict, data: Path, evidence: Path, name: str) -> None:
+    """Stop the discovery child via Runtime, then prove both incarnations gone."""
+    rule = _windows_owner_rule()
+    def snapshot():
+        rows = json.loads(windows.powershell(
+            rule.PROCESS_QUERY, "runtime-owner-processes.json", show=False, timeout=30))
+        return rows if isinstance(rows, list) else [rows]
+
+    rows = snapshot()
+    venv = Path(version["root"]) / "py"
+    if rule.owner_pids(rows, venv) != [int(healthy(data)["pid"])]:
+        raise RuntimeError("Windows Runtime stop owner is ambiguous or changed")
+    pair = rule.redirector_pair(rule.runtime_rows(rows), venv)
+    installed_cli(version, ["down", "--profile", "astrid", "--data-root", str(data)],
+                  evidence, name, module="astrid_runtime", timeout=120)
+    deadline = time.monotonic() + 120
+    while True:
+        rows = snapshot()
+        stopped = rule.pair_exited(rows, pair) if pair else not rule.runtime_rows(rows)
+        if stopped:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Windows Runtime child and redirector did not both stop")
+        time.sleep(0.2)
 
 
 def wait_ready(data: Path, *, timeout: int = 900) -> None:
@@ -1377,7 +1423,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         project = "windows-journey" if sys.platform == "win32" else "tst-b1-fresh-install"
         if args.leg != "fresh-install":
             old_version, old_data, old = installation(root, data)
-            assert_one_runtime(data)
+            assert_one_runtime(data, root=root)
             if args.leg == "stale-update":
                 old_manifest = read_json(Path(old["root"]) / "manifest.json")
                 if all(old_manifest.get(name) == manifest.get(name) for name in ("agent", "runtime")):
@@ -1427,7 +1473,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             if receipt_path.is_file():
                 observation = read_json(receipt_path)
                 result["import_origins"] = (observation.get("details") or {}).get("origin.imports")
-        assert_one_runtime(data)
+        assert_one_runtime(data, root=root)
         result["checks"]["one_runtime"] = "pass"
         task_project = project if args.leg == "fresh-install" else f"tst-b1-{args.leg}"
         if sys.platform == "win32":

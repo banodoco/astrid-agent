@@ -228,7 +228,7 @@ def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -
         raise RuntimeError("Diagnostic start preconditions are stale or do not match the live version/tuple")
     service = journey.assert_direct_service_ownership(root, data)
     health = journey.healthy(data)
-    journey.assert_one_runtime(data)
+    journey.assert_one_runtime(data, root=root)
     return version, {"state_path": state_path, "identity": identity,
                      "service": service, "health": health}
 
@@ -427,7 +427,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
                      action: str, request: dict) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
     service = journey.assert_direct_service_ownership(root, data)
-    journey.assert_one_runtime(data)
+    journey.assert_one_runtime(data, root=root)
     # Shutdown can remove discovery.json, so resolve and validate its realm while live.
     realm = journey.workspace_root(data)
     evidence.mkdir(parents=True, exist_ok=True)
@@ -444,9 +444,10 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
     try:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
-            journey.windows.powershell("$ErrorActionPreference='Stop'; Stop-ScheduledTask "
-                                       "-TaskName 'Astrid Runtime' -TaskPath '\\'",
-                                       f"{action}-stop-service.log", show=False, timeout=30)
+            # Runtime's birth-checked shutdown addresses the discovery child.
+            # The venv redirector exits with that child. The raw census below
+            # must see BOTH gone before any offline workspace writes.
+            journey.stop_windows_runtime(version, data, evidence, f"{action}-stop-service.log")
         else:
             journey.run(stop, evidence / f"{action}-stop-service.log", timeout=120)
         deadline = time.monotonic() + 120
@@ -465,7 +466,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)
         journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
 
 
 def installed_release(version: dict) -> int:
@@ -546,7 +547,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
@@ -605,7 +606,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["semantic_data"] = "pass"
         task_after_update(version, evidence / "release1-working-task", project)
         result["checks"]["task_settled"] = "pass"
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
         result["checks"]["one_runtime"] = "pass"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
@@ -662,7 +663,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         journey.wait_ready(data)
         old_path, _, old = journey.installation(root, data)
         before_tuple = journey.selected_tuple(journey.read_json(old_manifest_path), old)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
         old_owner = journey.healthy(data)
         old_pid = old_owner["pid"]
         old_birth = journey.process_birth(old_pid)
@@ -714,7 +715,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         result["checks"]["task_settled"] = "pass"
         rerun(args, root, data, evidence / "rerun", app, candidate_path, manifest, version, keys)
         result["checks"]["same_release_rerun"] = "pass"
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
         result["checks"]["one_runtime"] = "pass"
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Unrelated sentinel did not survive version update and rerun")
@@ -771,7 +772,7 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
             raise RuntimeError("Busy refusal mutated selection/version/discovery")
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Busy refusal disturbed the unrelated sentinel")
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, root=root)
         result["checks"].update(busy_refusal="pass", one_runtime="pass", unrelated_sentinel="pass")
     finally:
         workspace(old, data, evidence / "busy-release", "release", keys)

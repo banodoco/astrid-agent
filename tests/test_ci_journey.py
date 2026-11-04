@@ -138,7 +138,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: checkouts)
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: {"manager": "test"})
     monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused, **kwargs: None)
     version_path, _, version = journey.installation(root, data)
     args.candidate_checkouts = checkouts
     if write_state:
@@ -1232,7 +1232,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def one_runtime(_data, **kwargs):
         assert state["running"] and not state["local"]
 
     def manager_action(operation):
@@ -1256,8 +1256,13 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
 
     def powershell(code, name, **kwargs):
         assert "-TaskName 'Astrid Runtime'" in code
-        manager_action("stop" if "Stop-ScheduledTask" in code else "start")
+        assert "Stop-ScheduledTask" not in code
+        manager_action("start")
         return ""
+
+    def installed_stop(version, selected_data, _evidence, name):
+        assert selected_data == data
+        manager_action("stop")
 
     def workspace(version, _data, _evidence, action, request, *, realm):
         # A second RuntimeService would fail this simulated exclusive lock.
@@ -1308,6 +1313,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     monkeypatch.setattr(journey, "process_birth", lambda pid: str(pid) if pid == state["pid"] else None)
     monkeypatch.setattr(journey, "run", run)
     monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "stop_windows_runtime", installed_stop)
     monkeypatch.setattr(jumps, "workspace", workspace)
     monkeypatch.setattr(jumps, "task_after_update", task)
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
@@ -1332,7 +1338,7 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     state = {"running": True}
     monkeypatch.setattr(journey, "assert_direct_service_ownership",
                         lambda *_: {"manager": "systemd-user"} if state["running"] else pytest.fail("stopped"))
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_, **kwargs: None)
     monkeypatch.setattr(journey, "wait_ready", lambda *_: None)
     monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")

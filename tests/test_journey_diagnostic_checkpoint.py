@@ -88,7 +88,7 @@ def _retained_preseed_state(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: checkouts)
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: {"manager": "test"})
     monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused, **kwargs: None)
     version_path, _, version = journey.installation(root, data)
     args.candidate_checkouts = checkouts
     jumps.write_diagnostic_release0_preconditions(
@@ -117,7 +117,7 @@ def test_diagnostic_checkpoint_accepts_only_unchanged_preseed_realm_and_keeps_cu
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: (
         custody.append("owner") or {"manager": "test"}))
     monkeypatch.setattr(journey, "healthy", lambda *unused: custody.append("health") or {"pid": 42})
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: custody.append("one-runtime"))
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused, **kwargs: custody.append("one-runtime"))
     actions = []
     monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: actions.append("verify"))
     monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")

@@ -977,6 +977,35 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
+    def windows_runtime_pair(self, version: Version | None, owner_pid: int | None):
+        """Read-only duplicate admission before Runtime's fenced child stop."""
+        from .windows_owner import PROCESS_QUERY, owner_pids, redirector_pair, runtime_rows
+
+        rows = json.loads(self.powershell(PROCESS_QUERY))
+        rows = rows if isinstance(rows, list) else [rows]
+        venv = version.root / "py" if version is not None else None
+        if version is not None and (version.root.parent != self.root / "versions" or
+                                    version.python != venv / "Scripts" / "python.exe"):
+            raise ValueError("The selected Windows interpreter is outside its installed venv.")
+        owners = owner_pids(rows, venv)
+        if owners and owners != [owner_pid]:
+            raise ValueError("Windows Runtime process matches are ambiguous or differ from discovery.")
+        return redirector_pair(runtime_rows(rows), venv) if venv is not None else None
+
+    def wait_windows_runtime_pair(self, pair) -> None:
+        """Never terminate the launcher or a replacement scheduled invocation."""
+        from .windows_owner import PROCESS_QUERY, pair_exited
+
+        deadline = time.monotonic() + 90
+        while True:
+            rows = json.loads(self.powershell(PROCESS_QUERY))
+            rows = rows if isinstance(rows, list) else [rows]
+            if pair_exited(rows, pair):
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("The Windows Runtime child and redirector did not both stop.")
+            time.sleep(0.2)
+
     def register(self, version: Version, data: Path) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():

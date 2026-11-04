@@ -660,9 +660,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # refusals are downstream-classified. C1 busy admission runs later in
             # down(), so a probe refusal can be reported before the busy message.
             launchd_identity = None
+            windows_pair = None
             if self.managed_by != "pinokio":
                 launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                if self.service.system == "win32":
+                    windows_pair = self.service.windows_runtime_pair(version, owner_pid)
             def stop_selected_manager():
+                if windows_pair is not None:
+                    self.service.wait_windows_runtime_pair(windows_pair)
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
                                        or current_record.get("program_root") != str(self.root)
@@ -688,7 +693,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                             else:
                                 self.service.validate_stop_target(version, data, owner_pid=owner_pid)
                             self.service.disable()
-                            self.service.stop()
+                            if windows_pair is None:
+                                self.service.stop()
                 if stop_manager is not None:
                     stop_manager()
 
@@ -703,7 +709,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
             result = down(paths, boundary, stop_manager=stop_selected_manager,
                           stop_foreground=(stop_selected_foreground
-                                           if restore_selection is None and isinstance(foreground, dict) else None),
+                                           if windows_pair is None and restore_selection is None
+                                           and isinstance(foreground, dict) else None),
                           restore_selection=restore_selection)
         except Exception as exc:
             raise self._stop_failure(exc) from exc

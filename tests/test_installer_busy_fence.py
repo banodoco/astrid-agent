@@ -64,6 +64,7 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     monkeypatch.setattr(value.service, 'publish_launch_admission', lambda *_args: None)
     monkeypatch.setattr(value.service, 'login_service_exists', lambda: True)
     monkeypatch.setattr(value.service, 'validate_stop_target', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(value.service, 'windows_runtime_pair', lambda *_args: None)
     for name in ('register', 'start', 'restore', 'remove', 'backup', 'stage', 'upgrade', 'finish', 'open'):
         monkeypatch.setattr(value, name, Mock(side_effect=AssertionError(f'unexpected {name}')))
     monkeypatch.setattr(value, 'existing', lambda _data: old)
