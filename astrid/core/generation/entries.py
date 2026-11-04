@@ -20,13 +20,11 @@ def user_entries() -> list[dict[str, Any]]:
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
-    try:
-        import vibecomfy
-        root = Path(vibecomfy.__file__).resolve().parent.parent
-        index = json.loads((root / 'template_index.json').read_text())['templates']
-        coverage = json.loads((root / 'ready_templates/sources/manifests/coverage.json').read_text())['workflows']
-    except (ImportError, OSError, KeyError, ValueError):
-        return []
+    from vibecomfy import resources
+    from vibecomfy.errors import ShippedResourceMissingError
+    root = resources.ready_templates_root().parent
+    index = resources.template_index()['templates']
+    coverage = resources.coverage_manifest()['workflows']
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
                   'first_last_frame_video': 'flf', 'text_to_audio_song': 'music',
@@ -69,6 +67,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
                       **({'ambiguity': 'unknown loader role'} if ref['class_type'] not in LOADER_ROLES else {})}
                      for ref in _referenced_model_values(workflow)]
             binds = {name: name for name in workflow.inputs}
+        except ShippedResourceMissingError:
+            raise
         except Exception:
             needs, binds = [], {}
             ambiguity = 'ready workflow metadata could not be loaded'
@@ -224,12 +224,8 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
 
 def _ready_ids() -> set[str]:
     """Read identities without building unrelated workflows."""
-    try:
-        import vibecomfy
-        root = Path(vibecomfy.__file__).resolve().parent.parent
-        return {item['id'] for item in json.loads((root / 'template_index.json').read_text())['templates']}
-    except (ImportError, OSError, KeyError, ValueError):
-        return set()
+    from vibecomfy import resources
+    return {item['id'] for item in resources.template_index()['templates']}
 
 
 def _load_entry_workflow(entry: dict[str, Any]) -> Any:

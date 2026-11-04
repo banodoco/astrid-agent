@@ -16,6 +16,7 @@ import re  # noqa: E402 - imports follow the canonical entrypoint guard
 import shutil
 import subprocess
 import sys
+import traceback
 from types import SimpleNamespace
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -1079,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
                 endpoint_checkout=endpoint_checkout,
             )
     except Exception as exc:
+        sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         error = exc if isinstance(exc, AstridError) else AstridError(
             f"vibecomfy.run: {exc}",
             recovery_command=(
