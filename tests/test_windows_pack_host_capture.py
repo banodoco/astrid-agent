@@ -181,3 +181,35 @@ def test_isolation_preserves_and_restores_native_runtime_log_root(tmp_path, monk
         assert os.environ["LOCALAPPDATA"] == str(tmp_path / "run/localappdata")
     assert os.environ["LOCALAPPDATA"] == str(native)
     assert windows.NATIVE_RUNTIME_LOG_DIR_ENV not in os.environ
+
+
+@pytest.mark.parametrize("case,field", [
+    ("unhealthy", "health_status_ok"),
+    ("starting", "pack_host_running"),
+    ("missing", "ready_file_is_file"),
+    ("malformed", "ready_json_object"),
+    ("wrong-status", "ready_status_ready"),
+    ("mismatch", "ready_runtime_instance_matches"),
+])
+def test_readiness_manifest_identifies_rejected_predicate(capture, case, field):
+    data, _, nested, _, _, health = capture
+    health["services"][0]["state"] = "running"
+    marker = {"status": "ready", "runtime_instance_id": "current"}
+    if case == "unhealthy":
+        health["status"] = "error"
+    elif case == "starting":
+        health["services"][0]["state"] = "starting"
+    elif case == "wrong-status":
+        marker["status"] = "starting"
+    elif case == "mismatch":
+        marker["runtime_instance_id"] = "old"
+    if case != "missing":
+        (data / "runtime/generic-host.ready.json").write_text(
+            "{" if case == "malformed" else json.dumps(marker))
+    assert windows.host_ready() is False
+    observation = manifest(nested)
+    assert observation["predicates"][field] is False
+    assert observation["predicate_result"] is False
+    if case == "mismatch":
+        assert observation["health"]["runtime_instance_id"] == "current"
+        assert observation["markers"][0]["content"]["runtime_instance_id"] == "old"
