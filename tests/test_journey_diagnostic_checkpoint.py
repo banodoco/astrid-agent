@@ -1,10 +1,12 @@
 """Focused F2 coverage for retained release-0 diagnostic checkpoint fidelity."""
 
 import argparse
+from contextlib import nullcontext
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -266,6 +268,150 @@ def test_census_rejects_changes_between_passes(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "scandir", changing_scandir)
     with pytest.raises(RuntimeError, match="changed while checkpointing"):
         jumps._preseed_workspace_state(data)
+
+
+@pytest.mark.parametrize("operation,name,expected", [
+    ("scandir", ".", "."),
+    ("scandir", "staging", "staging"),
+    ("lstat", "realm.sqlite3", "realm.sqlite3"),
+    ("read_bytes", "realm.sqlite3-shm", "realm.sqlite3-shm"),
+    ("read_bytes", "private-token/value", "<redacted>"),
+])
+def test_denied_preseed_operation_is_safe_and_preserves_exception(
+        tmp_path, monkeypatch, operation, name, expected):
+    data = tmp_path / "data"
+    realm = data / "realm"
+    (realm / "staging").mkdir(parents=True)
+    target = realm / name
+    if operation != "scandir":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"private contents")
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    denied = PermissionError(13, "private error detail", str(target))
+    original_scandir, original_lstat, original_read = os.scandir, Path.lstat, Path.read_bytes
+
+    def scandir(path):
+        if operation == "scandir" and path == target:
+            raise denied
+        return original_scandir(path)
+
+    def lstat(path, *args, **kwargs):
+        if operation == "lstat" and path == target:
+            raise denied
+        return original_lstat(path, *args, **kwargs)
+
+    def read(path):
+        if operation == "read_bytes" and path == target:
+            raise denied
+        return original_read(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    with pytest.raises(PermissionError) as caught:
+        jumps._preseed_workspace_state(data)
+    assert caught.value is denied
+    assert denied.preseed_denial == {"operation": operation, "relative_path": expected,
+                                    "path_redacted": expected == "<redacted>"}
+    assert journey.format_journey_error(denied) == "PermissionError: Permission denied"
+
+
+def test_preseed_denial_is_written_safely_to_failure_receipt(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    target = realm / "private-token"
+    target.write_bytes(b"private contents")
+    denied = PermissionError(13, "private error detail", str(target))
+    original_read = Path.read_bytes
+
+    def read(path):
+        if path == target:
+            raise denied
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    with pytest.raises(PermissionError) as caught:
+        jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert caught.value is denied
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["error"] == "PermissionError: Permission denied"
+    assert receipt["preseed_denial"] == {"operation": "read_bytes", "relative_path": "<redacted>",
+                                        "path_redacted": True}
+    assert "private-token" not in str(receipt) and "private error detail" not in str(receipt)
+    assert receipt["checks"] == {"preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}
+
+
+def test_lifecycle_failure_receipt_keeps_safe_preseed_diagnostic(tmp_path, monkeypatch):
+    args, root, data, realm, _ = _retained_preseed_state(tmp_path, monkeypatch)
+    target = realm / "realm.sqlite3-shm"
+    target.write_bytes(b"private contents")
+    denied = PermissionError(13, "private detail", str(target))
+    original_read = Path.read_bytes
+
+    def read(path):
+        if path == target:
+            raise denied
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    manifest = {"release": 1, "agent": {"sha": "a"}, "runtime": {"sha": "b"}}
+    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, tmp_path / "manifest", {}))
+    monkeypatch.setattr(journey, "selected_manifest", lambda *a, **kw: (tmp_path / "manifest", manifest))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *a: manifest)
+    monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *a: None)
+    monkeypatch.setattr(journey, "installation", lambda *a: (tmp_path / "version", data, {}))
+    monkeypatch.setattr(jumps, "installed_release", lambda _: 0)
+    monkeypatch.setattr(journey, "read_json", lambda path: {} if path == tmp_path / "manifest"
+                        else __import__("json").loads(path.read_text(encoding="utf-8")))
+    monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
+    monkeypatch.setattr(journey, "assert_release0_runtime", lambda *a: None)
+    monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions",
+                        lambda *a, **kw: jumps._preseed_workspace_state(data))
+    actions = []
+    monkeypatch.setattr(journey, "verify", lambda *a, **kw: actions.append("verify"))
+    evidence = tmp_path / "lifecycle-evidence"
+    with pytest.raises(PermissionError) as caught:
+        jumps.execute_release0_to_release1(args, root, data, evidence, SimpleNamespace(pid=1), "birth")
+    assert caught.value is denied
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail" and actions == []
+    assert receipt["error"] == "PermissionError: Permission denied"
+    assert receipt["preseed_denial"] == {"operation": "read_bytes", "relative_path": "realm.sqlite3-shm",
+                                        "path_redacted": False}
+    assert "private detail" not in str(receipt)
+
+
+def test_outer_failure_receipt_and_stderr_do_not_expose_denied_path(tmp_path, monkeypatch, capsys):
+    root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
+    evidence.mkdir()
+    args = argparse.Namespace(run_root=tmp_path, root=root, data_root=data, leg="release0-to-release1",
+                              shell="sh", retain_for_next_leg=True)
+    denied = PermissionError(13, "private error detail", str(data / "private-token"))
+    jumps._note_preseed_denial(denied, "private-token", "read_bytes")
+    monkeypatch.setattr(journey, "run_scope", lambda *a, **kw: (tmp_path, root, data, evidence))
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda *a: None)
+    monkeypatch.setattr(journey, "assert_host_available", lambda *a: None)
+    monkeypatch.setattr(journey, "isolated_environment", lambda *a: nullcontext())
+    monkeypatch.setattr(journey, "sentinel_process", lambda *a: nullcontext((SimpleNamespace(pid=1), "birth")))
+    monkeypatch.setattr(journey, "snapshot_failure_evidence", lambda *a: None)
+
+    def fail(*unused):
+        journey.write_json(evidence / "journey-result.json", {
+            "status": "fail", "preseed_denial": denied.preseed_denial})
+        raise denied
+
+    monkeypatch.setattr(journey, "_execute_owned", fail)
+    with pytest.raises(PermissionError) as caught:
+        journey.execute(args)
+    assert caught.value is denied
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["error"] == "PermissionError: Permission denied"
+    assert receipt["preseed_denial"]["relative_path"] == "<redacted>"
+    assert "private" not in str(receipt) and "private" not in capsys.readouterr().err
 
 
 def test_real_r0_realm_checkpoint_when_runtime_checkout_available(tmp_path, monkeypatch):

@@ -38,10 +38,27 @@ DIAGNOSTIC_START_STAGE = "release0-api-seed"
 DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
 
 
-def _bytes_sha256(path: Path, label: str) -> str:
+def _bytes_sha256(path: Path, label: str, *, on_read_denied=None) -> str:
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"Diagnostic {label} must be a regular file")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        contents = path.read_bytes()
+    except PermissionError as exc:
+        if on_read_denied is not None:
+            on_read_denied(exc)
+        raise
+    return hashlib.sha256(contents).hexdigest()
+
+
+def _note_preseed_denial(exc: PermissionError, relative: str, operation: str) -> None:
+    # Only fixed R0 schema paths are safe to publish. Unknown path components
+    # may themselves contain user data or credentials; do not print or hash them.
+    known = {".", "owner.lock", "realm.sqlite3", "realm.sqlite3-wal",
+             "realm.sqlite3-shm", "realm.sqlite3-journal", "cas", "cas/sha256",
+             "staging", "staging/settlements"}
+    exc.preseed_denial = {"operation": operation,
+                          "relative_path": relative if relative in known else "<redacted>",
+                          "path_redacted": relative not in known}
 
 
 def _target_tuple(manifest: dict) -> dict:
@@ -110,11 +127,19 @@ def _preseed_workspace_state(data: Path) -> dict:
         def visit(directory: Path) -> None:
             # Unlike Path.rglob on some Python versions, scandir propagates
             # enumeration errors instead of silently returning a partial tree.
-            with os.scandir(directory) as children:
-                paths = sorted((Path(child.path) for child in children), key=lambda path: path.name)
+            try:
+                with os.scandir(directory) as children:
+                    paths = sorted((Path(child.path) for child in children), key=lambda path: path.name)
+            except PermissionError as exc:
+                _note_preseed_denial(exc, directory.relative_to(realm).as_posix(), "scandir")
+                raise
             for path in paths:
                 relative = path.relative_to(realm).as_posix()
-                info = path.lstat()
+                try:
+                    info = path.lstat()
+                except PermissionError as exc:
+                    _note_preseed_denial(exc, relative, "lstat")
+                    raise
                 if (stat.S_ISLNK(info.st_mode)
                         or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
                     raise RuntimeError("Diagnostic pre-seed workspace contains a symlink or reparse point")
@@ -125,8 +150,15 @@ def _preseed_workspace_state(data: Path) -> dict:
                     if relative == "owner.lock":
                         found.append({"path": relative, "kind": "live-owner-lock", "size": info.st_size})
                     else:
-                        found.append({"path": relative, "kind": "file",
-                                      "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+                        try:
+                            digest = _bytes_sha256(
+                                path, "pre-seed workspace file",
+                                on_read_denied=lambda exc: _note_preseed_denial(exc, relative, "read_bytes"))
+                        except PermissionError as exc:
+                            if not hasattr(exc, "preseed_denial"):
+                                _note_preseed_denial(exc, relative, "regular-file-check")
+                            raise
+                        found.append({"path": relative, "kind": "file", "sha256": digest})
                 else:
                     raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
 
@@ -289,7 +321,9 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
         result["checks"]["snapshot"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        result.update(status="fail", error=journey.format_journey_error(exc))
+        if isinstance(exc, PermissionError) and hasattr(exc, "preseed_denial"):
+            result["preseed_denial"] = exc.preseed_denial
         raise
     finally:
         journey.write_json(result_path, result)
@@ -633,7 +667,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        result.update(status="fail", error=journey.format_journey_error(exc))
+        if isinstance(exc, PermissionError) and hasattr(exc, "preseed_denial"):
+            result["preseed_denial"] = exc.preseed_denial
         raise
     finally:
         journey.write_json(result_path, result)

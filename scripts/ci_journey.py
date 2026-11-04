@@ -1603,6 +1603,14 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     return result
 
 
+def format_journey_error(exc: Exception) -> str:
+    # A pre-seed path or OS error string can contain private names. The
+    # structured diagnostic uses only an allowlist of fixed realm paths.
+    if isinstance(exc, PermissionError) and hasattr(exc, "preseed_denial"):
+        return "PermissionError: Permission denied"
+    return f"{type(exc).__name__}: {exc}"
+
+
 def execute(args: argparse.Namespace) -> dict:
     diagnostic_start_at = getattr(args, "diagnostic_start_at", None)
     run_root, root, data, evidence = run_scope(
@@ -1673,11 +1681,11 @@ def execute(args: argparse.Namespace) -> dict:
                     result = _execute_owned(args, root, data, evidence, sentinel, birth)
                 except Exception as exc:
                     primary_error = exc
-                    print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                    print(f"Journey failed: {format_journey_error(exc)}", file=sys.stderr, flush=True)
                     try:
                         result_path = evidence / "journey-result.json"
                         recorded = read_json(result_path) if result_path.is_file() else {}
-                        recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+                        recorded.update(status="fail", error=format_journey_error(exc))
                         write_json(result_path, recorded)
                     except Exception as receipt_error:
                         print(f"Journey failure receipt failed: {type(receipt_error).__name__}: {receipt_error}",
@@ -1741,9 +1749,9 @@ def execute(args: argparse.Namespace) -> dict:
         if "before-cleanup" not in recorded.get("failure_diagnostics", {}) or recorded.get("status") != "fail":
             recorded.update(schema_version=2, receipt_kind="release1-installed-lifecycle",
                             scenario=args.leg, status="fail",
-                            error=f"{type(exc).__name__}: {exc}")
+                            error=format_journey_error(exc))
             write_json(result_path, recorded)
-            print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            print(f"Journey failed: {format_journey_error(exc)}", file=sys.stderr, flush=True)
             snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
         raise
 
@@ -2038,7 +2046,9 @@ def main(argv: list[str] | None = None) -> int:
         with without_provider_credentials():
             execute(args)
     except Exception as exc:
-        print(f"Journey failed: {exc}", file=sys.stderr)
+        message = (format_journey_error(exc) if isinstance(exc, PermissionError)
+                   and hasattr(exc, "preseed_denial") else str(exc))
+        print(f"Journey failed: {message}", file=sys.stderr)
         return 1
     return 0
 
