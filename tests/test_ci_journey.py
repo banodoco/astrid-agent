@@ -108,7 +108,8 @@ def test_release1_task_failure_stages_sdk_response_and_selected_manifest(tmp_pat
     journey.retain_named_evidence(evidence, "after-cleanup")
     for phase in ("before-cleanup", "after-cleanup"):
         staged = run_root / "evidence-upload" / phase
-        assert (staged / "sdk-invocation.json").read_bytes() == response
+        assert not (staged / "sdk-invocation.json").exists()
+        assert json.loads((staged / "sdk-response-observation.json").read_text())["status"] == "unavailable"
         assert (staged / "installed-manifest.json").read_bytes() == manifest
         assert not (staged / "other.json").exists()
 

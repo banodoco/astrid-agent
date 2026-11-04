@@ -512,7 +512,7 @@ def semantic_digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def task_after_update(version: dict, evidence: Path, project: str) -> str:
+def task_after_update(version: dict, evidence: Path, project: str, diagnostic_data: Path | None = None) -> str:
     # Preserve the manifest from the exact version about to run the SDK. This
     # is best-effort evidence collection and must not alter the journey result.
     try:
@@ -528,6 +528,8 @@ def task_after_update(version: dict, evidence: Path, project: str) -> str:
         journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
         journey.windows.snapshot("processes-host-ready.json")
         return journey.windows.task(project, create_project=False)
+    if diagnostic_data is not None:
+        return journey.task(version, evidence, project, create_project=False, diagnostic_data=diagnostic_data)
     return journey.task(version, evidence, project, create_project=False)
 
 

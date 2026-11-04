@@ -67,6 +67,43 @@ def write(evidence, report):
     (evidence / "keepgoing-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def task_log_observation(root):
+    """Only fixed event counts in the last MiB, never arbitrary log text."""
+    path = root / "home/.local/state/astrid-runtime/logs/runtime-service.log"
+    result = {"available": False}
+    try:
+        if path.is_symlink() or not path.is_file():
+            return result
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - journey.EVIDENCE_LOG_LIMIT))
+            tail = stream.read(journey.EVIDENCE_LOG_LIMIT)
+        result.update(available=True, size=size, bytes_scanned=len(tail),
+                      project_not_found=tail.count(b"project not found"),
+                      not_found=tail.count(b"not_found"),
+                      runtime_internal_error=tail.count(b"Runtime internal error (request "))
+    except OSError:
+        pass
+    return result
+
+
+def fresh_task(version, evidence, project, data):
+    try:
+        before = task_log_observation(data.parent)
+    except Exception:
+        before = {"available": False}
+    try:
+        return jumps.task_after_update(version, evidence, project, data)
+    finally:
+        try:
+            after = task_log_observation(data.parent)
+            journey.write_json(evidence / "runtime-task-log-observation.json",
+                               {"before": before, "after": after})
+        except Exception:
+            pass
+
+
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     report = initial(evidence, args)
     state = {}
@@ -151,7 +188,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
-        stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
+        stage("release1-task", ["version"], lambda: fresh_task(state["version"], evidence / "release1-working-task", project, data) if args.job_id == "direct-linux" else jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
         stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(data), evidence)
         stage("sentinel", [], fresh_sentinel, evidence)
         return report

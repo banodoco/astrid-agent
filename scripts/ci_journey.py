@@ -572,6 +572,40 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def reduced_sdk_response(source: Path) -> dict:
+    """Read a bounded response and retain only fixed, non-secret diagnostics."""
+    result = {"status": "unavailable"}
+    try:
+        if source.is_symlink() or not source.is_file():
+            return result
+        with source.open("rb") as stream:
+            data = stream.read(EVIDENCE_LOG_LIMIT + 1)
+        if len(data) > EVIDENCE_LOG_LIMIT:
+            return {"status": "oversized"}
+        outer = json.loads(data)
+        content = outer.get("content", [])
+        inner = json.loads(content[0]["text"])
+        if not isinstance(inner, dict):
+            return result
+        result = {"status": "parsed"}
+        if type(inner.get("ok")) is bool:
+            result["ok"] = inner["ok"]
+        error = inner.get("error")
+        if isinstance(error, dict):
+            code = error.get("code")
+            result["error_code"] = code if code in {"not_found", "conflict", "invalid_argument", "internal_error", "unavailable", "permission_denied", "already_exists"} else "other"
+            result["project_not_found_message"] = error.get("message") == "project not found"
+            details = error.get("details")
+            if isinstance(details, dict):
+                result["project_matches_request"] = details.get("project") == "tst-m4-3b-release0"
+        refs = outer.get("details", {}).get("astridTaskRefs")
+        if isinstance(refs, list):
+            result["task_ref_count"] = len(refs)
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, UnicodeError):
+        pass
+    return result
+
+
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
@@ -625,7 +659,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     # manifest; other task directories may represent a different version.
     task_dir = evidence / "release1-working-task"
     if task_dir.is_dir() and not task_dir.is_symlink():
-        for name in ("sdk-invocation.json", "installed-manifest.json"):
+        for name in ("installed-manifest.json", "sdk-request.json",
+                     "sdk-context.json", "runtime-task-log-observation.json"):
             source = task_dir / name
             if source.is_file() and not source.is_symlink():
                 try:
@@ -633,6 +668,11 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 except OSError as exc:
                     print(f"Journey task evidence copy ({phase}) failed for {name}: "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        try:
+            write_json(destination / "sdk-response-observation.json",
+                       reduced_sdk_response(task_dir / "sdk-invocation.json"))
+        except OSError:
+            pass
 
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
@@ -1422,7 +1462,8 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
+def task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
+         diagnostic_data: Path | None = None) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output."""
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
     if create_project:
@@ -1432,8 +1473,23 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
             raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
-    invocation = json.loads(installed_cli(version, [json.dumps(request)], evidence,
-                                          "sdk-invocation.json", module="astrid.omp_invoke"))
+    if diagnostic_data is None:
+        output = installed_cli(version, [json.dumps(request)], evidence,
+                               "sdk-invocation.json", module="astrid.omp_invoke")
+    else:
+        # This is the same OMP module and request in the installed interpreter;
+        # the harness wrapper observes the actual resolver and client constructor.
+        try:
+            evidence.mkdir(parents=True, exist_ok=True)
+            write_json(evidence / "sdk-request.json", request)
+        except Exception:
+            pass
+        env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+        env.update(version["env"])
+        output = run([version["python"], "-I", ROOT / "scripts/journey_task_probe.py",
+                      evidence / "sdk-context.json", diagnostic_data, json.dumps(request)],
+                     evidence / "sdk-invocation.json", env=env, timeout=300)
+    invocation = json.loads(output)
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")
