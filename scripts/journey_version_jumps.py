@@ -504,10 +504,10 @@ def bootstrap_release0(fixture: Path, manifest: Path, shell: str, evidence: Path
                     evidence / "release0-bootstrap.log", env=env)
 
 
-def start_direct_runtime(evidence: Path) -> None:
+def start_direct_runtime(evidence: Path, *, task_name: str = "Astrid Runtime") -> None:
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
-        journey.windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
+        journey.windows.powershell(f"Start-ScheduledTask -TaskName '{task_name}' -TaskPath '\\'",
                                    "start-scheduled-task.log", show=False, timeout=30)
 
 
@@ -650,7 +650,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
-        start_direct_runtime(evidence / "release1")
+        start_direct_runtime(evidence / "release1", task_name="Astrid Runtime R1")
         journey.wait_ready(data)
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
