@@ -30,6 +30,7 @@ from .core import (
     read_json,
     require_boundary_available,
     require_recovery_boundary,
+    require_recovery_manager,
     recover_transaction,
     separate_roots,
     switch,
@@ -264,6 +265,7 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
     owner = transaction.get("transaction_context")
     if not owned_by_local_update(transaction):
         return False
+    require_recovery_manager(root, absolute(transaction["data_root"]), transaction)
     if transaction.get("transaction_kind") not in {"app", "migration"}:
         raise LocalUpdateStepError("recover-journal", "The local update journal kind is invalid.")
     if not isinstance(owner, dict):

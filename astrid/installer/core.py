@@ -117,6 +117,19 @@ def require_recovery_boundary(transaction: dict, *, login_managed: bool = False)
     require_boundary_available(old, login_managed=login_managed)
 
 
+def require_recovery_manager(root: Path, data: Path, transaction: dict) -> None:
+    """Do not let a journal alone claim the Pinokio recovery exception."""
+    old = Version.load(transaction["old"])
+    if old.managed_by == "pinokio":
+        marker = read_json(absolute(root / "install.json"))
+        if (marker.get("owner") != "haus.astrid.runtime"
+                or marker.get("managed_by") != "pinokio"
+                or not isinstance(marker.get("data_root"), str)
+                or absolute(marker["data_root"]) != absolute(data)):
+            raise ValueError("The interrupted update does not match the installation manager.")
+    require_boundary_available(old)
+
+
 def require_known_update_selection(root: Path, data: Path, version: "Version | None", *,
                                    allow_fresh_claim: bool = False) -> None:
     """An existing but unidentifiable installation must not become a fresh install."""
@@ -290,7 +303,7 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
                         stop, switch_old, activate_old, save,
                         restore_workspace: bool = True) -> None:
     """Apply the shared stop, optional restore, selection and ready rollback."""
-    require_recovery_boundary(transaction)
+    require_recovery_manager(root, data, transaction)
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
     realm = transaction["realm"]
@@ -328,7 +341,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     transaction = read_json(absolute(root / "update-transaction.json"))
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
-    require_recovery_boundary(transaction)
+    require_recovery_manager(root, data, transaction)
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
@@ -434,6 +447,8 @@ class Installer:
         if pending and pending.get("step") not in TERMINAL_STEPS \
                 and pending.get("transaction_kind") == "app":
             raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
+        if pending and pending.get("step") not in TERMINAL_STEPS:
+            require_recovery_boundary(pending, login_managed=self.managed_by != "pinokio")
 
         def switch_old(old: Version, _candidate: Version | None) -> None:
             if current(self.root) in (None, old):

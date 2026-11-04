@@ -195,3 +195,47 @@ def test_login_recovery_rejects_mismatched_journal_before_replay(tmp_path):
         core.require_recovery_boundary({'old': old.document()}, login_managed=True)
     # The Pinokio recovery path keeps its original manager handling.
     core.require_recovery_boundary({'old': old.document()})
+
+
+@pytest.mark.parametrize('route', ['recover', 'rollback', 'installer', 'local'])
+@pytest.mark.parametrize('marker', [None, {'owner': 'haus.astrid.runtime'},
+                                   {'owner': 'haus.astrid.runtime', 'managed_by': 'pinokio',
+                                    'data_root': '/different/workspace'}])
+def test_journal_cannot_claim_pinokio_to_bypass_login_recovery(tmp_path, route, marker):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    data.mkdir()
+    (data / 'owner.lock').write_bytes(b'opaque')
+    (data / 'realm.sqlite3').write_bytes(b'R0')
+    old = version(root / 'versions' / 'r0', managed_by='pinokio')
+    transaction = {'format': 'astrid-install-update/v1', 'operation_id': 'a' * 32,
+                   'step': 'stopping', 'data_root': str(data), 'old': old.document(),
+                   'realm': {'realm_root': str(data)}, 'transaction_kind': 'migration',
+                   'transaction_context': {'owner': 'local-update'} if route == 'local' else {}}
+    (root / 'update-transaction.json').write_text(json.dumps(transaction))
+    if marker is not None:
+        (root / 'install.json').write_text(json.dumps(marker))
+    before = manifest(tmp_path)
+    calls = []
+    callbacks = dict(stop=lambda *a: calls.append('stop'),
+                     switch_old=lambda *a: calls.append('switch'),
+                     activate_old=lambda *a: calls.append('activate'))
+    with pytest.raises(ValueError, match='installation manager'):
+        if route == 'recover':
+            core.recover_transaction(root, data, SimpleNamespace(), **callbacks)
+        elif route == 'rollback':
+            core.rollback_transaction(root, data, SimpleNamespace(), transaction,
+                                      save=lambda *a, **k: calls.append('save'), **callbacks)
+        elif route == 'installer':
+            core.Installer(root, data, SimpleNamespace())._recover_update()
+        else:
+            local_update._recover(root, SimpleNamespace(), SimpleNamespace(), say=print)
+    assert calls == []
+    assert manifest(tmp_path) == before
+
+
+def test_pinokio_recovery_manager_requires_matching_workspace(tmp_path):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    old = version(root / 'versions' / 'r0', managed_by='pinokio')
+    (root / 'install.json').write_text(json.dumps({'owner': 'haus.astrid.runtime',
+        'managed_by': 'pinokio', 'data_root': str(data)}))
+    core.require_recovery_manager(root, data, {'old': old.document()})
