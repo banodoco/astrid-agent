@@ -13,10 +13,23 @@ import runtime_protocol
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _bootstrap_import_allowed(name):
+    allowed = sys.stdlib_module_names | {"runtime_protocol", "astrid_runtime", "astrid_runtime_client"}
+    return (name.split(".")[0] in allowed or name == "astrid.installer"
+            or name.startswith("astrid.installer."))
+
+
+@pytest.mark.parametrize(("name", "expected"), [
+    ("astrid.installer.core", True), ("astrid.installer", True),
+    ("astrid.installer_extra", False), ("astrid.core", False), ("requests", False),
+])
+def test_bootstrap_import_allowlist(name, expected):
+    assert _bootstrap_import_allowed(name) is expected
+
+
 def test_installer_has_no_lazy_third_party_imports():
     # Include imports inside functions: a dependency introduced only in update,
     # doctor or uninstall must not evade the cold-import check below.
-    allowed = sys.stdlib_module_names | {"runtime_protocol", "astrid_runtime", "astrid_runtime_client"}
     for source in (ROOT / "astrid/installer").glob("*.py"):
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
             names = []
@@ -25,7 +38,7 @@ def test_installer_has_no_lazy_third_party_imports():
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 names = [node.module or ""]
             for name in names:
-                assert name.split(".")[0] in allowed, (source.name, node.lineno, name)
+                assert _bootstrap_import_allowed(name), (source.name, node.lineno, name)
 
 
 @pytest.mark.parametrize("flags", [[], ["--update"], ["--doctor"], ["--uninstall"], ["--uninstall", "--delete-data"]])

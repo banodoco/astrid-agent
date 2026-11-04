@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,18 @@ class _Backend:
 
     def validate_candidate(self, *_args):
         self.calls.append("validate")
+
+    def run(self, argv, *, extra_env, timeout):
+        # The fake versions are not executable; model the read-only inspection.
+        assert argv[1:4] == ["-X", "utf8", "-I"]
+        assert argv[4] == "-c" and "inspect_canonical_schema" in argv[5]
+        assert argv[6:] == [str(self.data / "runtime" / "realms" / "realm-1"), "realm-1"]
+        version = argv[0].parts[-4]
+        assert version in ("old", "candidate")
+        assert extra_env == {"ASTRID_INSTALL_RELEASE": "1" if version == "old" else "2",
+                             "ASTRID_INSTALL_MANAGED_BY": ""}
+        assert timeout == 120
+        return json.dumps({"identity": {"version": 32}, "target": 33})
 
     def publish_launch_admission(self, _version, _data):
         # Model atomic plist replacement. launchd's separately loaded action is

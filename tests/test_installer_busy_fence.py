@@ -70,6 +70,15 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     monkeypatch.setattr(value, 'workspace', lambda *_: {'realm_id': 'selected', 'realm_root': str(realm)})
     monkeypatch.setattr(value, 'verify', Mock(side_effect=VerificationError('restart needed')))
     monkeypatch.setattr(value, 'preflight_remove', lambda *_, **kwargs: None)
+    # This minimal task database exercises C1, not Runtime schema validation.
+    # Keep migration selected while the real busy checks and fence run below.
+    def inspect_fixture_schema(backend, version, selected, *, require_current=True):
+        assert backend is value
+        assert selected == {'realm_id': 'selected', 'realm_root': str(realm)}
+        assert not require_current
+        assert version.root.name in ('old', 'candidate')
+        return {'identity': {'version': 32 if version.root.name == 'old' else 33}, 'target': 33}
+    monkeypatch.setattr('astrid.installer.core.inspect_schema', inspect_fixture_schema)
     (data / 'workspace-sentinel').write_bytes(b'user work')
     return value, old, data, paths, realm, calls
 

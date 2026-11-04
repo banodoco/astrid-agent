@@ -1,4 +1,5 @@
 """Shared installer transactions, including every update failure boundary."""
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -69,6 +70,18 @@ class FakeBackend:
     def validate_candidate(self, version, data, realm):
         # The real backend returns None once the staged package is admitted.
         return None
+
+    def run(self, argv, *, extra_env, timeout):
+        # This transaction double has no SQLite realm or executable Runtime.
+        # Model a migration so the rollback tests still exercise backup/restore.
+        assert argv[0] in (self.old.python, self.candidate.python)
+        assert argv[1:4] == ['-X', 'utf8', '-I']
+        assert argv[4] == '-c' and 'inspect_canonical_schema' in argv[5]
+        assert argv[6:] == [str(self.data / 'realm'), 'same-realm']
+        selected = self.old if argv[0] == self.old.python else self.candidate
+        assert extra_env == selected.env and timeout == 120
+        schema_version = 32 if selected is self.old else 33
+        return json.dumps({'identity': {'version': schema_version}, 'target': 33})
 
     def upgrade(self, version, data):
         self.sentinel.write_text('migrated')
