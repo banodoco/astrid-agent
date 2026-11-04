@@ -615,6 +615,38 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # Readiness captures live below the R0 seed task. Promote only these fixed
+    # names through the service-log allowlist, preserving bounded payloads.
+    readiness_roots = (evidence, evidence / "release0-api-seed" / "release0-task",
+                       evidence / "release1-working-task")
+    readiness_suffixes = (".json", "-service-pack-host.log", "-runtime.log",
+                          "-runtime-service.log", "-generic-host.log")
+    for index, directory in enumerate(readiness_roots):
+        if not directory.is_dir() or directory.is_symlink():
+            continue
+        for observation in windows.PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+            for suffix in readiness_suffixes:
+                source = directory / f"pack-host-readiness-{observation}{suffix}"
+                if source.is_symlink() or not source.is_file():
+                    continue
+                target = destination / f"runtime-service-service-readiness-{index}-{observation}{suffix}.log"
+                try:
+                    if source.stat().st_size <= EVIDENCE_LOG_LIMIT:
+                        shutil.copyfile(source, target)
+                except OSError as exc:
+                    print(f"Journey readiness staging failed: {type(exc).__name__}",
+                          file=sys.stderr, flush=True)
+    if phase == "after-cleanup":
+        prior = destination.parent / "before-cleanup"
+        for source in sorted(prior.glob("runtime-service-service-readiness-*.log")):
+            target = destination / source.name
+            if not target.exists() and source.is_file() and not source.is_symlink():
+                try:
+                    shutil.copyfile(source, target)
+                except OSError as exc:
+                    print(f"Journey readiness carry-forward failed: {type(exc).__name__}",
+                          file=sys.stderr, flush=True)
+
     # Never upload the helper's raw stdout, traceback, request, or selection.
     for action in ("seed", "snapshot"):
         source = evidence / "release0-api-seed" / f"live-{action}-failure.json"
@@ -799,6 +831,10 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                "XDG_CONFIG_HOME": str(home / ".config"),
                "ASTRID_RUNTIME_DATA_ROOT": str(data),
                "ASTRID_CI_PROGRAM_ROOT": str(root), "ASTRID_CI_DATA_ROOT": str(data)}
+    if sys.platform == "win32":
+        native_local = os.environ.get("LOCALAPPDATA")
+        changes[windows.NATIVE_RUNTIME_LOG_DIR_ENV] = (
+            str(Path(native_local) / "Astrid Runtime" / "logs") if native_local else "")
     prior = {key: os.environ.get(key) for key in changes}
     os.environ.update(changes)
     try:
