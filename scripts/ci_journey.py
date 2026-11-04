@@ -1091,17 +1091,23 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
             "foreground_fallback": False, "evidence": str(evidence / "service-manager-prerequisite.log")}
 
 
-def assert_direct_service_ownership(root: Path, data: Path) -> dict:
-    """Prove a direct leg selected a native service, never a foreground fallback."""
+def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0) -> dict:
+    """Prove the selected direct service matches the lifecycle release phase."""
+    if release not in {0, 1}:
+        raise ValueError("Direct service ownership supports only release 0 or release 1")
     selection_path = program_root().parent / "astrid-install.json"
     if selection_path.is_file() and read_json(selection_path).get("foreground"):
         raise RuntimeError("Direct journey selected a forbidden foreground fallback")
     if sys.platform == "linux":
-        unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+        unit_dir = data.parent / "home" / ".config" / "systemd" / "user"
+        unit_name = "astrid-r1.service" if release == 1 else "astrid.service"
+        unit = unit_dir / unit_name
         if not unit.is_file() or unit.is_symlink():
-            raise RuntimeError("Direct journey did not install an owned systemd user unit")
-        completed = subprocess.run(["systemctl", "--user", "show", "astrid.service",
-                                    "--property=LoadState,FragmentPath,ActiveState"], capture_output=True,
+            raise RuntimeError(f"Direct journey did not install the owned {unit_name} unit")
+        properties = "LoadState,FragmentPath,ActiveState,UnitFileState" if release == 1 else (
+            "LoadState,FragmentPath,ActiveState")
+        completed = subprocess.run(["systemctl", "--user", "show", unit_name,
+                                    f"--property={properties}"], capture_output=True,
                                    text=True, timeout=30, check=False)
         fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
         if completed.returncode or fields.get("LoadState") != "loaded" or fields.get("FragmentPath") != str(unit):
@@ -1109,17 +1115,52 @@ def assert_direct_service_ownership(root: Path, data: Path) -> dict:
         if fields.get("ActiveState") != "active":
             state = fields.get("ActiveState", "unknown")
             raise RuntimeError(f"Direct journey systemd user service is inactive (ActiveState={state})")
+        if release == 1:
+            r0_unit = unit_dir / "astrid.service"
+            if not r0_unit.is_file() or r0_unit.is_symlink():
+                raise RuntimeError("Release-1 journey did not retain the owned R0 systemd user unit")
+            old = subprocess.run(["systemctl", "--user", "show", "astrid.service",
+                                  "--property=LoadState,FragmentPath,ActiveState,UnitFileState"],
+                                 capture_output=True, text=True, timeout=30, check=False)
+            old_fields = dict(line.split("=", 1) for line in old.stdout.splitlines() if "=" in line)
+            if (old.returncode or old_fields.get("LoadState") != "loaded"
+                    or old_fields.get("FragmentPath") != str(r0_unit)
+                    or old_fields.get("UnitFileState") != "disabled"
+                    or old_fields.get("ActiveState") not in {"inactive", "failed"}):
+                raise RuntimeError("Release-1 journey R0 service is not owned, disabled and inactive")
+
         return {"manager": "systemd-user", "service_path": str(unit), "foreground_fallback": False}
     if sys.platform == "darwin":
-        plist = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+        label = "haus.astrid.runtime.r1" if release == 1 else "haus.astrid.runtime"
+        plist = data.parent / "home" / "Library" / "LaunchAgents" / f"{label}.plist"
         if not plist.is_file() or plist.is_symlink():
-            raise RuntimeError("Direct journey did not install an owned LaunchAgent")
-        completed = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"],
+            raise RuntimeError(f"Direct journey did not install the owned {label} LaunchAgent")
+        domain = f"gui/{os.getuid()}"
+        completed = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
                                    capture_output=True, text=True, timeout=30, check=False)
-        if completed.returncode:
-            raise RuntimeError("Direct journey LaunchAgent is not loaded in the GUI domain")
+        if completed.returncode or (release == 1 and (
+                f"{domain}/{label} = {{" not in completed.stdout
+                or f"path = {plist}" not in completed.stdout
+                or not re.search(r"(?m)^\s*state = running\s*$", completed.stdout))):
+            raise RuntimeError(f"Direct journey {label} LaunchAgent is not active from its owned plist")
+        if release == 1:
+            r0_plist = plist.with_name("haus.astrid.runtime.plist")
+            if not r0_plist.is_file() or r0_plist.is_symlink():
+                raise RuntimeError("Release-1 journey did not retain the owned R0 LaunchAgent")
+            old_target = f"{domain}/haus.astrid.runtime"
+            old = subprocess.run(["launchctl", "print", old_target], capture_output=True,
+                                 text=True, timeout=30, check=False)
+            disabled = subprocess.run(["launchctl", "print-disabled", domain], capture_output=True,
+                                      text=True, timeout=30, check=False)
+            if (disabled.returncode or old.returncode == 0
+                    or "Could not find service" not in (old.stderr + old.stdout)
+                    or not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true',
+                                     disabled.stdout)):
+                raise RuntimeError("Release-1 journey R0 LaunchAgent is not disabled and unloaded")
         return {"manager": "launchd", "service_path": str(plist), "foreground_fallback": False}
     if sys.platform == "win32":
+        if release != 0:
+            raise RuntimeError("Release-1 direct service ownership is unsupported on Windows")
         existing = windows.powershell(
             "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop; "
             "'present'; $t.Actions | ForEach-Object { $_.Execute }",
@@ -1639,7 +1680,8 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if old_data is not None and data != old_data:
             raise RuntimeError("Installer changed the selected data root")
         if getattr(args, "job_id", None) and args.mode == "direct":
-            result["service_manager"] = assert_direct_service_ownership(root, data)
+            release = 1 if args.leg == "stale-update" and sys.platform in {"linux", "darwin"} else 0
+            result["service_manager"] = assert_direct_service_ownership(root, data, release=release)
         if sys.platform == "win32":
             windows.EVIDENCE = evidence
             windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
@@ -1789,10 +1831,10 @@ def execute(args: argparse.Namespace) -> dict:
                         result_path = evidence / "journey-result.json"
                         try:
                             if (root / "current").is_file():
-                                if keep_going:
-                                    # Never uninstall a service whose current definition is not owned by this run.
-                                    assert_direct_service_ownership(root, data)
                                 _, _, installed = installation(root, data)
+                                if keep_going:
+                                    release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
+                                    assert_direct_service_ownership(root, data, release=release)
                                 installed_cli(installed, ["install", "--uninstall", "--root", str(root),
                                                           "--data-root", str(data)], evidence,
                                               "final-uninstall.log", timeout=1800)

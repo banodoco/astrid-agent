@@ -321,10 +321,11 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
     return json.loads(output)
 
 
-def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict) -> dict:
+def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict,
+                   *, release: int = 0) -> dict:
     """Observe or seed through the selected live owner without releasing it."""
     owner_data = selected_data_root(root, data, allow_r1=False)
-    journey.assert_direct_service_ownership(root, owner_data)
+    journey.assert_direct_service_ownership(root, owner_data, release=release)
     discovery = journey.healthy(data)
     selection = live.selection_for(data, root, discovery)
     # The old offline path imposed this gate; also ensure its second discovery
@@ -360,7 +361,7 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
         live.check_selection(data, root, selection)
         raise
     live.check_selection(data, root, selection)
-    journey.assert_direct_service_ownership(root, owner_data)
+    journey.assert_direct_service_ownership(root, owner_data, release=release)
     return json.loads(output)
 
 
@@ -690,7 +691,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         selected = selected_candidate(manifest, version, old_tuple)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
-        new_service = journey.assert_direct_service_ownership(root, data)
+        new_service = journey.assert_direct_service_ownership(root, data, release=1)
         new_health = journey.healthy(active_data)
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
             raise RuntimeError("Release-1 update retained the release-0 Runtime instance")
@@ -706,7 +707,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, active_data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys)
+        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys,
+                               release=1)
         assert_preserved(before, after)
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         before_sha = semantic_digest({k: before[k] for k in semantic_keys})

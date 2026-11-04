@@ -1211,7 +1211,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
 
-    def ownership(_root, _data):
+    def ownership(_root, _data, **_kwargs):
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
@@ -1242,7 +1242,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         manager_action("stop" if "Stop-ScheduledTask" in code else "start")
         return ""
 
-    def workspace(_root, _data, _evidence, action, request):
+    def workspace(_root, _data, _evidence, action, request, **_kwargs):
         assert state["running"] and not state["local"]
         state["local"] = True
         try:
