@@ -7,6 +7,24 @@ import pytest
 from scripts import journey_version_jumps as jumps
 
 
+@pytest.mark.parametrize(("task_name", "expected"), [
+    (None, "Astrid Runtime"),
+    ("Astrid Runtime R1", "Astrid Runtime R1"),
+])
+def test_windows_start_direct_runtime_uses_selected_task_name(tmp_path, monkeypatch, task_name, expected):
+    calls = []
+    monkeypatch.setattr(jumps.sys, "platform", "win32")
+    monkeypatch.setattr(jumps.journey.windows, "powershell", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    if task_name is None:
+        jumps.start_direct_runtime(tmp_path / "evidence")
+    else:
+        jumps.start_direct_runtime(tmp_path / "evidence", task_name=task_name)
+
+    assert calls == [((f"Start-ScheduledTask -TaskName '{expected}' -TaskPath '\\'",
+                       "start-scheduled-task.log"), {"show": False, "timeout": 30})]
+
+
 def test_release0_fixture_is_the_approved_hashed_input_set():
     root, manifest, receipt = jumps.verified_release0_fixture(jumps.RELEASE0_FIXTURE)
     assert root == jumps.RELEASE0_FIXTURE.resolve()
