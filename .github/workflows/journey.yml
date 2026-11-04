@@ -34,6 +34,11 @@ on:
         required: false
         default: release0-to-release1
         type: string
+      diagnostic_prestop_r0:
+        description: NON-PROOF stop R0 through its native manager before update
+        required: false
+        default: false
+        type: boolean
       diagnostic_keep_going:
         description: NON-PROOF disposable direct keep-going diagnostic
         required: false
@@ -106,6 +111,11 @@ on:
         required: false
         default: release0-to-release1
         type: string
+      diagnostic_prestop_r0:
+        description: NON-PROOF stop R0 through its native manager before update
+        required: false
+        default: false
+        type: boolean
       diagnostic_keep_going:
         description: NON-PROOF disposable direct keep-going diagnostic
         required: false
@@ -275,6 +285,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
+          DIAGNOSTIC_PRESTOP_R0: ${{ inputs.diagnostic_prestop_r0 || false }}
           DIAGNOSTIC_LEG: ${{ inputs.diagnostic_leg || 'release0-to-release1' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
@@ -329,11 +340,13 @@ jobs:
               raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
           if journey_row:
               direct_only = True
-          diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
+          diagnostic_leg = os.environ.get("DIAGNOSTIC_LEG", "release0-to-release1")
           if diagnostic_leg not in {"release0-to-release1", "fresh-install", "both"}:
               raise SystemExit("invalid diagnostic_leg")
-          if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
+          if diagnostic_leg != "release0-to-release1" and os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() != "true":
               raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
+          if os.environ.get("DIAGNOSTIC_PRESTOP_R0", "false").lower() == "true" and (os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() != "true" or diagnostic_leg != "release0-to-release1"):
+              raise SystemExit("diagnostic_prestop_r0 requires keep-going and release0-to-release1")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
           if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
               raise SystemExit("diagnostic_keep_going requires direct_only")
@@ -730,6 +743,7 @@ jobs:
           }
           $keepGoingArgs = @()
           if ('${{ inputs.diagnostic_keep_going }}' -eq 'true') { $keepGoingArgs = @('--diagnostic-keep-going') }
+          if ('${{ inputs.diagnostic_prestop_r0 }}' -eq 'true') { $keepGoingArgs += '--diagnostic-prestop-r0' }
           python -u agent/scripts/ci_journey.py `
             --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg '${{ matrix.leg }}' `
             --candidate "$env:RUNNER_TEMP/candidate.json" `

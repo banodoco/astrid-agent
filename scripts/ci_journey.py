@@ -1624,7 +1624,7 @@ def execute(args: argparse.Namespace) -> dict:
                                      "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
             report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
                                      "first_error": "Unsafe or unavailable preflight", "evidence_path": str(evidence)}
-                                    for name in (keepgoing.FRESH_STAGES if args.leg == "fresh-install" else keepgoing.STAGES))
+                                    for name in keepgoing.stages_for(args))
             keepgoing.write(evidence, report)
         failure_path = evidence / "journey-result.json"
         recorded = read_json(failure_path) if failure_path.is_file() else {
@@ -1672,6 +1672,10 @@ def execute(args: argparse.Namespace) -> dict:
                         result_path = evidence / "journey-result.json"
                         try:
                             if (root / "current").is_file():
+                                if (getattr(args, "diagnostic_prestop_r0", False) and
+                                        not any(row.get("stage") == "release0-prestop" and row.get("result") == "pass"
+                                                for row in locals().get("result", {}).get("stages", []))):
+                                    raise RuntimeError("Diagnostic prestop was not verified; preserve installation and data")
                                 if keep_going:
                                     # Never uninstall a service whose current definition is not owned by this run.
                                     assert_direct_service_ownership(root, data)
@@ -1737,7 +1741,7 @@ def execute(args: argparse.Namespace) -> dict:
             seen = {row["stage"] for row in report["stages"]}
             report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
                                      "first_error": "Unsafe or unavailable harness context", "evidence_path": str(evidence)}
-                                    for name in keepgoing.STAGES if name not in seen)
+                                    for name in keepgoing.stages_for(args) if name not in seen)
             # Preserve any failure diagnostics already written to the result.
             saved_path = evidence / "journey-result.json"
             saved = read_json(saved_path) if saved_path.is_file() else {}
@@ -1988,12 +1992,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retain-for-next-leg", action="store_true",
                         help="keep only this run's installed service for the next named leg")
     parser.add_argument("--diagnostic-keep-going", action="store_true", help="NON-PROOF direct lifecycle diagnostic")
+    parser.add_argument("--diagnostic-prestop-r0", action="store_true",
+                        help="NON-PROOF: stop the installed R0 service before its R1 update")
     parser.add_argument("--diagnostic-start-at", choices=("release0-api-seed",),
                         help="DIAGNOSTIC ONLY: run one retained release-0 stage, never qualification")
     parser.add_argument("--diagnostic-state", type=Path,
                         help="exact run-owned precondition checkpoint for --diagnostic-start-at")
     args = parser.parse_args(argv)
     diagnostic = args.diagnostic_start_at is not None
+    if args.diagnostic_prestop_r0:
+        if diagnostic or args.mode != "direct" or args.leg != "release0-to-release1":
+            parser.error("prestop requires the direct release0-to-release1 journey")
+        args.diagnostic_keep_going = True
     if args.diagnostic_keep_going and (diagnostic or args.mode != "direct" or
             args.leg not in {"release0-to-release1", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
         parser.error("keep-going requires a disposable direct lifecycle matrix job")
