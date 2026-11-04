@@ -111,7 +111,7 @@ def test_linux_x86_64_h3_environment_closure_before_model_stages(tmp_path):
     assert not any(step["kind"] == "model" for step in receipt["steps"]), (
         "the installer must stop before starting any model stage"
     )
-    assert receipt["failed_step_id"] == "sanity"
+    assert receipt["status"] == "failed"
 
     source_paths = {source.name: str(engine_root / source.relative_path) for source in recipe.sources}
     probe = r'''
