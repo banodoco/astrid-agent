@@ -297,6 +297,26 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     return True
 
 
+def _require_inactive_r0_linux(reg, service):
+    output = reg._run(["systemctl", "--user", "show", registration.R0_LINUX,
+                       "--property=LoadState", "--property=ActiveState",
+                       "--property=UnitFileState", "--property=FragmentPath",
+                       "--property=DropInPaths"])
+    pairs = [line.split("=", 1) for line in output.splitlines() if "=" in line]
+    fields = dict(pairs)
+    if (len(fields) != len(pairs) or fields.get("LoadState") != "loaded"
+            or fields.get("FragmentPath") != str(service.path)
+            or fields.get("DropInPaths") != ""
+            or fields.get("ActiveState") not in {"inactive", "failed"}
+            or fields.get("UnitFileState") != "disabled"):
+        raise ValueError("R0 service state or ownership changed; both roots were kept.")
+
+
+def _mac_disabled(output, label):
+    return bool(re.search(r'(?m)^\s*"' + re.escape(label)
+                          + r'"\s*(?:=>|=)\s*(?:true|disabled)\s*$', output))
+
+
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
     """Remove a completed, bound handoff without ever restarting R0.
 
@@ -346,12 +366,7 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
     # Validate both manager entries before making either change. R0 must have
     # remained stopped since adoption; never stop a newly appeared R0 owner.
     if tx.service.system == "linux":
-        r0_stop._validate_manager(tx.service, reg.uid)
-        output = reg._run(["systemctl", "--user", "show", registration.R0_LINUX,
-                           "--property=ActiveState", "--property=UnitFileState"])
-        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
-        if fields.get("ActiveState") not in {"inactive", "failed"} or fields.get("UnitFileState") != "disabled":
-            raise ValueError("R0 service state is uncertain; both roots were kept.")
+        _require_inactive_r0_linux(reg, tx.service)
         if reg._linux_state() is None:
             raise ValueError("R1 service is missing; both roots were kept.")
         reg._run(["systemctl", "--user", "disable", "--now", registration.R1_LINUX])
@@ -363,7 +378,7 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
         if r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None:
             raise ValueError("R0 service unexpectedly loaded; both roots were kept.")
         disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
-        if not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true', disabled):
+        if not _mac_disabled(disabled, registration.R0_MAC):
             raise ValueError("R0 service state is uncertain; both roots were kept.")
         if not reg._mac_state(bound):
             raise ValueError("R1 service is missing; both roots were kept.")
@@ -372,7 +387,7 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
         reg._run(["launchctl", "bootout", target])
         disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
         if (reg._mac_state(bound)
-                or not re.search(r'"haus\.astrid\.runtime\.r1"\s*=>\s*true', disabled)):
+                or not _mac_disabled(disabled, registration.R1_MAC)):
             raise ValueError("R1 stop is uncertain; both roots were kept.")
 
     r1_realm = destination / "runtime/realms" / value["realm_id"]
@@ -390,20 +405,20 @@ def uninstall_complete(backend, data, *, delete_data=False, say=print):
             reg._run(["systemctl", "--user", "daemon-reload"])
         r0_stop._require_no_r1(tx.service)
         if tx.service.system == "linux":
-            r0_stop._validate_manager(tx.service, reg.uid)
-            reg._run(["systemctl", "--user", "disable", "--now", registration.R0_LINUX])
-            output = reg._run(["systemctl", "--user", "show", registration.R0_LINUX,
-                               "--property=ActiveState", "--property=UnitFileState"])
-            fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
-            if fields.get("ActiveState") not in {"inactive", "failed"} or fields.get("UnitFileState") != "disabled":
-                raise ValueError("R0 stop is uncertain; both roots were kept.")
+            _require_inactive_r0_linux(reg, tx.service)
+            reg._run(["systemctl", "--user", "disable", registration.R0_LINUX])
+            _require_inactive_r0_linux(reg, tx.service)
+            if r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]:
+                raise ValueError("R0 service changed; both roots were kept.")
         else:
             if r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None:
                 raise ValueError("R0 service unexpectedly loaded; both roots were kept.")
             reg._run(["launchctl", "disable", f"gui/{reg.uid}/{registration.R0_MAC}"])
             disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
-            if not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true', disabled):
-                raise ValueError("R0 stop is uncertain; both roots were kept.")
+            if (r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None
+                    or not _mac_disabled(disabled, registration.R0_MAC)
+                    or r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]):
+                raise ValueError("R0 service state or ownership changed; both roots were kept.")
         tx.service.path.unlink()
         r0_stop._sync_directory(tx.service.path.parent)
         if tx.service.system == "linux":

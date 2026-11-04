@@ -62,13 +62,17 @@ def case(tmp_path, monkeypatch):
     body = shim.read_text().replace('print("FragmentPath=" + state["unit"])',
         'print("FragmentPath=" + state["unit"])\n'
         '    print("ActiveState=" + ("active" if state["running"] else "inactive"))\n'
-        '    print("UnitFileState=" + ("enabled" if state["enabled"] else "disabled"))')
+        '    print("UnitFileState=" + ("enabled" if state["enabled"] else "disabled"))\n'
+        '    print("LoadState=loaded\\nDropInPaths=" + state.get("r0_dropin", ""))')
     body = body.replace('print("LoadState=loaded\\nActiveState=" + state["r1"])',
         'print("LoadState=loaded\\nActiveState=" + state["r1"])\n'
         f'    print("FragmentPath=" + state.get("r1_fragment", {str(service.path.with_name(registration.R1_LINUX))!r}))\n'
         '    print("DropInPaths=" + state.get("dropins", ""))\n'
         '    print("UnitFileState=" + ("enabled" if state.get("r1_enabled") else "disabled"))')
     body = body.replace('else:\n    raise SystemExit("unexpected manager mutation: " + repr(args))', f'''
+elif args == ["--user", "disable", "astrid.service"]:
+    state["enabled"] = False
+    path.write_text(json.dumps(state))
 elif args == ["--user", "daemon-reload"]:
     exists = Path({str(service.path.with_name(registration.R1_LINUX))!r}).exists()
     if exists and state["r1"] == "absent": state["r1"] = "inactive"
@@ -563,7 +567,7 @@ def test_cli_uninstall_completed_handoff_orders_services_and_preserves_r1(case, 
     run, unlink, remove = c.service.run, Path.unlink, c.backend.remove
     def manager(argv, **options):
         if list(argv) in (["systemctl", "--user", "disable", "--now", registration.R1_LINUX],
-                          ["systemctl", "--user", "disable", "--now", registration.R0_LINUX]):
+                          ["systemctl", "--user", "disable", registration.R0_LINUX]):
             events.append(list(argv)[-1])
         return run(argv, **options)
     def removed(path, *args, **kwargs):
@@ -619,7 +623,7 @@ def test_cli_uninstall_handoff_refuses_uncertain_or_failed_steps(case, monkeypat
     elif problem == 'failed-r0-stop':
         run = c.service.run
         def failing(argv, **options):
-            if list(argv) == ['systemctl', '--user', 'disable', '--now', registration.R0_LINUX]:
+            if list(argv) == ['systemctl', '--user', 'disable', registration.R0_LINUX]:
                 raise subprocess.CalledProcessError(1, argv)
             return run(argv, **options)
         monkeypatch.setattr(c.service, 'run', failing)
@@ -667,3 +671,104 @@ def test_uninstall_rechecks_realm_at_file_removal(case, monkeypatch):
     assert cli.main(['--root', str(c.root), '--uninstall', '--delete-data']) == 1
     assert (foreign / 'keep').read_text() == 'user data'
     assert c.root.exists() and c.data.exists() and c.destination.exists()
+
+
+@pytest.mark.parametrize("appearance", ["before-disable", "after-disable", "drop-in"])
+def test_uninstall_refuses_new_r0_owner_without_signalling_process(case, monkeypatch, appearance):
+    c = case
+    prepare_uninstall(c, monkeypatch)
+    before = snapshot(c.data), snapshot(c.destination)
+    # The manager is a persistent subprocess; a stopping disable simulates
+    # systemd signalling the current label owner, even if it is unrelated.
+    shim = c.root.parent / "commands/systemctl"
+    source = shim.read_text().replace(
+        '    state.update(enabled=False, running=False)',
+        '    if state.get("foreign_pid"): os.kill(state["foreign_pid"], signal.SIGTERM)\n'
+        '    state.update(enabled=False, running=False)', 1)
+    shim.write_text(source)
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    state(c.manager, foreign_pid=child.pid, calls=[])
+    run = c.service.run
+    appeared = []
+    def manager(argv, **options):
+        result = run(argv, **options)
+        if not appeared and ((appearance != 'after-disable' and argv == ['systemctl', '--user', 'daemon-reload'])
+                             or (appearance == 'after-disable' and argv == ['systemctl', '--user', 'disable', registration.R0_LINUX])):
+            changes = {'r0_dropin': '/foreign/override.conf'} if appearance == 'drop-in' else {'running': True}
+            state(c.manager, **changes)
+            appeared.append(True)
+        return result
+    monkeypatch.setattr(c.service, 'run', manager)
+    try:
+        assert cli.main(['--root', str(c.root), '--uninstall', '--delete-data']) == 1
+        assert appeared and child.poll() is None
+        assert ['--user', 'disable', '--now', registration.R0_LINUX] not in state(c.manager)['calls']
+        assert (snapshot(c.data), snapshot(c.destination)) == before
+        assert c.root.exists() and c.service.path.exists() and c.tx.journal.exists()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def mac_ready(c, monkeypatch):
+    import plistlib
+    from astrid.installer.service import Service
+    from tests.test_installer_r0_stop import FIXTURES
+    old_service = c.service
+    svc = Service(c.root, c.backend.log, None, home=old_service.home, system='darwin')
+    write_json(svc.selection, read_json(old_service.selection))
+    svc.path.parent.mkdir(parents=True)
+    plist = plistlib.loads((FIXTURES / 'macos.txt').read_bytes())
+    plist['ProgramArguments'] = [x.replace('/Users/runner/work/_temp/astrid-r1-direct-macos/program', str(c.root)) for x in plist['ProgramArguments']]
+    svc.path.write_bytes(plistlib.dumps(plist))
+    manager = {'r0_loaded': True, 'r0_enabled': True, 'r1_loaded': False, 'r1_enabled': False, 'separator': '=>', 'disabled_value': 'true', 'calls': []}
+    def run(argv, **kw):
+        argv = list(map(str, argv))
+        manager['calls'].append(argv)
+        action, target = argv[1:3]
+        is_r1 = target.endswith(registration.R1_MAC)
+        which = 'r1' if is_r1 else 'r0'
+        if action == 'print':
+            if not manager[which + '_loaded']:
+                raise subprocess.CalledProcessError(113, argv, output='Could not find service "' + target.rsplit('/', 1)[-1] + '"')
+            path = svc.path.with_name(registration.R1_MAC + '.plist') if is_r1 else svc.path
+            args = plistlib.loads(path.read_bytes())['ProgramArguments']
+            body = ''.join('\t\t' + arg + '\n' for arg in args)
+            return f'{target} = {{\n\tpath = {path}\n\targuments = {{\n{body}\t}}\n}}\n'
+        if action == 'print-disabled':
+            return 'disabled services = {\n' + ''.join(f'\t"{label}" {manager["separator"]} {(manager["disabled_value"] if not manager[key + "_enabled"] else "false")}\n' for key, label in [('r0', registration.R0_MAC), ('r1', registration.R1_MAC)]) + '}\n'
+        if action in ('enable', 'disable'):
+            manager[which + '_enabled'] = action == 'enable'
+        elif action == 'bootout':
+            manager[which + '_loaded'] = False
+        elif action == 'bootstrap':
+            manager['r1_loaded'] = True
+        else:
+            raise AssertionError(argv)
+        return ''
+    svc.run = run
+    c.service = c.backend.service = svc
+    c.tx = handoff.BoundaryHandoff(c.backend)
+    monkeypatch.setattr(c.backend, 'verify', lambda *a, **kw: None)
+    upgrade(c)
+    r1_work(c)
+    monkeypatch.setattr(c.backend, 'preflight_stop', lambda *a, **kw: None)
+    c.backend.managed_by = None
+    manager['calls'].clear()
+    return manager
+
+
+@pytest.mark.parametrize('separator, disabled_value', [('=>', 'disabled'), ('=>', 'true'), ('=', 'true')])
+def test_mac_uninstall_with_disabled_output(case, monkeypatch, separator, disabled_value):
+    c = case
+    manager = mac_ready(c, monkeypatch)
+    manager['separator'] = separator
+    manager['disabled_value'] = disabled_value
+    before = snapshot(c.data), snapshot(c.destination)
+    handoff.uninstall_complete(c.backend, c.data)
+    assert not c.root.exists()
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+    assert not manager['r0_loaded'] and not manager['r1_loaded']
+    assert not manager['r0_enabled'] and not manager['r1_enabled']
+    actions = [cmd[1] for cmd in manager['calls'] if cmd[1] not in ('print', 'print-disabled')]
+    assert actions == ['disable', 'bootout', 'disable']
