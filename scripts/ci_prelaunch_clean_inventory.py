@@ -147,7 +147,15 @@ def main():
     for label, parent in (("cache", home / ".astrid-mac-bundle-cache"), ("checkout", home / "actions-runner/_work/astrid-agent"), ("prelaunch_audits", home / ".astrid-prelaunch-clean-audits"), ("r1fix_audits", home / ".astrid-r1fix-clean-audits")):
         if parent.is_dir() and not parent.is_symlink() and parent.stat().st_uid==UID:
             children[label] = {p.name: measure(p) for p in sorted(parent.iterdir())}
-    result = {"children": children, "schema": "prelaunch-clean-inventory/v1", "uid": UID, "runner": "hannah-mac",
+    checkout=home / "actions-runner/_work/astrid-agent/astrid-agent"
+    checkout_identity={}
+    if checkout.is_dir() and not checkout.is_symlink() and checkout.stat().st_uid==UID:
+        env={"PATH":"/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM":"1", "GIT_CONFIG_GLOBAL":"/dev/null", "GIT_CONFIG_SYSTEM":"/dev/null", "GIT_NO_REPLACE_OBJECTS":"1"}
+        def git(*args): return subprocess.run(["/usr/bin/git","-C",str(checkout),"-c","core.hooksPath=/dev/null",*args],env=env,capture_output=True,text=True,timeout=30,check=True).stdout.strip()
+        try:
+            checkout_identity={"head":git("rev-parse","HEAD"), "origin_expected":git("config","--get","remote.origin.url") in ("https://github.com/banodoco/astrid-agent", "https://github.com/banodoco/astrid-agent.git"), "dirty":bool(git("status","--porcelain","--untracked-files=all"))}
+        except Exception: checkout_identity={"status":"unverified"}
+    result = {"checkout_identity": checkout_identity, "children": children, "schema": "prelaunch-clean-inventory/v1", "uid": UID, "runner": "hannah-mac",
               "read_only": True, "paths": inventory, "task_processes": task_processes(),
               "notes": ["Sizes are logical bytes, deduplicated per path; symlinks, mount points and foreign-owned directories are not followed.",
                         "A truncated or inaccessible count is incomplete; process observations are a point-in-time sample."]}
