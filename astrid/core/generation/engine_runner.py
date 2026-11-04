@@ -620,8 +620,14 @@ class _Runner:
         self.helper("install-locks", environment=name)
         support = self.path(".astrid-engine/environments", name, "support.lock")
         wheels = self.path(".astrid-engine/environments", name, "wheels.lock")
-        self.run((uv, "--no-config", "pip", "sync", "--python", python,
-                  "--index-url", "https://pypi.org/simple", "--require-hashes", support))
+        sync = (uv, "--no-config", "pip", "sync", "--python", python,
+                "--index-url", "https://pypi.org/simple", "--require-hashes")
+        if (self.recipe.engine == "vibecomfy-h3" and self.recipe.platform == "linux-x86_64-cu130"
+                and environment.requirements.mode == "packaged"):
+            sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper",
+                     "--no-binary", "argbind", "--no-binary", "randomname",
+                     "--build-constraints", support)
+        self.run((*sync, support))
         for install in environment.source_installs:
             cwd = self.path(next(s.relative_path for s in self.recipe.sources if s.name == install.source))
             argv = tuple(a.format_map(self.placeholder_values(environment)) for a in install.argv)

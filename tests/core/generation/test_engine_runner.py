@@ -2077,7 +2077,7 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
 
 
 LINUX_LOCK_PATH = "packs/runpod/requirements.linux-cu130.lock"
-LINUX_LOCK_SHA256 = "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+LINUX_LOCK_SHA256 = "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36a1f99"
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
@@ -2091,14 +2091,16 @@ def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
     assert hashlib.sha256(path.read_bytes()).hexdigest() == LINUX_LOCK_SHA256
     entries = target._entries(path.read_text(encoding="utf-8"))
     by_name = {re.match(r"[A-Za-z0-9._-]+", row[0])[0].lower(): row for row in entries}
-    assert len(by_name) == len(entries) == 114
+    assert len(by_name) == len(entries) == 182
     for wheel in recipe.environments[0].final_wheels:
         requirement, hashes, _ = by_name[wheel.name]
         assert requirement == f"{wheel.name} @ {wheel.url}"
         assert hashes == [wheel.sha256]
-    for pin in ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python-headless==5.0.0.93", "pip==25.2"):
+    for pin in ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python==5.0.0.93"):
         name, version = pin.split("==")
         assert by_name[name][0] == pin
+    # pip is not declared by the canonical source inputs for this closure.
+    assert "pip" not in by_name
     # The reviewed index digest binds the exact recipe bytes that name this lock.
     entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("vibecomfy-h3", PLATFORM))
     assert hashlib.sha256((Path(recipes._ROOT) / entry.recipe.path).read_bytes()).hexdigest() == entry.recipe.sha256
@@ -2132,7 +2134,7 @@ def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path
     support = (directory / "support.lock").read_text()
     wheels = (directory / "wheels.lock").read_text()
     assert "torch @" not in support and "torchvision @" not in support and "torchaudio @" not in support
-    assert "comfy-kitchen==0.2.34" in support and "opencv-python-headless==5.0.0.93" in support
+    assert "comfy-kitchen==0.2.34" in support and "opencv-python==5.0.0.93" in support
     assert all(w.sha256 in wheels and w.url in wheels for w in recipe.environments[0].final_wheels)
     # An altered shipped lock is refused rather than re-resolved.
     (directory / "requirements.lock").write_bytes(shipped + b"# tamper\n")
@@ -2147,6 +2149,85 @@ def test_runner_installs_packaged_linux_lock_with_no_compile_step(setup):
     assert not any("compile" in command for command in commands)
     assert any("commit-lock" in command for command in commands)
     assert result.requirements_locks == {"comfy": "b" * 64}
+
+
+def test_h3_packaged_sync_allows_only_three_source_builds_and_uses_support_lock(setup, tmp_path):
+    result = install(setup)
+    assert result.status == "installed"
+    commands = [event[1] for event in setup[1].events if event[0] == "argv"]
+    support = ROOT + "/.astrid-engine/environments/comfy/support.lock"
+    sync = next(command for command in commands if command[:4] == (
+        ROOT + "/runtime/bootstrap/bin/uv", "--no-config", "pip", "sync"))
+    assert sync == (
+        ROOT + "/runtime/bootstrap/bin/uv", "--no-config", "pip", "sync",
+        "--python", ROOT + "/runtime/venv/bin/python",
+        "--index-url", "https://pypi.org/simple", "--require-hashes",
+        "--only-binary", ":all:", "--no-binary", "openai-whisper",
+        "--no-binary", "argbind", "--no-binary", "randomname",
+        "--build-constraints", support, support)
+    recipe = setup[1].recipe
+    assert (recipe.engine, recipe.platform, recipe.environments[0].requirements.mode) == (
+        "vibecomfy-h3", PLATFORM, "packaged")
+    sync_index = commands.index(sync)
+    check = next(i for i, command in enumerate(commands) if "check" in command)
+    source_installs = [i for i, command in enumerate(commands)
+                       if "--no-deps" in command and "--no-build-isolation" in command]
+    final_wheels = next(i for i, command in enumerate(commands)
+                        if "-r" in command and command[command.index("-r") + 1].endswith("/wheels.lock"))
+    assert sync_index < check
+    assert all(sync_index < i < final_wheels < check for i in source_installs)
+    assert sync_index < final_wheels < check
+
+    payload = _helper_payload(tmp_path, recipe, environment="comfy")
+    target.dispatch("lock-inputs", payload)
+    target.dispatch("commit-lock", payload)
+    target.dispatch("install-locks", payload)
+    support_rows = (tmp_path / ".astrid-engine/environments/comfy/support.lock").read_text().splitlines()
+    expected_sources = {
+        "openai-whisper": "https://files.pythonhosted.org/packages/35/8e/d36f8880bcf18ec026a55807d02fe4c7357da9f25aebd92f85178000c0dc/openai_whisper-20250625.tar.gz#sha256=37a91a3921809d9f44748ffc73c0a55c9f366c85a3ef5c2ae0cc09540432eb96",
+        "argbind": "https://files.pythonhosted.org/packages/8e/25/4422cf7777c0cedd2fbcbdf8face786be76186e6d2e7b66f5f37e266b604/argbind-0.3.9.tar.gz#sha256=1b159c04af56858a91d59c7a47bc9ea39d96adfce1d7fcfa38050d7ac9815745",
+        "randomname": "https://files.pythonhosted.org/packages/e8/c2/525e9e9b458c3ca493d9bd0871f3ed9b51446d26fe82d462494de188f848/randomname-0.2.1.tar.gz#sha256=b79b98302ba4479164b0a4f87995b7bebbd1d91012aeda483341e3e58ace520e",
+    }
+    for expected_name, expected_artifact in expected_sources.items():
+        expected_url, digest = expected_artifact.split("#sha256=", 1)
+        expected_hash = "--hash=sha256:" + digest
+        assert any(row.startswith(expected_name + " @ " + expected_url)
+                   and expected_hash in row for row in support_rows)
+    setuptools_url = (
+        "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/"
+        "setuptools-84.0.0-py3-none-any.whl#sha256=51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+    )
+    setuptools_hash = "--hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+    assert any(setuptools_url in row and setuptools_hash in row for row in support_rows)
+
+
+@pytest.mark.parametrize("change", ["engine", "platform", "mode"])
+def test_three_source_build_policy_does_not_leak_to_other_syncs(setup, monkeypatch, change):
+    _plan, context, adapter, deadline = setup
+    recipe = context.recipe
+    if change == "engine":
+        recipe = replace(recipe, engine="other-engine")
+    elif change == "platform":
+        recipe = replace(recipe, platform="linux-x86_64-cu128")
+        context.platform = recipe.platform
+        adapter.key = recipe.platform
+    else:
+        recipe = replace(recipe, environments=(replace(
+            recipe.environments[0], requirements=replace(
+                recipe.environments[0].requirements, mode="resolve-once")),))
+    monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
+    monkeypatch.setattr(runner, "helper_manifest", lambda _recipe: {})
+    context.recipe = recipe
+    plan = runner.plan_install(recipe, root=ROOT, placement="local")
+    runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
+    commands = [event[1] for event in context.events if event[0] == "argv"]
+    sync = next(command for command in commands if command[:4] == (
+        ROOT + "/runtime/bootstrap/bin/uv", "--no-config", "pip", "sync"))
+    support = ROOT + "/.astrid-engine/environments/comfy/support.lock"
+    assert sync == (
+        ROOT + "/runtime/bootstrap/bin/uv", "--no-config", "pip", "sync",
+        "--python", ROOT + "/runtime/venv/bin/python",
+        "--index-url", "https://pypi.org/simple", "--require-hashes", support)
 
 
 def test_health_timeout_is_bounded_by_recipe_and_caller_deadline(setup):
