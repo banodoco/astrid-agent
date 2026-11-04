@@ -714,6 +714,7 @@ jobs:
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
+            'windows-schema-acl-before-install.json', 'windows-schema-acl-after-install.json',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-selection-context.json', 'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
@@ -748,6 +749,16 @@ jobs:
             throw "Named journey artifact estimate is $estimatedArtifactBytes bytes; limit is below $maxArtifactBytes bytes"
           }
           Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
+      - name: Retain Windows schema ACL observer evidence
+        if: always() && matrix.job_id == 'direct-windows' && matrix.leg == 'fresh-install'
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-schema-acl-${{ matrix.job_id }}
+          path: |
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/fresh-install/windows-schema-acl-before-install.json
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/fresh-install/windows-schema-acl-after-install.json
+          if-no-files-found: warn
       - name: Retain only the named lifecycle evidence after a lifecycle failure
         if: always() && steps.evidence_boundary.outcome == 'success'
         uses: actions/upload-artifact@v4

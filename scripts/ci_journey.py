@@ -27,6 +27,7 @@ from pathlib import Path
 
 if __package__:
     from . import ci_windows_journey as windows
+    from . import windows_schema_acl_observer
     from .journey_matrix import (
         M4_4A_OLD_LAUNCHER_REF,
         M4_4A_OLD_UPDATE_SHA256,
@@ -37,6 +38,7 @@ if __package__:
     )
 else:
     import ci_windows_journey as windows
+    import windows_schema_acl_observer
     from journey_matrix import (
         M4_4A_OLD_LAUNCHER_REF,
         M4_4A_OLD_UPDATE_SHA256,
@@ -64,6 +66,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
+    "windows-schema-acl-before-install.json", "windows-schema-acl-after-install.json",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
@@ -1543,8 +1546,16 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if args.leg == "reinstall":
             installed_cli(old, ["install", "--uninstall", "--root", str(root),
                                 "--data-root", str(data)], evidence, "uninstall.log", timeout=1800)
-        bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
-                  evidence, root, data)
+        observe_schema = (sys.platform == "win32" and getattr(args, "job_id", None) == "direct-windows"
+                          and args.leg == "fresh-install" and args.mode == "direct")
+        if observe_schema:
+            windows_schema_acl_observer.observe(root, evidence, "before-install")
+        try:
+            bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
+                      evidence, root, data)
+        finally:
+            if observe_schema:
+                windows_schema_acl_observer.observe(root, evidence, "after-install")
         after_sentinel = sentinel_observation(sentinel, birth)
         result["sentinel"]["after_lifecycle"] = after_sentinel
         if not after_sentinel["alive"]:
