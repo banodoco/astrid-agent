@@ -500,6 +500,35 @@ def test_rerun_preserves_marker_and_does_not_restart_r0_with_r1(tmp_path, monkey
     assert (snapshot(root), snapshot(data)) == before
 
 
+@pytest.mark.parametrize("r1", ["absent", "active", "inactive", "unknown"])
+def test_interrupted_registration_refuses_without_losing_roots(tmp_path, monkeypatch, r1):
+    root, data, realm, service, manager = public_case(tmp_path, monkeypatch)
+    backend = Backend(root, service.home / "log", Path(sys.executable))
+    r0_stop.stop_r0_and_wait(backend.service, realm, data_root=data)
+    # A definition may be incomplete or complete when the installer dies.
+    # Its existence is not evidence that the manager did or did not start it.
+    unit = service.path.with_name(r0_stop.R1_UNIT)
+    unit.write_text("[Unit]\nDescription=interrupted registration\n")
+    destination = Path(str(data) + "-r1")
+    destination.mkdir()
+    (destination / "retained-data").write_text("keep")
+    before = snapshot(root), snapshot(data), snapshot(destination), unit.read_bytes()
+    state(manager, r1=r1, calls=[])
+    result = invoke(root)
+    assert result.returncode == 1
+    if r1 == "absent":
+        assert "Recovered the interrupted R0 stop" in result.stdout
+        assert state(manager)["enabled"] and state(manager)["running"]
+        assert not r0_stop._marker_path(service).exists()
+        retry = invoke(root)
+        assert retry.returncode == 1 and "R1 handoff is already present" in retry.stdout
+    else:
+        assert not state(manager)["enabled"]
+        assert r0_stop._marker_path(service).exists()
+        assert not any("enable" in call for call in state(manager)["calls"])
+    assert (snapshot(root), snapshot(data), snapshot(destination), unit.read_bytes()) == before
+
+
 def test_public_cli_collision_refuses_before_stop(tmp_path, monkeypatch):
     root, data, _, _, manager = public_case(tmp_path, monkeypatch)
     destination = Path(str(data) + "-r1")

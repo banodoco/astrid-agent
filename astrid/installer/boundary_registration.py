@@ -58,7 +58,7 @@ class BoundaryRegistration:
 
     ``run`` accepts argv and returns stdout. ``wait_r1_unlocked`` must raise
     unless the R1 owner lock is free after the service has been stopped. The
-    rollback validator must bind the manager entry to the retained R0 intent.
+    rollback validators must bind both manager entries to their retained intent.
     """
 
     def __init__(self, root: Path, home: Path, system: str, run, *, uid: str = "",
@@ -141,11 +141,13 @@ class BoundaryRegistration:
                             f"Register-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' -Xml ([IO.File]::ReadAllText({_ps(str(self.r1_path))})) | Out-Null; "
                             f"Start-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
 
-    def rollback(self, wait_r1_unlocked, validate_r0) -> None:
-        """Disable R1, confirm its lock free, then re-enable the intact R0 entry."""
-        if not callable(wait_r1_unlocked) or not callable(validate_r0):
-            raise ValueError("R1 owner-lock wait and R0 service validation are required")
-        validate_r0()
+    def rollback(self, wait_r1_unlocked, validate_r0, validate_r1) -> None:
+        """Validate and disable R1, wait for its lock, then validate and enable R0."""
+        if not all(callable(fn) for fn in (wait_r1_unlocked, validate_r0, validate_r1)):
+            raise ValueError("R1 and R0 service validation and R1 owner-lock wait are required")
+        # Never disable an unrelated manager entry just because it uses our
+        # label. The caller must bind the loaded entry to durable R1 intent.
+        validate_r1()
         if self.system == "linux":
             self.run(["systemctl", "--user", "disable", "--now", R1_LINUX])
         elif self.system == "darwin":
@@ -154,7 +156,8 @@ class BoundaryRegistration:
         else:
             self.powershell(f"Disable-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' | Out-Null; Stop-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
         wait_r1_unlocked()
-        # Revalidate the bound R0 entry immediately before enabling it.
+        # A changed R0 entry must not prevent us from stopping R1. Validate it
+        # only after R1 is disabled and unlocked, immediately before enabling.
         validate_r0()
         if self.system == "linux":
             self.run(["systemctl", "--user", "enable", "--now", R0_LINUX])
