@@ -243,44 +243,63 @@ def main():
     home=Path(pwd.getpwuid(UID).pw_dir); base=home/'.astrid-r1fix-stopped'; safe_private_dir(base)
     temp=Path(os.environ['RUNNER_TEMP'])
     if temp!=home/'actions-runner/_work/_temp' or temp.resolve()!=temp or temp.stat().st_uid!=UID: raise RuntimeError('Unexpected temp')
-    output=temp/'ws05-cancel-audit'; output.mkdir(mode=0o700)
-    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('WS05_CANCEL_UPLOAD='+str(output)+'\n')
-    audit={'status':'checking','target':'cancelled-task','before':shutil.disk_usage(home).free}
-    path=output/'audit.json'
+    phase=os.environ.get('WS06_PHASE','')
+    if phase not in {'capture','cleanup'}: raise RuntimeError('Unexpected phase')
+    output=temp/'ws06-clean-audit'; output.mkdir(mode=0o700,exist_ok=(phase=='cleanup')); safe_private_dir(output)
+    with open(os.environ['GITHUB_ENV'],'a') as f: f.write('WS06_CLEAN_UPLOAD='+str(output)+'\n')
+    audit={'status':'checking','target':'ws06-task','before':shutil.disk_usage(home).free}; path=output/'audit.json'
     def save(): checkpoint(path,audit)
     save()
-    target=base/'task.tjj7y4z8'; identity=target_identity(target,base)
+    target=base/'task.mgm16apc'; identity=target_identity(target,base)
     if identity is None: raise RuntimeError('Expected task absent')
     script=target/'diagnostic.py'
-    if script.is_symlink() or not script.is_file() or script.stat().st_uid!=UID or hashlib.sha256(script.read_bytes()).hexdigest()!='51e4a54db34755eb60088d9a320eafa9c5cf8f2dcbd50470c9f5ae1c98e08b1e': raise RuntimeError('Task provenance differs')
-    state=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
-    missing='Could not find service "haus.astrid.runtime" in domain for user gui: 503'
-    if state.returncode!=113 or state.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Service absence unverified')
+    if script.is_symlink() or not script.is_file() or script.stat().st_uid!=UID or hashlib.sha256(script.read_bytes()).hexdigest()!='80a78e41dfb878da5232185494be86827378bafb2f414db41bd04a399648c01d': raise RuntimeError('Task provenance differs')
+    for label in ('haus.astrid.runtime','haus.astrid.runtime.r1'):
+        state=subprocess.run(['/bin/launchctl','print','gui/503/'+label],capture_output=True,text=True,timeout=20)
+        missing=f'Could not find service "{label}" in domain for user gui: 503'
+        if state.returncode!=113 or state.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Service absence unverified')
     if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Task busy or not verified')
-    processes=subprocess.run(['/bin/ps','-ww','-u',str(UID),'-o','command='],capture_output=True,text=True,timeout=20,check=True).stdout
-    if any('-m runtime_protocol start' in row or ('from astrid_runtime.cli import main' in row and 'run' in row) for row in processes.splitlines()): raise RuntimeError('Runner Runtime owner present')
-    disabled=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
-    if 'disabled services' not in disabled.stdout: raise RuntimeError('Disabled state unverified')
-    found=re.search(r'(?m)^\s*"haus\.astrid\.runtime"\s*=>\s*(\w+)\s*$',disabled.stdout)
-    label=found.group(1) if found else 'not-listed'; audit['label_before']=label; save()
-    if label in {'disabled','true'}:
-        log=target/'private-logs/capture-private.log'
-        if log.is_symlink() or not log.is_file() or log.stat().st_uid!=UID or log.stat().st_size>5000000: raise RuntimeError('Disable provenance log unavailable')
-        data=log.read_bytes()
-        if b'STAGE launchagent-disable pass' not in data and b'STAGE r1-launchagent-disable pass' not in data: raise RuntimeError('No proof this task disabled the label')
-        audit['disable_provenance']='task stage log'; save()
-        subprocess.run(['/bin/launchctl','enable','gui/503/haus.astrid.runtime'],check=True,timeout=30)
-        audit['label_recovery']='enabled'; save()
-    elif label not in {'enabled','false','not-listed'}: raise RuntimeError('Unknown disabled state')
-    check=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
-    if 'disabled services' not in check.stdout: raise RuntimeError('Restored state unverified')
-    m=re.search(r'(?m)^\s*"haus\.astrid\.runtime"\s*=>\s*(\w+)\s*$',check.stdout)
-    final=m.group(1) if m else 'not-listed'
-    if final not in {'enabled','false','not-listed'}: raise RuntimeError('Label remains disabled')
-    audit['label_after']=final
-    result=target/'evidence/result.json'
-    if result.is_file() and not result.is_symlink() and result.stat().st_uid==UID:
-        value=json.loads(result.read_text()); audit['task_result']={'outcome':value.get('outcome'),'stages':value.get('stages'),'cleanup':value.get('cleanup')}
+    def guard_path(path, require_dir=False):
+        if not path.is_relative_to(target): raise RuntimeError('Evidence path outside task')
+        current=target; device=target.stat().st_dev
+        for part in path.relative_to(target).parts:
+            current=current/part; st=current.lstat()
+            if stat.S_ISLNK(st.st_mode) or st.st_uid!=UID or st.st_dev!=device: raise RuntimeError('Evidence path ownership or boundary unsafe')
+        if path.resolve(strict=True)!=path: raise RuntimeError('Evidence path aliases another path')
+        if require_dir and not path.is_dir(): raise RuntimeError('Evidence directory unavailable')
+    data=target/'run/data'; realms=data/'runtime/realms'
+    guard_path(realms,require_dir=True)
+    found=[p for p in realms.iterdir() if p.is_dir() and not p.is_symlink()]
+    if len(found)!=1: raise RuntimeError('Task realm identity ambiguous')
+    realm=found[0]; guard_path(realm,require_dir=True); target_realm=target/'run/data-r1/runtime/realms'/realm.name
+    def cas(root):
+        root=root/'cas/sha256'; items={}
+        if not root.exists() and not root.is_symlink(): return None
+        guard_path(root,require_dir=True)
+        for f in root.rglob('*'):
+            if f.is_symlink(): raise RuntimeError('CAS symlink')
+            if f.is_file():
+                guard_path(f)
+                h=hashlib.sha256()
+                with f.open('rb') as src:
+                    for chunk in iter(lambda:src.read(1024*1024),b''): h.update(chunk)
+                items[f.relative_to(root).as_posix()]=h.hexdigest()
+                if len(items)>1000: raise RuntimeError('CAS count exceeds bound')
+        return items
+    if target_realm.exists() or target_realm.is_symlink(): guard_path(target_realm,require_dir=True); after=cas(target_realm)
+    else: after=None
+    before=cas(realm)
+    audit['cas']={'source':before,'target':after,'identical':before==after if after is not None else None}
+    receipt=target/'run/data-r1/adopt-receipt.r1.json'
+    audit['receipt_captured']=False
+    if receipt.exists() or receipt.is_symlink():
+        guard_path(receipt)
+        if not receipt.is_file() or receipt.stat().st_size>=1000000: raise RuntimeError('Receipt unsafe')
+        raw=receipt.read_bytes(); text=raw.decode('utf-8','replace').replace(str(target),'<TASK>').replace(str(home),'<RUNNER_HOME>')
+        text=re.sub(r'(?i)(["\'](?:token|api[_-]?key|secret|password)["\']\s*:\s*["\'])[^"\']*',r'\1<REDACTED>',text)
+        (output/'adopt-receipt.sanitized.json').write_text(text); audit['receipt_source_sha256']=hashlib.sha256(raw).hexdigest(); audit['receipt_captured']=True
+    if phase=='capture':
+        audit['status']='evidence-captured'; save(); print(json.dumps(audit)); return
     first=scan_tree(target,identity,'source-only'); audit['tree']=first; save()
     if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Task became busy')
     if scan_tree(target,identity,'source-only')['tree_sha256']!=first['tree_sha256']: raise RuntimeError('Task changed during verification')
@@ -291,8 +310,7 @@ def main():
         if (st.st_dev,st.st_ino,st.st_uid)!=identity: raise RuntimeError('Task identity changed')
         audit['status']='removal-started'; save(); shutil.rmtree(target.name,dir_fd=fd); os.fsync(fd)
     finally: os.close(fd)
-    audit['status']='complete'; audit['after']=shutil.disk_usage(home).free; save()
-    print(json.dumps(audit))
+    audit['status']='complete'; audit['after']=shutil.disk_usage(home).free; save(); print(json.dumps(audit))
 
 if __name__=='__main__':
     try: main()
