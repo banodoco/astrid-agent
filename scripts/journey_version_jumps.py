@@ -443,10 +443,23 @@ def start_direct_runtime(evidence: Path) -> None:
 
 
 def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
-                     action: str, request: dict) -> dict:
+                     action: str, request: dict, *, release0_version_path: Path | None = None) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
+    def assert_runtime(phase: str) -> None:
+        if sys.platform != "win32" or release0_version_path is None:
+            journey.assert_one_runtime(data)
+            return
+        # Only the authenticated R0 leg opts in. Rebind to the live selection
+        # before each fresh census, including after the service has restarted.
+        selected_path, selected_data, selected_version = journey.installation(root, data)
+        if (selected_path != release0_version_path or selected_data != data
+                or selected_version != version or installed_release(selected_version) != 0):
+            raise RuntimeError("Workspace R0 owner check does not match the selected release-0 version")
+        journey.assert_release0_runtime(
+            data, selected_path, evidence / "runtime-owner-workspace" / f"{action}-{phase}")
+
     service = journey.assert_direct_service_ownership(root, data)
-    journey.assert_one_runtime(data)
+    assert_runtime("before")
     # Shutdown can remove discovery.json, so resolve and validate its realm while live.
     realm = journey.workspace_root(data)
     evidence.mkdir(parents=True, exist_ok=True)
@@ -484,7 +497,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)
         journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        assert_runtime("after")
 
 
 def installed_release(version: dict) -> int:
@@ -578,9 +591,11 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("observe", old_path, data, baseline)
         project = "tst-m4-3b-release0"
         keys = direct_workspace(root, old, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+            "project": project, "generation": "release0", "task_id": None, "create_project": True},
+            release0_version_path=old_path)
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = direct_workspace(root, old, data, baseline, "snapshot", keys)
+        before = direct_workspace(root, old, data, baseline, "snapshot", keys,
+                                  release0_version_path=old_path)
         # The helper temporarily stops the service, so identify the actual R0
         # owner that the update must replace after the last offline observation.
         old_health = journey.healthy(data)
