@@ -95,3 +95,15 @@ def test_direct_workspace_rejects_bad_selection_before_service_action(case, monk
     with pytest.raises(RuntimeError):
         jumps.direct_workspace(root, {}, r0, root.parent / 'evidence', 'seed', {})
     assert actions == []
+
+
+def test_live_selection_requires_original_owned_data_directory(case):
+    root, r0, r1, version, marker = case
+    other = r0.parent / 'other'
+    (other / 'runtime/realms/realm').mkdir(parents=True)
+    (other / 'token').write_text('credential')
+    marker.write_text(json.dumps({'data_root': str(other)}))
+    (r0.parent / 'tst-b1-owner.json').write_text(json.dumps({
+        'schema_version': 1, 'run_id': 'a' * 32, 'root': str(root), 'data_root': str(other)}))
+    with pytest.raises(ValueError, match='owned program and data roots'):
+        live.selection_for(other, root, discovery(other))

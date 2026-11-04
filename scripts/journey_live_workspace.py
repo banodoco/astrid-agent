@@ -165,6 +165,7 @@ def selection_for(data, root, discovery):
     data, root = Path(data), Path(root)
     recorded_data, active_data = journey_data_roots.selection(root, data)
     if (data != active_data or root != recorded_data.parent / "program"
+            or recorded_data != recorded_data.parent / "data"
             or not data.is_dir() or not recorded_data.is_dir() or not root.is_dir()):
         raise ValueError("Live workspace requires the owned program and data roots")
     owner_path = recorded_data.parent / "tst-b1-owner.json"
