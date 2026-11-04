@@ -37,7 +37,7 @@ from astrid.core.rendering.assets import (
     AssetMaterializer,
     InvocationAssetServer as InvocationAssetServer,
 )
-from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import SCHEMA_VERSION
 from astrid.core.rendering.contracts import AudioOwnership, FrameWindow, RenderProfile, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,

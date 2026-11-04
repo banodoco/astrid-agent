@@ -39,7 +39,7 @@ from astrid.core import timeline
 from astrid.pack_api import write_json_atomic
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.core.rendering.assets import AssetMaterializer
-from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import SCHEMA_VERSION
 from astrid.core.rendering.contracts import AudioOwnership, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
