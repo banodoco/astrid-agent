@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import ntpath
@@ -11,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,26 @@ EVIDENCE = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())) / "X5-wind
 HEALTH_URL = "http://127.0.0.1:17340/api/runtime/v1/health"
 TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
+PACK_HOST_LOG_TAIL_BYTES = 65536
+PACK_HOST_MARKER_BYTES = 8192
+PACK_HOST_DIAGNOSTIC_OBSERVATIONS = ("first-failed-poll", "first-service-exit", "last-failed-poll")
+NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
+_DIAGNOSTIC_SECRET = re.compile(
+    r"(?im)((?:[\"']?\b(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|"
+    r"cookie|credential|password|private[_-]?key|refresh[_-]?token|secret|signature|token)"
+    r"\b[\"']?)\s*[=:]\s*)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|"
+    r"(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)"
+)
+_DIAGNOSTIC_BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
+_DIAGNOSTIC_URL_AUTH = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
+_DIAGNOSTIC_PRIVATE_KEY = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.I)
+_DIAGNOSTIC_SECRET_KEY = re.compile(r"token|secret|password|credential|authorization|api[_-]?key|cookie|signature", re.I)
+_EXIT_SIGNATURES = {
+    "missing_matching_job_drain_receipt": b"legacy Windows host registration lacks a matching Runtime Job-drain receipt; automatic retirement is blocked",
+    "no_retained_job_custody": b"registered Windows host has no retained Job custody; retirement blocked",
+    "foreign_identity": b"registered Windows host identity is foreign; retirement blocked",
+    "foreign_pid_identity": b"registered pid is not this Astrid pack host; not signalled",
+}
 
 
 def _powershell_quote(value):
@@ -342,6 +364,171 @@ def health():
     return value
 
 
+def _diagnostic_text(value):
+    """Redact common credential forms before retaining service log text."""
+    lines = []
+    in_key = False
+    for line in value.splitlines(keepends=True):
+        if _DIAGNOSTIC_PRIVATE_KEY.match(line):
+            if not in_key:
+                lines.append("<redacted private key>\n")
+            in_key = True
+        elif in_key:
+            if line.startswith("-----END ") and "PRIVATE KEY-----" in line:
+                in_key = False
+            continue
+        else:
+            line = _DIAGNOSTIC_URL_AUTH.sub(r"\1<redacted>@", line)
+            line = _DIAGNOSTIC_BEARER.sub("Bearer <redacted>", line)
+            line = _DIAGNOSTIC_SECRET.sub(r"\1<redacted>", line)
+            lines.append(line)
+    if in_key:
+        lines.append("<redacted truncated private key>\n")
+    return "".join(lines)
+
+
+def _diagnostic_value(value, budget=None, depth=0):
+    budget = [4096] if budget is None else budget
+    if budget[0] <= 0:
+        return "<omitted: budget exhausted>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        safe = _diagnostic_text(value)
+        encoded = safe.encode("utf-8", errors="replace")
+        allowed = min(1024, budget[0])
+        budget[0] -= min(len(encoded), allowed)
+        return encoded[:allowed].decode("utf-8", errors="ignore") + ("<truncated>" if len(encoded) > allowed else "")
+    if depth >= 4:
+        return "<omitted: nesting limit>"
+    if isinstance(value, list):
+        return [_diagnostic_value(item, budget, depth + 1) for item in value[:16]]
+    if isinstance(value, dict):
+        result = {}
+        for key in sorted(value, key=str)[:24]:
+            name = str(key)
+            result[name] = "<redacted>" if _DIAGNOSTIC_SECRET_KEY.search(name) else _diagnostic_value(value[key], budget, depth + 1)
+        return result
+    return f"<unsupported {type(value).__name__}>"
+
+
+def _read_diagnostic_file(path, limit, tail):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"status": "missing"}, None
+    except OSError as exc:
+        return {"status": "error", "error": type(exc).__name__}, None
+    if (stat.S_ISLNK(info.st_mode) or
+            getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
+            any(parent.is_symlink() for parent in path.parents)):
+        return {"status": "unsafe_type"}, None
+    if not stat.S_ISREG(info.st_mode):
+        return {"status": "unsafe_type"}, None
+    try:
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if not tail and size > limit:
+                return {"status": "oversized", "bytes": size}, None
+            if tail:
+                stream.seek(max(0, size - limit))
+            data = stream.read(limit)
+    except OSError as exc:
+        return {"status": "error", "error": type(exc).__name__}, None
+    return {"status": "read", "bytes": size, "truncated": bool(tail and size > limit)}, data
+
+
+def _capture_pack_host_log(path, name, observation, search_root):
+    details, raw = _read_diagnostic_file(path, PACK_HOST_LOG_TAIL_BYTES, True)
+    record = {"source": name, "search_root": search_root, **details}
+    if raw is None:
+        return record
+    safe = _diagnostic_text(raw.decode("utf-8", errors="replace")).encode("utf-8")
+    safe = safe[-PACK_HOST_LOG_TAIL_BYTES:]
+    filename = f"pack-host-readiness-{observation}-{name}"
+    try:
+        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        (EVIDENCE / filename).write_bytes(safe)
+    except OSError as exc:
+        return {"source": name, "search_root": search_root, "status": "error", "error": type(exc).__name__}
+    return {"source": name, "search_root": search_root, "status": "captured", "evidence": filename,
+            "source_bytes": details["bytes"], "captured_bytes": len(safe),
+            "truncated": details["truncated"], "redacted": safe != raw,
+            "sha256": hashlib.sha256(safe).hexdigest()}
+
+
+def _exit_log_discriminator(path):
+    details, raw = _read_diagnostic_file(path, PACK_HOST_LOG_TAIL_BYTES, True)
+    result = {"status": details["status"], "content_retained": False,
+              "absence_is_inconclusive": True, "categories": []}
+    if raw is None:
+        return result
+    categories = sorted(name for name, signature in _EXIT_SIGNATURES.items() if signature in raw)
+    result.update(classification="recognized" if categories else "other", categories=categories,
+                  truncated=details["truncated"])
+    return result
+
+
+def capture_pack_host_readiness(health_value, accepted):
+    """Capture bounded failure-time state without affecting the readiness predicate."""
+    if accepted:
+        return
+    runtime = data_root() / "runtime"
+    services = health_value.get("services", []) if isinstance(health_value, dict) else []
+    service = next((row for row in services if isinstance(row, dict) and row.get("name") == "pack-host"), None)
+    observations = ["first-failed-poll", "last-failed-poll"]
+    if service and (service.get("last_exit") is not None or service.get("reason")):
+        observations.append("first-service-exit")
+    native = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+    local = os.environ.get("LOCALAPPDATA")
+    sources = [(runtime / "generic-host.log", "runtime-support-root")]
+    if native and Path(native).is_absolute():
+        sources.extend((Path(native) / name, "native-runtime-logs")
+                       for name in ("service-pack-host.log", "runtime.log"))
+    if local and Path(local).is_absolute():
+        sources.append((Path(local) / "Astrid Runtime" / "logs" / "runtime-service.log", "isolated-service-logs"))
+    ready_path = runtime / "generic-host.ready.json"
+    marker_details, marker_bytes = _read_diagnostic_file(ready_path, PACK_HOST_MARKER_BYTES, False)
+    marker = None
+    if marker_bytes is not None:
+        try:
+            marker = _diagnostic_value(json.loads(marker_bytes.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            marker_details = {"status": "malformed", "bytes": marker_details.get("bytes")}
+    for observation in observations:
+        manifest = EVIDENCE / f"pack-host-readiness-{observation}.json"
+        if observation != "last-failed-poll" and manifest.exists():
+            continue
+        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        health = _diagnostic_value({
+            "status": health_value.get("status") if isinstance(health_value, dict) else None,
+            "runtime_instance_id": health_value.get("runtime_instance_id") if isinstance(health_value, dict) else None,
+            "pack_host": ({key: service.get(key) for key in ("name", "state", "last_exit", "restart_count", "reason") if key in service}
+                          if service else None),
+        })
+        capture = {
+            "schema_version": 1, "observation": observation,
+            "observed_at_unix_ns": time.time_ns(), "predicate_result": accepted,
+            "limitation": "sequential diagnostic reads; no process or Job custody proof",
+            "health": health, "ready_marker": {**marker_details, "content": marker},
+            "readiness": {"service_running": bool(service and service.get("state") == "running"),
+                          "ready_file_exists": ready_path.is_file(),
+                          "ready_status": marker.get("status") if isinstance(marker, dict) else None,
+                          "runtime_instance_matches": bool(isinstance(marker, dict) and isinstance(health_value, dict)
+                                                            and health_value.get("runtime_instance_id")
+                                                            and marker.get("runtime_instance_id") == health_value.get("runtime_instance_id"))},
+            "logs": [_capture_pack_host_log(path, path.name, observation, root_name)
+                     for path, root_name in sources],
+        }
+        if observation == "first-service-exit":
+            capture["first_exit_discriminator"] = (
+                _exit_log_discriminator(Path(native) / "service-pack-host.log")
+                if native and Path(native).is_absolute() else
+                {"status": "unavailable", "content_retained": False,
+                 "absence_is_inconclusive": True, "categories": []})
+        save(manifest.name, capture)
+
+
 def wait_for(label, probe, *, seconds=900):
     deadline = time.monotonic() + seconds
     while True:
@@ -368,6 +555,23 @@ def healthy():
 
 def host_ready():
     value = health()
+    try:
+        accepted = _host_ready(value)
+    except Exception:
+        _try_capture_pack_host_readiness(value, None)
+        raise
+    _try_capture_pack_host_readiness(value, accepted)
+    return accepted
+
+
+def _try_capture_pack_host_readiness(value, accepted):
+    try:
+        capture_pack_host_readiness(value, accepted)
+    except Exception as exc:
+        print(f"Pack-host diagnostic capture unavailable: {type(exc).__name__}", flush=True)
+
+
+def _host_ready(value):
     if not value or value.get("status") != "ok":
         return False
     service = next((row for row in value.get("services", []) if row.get("name") == "pack-host"), {})
