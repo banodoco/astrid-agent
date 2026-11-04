@@ -101,6 +101,9 @@ class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
                  process_control: str | None = None, managed_by: str | None = None):
         self.root, self.log, self.uv, self.say = root, log, uv, say
+        # The public entry point keeps command diagnostics on the console until
+        # it has resolved the selected roots and checked the log destination.
+        self.console_diagnostics = False
         self.managed_by = managed_by
         # None keeps the workspace's current setting (strict on a new one).
         self.process_control = process_control
@@ -127,10 +130,17 @@ class Backend:
         result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
-        with self.log.open("a", encoding="utf-8") as stream:
-            platform.owner_only(stream.fileno())
-            # Do not log inherited environments or credentials.
-            stream.write(result.stdout + "\n")
+        if not getattr(self, "console_diagnostics", False):
+            try:
+                with self.log.open("a", encoding="utf-8") as stream:
+                    platform.owner_only(stream.fileno())
+                    # Do not log inherited environments or credentials.
+                    stream.write(result.stdout + "\n")
+            except OSError:
+                # Diagnostics must never prevent manager stop/recovery.
+                self.console_diagnostics = True
+        if getattr(self, "console_diagnostics", False) and result.stdout:
+            getattr(self, "say", print)(result.stdout.rstrip("\n"))
         if result.returncode:
             raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
         return result.stdout.strip()

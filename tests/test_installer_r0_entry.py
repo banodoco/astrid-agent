@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -110,7 +111,153 @@ def state(path, **changes):
     return value
 
 
+def move_selected_tree(root, data, service, destination, *, program=False):
+    """Exercise recorded selection, including the CLI's default-root override."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(root if program else data), destination)
+    if program:
+        root = destination
+        folder = root / "versions" / "release0"
+        write_json(folder / "version.json", Version(
+            folder, folder / "py" / "bin" / "python", folder / "profile.json", {}, release=0,
+        ).document())
+    else:
+        data = destination
+    realm = data / "runtime" / "realms" / "r0"
+    catalog(data, realm)
+    marker = json.loads((root / "install.json").read_text())
+    write_json(root / "install.json", {**marker, "data_root": str(data)})
+    selected = json.loads(service.selection.read_text())
+    write_json(service.selection, {**selected, "program_root": str(root),
+                                  "data_root": str(data), "realm_root": str(realm)})
+    return root, data, realm
+
+
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux executable manager simulation")
+
+
+@pytest.mark.parametrize("program", [False, True], ids=["data", "program"])
+@pytest.mark.parametrize("existing", [False, True], ids=["missing-log", "existing-log"])
+def test_public_cli_nested_default_log_preserves_selected_roots(tmp_path, monkeypatch, program, existing):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    root, data, _ = move_selected_tree(root, data, service, platform.log_dir().parent, program=program)
+    if existing:
+        platform.log_dir().mkdir(mode=0o755)
+        log = platform.log_dir() / "install.log"
+        log.write_text("keep the old installer log\n")
+        log.chmod(0o644)
+    before = snapshot(root), snapshot(data)
+    # No --root: the recorded program/data selection must be resolved before
+    # touching the default log, including when it is inside the program tree.
+    result = subprocess.run([sys.executable, "-m", "astrid", "install"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "upgrade was not completed" in result.stdout
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert not r0_stop._marker_path(service).exists()
+    assert (snapshot(root), snapshot(data)) == before
+
+
+@pytest.mark.parametrize("program", [False, True], ids=["data", "program"])
+def test_public_cli_busy_refusal_with_nested_log(tmp_path, monkeypatch, capsys, program):
+    root, data, realm, service, manager = public_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(platform, "log_dir", lambda: (root if program else data) / "logs")
+    before = snapshot(root), snapshot(data)
+    wait = r0_stop._wait_for_owner_lock
+    monkeypatch.setattr(r0_stop, "_wait_for_owner_lock", lambda path, *_: wait(path, .02, .005))
+    fd = os.open(realm / "owner.lock", os.O_RDONLY)
+    platform.lock_file(fd, blocking=False)
+    try:
+        assert cli.main(["--update", "--root", str(root)]) == 1
+    finally:
+        platform.unlock_file(fd)
+        os.close(fd)
+    output = capsys.readouterr()
+    assert "Finish or cancel running tasks" in output.out
+    assert "Finish or cancel running tasks" in output.err  # console traceback
+    assert "Details:" not in output.out
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert not r0_stop._marker_path(service).exists()
+    assert (snapshot(root), snapshot(data)) == before
+
+
+@pytest.mark.parametrize("program", [False, True], ids=["data", "program"])
+def test_public_cli_recovers_interrupted_stop_with_nested_read_only_source(tmp_path, monkeypatch, program):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    root, data, _ = move_selected_tree(root, data, service, platform.log_dir().parent, program=program)
+    try:
+        for tree in (root, data):
+            for path in sorted(tree.rglob("*"), reverse=True):
+                path.chmod(0o555 if path.is_dir() else 0o444)
+            tree.chmod(0o555)
+        before = snapshot(root), snapshot(data)
+        state(manager, kill_after_disable=True)
+        killed = invoke(root)
+        assert killed.returncode == -signal.SIGKILL, killed.stdout + killed.stderr
+        assert r0_stop._marker_path(service).exists()
+        assert not state(manager)["enabled"]
+        state(manager, kill_after_disable=False)
+        recovered = invoke(root)
+        assert recovered.returncode == 1, recovered.stdout + recovered.stderr
+        assert "Recovered the interrupted R0 stop" in recovered.stdout
+        assert state(manager)["enabled"] and state(manager)["running"]
+        assert not r0_stop._marker_path(service).exists()
+        assert (snapshot(root), snapshot(data)) == before
+    finally:
+        for tree in (root, data):
+            tree.chmod(0o755)
+            for path in tree.rglob("*"):
+                if not path.is_symlink():
+                    path.chmod(0o755 if path.is_dir() else 0o644)
+
+
+def test_public_cli_log_becoming_unwritable_cannot_block_manager_recovery(tmp_path, monkeypatch):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    log = platform.log_dir() / "install.log"
+    shim = tmp_path / "commands" / "systemctl"
+    shim.write_text(shim.read_text().replace(
+        'state.update(enabled=False, running=False)',
+        f'log = Path({str(log)!r})\n    log.unlink()\n    log.mkdir()\n'
+        '    print("R0 stopped; diagnostic destination unavailable")\n'
+        '    state.update(enabled=False, running=False)',
+    ).replace('state.update(enabled=True, running=True)',
+              'print("R0 restored")\n    state.update(enabled=True, running=True)'))
+    before = snapshot(root), snapshot(data)
+    result = invoke(root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "upgrade was not completed" in result.stdout
+    assert "diagnostic destination unavailable" in result.stdout
+    assert "R0 restored" in result.stdout
+    assert "R0StopError" in result.stderr  # failure handler also falls back
+    assert "Details:" not in result.stdout
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert not r0_stop._marker_path(service).exists()
+    assert (snapshot(root), snapshot(data)) == before
+
+
+@pytest.mark.parametrize("alias", ["file-symlink", "parent-symlink", "hardlink"])
+def test_public_cli_log_alias_into_source_is_console_only(tmp_path, monkeypatch, alias):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    source_log = data / "logs" / "install.log"
+    source_log.parent.mkdir()
+    source_log.write_text("retained log\n")
+    source_log.chmod(0o644)
+    log_dir = platform.log_dir()
+    log_dir.parent.mkdir(parents=True)
+    if alias == "parent-symlink":
+        log_dir.symlink_to(source_log.parent, target_is_directory=True)
+    else:
+        log_dir.mkdir()
+        if alias == "file-symlink":
+            (log_dir / "install.log").symlink_to(source_log)
+        else:
+            os.link(source_log, log_dir / "install.log")
+    before = snapshot(root), snapshot(data)
+    result = invoke(root)
+    assert result.returncode == 1 and "upgrade was not completed" in result.stdout
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert not r0_stop._marker_path(service).exists()
+    assert (snapshot(root), snapshot(data)) == before
 
 
 def test_real_cli_stops_restores_and_refuses_without_legacy_writes(tmp_path, monkeypatch):
