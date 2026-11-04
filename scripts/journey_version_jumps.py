@@ -332,6 +332,16 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
         raise RuntimeError("Runtime owner changed during live workspace access")
     live.check_selection(data, root, selection)
     evidence.mkdir(parents=True, exist_ok=True)
+    if action == "snapshot":
+        _, selected_data, version = journey.installation(root, data)
+        if selected_data != data:
+            raise RuntimeError("Selected Runtime data root differs from this journey")
+        manifest = journey.read_json(Path(version["root"]) / "manifest.json")
+        runtime = manifest.get("runtime")
+        schema_digest = runtime.get("schema_digest") if isinstance(runtime, dict) else None
+        if not isinstance(schema_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", schema_digest):
+            raise RuntimeError("Selected installation lacks its Runtime schema digest")
+        request = {**request, "expected_schema_digest": schema_digest}
     request_path = evidence / (action + "-request.json")
     selection_path = evidence / (action + "-selection.json")
     journey.write_json(request_path, request)
