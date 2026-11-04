@@ -9,7 +9,9 @@ from scripts import ci_journey_keepgoing as keepgoing
 from scripts import journey_version_jumps as jumps
 
 
-def test_fresh_release1_keeps_standard_service_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(keepgoing.sys, "platform", platform)
     app = tmp_path / 'app'
     app.mkdir()
     candidate = tmp_path / 'candidate.json'
@@ -19,6 +21,7 @@ def test_fresh_release1_keeps_standard_service_identity(tmp_path, monkeypatch):
     root, data = tmp_path / 'program', tmp_path / 'data'
     manifest = {'release': 1}
     calls = []
+    task_calls = []
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
@@ -31,11 +34,28 @@ def test_fresh_release1_keeps_standard_service_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, 'assert_direct_service_ownership',
                         lambda *a, **k: calls.append((a, k)))
     monkeypatch.setattr(journey, 'verify', lambda *a, **k: None)
-    monkeypatch.setattr(jumps, 'task_after_update', lambda *a: None)
-    report = keepgoing.execute(args, root, data, tmp_path / 'evidence', SimpleNamespace(pid=1), 'birth')
+    monkeypatch.setattr(journey.windows, 'EVIDENCE', None)
+    monkeypatch.setattr(jumps, 'task_after_update',
+                        lambda *a: pytest.fail("fresh-install must seed its project"))
+    monkeypatch.setattr(journey, 'task', lambda *a, **k: task_calls.append(("sdk", a, k)))
+    monkeypatch.setattr(journey.windows, 'wait_for', lambda *a: task_calls.append(("wait", a)))
+    monkeypatch.setattr(journey.windows, 'host_ready', lambda: True)
+    monkeypatch.setattr(journey.windows, 'snapshot', lambda *a: task_calls.append(("snapshot", a)))
+    monkeypatch.setattr(journey.windows, 'task',
+                        lambda *a, **k: task_calls.append(("windows", a, k)))
+    evidence = tmp_path / 'evidence'
+    report = keepgoing.execute(args, root, data, evidence, SimpleNamespace(pid=1), 'birth')
     assert all(stage['result'] == 'pass' for stage in report['stages'])
     assert [stage['stage'] for stage in report['stages']] == list(keepgoing.FRESH_STAGES)
     assert calls == [((root, data), {})]
+    if platform == "win32":
+        assert task_calls[0][0] == "wait"
+        assert task_calls[1] == ("snapshot", ("processes-host-ready.json",))
+        assert task_calls[-1] == ("windows", ("tst-m4-3b-release0",), {"create_project": True})
+        assert journey.windows.EVIDENCE == evidence / "release1-working-task"
+    else:
+        assert task_calls == [("sdk", (manifest, evidence / "release1-working-task",
+                                        "tst-m4-3b-release0"), {})]
 
 
 @pytest.mark.parametrize("wrong_selection,change_at", [

@@ -1630,6 +1630,9 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
     invocation = json.loads(installed_cli_with_capture(version, [json.dumps(request)], evidence,
                                           "sdk-invocation.json", module="astrid.omp_invoke",
                                           status_name="sdk-capture-status.json"))
+    if invocation.get("ok") is False:
+        error = invocation.get("error") or {}
+        raise RuntimeError(f"Installed SDK invocation failed: {error.get('code', 'unknown')}")
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")

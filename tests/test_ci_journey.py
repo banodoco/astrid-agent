@@ -25,6 +25,18 @@ def app_checkout(tmp_path):
     return app, shipped
 
 
+def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
+    evidence = tmp_path / "release1-working-task"
+    evidence.mkdir()
+    monkeypatch.setattr(
+        journey, "installed_cli_with_capture",
+        lambda *args, **kwargs: json.dumps({"ok": False, "error": {"code": "not_found"}}),
+    )
+
+    with pytest.raises(RuntimeError, match="invocation failed: not_found"):
+        journey.task({}, evidence, "fresh-project", create_project=False)
+
+
 def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(tmp_path):
     app, shipped = app_checkout(tmp_path)
     original = shipped.read_bytes()
