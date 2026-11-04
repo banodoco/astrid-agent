@@ -30,12 +30,14 @@ def mac_case(tmp_path, monkeypatch):
     run = manager.run
     manager.r1_loaded = False
     manager.foreign_r1 = False
+    manager.r0_disabled_state = "disabled"
     def launchctl(argv, *, timeout):
         argv = list(map(str, argv))
         target = f"gui/501/{registration.R1_MAC}"
         if argv[:2] == ["launchctl", "print-disabled"]:
             manager.calls.append(argv)
-            return 'disabled services = {\n "haus.astrid.runtime" => true\n}'
+            return ('disabled services = {\n'
+                    f' "haus.astrid.runtime" => {manager.r0_disabled_state}\n}}')
         if len(argv) == 3 and argv[2] == target:
             manager.calls.append(argv)
             if argv[1] == "print":
@@ -99,6 +101,31 @@ def test_launchd_disable_precedes_publication_and_recovery_unloads_r1_before_r0(
         ["R1 owner lock wait"]) < manager.calls.index(["launchctl", "enable", "gui/501/haus.astrid.runtime"])
     assert (snapshot(realm.parent), snapshot(destination), manager.path.read_bytes()) == before
     assert not tx.journal.exists()
+
+
+@pytest.mark.parametrize("disabled_state", ["disabled", "true"])
+def test_launchd_registration_accepts_disabled_r0_output(mac_case, disabled_state):
+    manager, tx, version, realm, _ = mac_case
+    manager.r0_disabled_state = disabled_state
+
+    tx.prepare(version, realm.parent, "r0", realm)
+
+    assert tx.journal.exists()
+    assert read_json(tx.journal)["phase"] == "disabled"
+
+
+@pytest.mark.parametrize("enabled_state", ["enabled", "false"])
+def test_launchd_registration_rejects_r0_that_is_not_disabled(mac_case, enabled_state):
+    manager, tx, version, realm, _ = mac_case
+    manager.r0_disabled_state = enabled_state
+
+    with pytest.raises(ValueError, match="R0 must be disabled"):
+        tx.prepare(version, realm.parent, "r0", realm)
+
+    assert not tx.journal.exists()
+    assert not tx.launcher.exists()
+    assert not tx.r1_path.exists()
+    assert not any(call[1:2] == ["disable"] for call in manager.calls)
 
 
 def test_launchd_changed_loaded_arguments_are_never_stopped(mac_case):

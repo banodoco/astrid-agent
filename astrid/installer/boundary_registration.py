@@ -279,7 +279,7 @@ class BoundaryRegistration:
             if r0_stop._launchd_print(self.service, f"gui/{self.uid}/{R0_MAC}") is not None:
                 raise ValueError("R0 must be unloaded before R1 registration.")
             disabled = self._run(["launchctl", "print-disabled", f"gui/{self.uid}"])
-            if not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true', disabled):
+            if not re.search(r'"haus\.astrid\.runtime"\s*=>\s*(?:true|disabled)\b', disabled):
                 raise ValueError("R0 must be disabled before R1 registration.")
         r0_stop._wait_for_owner_lock(realm, 0, .2)
         r0_stop._wait_for_owner_lock(adopted_realm, 0, .2)
