@@ -141,5 +141,5 @@ def test_adopt_diagnostic_binds_sources_and_guards_before_mutation():
     assert 'loaded_path.group(1)!=str(plist)' in inner
     assert "'workspace','adopt','--data-root'" in inner
     assert "'--expected-realm-id',realm_id,'--json'" in inner
-    assert capture.REFS['agent'][1] == 'ffe476b7efb7387acca4097c0569d3dffe2fbab0'
+    assert capture.REFS['agent'][1] == '45a1af120aa4c718e57d051a2abf6d69b78fe7f7'
     assert capture.REFS['runtime'][1] == '9fc53b771134940aaac901e4cfc5d03c1db1a20a'

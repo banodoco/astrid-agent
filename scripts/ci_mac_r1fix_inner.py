@@ -32,9 +32,9 @@ def prove_owned():
  if j.runtime_processes(data)!=[pid]: raise RuntimeError('Runner owner census differs')
  return pid,birth,plist
 
-def stop_owned():
+def stop_owned(name="stop.log"):
  pid,birth,plist=prove_owned(); realm=j.workspace_root(data)
- j.run(['/bin/launchctl','bootout',f'gui/{os.getuid()}/haus.astrid.runtime'],evidence/'stop.log',timeout=120)
+ j.run(['/bin/launchctl','bootout',f'gui/{os.getuid()}/haus.astrid.runtime'],evidence/name,timeout=120)
  deadline=time.monotonic()+120
  while j.process_birth(pid)==birth:
   if time.monotonic()>deadline: raise RuntimeError('Stopped owner did not exit')
@@ -47,6 +47,7 @@ def stop_owned():
  return realm
 
 disabled_by_us=False
+service_run=run
 r1=Path(str(data)+'-r1'); realm=None; realm_id=None
 try:
  agent_fixture=base/'agent/tests/fixtures/release0'
@@ -55,7 +56,9 @@ try:
  fixture, oldmanifest, receipt=v.verified_release0_fixture(driver_fixture); done('r0-fixture-verification')
  app_manifest=base/'app/public/install-manifest.json'; app_bytes=app_manifest.read_bytes()
  (evidence/'app-publishing-manifest.json').write_bytes(app_bytes)
- status['app_publishing_sha']='878c28df7a6c80fa9aaa6540c5fccad95473e7c1'
+ status['app_publishing_sha']='1daa20c6051b82a481d1d96627e76bb93609d6a5'
+ pins=json.loads(app_bytes)
+ if hashlib.sha256(app_bytes).hexdigest()!='949c4dd06cd23a705f0714f74cce4423eaed992d34c9931b59968fea2f8085df' or pins['agent']['sha']!='45a1af120aa4c718e57d051a2abf6d69b78fe7f7' or pins['runtime']['sha']!='9fc53b771134940aaac901e4cfc5d03c1db1a20a': raise RuntimeError('Candidate manifest mismatch')
  status['app_manifest_sha256']=hashlib.sha256(app_bytes).hexdigest(); done('app-manifest-captured')
  with j.isolated_environment(run,root,data):
   v.bootstrap_release0(fixture,oldmanifest,'sh',evidence/'release0',root,data); done('r0-install')
@@ -93,18 +96,49 @@ try:
   finally: connection.close()
   if len(rows)!=1 or not isinstance(rows[0][0],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',rows[0][0]): raise RuntimeError('R0 realm identity ambiguous')
   realm_id=rows[0][0]; done('r0-realm-identity')
-  venv=base/'r1-venv'; py=Path(sys.executable); j.run([py,'-m','venv',venv],evidence/'venv.log',timeout=300); interp=venv/'bin/python'
-  j.run([interp,'-m','pip','install','-e',base/'runtime','-e',base/'runtime/packages/python','-e',base/'agent'],evidence/'r1-install.log',timeout=1200); done('r1-runtime-install')
-  profile=base/'r1-profile.json'; profile.write_text(json.dumps({'profile':'astrid','runtime_checkout':str(base/'runtime'),'source_checkout':str(base/'agent'),'runtime_environment':str(venv)}))
-  os.chmod(profile,0o600); env=dict(os.environ); env['ASTRID_RUNTIME_SOURCE_MANIFEST']=str(profile)
+  # R0 is stopped; install the pinned R1 into its own program/data/HOME.
+  state=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
+  missing='Could not find service "haus.astrid.runtime" in domain for user gui: '+str(os.getuid())
+  if state.returncode!=113 or state.stderr.strip().replace('\r\n','\n') not in (missing,'Bad request.\n'+missing) or runner_owners(data): raise RuntimeError('R0 service absence unverified before R1 install')
+  sockcheck=subprocess.run(['/usr/sbin/lsof','-nP','-iTCP:17340','-sTCP:LISTEN'],capture_output=True,text=True,timeout=20)
+  if sockcheck.returncode!=1 or sockcheck.stdout.strip() or sockcheck.stderr.strip(): raise RuntimeError('R1 installer port unavailable')
+  subprocess.run(['/bin/launchctl','enable',f'gui/{os.getuid()}/haus.astrid.runtime'],check=True,timeout=30); disabled_by_us=False
+  old_root,old_data=root,data
+  service_run=base/'r1-install'; service_run.mkdir(mode=0o700)
+  root=service_run/'program'; data=service_run/'data'
+  with (service_run/'tst-b1-owner.json').open('x',encoding='utf-8') as owner:
+   json.dump({'schema_version':1,'run_id':uuid.uuid4().hex,'root':str(root),'data_root':str(data)},owner); owner.write('\n')
+  with j.isolated_environment(service_run,root,data):
+   j.bootstrap(base/'app',app_manifest,'sh','install',evidence/'r1-install',root,data); done('r1-install')
+   j.wait_ready(data); r1path,_,installed=j.installation(root,data)
+   selected=j.read_json(Path(installed['root'])/'manifest.json')
+   if v.installed_release(installed)!=1 or any(selected.get(k)!=pins.get(k) for k in ('agent','runtime')): raise RuntimeError('Installed R1 tuple differs')
+   r1_manifest_bytes=(Path(installed['root'])/'manifest.json').read_bytes()
+   (evidence/'installed-r1-manifest.json').write_bytes(r1_manifest_bytes); status['installed_r1_manifest_sha256']=hashlib.sha256(r1_manifest_bytes).hexdigest()
+   (evidence/'installed-r1-current.txt').write_bytes((root/'current').read_bytes())
+   (evidence/'installed-r1-program-tree.json').write_text(json.dumps(tree(root),indent=2)+'\n'); done('installed-r1-inventory')
+   prove_owned(); done('r1-service-identity')
+   v.direct_workspace(root,installed,data,evidence/'r1-seed','seed',{'project':'ws05-r1-workspace','generation':'release1','task_id':None,'create_project':True}); done('r1-seed')
+   prove_owned(); disabled_by_us=True
+   subprocess.run(['/bin/launchctl','disable',f'gui/{os.getuid()}/haus.astrid.runtime'],check=True,timeout=30); done('r1-launchagent-disable')
+   stop_owned('r1-stop.log'); done('r1-stopped-and-lock-free')
+  root,data=old_root,old_data; service_run=run
+  # Prove the original source lock remains free immediately before adoption.
+  source_fd=os.open(realm/'owner.lock',os.O_RDWR|os.O_NOFOLLOW)
+  try: fcntl.flock(source_fd,fcntl.LOCK_EX|fcntl.LOCK_NB); fcntl.flock(source_fd,fcntl.LOCK_UN)
+  finally: os.close(source_fd)
+  interp=Path(installed['python']); env=dict(os.environ); env.update(installed['env'])
+  r1home=base/'r1-install/home'; r1tmp=base/'r1-install/tmp'
+  env.update({'HOME':str(r1home),'XDG_CONFIG_HOME':str(r1home/'.config'),'XDG_DATA_HOME':str(r1home/'.local/share'),'XDG_STATE_HOME':str(r1home/'.local/state'),'TMPDIR':str(r1tmp),'TMP':str(r1tmp),'TEMP':str(r1tmp)})
+  env.pop('ASTRID_RUNTIME_DATA_ROOT',None); env.pop('ASTRID_RUNTIME_HOME',None)
   # Use an unoccupied, non-default port for the task-owned R1 door.
   import socket
   with socket.socket() as sock: sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
   if port==17340: raise RuntimeError('Unexpected R1 door port')
   env['ASTRID_RUNTIME_DOOR_PORT']=str(port)
-  cli=venv/'bin/astrid-runtime'
+  cli=[str(interp),'-I','-m','astrid_runtime']
   def command(name,args):
-   result=subprocess.run([str(cli),*args],env=env,cwd=str(base/'runtime'),capture_output=True,text=True,timeout=1200)
+   result=subprocess.run([*cli,*args],env=env,cwd=str(base/'runtime'),capture_output=True,text=True,timeout=1200)
    (evidence/(name+'.stdout.json')).write_text(result.stdout); (evidence/(name+'.stderr.txt')).write_text(result.stderr)
    status['stages'][name]={'exit':result.returncode}; save(); return result
   adopt=command('adopt',['workspace','adopt','--data-root',str(r1),'--from',str(realm),'--realm-id',realm_id,'--json'])
@@ -136,7 +170,7 @@ finally:
    if birth:
     ps=subprocess.run(['/bin/ps','-ww','-p',str(pid),'-o','uid=,command='],capture_output=True,text=True,check=True,timeout=20).stdout.strip()
     if not ps.startswith(str(os.getuid())+' ') or str(r1) not in ps: raise RuntimeError('R1 owner identity not proven')
-    result=subprocess.run([str(base/'r1-venv/bin/astrid-runtime'),'down','--data-root',str(r1),'--json'],capture_output=True,text=True,timeout=180,env=env)
+    result=subprocess.run([*cli,'down','--data-root',str(r1),'--json'],capture_output=True,text=True,timeout=180,env=env)
     (evidence/'r1-down.stdout.json').write_text(result.stdout); (evidence/'r1-down.stderr.txt').write_text(result.stderr)
     if result.returncode!=0: raise RuntimeError('R1 graceful down failed')
     end=time.monotonic()+120
@@ -145,7 +179,7 @@ finally:
      time.sleep(1)
   state=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
   if state.returncode==0:
-   with j.isolated_environment(run,root,data): stop_owned()
+   with j.isolated_environment(service_run,root,data): stop_owned()
    state=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
   missing='Could not find service "haus.astrid.runtime" in domain for user gui: '+str(os.getuid())
   if state.returncode!=113 or state.stderr.strip().replace('\r\n','\n') not in (missing,'Bad request.\n'+missing): raise RuntimeError('Service absence unverified')
@@ -162,4 +196,8 @@ finally:
     if current.returncode!=113 or current.stderr.strip().replace('\r\n','\n') not in (missing,'Bad request.\n'+missing): raise RuntimeError('LaunchAgent absence unverified')
     subprocess.run(['/bin/launchctl','enable',f'gui/{os.getuid()}/haus.astrid.runtime'],check=True,timeout=30); disabled_by_us=False; status['launchd_restore']='enabled'
    except Exception as restore_exc: status['launchd_restore']='unverified'; status['launchd_restore_error']=str(restore_exc)
+ for label,log in (('r0-installer',run/'home/Library/Logs/Astrid Runtime/install.log'),('r1-installer',base/'r1-install/home/Library/Logs/Astrid Runtime/install.log'),('r1-runtime',r1/'runtime/runtime.log')):
+  if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(base):
+   with log.open('rb') as stream:
+    stream.seek(0,2); stream.seek(max(0,stream.tell()-100000)); (evidence/(label+'-tail.txt')).write_bytes(stream.read())
  save()
