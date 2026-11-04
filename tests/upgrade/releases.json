@@ -63,7 +63,7 @@
           "version_root": "versions/<current>",
           "current_file": "current",
           "launcher": "bin/runtime",
-          "launcher_target": "inside-selected-version"
+          "launcher_target": "dispatches-current-to-selected-version"
         },
         "version_record_keys": ["env", "identity", "profile", "python", "root"],
         "health_identity_emitted": true,

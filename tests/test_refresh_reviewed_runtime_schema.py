@@ -69,7 +69,16 @@ def _installed_tree(tmp_path):
     runtime = version / 'bin' / 'runtime'
     runtime.write_text('#!/bin/sh\nexit 0\n')
     (program / 'bin').mkdir()
-    (program / 'bin' / 'runtime').symlink_to(runtime)
+    fixed_launcher = program / 'bin' / 'runtime'
+    fixed_launcher.write_text(
+        '#!/bin/sh\nset -eu\n'
+        'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+        'version=$(cat "$root/current")\n'
+        'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+        '[ ${#version} -le 64 ] || exit 2\n'
+        'exec "$root/versions/$version/bin/runtime" "$@"\n'
+    )
+    fixed_launcher.chmod(0o755)
     return program
 
 
@@ -99,6 +108,7 @@ def test_generator_command_is_reproducible_and_retains_raw_evidence(tmp_path):
     assert captured['manifest_runtime_sha']
     assert captured['runtime_contract']['workspace_schema_version'] == 33
     assert captured['raw']['manifest_json_base64']
+    assert captured['reviewed_schema']['installed_layout']['launcher_target'] == 'dispatches-current-to-selected-version'
 
 
 @pytest.mark.posix_native
@@ -114,5 +124,25 @@ def test_generator_refuses_wrong_current_and_preserves_reviewed_row(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode == 2
     assert 'current' in result.stderr
+    assert releases_path.read_bytes() == before
+    assert not evidence.exists()
+
+
+@pytest.mark.posix_native
+def test_generator_refuses_wrong_fixed_launcher_dispatch_and_preserves_reviewed_row(tmp_path):
+    program = _installed_tree(tmp_path)
+    launcher = program / 'bin' / 'runtime'
+    launcher.write_text(launcher.read_text().replace(
+        'exec "$root/versions/$version/bin/runtime" "$@"',
+        'exec "$root/versions/other/bin/runtime" "$@"'))
+    evidence = tmp_path / 'evidence.json'
+    releases = json.loads((ROOT / 'tests/upgrade/releases.json').read_text())
+    releases_path = tmp_path / 'releases.json'
+    releases_path.write_text(json.dumps(releases, indent=2) + '\n')
+    before = releases_path.read_bytes()
+    result = subprocess.run(_command(program, evidence, releases_path), cwd=ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'current-selection dispatch' in result.stderr
     assert releases_path.read_bytes() == before
     assert not evidence.exists()

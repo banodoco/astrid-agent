@@ -9,6 +9,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -62,15 +63,25 @@ def capture(program_root: Path, app_manifest_commit: str) -> tuple[dict, dict]:
     if not isinstance(version, dict) or not isinstance(manifest, dict) or not isinstance(profile, dict):
         raise ValueError('installed manifest, profile, and version record must be JSON objects')
 
-    # Verify the fixed entry point by resolving it without executing it.
+    # Verify the fixed entry point without executing it. The stable program
+    # launcher dispatches through current; it is not a symlink into versions/.
     launcher = program_root / 'bin' / 'runtime'
-    launcher_target = launcher.resolve(strict=True)
+    expected_launcher = (
+        '#!/bin/sh\nset -eu\n'
+        'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+        'version=$(cat "$root/current")\n'
+        'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+        '[ ${#version} -le 64 ] || exit 2\n'
+        'exec "$root/versions/$version/bin/runtime" "$@"\n'
+    )
     try:
-        launcher_target.relative_to(version_root.resolve(strict=True))
-    except ValueError as exc:
-        raise ValueError('bin/runtime does not resolve inside the selected version') from exc
-    if not launcher.is_file():
-        raise ValueError('bin/runtime is not a file')
+        launcher_target = launcher.resolve(strict=True)
+        launcher_content = launcher.read_text(encoding='utf-8')
+    except OSError as exc:
+        raise ValueError('bin/runtime is missing or unreadable') from exc
+    if (launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK)
+            or launcher_content != expected_launcher):
+        raise ValueError('bin/runtime does not match the reviewed current-selection dispatch')
 
     if Path(version.get('root', '')).resolve() != version_root.resolve():
         raise ValueError('version record root does not match current selection')
@@ -131,7 +142,7 @@ def capture(program_root: Path, app_manifest_commit: str) -> tuple[dict, dict]:
             'version_root': 'versions/<current>',
             'current_file': 'current',
             'launcher': 'bin/runtime',
-            'launcher_target': 'inside-selected-version',
+            'launcher_target': 'dispatches-current-to-selected-version',
         },
     }
     if default_vibecomfy:
