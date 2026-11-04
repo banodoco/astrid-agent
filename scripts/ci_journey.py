@@ -1238,7 +1238,32 @@ def _windows_command_parts(command: str) -> tuple[str, str] | None:
     return (match.group(1) or match.group(2), match.group(3)) if match else None
 
 
-def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path) -> bool:
+def _windows_creation_time(pid: int) -> int | None:
+    """Read an exact FILETIME with query-only access; never signal a process."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in times]):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path,
+                     native_births: dict[int, int | None]) -> bool:
     """Recognize only the selected venv redirector and its direct child."""
     owners = [row for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
     if len(owners) != 2:
@@ -1251,7 +1276,14 @@ def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path) -> b
         if child_pid <= 0 or parent_pid <= 0 or int(child["ParentProcessId"]) != parent_pid:
             return False
         parent_birth, child_birth = int(parent["Birth"]), int(child["Birth"])
-        if not 0 < parent_birth < child_birth or discovery.get("process_birth_id") != f"windows-creation:{child_birth}":
+        parent_native, child_native = native_births[parent_pid], native_births[child_pid]
+        # CIM_DATETIME preserves microseconds, FILETIME preserves 100 ns ticks.
+        # The projection binds the census to native observations; only exact
+        # native equality identifies discovery. Never round an identity match.
+        if (parent_native is None or child_native is None
+                or not 0 < parent_birth < child_birth or not 0 < parent_native < child_native
+                or parent_birth != parent_native // 10 * 10 or child_birth != child_native // 10 * 10
+                or discovery.get("process_birth_id") != f"windows-creation:{child_native}"):
             return False
         venv = version_path.parent / "py"
         launcher = venv / "Scripts" / "pythonw.exe"
@@ -1280,13 +1312,16 @@ def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path) -> b
         return False
 
 
-def _capture_windows_r0_selection_context(discovery: dict, version_path: Path, evidence: Path) -> None:
+def _capture_windows_r0_selection_context(discovery: dict, version_path: Path, evidence: Path,
+                                          native_births: dict[int, int | None]) -> None:
     """Record the remaining inputs to the selection predicate, without changing it."""
     venv = version_path.parent / "py"
     paths = {"version_dir": version_path.parent, "venv": venv, "scripts": venv / "Scripts",
              "launcher": venv / "Scripts" / "pythonw.exe", "config": venv / "pyvenv.cfg"}
     context = {"version_path": str(version_path),
                "discovery": {key: discovery.get(key) for key in ("pid", "process_birth_id")},
+               "native_creation_filetimes": {str(pid): str(birth) if birth is not None else None
+                                             for pid, birth in native_births.items()},
                "paths": {}}
     for name, path in paths.items():
         item = {"path": str(path)}
@@ -1322,14 +1357,21 @@ def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> N
             "runtime-owner-selection.json", show=False, timeout=30))
     finally:
         windows.EVIDENCE = previous_evidence
+    rows = rows if isinstance(rows, list) else [rows]
+    owners = [int(row["ProcessId"]) for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    native_births = {}
+    if len(owners) == 2:
+        for pid in owners:
+            try:
+                native_births[pid] = _windows_creation_time(pid)
+            except OSError:
+                native_births[pid] = None
     try:
-        _capture_windows_r0_selection_context(discovery, version_path, evidence)
+        _capture_windows_r0_selection_context(discovery, version_path, evidence, native_births)
     except Exception as exc:
         print(f"Journey R0 selection context capture failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
-    rows = rows if isinstance(rows, list) else [rows]
-    owners = [int(row["ProcessId"]) for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
-    if owners != [int(discovery["pid"])] and not _windows_r0_pair(rows, discovery, version_path):
+    if owners != [int(discovery["pid"])] and not _windows_r0_pair(rows, discovery, version_path, native_births):
         raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
 
 

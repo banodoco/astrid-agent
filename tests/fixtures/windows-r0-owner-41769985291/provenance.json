@@ -1,0 +1,21 @@
+{
+  "run_id": "41769985291",
+  "phase": "journey-receipt-direct-windows/before-cleanup",
+  "candidate": "9bfe98843bd4bb0b5574ee0c73cee99bc2fbb450",
+  "encoding": "base64 of original artifact bytes; preserves CRLF",
+  "native_observation": "Not captured by this run. Replay tests supply hypothetical native observations and never infer identity from CIM alone.",
+  "files": {
+    "runtime-owner-selection.json": {
+      "sha256": "25e185f51aeb7da8751c03c8f7c71f3623cf86c3ecc715f8e60f5fe87ddabfb5",
+      "bytes": 38140
+    },
+    "runtime-owner-selection-context.json": {
+      "sha256": "1e4127be46f658b8b60fe58f0eb13fe406b9521b3b93e29bc25274576ad368e5",
+      "bytes": 1547
+    },
+    "unit-file-before-cleanup.txt": {
+      "sha256": "0fb43d935df099c7c2d78418d3cc64058630bb34aa1f0d26b6ec01a7fc95cba5",
+      "bytes": 5425
+    }
+  }
+}
