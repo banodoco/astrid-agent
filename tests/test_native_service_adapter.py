@@ -497,12 +497,8 @@ class StatefulRunner:
         raise AssertionError(f"unexpected command: {argv}")
 
 
-def hosted_environment(tmp_path: Path, os_name: str, powershell: Path | None) -> dict[str, str]:
-    runner_os, image_os = {
-        "macos": ("macOS", "macos14"),
-        "linux": ("Linux", "ubuntu24"),
-        "windows": ("Windows", "win22"),
-    }[os_name]
+def hosted_environment(tmp_path: Path, runner: str, powershell: Path | None) -> dict[str, str]:
+    _, runner_os, image_os = failure.RUNNER_PROVENANCE[runner]
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = {
@@ -525,6 +521,24 @@ def hosted_environment(tmp_path: Path, os_name: str, powershell: Path | None) ->
     if powershell is not None:
         env["SystemRoot"] = str(powershell.parents[3])
     return env
+
+
+@pytest.mark.parametrize(
+    ("runner", "image", "wrong_image"),
+    [("macos-14", "macos14", "macos15"), ("macos-15", "macos15", "macos14")],
+)
+def test_hosted_environment_uses_runner_image_and_rejects_other_image(
+    tmp_path: Path, runner: str, image: str, wrong_image: str
+) -> None:
+    env = hosted_environment(tmp_path, runner, None)
+    assert env["ImageOS"] == image
+    env["ImageOS"] = wrong_image
+    command_runner = StatefulRunner("macos", {}, FakeProcessProbe())
+    with pytest.raises(RuntimeError, match="hosted runner provenance ImageOS does not match"):
+        native._host_authentication(
+            env, {"runner": runner}, command_runner, fixture_mode=False, powershell=None
+        )
+    assert command_runner.calls == []
 
 
 def make_repos(tmp_path: Path) -> tuple[dict[str, Path], dict[str, str]]:
@@ -759,7 +773,8 @@ def collect(
     invalid_instance_entry: bool = False,
 ) -> tuple[dict, StatefulRunner, FakeProcessProbe]:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    os_name = failure.RUNNER_PROVENANCE[failure.SLOT_CONTRACTS[slot_id]["runner"]][0]
+    runner_label = failure.SLOT_CONTRACTS[slot_id]["runner"]
+    os_name = failure.RUNNER_PROVENANCE[runner_label][0]
     repos, heads = make_repos(tmp_path)
     process = FakeProcessProbe()
     process.deny_absence = deny_absence
@@ -803,7 +818,7 @@ def collect(
         agent_repo=repos["agent"],
         runtime_repo=repos["runtime"],
         pinokio_repo=repos["pinokio"],
-        environment=hosted_environment(tmp_path, os_name, powershell),
+        environment=hosted_environment(tmp_path, runner_label, powershell),
         _runner=runner,
         _process_probe=process,
         _journey_driver=driver,
@@ -2527,7 +2542,7 @@ def test_failure_without_exact_instance_preserves_residue_instead_of_unsafe_remo
     process = FakeProcessProbe()
     runner = StatefulRunner("linux", heads, process)
     driver = FakeJourneyDriver(PROVISIONAL_CANDIDATE, process, runner, fail_at="before-observe")
-    env = hosted_environment(tmp_path, "linux", None)
+    env = hosted_environment(tmp_path, failure.SLOT_CONTRACTS["direct-linux"]["runner"], None)
     with pytest.raises(RuntimeError, match="cleanup refused; residue may remain"):
         native.execute(
             "direct-linux",
