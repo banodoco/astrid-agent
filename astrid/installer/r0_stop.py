@@ -1,8 +1,7 @@
 """Stop the registered R0 service and wait for its realm owner lock.
 
-This is a standalone upgrade primitive. The caller supplies the selected realm
-root and serializes the installer transaction; it must not use this operation
-for signalling arbitrary processes or for stopping R1.
+The direct installer holds its per-user lock while using this boundary. Piece A
+ends by restoring R0 and refusing: adoption and R1 activation belong to B/C.
 """
 from __future__ import annotations
 
@@ -13,6 +12,7 @@ import plistlib
 import os
 import re
 import stat
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -21,9 +21,165 @@ from runtime_protocol import platform
 
 from .service import LABEL, TASK
 
+R1_LABEL = "haus.astrid.runtime.r1"
+R1_UNIT = "astrid-r1.service"
+
+
+def _run(service, argv):
+    # R0's own stop grace is 90 seconds. Never inherit Backend's 30 minute
+    # command timeout for an unresponsive manager.
+    return service.run(argv, timeout=105)
+
+
+def _launchd_print(service, target):
+    try:
+        return _run(service, ["launchctl", "print", target])
+    except subprocess.CalledProcessError as exc:
+        output = str(exc.output or "")
+        if "Could not find service" in output and target.rsplit("/", 1)[-1] in output:
+            return None
+        raise
+
+
+def _require_no_r1(service):
+    """Only an absent R1 job permits R0 restart in this pre-handoff piece.
+
+    A registered inactive job can restart automatically. Leave it and the
+    recovery intent alone for B's explicit disable-R1/re-enable-R0 rollback.
+    This is a manager query, never process/discovery matching.
+    """
+    if service.system == "linux":
+        argv = ["systemctl", "--user", "show", R1_UNIT,
+                "--property=LoadState", "--property=ActiveState"]
+        try:
+            output = _run(service, argv)
+        except subprocess.CalledProcessError as exc:
+            output = str(exc.output or "")
+        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if fields.get("LoadState") == "not-found" and fields.get("ActiveState") == "inactive":
+            return
+    elif service.system == "darwin":
+        if _launchd_print(service, f"gui/{_launchd_uid()}/{R1_LABEL}") is None:
+            return
+    else:
+        raise R0StopError("The R1 scheduled task state cannot be verified; R0 was not restarted.")
+    raise R0StopError("R1 is registered or its state is unknown. R0 was not restarted; use the R1 service rollback before retrying.")
+
 
 class R0StopError(ValueError):
     """R0 could not be stopped safely; the upgrade must be refused."""
+
+
+STAGING_REFUSAL = (
+    "R0 is enabled again. The R0-to-R1 upgrade was not completed: "
+    "this installer still needs R1 registration and copy-only adoption (Pieces B/C). "
+    "Keep using R0 until those pieces are available, then run the install line again."
+)
+
+
+def _read_record(path):
+    from .core import absolute, read_json
+    path = absolute(path)
+    if not path.is_file():
+        raise R0StopError(f"Missing upgrade evidence: {path}")
+    return read_json(path)
+
+
+def _selected_realm(data):
+    from .core import absolute
+    catalog = _read_record(data / "runtime" / "catalog.json")
+    selected = catalog.get("selected_realm_id")
+    rows = catalog.get("realms")
+    if (catalog.get("version") != 1 or not isinstance(selected, str) or not selected
+            or not isinstance(rows, list)):
+        raise R0StopError("R0's selected realm cannot be read safely; no service was stopped.")
+    matches = [row for row in rows if isinstance(row, dict) and row.get("realm_id") == selected]
+    if len(matches) != 1 or not isinstance(matches[0].get("data_root"), str):
+        raise R0StopError("R0's selected realm is ambiguous; no service was stopped.")
+    return selected, absolute(matches[0]["data_root"])
+
+
+def _completed_adopt(data, realm, destination):
+    # Runtime #29's durable receipt is runtime/adopt-journal.json, state
+    # complete. Its source/destination fields name realms, not support roots.
+    # Do not accept a loose receipt.json or a claimed ok=true as this evidence.
+    try:
+        realm_id, source = _selected_realm(data)
+        adopted_id, adopted = _selected_realm(destination)
+        receipt = _read_record(destination / "runtime" / "adopt-journal.json")
+        expected = destination / "runtime" / "realms" / realm_id
+        return (source == realm and adopted_id == realm_id and adopted == expected
+                and receipt.get("state") == "complete" and receipt.get("realm_id") == realm_id
+                and receipt.get("source") == str(realm)
+                and receipt.get("destination") == str(expected)
+                and receipt.get("backup_identity") is None)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def is_r0_installation(root):
+    from .core import current, read_json
+    version = current(root)
+    if version is not None:
+        return version.release == 0
+    marker = read_json(root / "install.json")
+    return marker.get("owner") == LABEL and marker.get("managed_by") is None
+
+
+def refuse_legacy_r0_recovery(root):
+    from .core import Version, current, pending_transaction
+    pending = pending_transaction(root)
+    if pending and pending.get("transaction_kind") != "app":
+        old = pending.get("old")
+        selected = current(root)
+        if ((selected is not None and selected.release == 0)
+                or not isinstance(old, dict) or Version.load(old).release == 0):
+            raise R0StopError(
+                "An interrupted legacy R0 update is retained. Automatic in-place restore or migration "
+                "is disabled; preserve both roots and resolve that journal before the copy-only upgrade."
+            )
+
+
+def refuse_unintegrated_r1_handoff(root, service):
+    from .core import read_json
+    marker = read_json(root / "install.json")
+    selection = read_json(service.selection)
+    if service.system == "linux":
+        definition = service.path.with_name(R1_UNIT)
+    elif service.system == "darwin":
+        definition = service.path.with_name(R1_LABEL + ".plist")
+    else:
+        definition = root / "task-r1.xml"
+    if (marker.get("r1_data_root") or selection.get("r1_data_root")
+            or definition.exists() or definition.is_symlink()):
+        raise R0StopError(
+            "An R1 handoff is already present. This Piece A installer cannot update or activate it; "
+            "use the completed R1 registration/adoption installer. Both roots were kept."
+        )
+
+
+def stage_r0_upgrade(root, data, backend, *, say=print):
+    """Real install entry boundary, before legacy recovery, preflight or writes.
+
+    Caller holds the existing per-user installer lock. There is deliberately no
+    successful handoff in A: after proving stop/lock, restore R0 and refuse.
+    """
+    service = backend.service
+    if recover_r0(service):
+        raise R0StopError("Recovered the interrupted R0 stop. " + STAGING_REFUSAL)
+    refuse_unintegrated_r1_handoff(root, service)
+    refuse_legacy_r0_recovery(root)
+    from .core import pending_transaction
+
+    if pending_transaction(root):
+        return  # only a verified R1 journal can reach existing R1 recovery
+    if not is_r0_installation(root):
+        return
+    _, realm = _selected_realm(data)  # read catalog only; never launch R0/R1 to inspect it
+    say("Astrid will restart to update.")
+    stop_r0_and_wait(service, realm, data_root=data)
+    recover_r0(service)
+    raise R0StopError(STAGING_REFUSAL)
 
 
 def _launchd_uid():
@@ -45,7 +201,8 @@ def _validate_plist(service):
         root = Path(service.root)
         if (value.get("Label") != LABEL or not isinstance(args, list) or not args
                 or not all(isinstance(arg, str) for arg in args)
-                or not executable.is_absolute() or not executable.is_relative_to(root)):
+                or not executable.is_absolute()
+                or not Path(os.path.abspath(executable)).is_relative_to(root)):
             raise ValueError("invalid action")
     except (OSError, ValueError, KeyError, IndexError, TypeError, plistlib.InvalidFileException) as exc:
         raise R0StopError("The R0 plist action does not match its program root.") from exc
@@ -54,14 +211,16 @@ def _validate_plist(service):
 
 def _validate_manager(service, uid):
     if service.system == "linux":
-        output = service.run(["systemctl", "--user", "show", "astrid.service", "--property=FragmentPath"])
+        output = _run(service, ["systemctl", "--user", "show", "astrid.service", "--property=FragmentPath"])
         fields = [line.partition("=")[2] for line in output.splitlines()
                   if line.startswith("FragmentPath=")]
         if fields != [str(service.path)]:
             raise R0StopError("The registered R0 systemd FragmentPath does not match the installer unit; refusing to stop it.")
     elif service.system == "darwin":
         target = f"gui/{uid}/{LABEL}"
-        output = service.run(["launchctl", "print", target])
+        output = _launchd_print(service, target)
+        if output is None:
+            raise R0StopError("The R0 launchd service is not loaded.")
         head, separator, rest = output.partition("\targuments = {\n")
         paths = re.findall(r"(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$", head)
         args = _validate_plist(service)
@@ -77,11 +236,11 @@ def _validate_manager(service, uid):
 
 def _disable_and_stop(service, uid):
     if service.system == "linux":
-        service.run(["systemctl", "--user", "disable", "--now", "astrid.service"])
+        _run(service, ["systemctl", "--user", "disable", "--now", "astrid.service"])
     elif service.system == "darwin":
         target = f"gui/{uid}/{LABEL}"
-        service.run(["launchctl", "disable", target])
-        service.run(["launchctl", "bootout", target])
+        _run(service, ["launchctl", "disable", target])
+        _run(service, ["launchctl", "bootout", target])
     else:
         service.powershell(f"Disable-ScheduledTask -TaskName '{TASK}' -TaskPath '\\' | Out-Null")
         service.powershell(f"Stop-ScheduledTask -TaskName '{TASK}' -TaskPath '\\'")
@@ -89,17 +248,12 @@ def _disable_and_stop(service, uid):
 
 def _reenable(service, uid, *, stopped):
     if service.system == "linux":
-        service.run(["systemctl", "--user", "enable", "--now", "astrid.service"])
+        _run(service, ["systemctl", "--user", "enable", "--now", "astrid.service"])
     elif service.system == "darwin":
         target = f"gui/{uid}/{LABEL}"
-        service.run(["launchctl", "enable", target])
+        _run(service, ["launchctl", "enable", target])
         if stopped:
-            try:
-                _validate_manager(service, uid)
-            except Exception:
-                service.run(["launchctl", "bootstrap", f"gui/{uid}", service.path])
-                _validate_manager(service, uid)
-            service.run(["launchctl", "kickstart", target])
+            _run(service, ["launchctl", "kickstart", target])
     else:
         service.powershell(f"Enable-ScheduledTask -TaskName '{TASK}' -TaskPath '\\' | Out-Null")
         if stopped:
@@ -172,13 +326,8 @@ def _write_marker(service, data_root):
         _sync_directory(path.parent)
 
 
-def recover_r0(service, *, r1_inactive=None):
-    """Restore R0 only with a manager-backed R1 exclusion under the installer lock.
-
-    The future R1 handoff must supply a callable which checks its registered
-    manager entry and prevents R1 starting until recovery has completed. An
-    unavailable or ambiguous check is not evidence that R1 is inactive.
-    """
+def recover_r0(service):
+    """Re-run recovery: check R1's manager, restore the bound R0, clear intent."""
     path = _marker_path(service)
     if not path.exists() and not path.is_symlink():
         return False
@@ -192,18 +341,18 @@ def recover_r0(service, *, r1_inactive=None):
             raise ValueError("marker or service changed")
         if not Path(payload["data_root"]).is_absolute():
             raise ValueError("invalid data root")
-        if r1_inactive is None or r1_inactive() is not True:
-            raise ValueError("R1 service inactivity cannot be established; refusing to restart R0")
+        _require_no_r1(service)
         uid = _launchd_uid() if service.system == "darwin" else None
         if service.system == "linux":
             _validate_manager(service, uid)
         elif service.system == "darwin":
             _validate_plist(service)
             # A loaded foreign job must never be enabled or started.
-            try:
-                service.run(["launchctl", "print", f"gui/{uid}/{LABEL}"])
-            except Exception:
-                service.run(["launchctl", "bootstrap", f"gui/{uid}", service.path])
+            target = f"gui/{uid}/{LABEL}"
+            if _launchd_print(service, target) is None:
+                # launchd will reject bootstrap while the label is disabled.
+                _run(service, ["launchctl", "enable", target])
+                _run(service, ["launchctl", "bootstrap", f"gui/{uid}", service.path])
             _validate_manager(service, uid)
         else:
             raise ValueError("unverified service manager")
@@ -227,23 +376,20 @@ def stop_r0_and_wait(service, realm_root: Path, *, data_root: Path | None = None
     marker = _marker_path(service)
     if marker.is_relative_to(data_root) or marker.is_relative_to(service.root):
         raise R0StopError("The recovery marker must be outside the R0 roots.")
-    # Until the adopt receipt is consumed by the subsequent piece, no existing
-    # destination can be established as ours; do not touch it.
     destination = Path(str(data_root) + "-r1")
-    if destination.exists() or destination.is_symlink():
+    if ((destination.exists() or destination.is_symlink())
+            and not _completed_adopt(data_root, realm_root, destination)):
         raise R0StopError(f"The R1 destination already exists: {destination}.")
     uid = _launchd_uid() if service.system == "darwin" else None
     _validate_manager(service, uid)
+    _require_no_r1(service)
     _write_marker(service, data_root)
     try:
         _disable_and_stop(service, uid)
         _wait_for_owner_lock(realm_root, timeout, poll_interval)
     except BaseException as exc:
         try:
-            # This call is still inside the serialized stop, before any R1
-            # handoff can have started. Interrupted invocations need the R1
-            # manager-backed exclusion described by recover_r0 instead.
-            recover_r0(service, r1_inactive=lambda: True)
+            recover_r0(service)
         except BaseException as recovery:
             raise R0StopError(f"R0 stop failed ({exc}); automatic re-enable also failed ({recovery}). Re-enable the Astrid service in the OS service manager, then run the install line again.") from recovery
         if isinstance(exc, R0StopError) or not isinstance(exc, Exception):

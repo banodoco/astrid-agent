@@ -75,6 +75,8 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
     backend = _cli_backend(tmp_path, root, data)
     _prepare_cli(monkeypatch, tmp_path, root, data, backend)
     write_json(root / "update-transaction.json", {
+        "old": Version(root / "versions" / "retained-r1", Path(sys.executable),
+                       root / "versions" / "retained-r1" / "profile.json", {}, release=1).document(),
         "format": "astrid-install-update/v1",
         "operation_id": "a" * 32,
         "transaction_kind": "migration",
@@ -152,6 +154,8 @@ def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
     marker["update_job_residue"] = original_residues
     write_json(root / "install.json", marker)
     write_json(root / "update-transaction.json", {
+        "old": Version(root / "versions" / "retained-r1", Path(sys.executable),
+                       root / "versions" / "retained-r1" / "profile.json", {}, release=1).document(),
         "format": "astrid-install-update/v1", "operation_id": "e" * 32,
         "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
         "update_job": {"operation_id": operation_id},
@@ -422,7 +426,8 @@ def _prepare_gateway_lifecycle(tmp_path, monkeypatch, *, installed=9):
     record = {"owner": LABEL, "program_root": str(root), "data_root": str(data)}
     backend = LifecycleBackend(root, data)
     backend.old = old
-    backend.service = SimpleNamespace(recorded=lambda: record.copy())
+    backend.service = SimpleNamespace(recorded=lambda: record.copy(), home=tmp_path, system=sys.platform,
+                                      path=tmp_path / "service", selection=tmp_path / "selection.json")
     backend.managed_by = None
     backend.source_checkout_ownership = lambda *_args: False
     backend.restart_required = lambda: False
@@ -539,6 +544,8 @@ def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
     restored = Version(restored_root, Path(sys.executable), profile, {}, release=7)
     write_json(restored_root / "version.json", restored.document())
     write_json(root / "update-transaction.json", {
+        "old": Version(root / "versions" / "retained-r1", Path(sys.executable),
+                       root / "versions" / "retained-r1" / "profile.json", {}, release=1).document(),
         "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
     })
     recovery = []
@@ -635,6 +642,7 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
     backend.workspace = lambda *_args, **_kwargs: {"realm_id": "original-realm"}
     backend.service = SimpleNamespace(
         home=tmp_path, system=sys.platform, selection=tmp_path / "selection.json",
+        path=tmp_path / "service",
         recorded=lambda: {"owner": LABEL, "data_root": str(data)},
     )
     monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)

@@ -6,6 +6,7 @@ import hashlib
 import json
 import plistlib
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from astrid.installer.r0_stop import R0StopError, stop_r0_and_wait
 from astrid.installer.service import LABEL, Service
 
 
-FIXTURES = Path(__file__).parent / "fixtures" / "r0_service"
+FIXTURES = Path(__file__).parent / "r0_service_data"
 
 
 @pytest.fixture(autouse=True)
@@ -33,15 +34,41 @@ class Manager:
         self.calls = []
         self.mismatch = False
         self.fail = None
+        self.loaded = True
+        self.enabled = True
+        self.r1_registered = False
 
-    def run(self, argv):
+    def run(self, argv, *, timeout):
+        assert timeout == 105
         argv = [str(v) for v in argv]
         self.calls.append(argv)
         if self.fail and self.fail in argv:
             raise RuntimeError("injected manager failure")
+        if argv[:4] == ["systemctl", "--user", "show", r0_stop.R1_UNIT]:
+            return ("LoadState=loaded\nActiveState=active" if self.r1_registered
+                    else "LoadState=not-found\nActiveState=inactive")
+        if argv[:4] == ["systemctl", "--user", "disable", "--now"]:
+            self.enabled = self.loaded = False
+        if argv[:4] == ["systemctl", "--user", "enable", "--now"]:
+            self.enabled = self.loaded = True
+        if argv[:2] == ["launchctl", "disable"]:
+            self.enabled = False
+        if argv[:2] == ["launchctl", "bootout"]:
+            self.loaded = False
+        if argv[:2] == ["launchctl", "enable"]:
+            self.enabled = True
+        if argv[:2] == ["launchctl", "bootstrap"]:
+            assert self.enabled
+            self.loaded = True
         if argv[:4] == ["systemctl", "--user", "show", "astrid.service"]:
             return "FragmentPath=" + ("/unrelated" if self.mismatch else str(self.path)) + "\n"
         if argv[:2] == ["launchctl", "print"]:
+            if argv[2].endswith(r0_stop.R1_LABEL):
+                if self.r1_registered:
+                    return "registered R1"
+                raise subprocess.CalledProcessError(113, argv, output=f'Could not find service "{r0_stop.R1_LABEL}"')
+            if not self.loaded:
+                raise subprocess.CalledProcessError(113, argv, output=f'Could not find service "{LABEL}"')
             path = "/unrelated" if self.mismatch else str(self.path)
             args = plistlib.loads(self.path.read_bytes())["ProgramArguments"]
             body = "".join("\t\t" + arg + "\n" for arg in args)
@@ -164,6 +191,11 @@ def test_reenable_failure_is_actionable(tmp_path):
     manager.fail = "enable"
     with pytest.raises(R0StopError, match="automatic re-enable also failed.*Re-enable"):
         stop_r0_and_wait(manager, realm)
+    assert r0_stop._marker_path(manager).exists()
+    manager.fail = None
+    assert r0_stop.recover_r0(manager)
+    assert manager.enabled
+    assert not (realm / "owner.lock").exists()
 
 
 def test_real_service_uses_same_unit_identity(tmp_path):
@@ -238,8 +270,8 @@ def test_launchd_foreign_loaded_arguments_refused(tmp_path):
     manager, realm = setup_case(tmp_path, "darwin")
     original = manager.run
 
-    def foreign(argv):
-        output = original(argv)
+    def foreign(argv, **kwargs):
+        output = original(argv, **kwargs)
         if argv[:2] == ["launchctl", "print"]:
             return output.replace(str(manager.root / "versions"), "/foreign/versions")
         return output
@@ -273,8 +305,8 @@ def test_killed_after_disable_next_invocation_recovers(tmp_path):
     if child == 0:
         os.close(read_fd)
         # Block inside the manager call after its persistent side effect.
-        def child_run(argv):
-            output = original(argv)
+        def child_run(argv, **kwargs):
+            output = original(argv, **kwargs)
             if argv[2:4] == ["disable", "--now"]:
                 state.write_text("disabled")
                 os.write(write_fd, b"1")
@@ -290,13 +322,13 @@ def test_killed_after_disable_next_invocation_recovers(tmp_path):
         _, status = os.waitpid(child, 0)
         assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
         assert state.read_text() == "disabled"
-        def recover_run(argv):
-            output = original(argv)
+        def recover_run(argv, **kwargs):
+            output = original(argv, **kwargs)
             if argv[2:4] == ["enable", "--now"]:
                 state.write_text("enabled")
             return output
         manager.run = recover_run
-        assert r0_stop.recover_r0(manager, r1_inactive=lambda: True)
+        assert r0_stop.recover_r0(manager)
         assert state.read_text() == "enabled"
         assert snapshot(realm) == before
         assert not r0_stop._marker_path(manager).exists()
@@ -310,48 +342,101 @@ def test_recovery_refuses_changed_unit(tmp_path):
     manager.path.write_text("foreign replacement")
     before = len(manager.calls)
     with pytest.raises(R0StopError, match="marker was retained"):
-        r0_stop.recover_r0(manager, r1_inactive=lambda: True)
+        r0_stop.recover_r0(manager)
     assert len(manager.calls) == before
     assert r0_stop._marker_path(manager).exists()
 
 
-@pytest.mark.parametrize("r1_state", [None, False])
-def test_recovery_refuses_without_r1_exclusion(tmp_path, r1_state):
-    manager, realm = setup_case(tmp_path, "linux")
+@pytest.mark.parametrize("system", ["linux", "darwin"])
+def test_recovery_refuses_registered_r1(tmp_path, system):
+    manager, realm = setup_case(tmp_path, system)
     before = snapshot(realm)
     stop_r0_and_wait(manager, realm)
-    if r1_state is False:
-        Path(str(realm) + "-r1").mkdir()  # Model a registered, running R1.
+    manager.r1_registered = True
     manager.calls.clear()
-    check = None if r1_state is None else lambda: r1_state
-    with pytest.raises(R0StopError, match="R1 service inactivity cannot be established"):
-        r0_stop.recover_r0(manager, r1_inactive=check)
-    assert manager.calls == []
+    with pytest.raises(R0StopError, match="R1 is registered"):
+        r0_stop.recover_r0(manager)
+    assert all("enable" not in call and "bootstrap" not in call for call in manager.calls)
     assert r0_stop._marker_path(manager).exists()
     assert snapshot(realm) == before
 
 
-def test_install_entry_refuses_unverified_recovery_before_update_preflight(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
-    from astrid.installer import cli
-    from astrid.installer.core import write_json
+@pytest.mark.parametrize("system", ["linux", "darwin"])
+def test_registered_r1_refuses_before_r0_stop(tmp_path, system):
+    manager, realm = setup_case(tmp_path, system)
+    manager.r1_registered = True
+    before = snapshot(realm)
+    with pytest.raises(R0StopError, match="R1 is registered"):
+        stop_r0_and_wait(manager, realm)
+    assert manager.enabled and manager.loaded
+    assert snapshot(realm) == before
+    assert not r0_stop._marker_path(manager).exists()
 
-    if sys.platform != "linux":
-        pytest.skip("Linux manager model")
-    manager, realm = setup_case(tmp_path, "linux")
-    manager.root.mkdir()
-    write_json(manager.root / "install.json", {"owner": LABEL, "data_root": str(realm)})
-    manager.recorded = lambda: {"owner": LABEL, "program_root": str(manager.root), "data_root": str(realm)}
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+@pytest.mark.parametrize("cut", ["disable", "bootout"])
+def test_launchd_sigkill_at_each_stop_step_then_recover(tmp_path, cut):
+    import select
+    import signal
+
+    if not hasattr(os, "fork"):
+        pytest.skip("POSIX SIGKILL test")
+    manager, realm = setup_case(tmp_path, "darwin")
+    before = snapshot(realm)
+    state = tmp_path / "launchd-state.json"
+    read_fd, write_fd = os.pipe()
+    original = manager.run
+    child = os.fork()
+    if child == 0:
+        os.close(read_fd)
+
+        def interrupted(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[:2] == ["launchctl", cut]:
+                state.write_text(json.dumps({"enabled": manager.enabled, "loaded": manager.loaded}))
+                os.write(write_fd, b"1")
+                signal.pause()
+            return result
+
+        manager.run = interrupted
+        stop_r0_and_wait(manager, realm)
+        os._exit(2)
+    os.close(write_fd)
+    try:
+        assert select.select([read_fd], [], [], 5)[0], "child never reached stop step"
+        assert os.read(read_fd, 1) == b"1"
+        os.kill(child, signal.SIGKILL)
+        _, status = os.waitpid(child, 0)
+        child = None
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+        persistent = json.loads(state.read_text())
+        manager.enabled, manager.loaded = persistent["enabled"], persistent["loaded"]
+        assert r0_stop.recover_r0(manager)
+        assert manager.enabled and manager.loaded
+        assert not r0_stop._marker_path(manager).exists()
+        assert snapshot(realm) == before
+        if cut == "bootout":
+            commands = [call[1] for call in manager.calls if call[0] == "launchctl"]
+            assert commands.index("enable") < commands.index("bootstrap")
+    finally:
+        if child is not None:
+            os.kill(child, signal.SIGKILL)
+            os.waitpid(child, 0)
+        os.close(read_fd)
+
+
+def test_launchd_query_failure_is_not_treated_as_missing_job(tmp_path):
+    manager, realm = setup_case(tmp_path, "darwin")
     stop_r0_and_wait(manager, realm)
+    original = manager.run
+
+    def unavailable(argv, **kwargs):
+        if argv[:2] == ["launchctl", "print"]:
+            raise subprocess.CalledProcessError(1, argv, output="permission denied")
+        return original(argv, **kwargs)
+
+    manager.run = unavailable
     manager.calls.clear()
-    backend = SimpleNamespace(service=manager, managed_by=None)
-    monkeypatch.setattr(cli, "Backend", lambda *_a, **_k: backend)
-    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
-    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(parents=True, exist_ok=True))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    assert cli.main(["--root", str(manager.root)]) == 1
+    with pytest.raises(R0StopError, match="marker was retained"):
+        r0_stop.recover_r0(manager)
     assert manager.calls == []
     assert r0_stop._marker_path(manager).exists()

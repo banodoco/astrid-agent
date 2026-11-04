@@ -251,14 +251,12 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
-                r0_marker = lock_path.parent / "astrid-r0-upgrade-in-progress.json"
-                if (mode in {"install", "update"} and managed_by != "pinokio"
-                        and (r0_marker.exists() or r0_marker.is_symlink())):
-                    from .r0_stop import recover_r0
+                if mode in {"install", "update"} and managed_by != "pinokio":
+                    from .r0_stop import stage_r0_upgrade
 
-                    if recover_r0(backend.service):
-                        print(RECOVERED_PREVIOUS_VERSION)
-                        return 0
+                    # R0's data stays read-only. This must precede legacy
+                    # journal replay, Runtime preflight, staging and claims.
+                    stage_r0_upgrade(root, data, backend)
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
