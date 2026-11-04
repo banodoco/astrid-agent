@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 import traceback
 from pathlib import Path
 from urllib.error import HTTPError
@@ -112,13 +111,6 @@ def seed(client, project, generation, task_id=None, create_project=False):
 
 
 def snapshot(client, keys):
-    # This helper is launched as a script, so sys.path[0] is ``scripts/``.
-    # The generated contract package lives one directory above it.
-    repository_root = str(Path(__file__).resolve().parents[1])
-    if repository_root not in sys.path:
-        sys.path.insert(0, repository_root)
-    from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
-
     project = client.request("GET", path("projects", keys["project"]))
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
@@ -142,7 +134,12 @@ def snapshot(client, keys):
     if task["state"] != "succeeded" or "result" not in task:
         raise ValueError("Seeded task is no longer settled successfully with a result")
     health = client.request("GET", path("health"))
-    if health.get("protocol") != PROTOCOL or health.get("schema_digest") != SCHEMA_DIGEST:
+    expected_schema_digest = keys.get("expected_schema_digest")
+    if (not isinstance(expected_schema_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_schema_digest)):
+        raise ValueError("Selected installation lacks its Runtime schema digest")
+    if (health.get("protocol") != "workspace.v1"
+            or health.get("schema_digest") != expected_schema_digest):
         raise ValueError("Runtime health does not match the selected schema")
     return {"project": {k: project[k] for k in ("project_id", "slug", "name", "metadata")},
             "timeline": {"name": timeline["name"], "head": timeline["head_revision_id"],
@@ -150,7 +147,7 @@ def snapshot(client, keys):
             "preferences": {k: preferences[k] for k in ("content", "version")},
             "task": {k: task[k] for k in ("task_id", "state", "spec", "result")},
             "cas_sha256": hashlib.sha256(payload).hexdigest(),
-            "schema_digest": health["schema_digest"], "target_schema_digest": SCHEMA_DIGEST}
+            "schema_digest": health["schema_digest"], "target_schema_digest": expected_schema_digest}
 
 
 # These fields bind discovery to the owner selected by the parent. Do not pass

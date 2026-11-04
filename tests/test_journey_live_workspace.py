@@ -3,7 +3,6 @@ import hashlib
 import json
 import shutil
 import sqlite3
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -62,11 +61,12 @@ def test_preservation_checks_public_schema_digest():
 
 
 def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch):
-    from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
-
     payload = b"C1 object release0\n"
     keys = {"project": "p", "timeline": "t", "revision": "r", "generation": "release0",
-            "object_digest": hashlib.sha256(payload).hexdigest(), "task_id": "task"}
+            "object_digest": hashlib.sha256(payload).hexdigest(), "task_id": "task",
+            "expected_schema_digest": "sha256:" + "9" * 64}
+    # The live R0 Runtime contract differs from the R1 checkout's generated contract.
+    r0_schema_digest = "sha256:" + "9" * 64
     class Client:
         def request(self, method, path, **_kwargs):
             assert method == "GET"
@@ -85,23 +85,43 @@ def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch)
             if path == "/v1/tasks/task":
                 return {"task_id": "task", "state": "succeeded", "spec": {}, "result": {}}
             if path == "/v1/health":
-                return {"protocol": PROTOCOL, "schema_digest": SCHEMA_DIGEST}
+                return {"protocol": "workspace.v1", "schema_digest": r0_schema_digest}
             raise AssertionError(f"unexpected request: {path}")
 
-    # The hosted driver invokes this helper by file path without PYTHONPATH;
-    # simulate that isolated script path and force a fresh package import.
-    repository_root = Path(live.__file__).resolve().parents[1]
-    monkeypatch.setattr(sys, "path", [entry for entry in sys.path
-                                      if Path(entry or ".").resolve() != repository_root])
-    for name in tuple(sys.modules):
-        if name == "astrid_runtime_client" or name.startswith("astrid_runtime_client."):
-            monkeypatch.delitem(sys.modules, name)
     result = live.snapshot(Client(), keys)
-    assert str(repository_root) in sys.path
     assert result["preferences"]["content"] == "Keep user changes release0"
     assert result["task"]["state"] == "succeeded"
     assert result["cas_sha256"] == keys["object_digest"]
-    assert result["schema_digest"] == result["target_schema_digest"] == SCHEMA_DIGEST
+    assert result["schema_digest"] == result["target_schema_digest"] == r0_schema_digest
+
+
+def test_snapshot_rejects_runtime_schema_digest_different_from_selected_install():
+    keys = {"project": "p", "timeline": "t", "revision": "r", "generation": "release0",
+            "object_digest": hashlib.sha256(b"C1 object release0\n").hexdigest(), "task_id": "task",
+            "expected_schema_digest": "sha256:" + "9" * 64}
+
+    class Client:
+        def request(self, method, path, **_kwargs):
+            if path == "/v1/projects/p":
+                return {"project_id": "p", "slug": "p", "name": "project", "metadata": {}}
+            if path == "/v1/projects/p/timelines/t":
+                return {"name": "User edit release0", "head_revision_id": "r"}
+            if path == "/v1/projects/p/timelines/t/composition-revisions/r":
+                return {"revision_id": "r", "content_digest": "digest", "payload": {
+                    "config": {"tracks": [], "clips": [], "metadata": {"user_note": "release0"}},
+                    "registry": {"assets": {}}}}
+            if path.startswith("/v1/preferences/project?"):
+                return {"content": "Keep user changes release0", "version": 1}
+            if path.startswith("/v1/objects/"):
+                return b"C1 object release0\n"
+            if path == "/v1/tasks/task":
+                return {"task_id": "task", "state": "succeeded", "spec": {}, "result": {}}
+            if path == "/v1/health":
+                return {"protocol": "workspace.v1", "schema_digest": "sha256:" + "8" * 64}
+            raise AssertionError(f"unexpected request: {path}")
+
+    with pytest.raises(ValueError, match="Runtime health does not match"):
+        live.snapshot(Client(), keys)
 
 
 def test_live_client_refuses_non_loopback():
@@ -147,12 +167,18 @@ def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeyp
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: events.append("owner"))
     monkeypatch.setattr(journey, "healthy", lambda *_: events.append("health") or selected)
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
+    manifest_root = tmp_path / "version"
+    manifest_root.mkdir()
+    (manifest_root / "manifest.json").write_text(json.dumps({"runtime": {"schema_digest": "sha256:" + "9" * 64}}))
+    monkeypatch.setattr(journey, "installation", lambda *_: (None, tmp_path, {"root": str(manifest_root)}))
     monkeypatch.setattr(live, "selection_for", lambda *_: selected)
     monkeypatch.setattr(live, "check_selection", lambda *_: events.append("check"))
     def run(argv, *_args, **_kwargs):
         events.append("api")
         assert "journey_live_workspace.py" in str(argv[1])
         assert json.loads(Path(argv[argv.index("--selection") + 1]).read_text()) == selected
+        request = json.loads(Path(argv[argv.index("--request") + 1]).read_text())
+        assert request["expected_schema_digest"] == "sha256:" + "9" * 64
         assert Path(argv[argv.index("--diagnostic") + 1]).name == "live-snapshot-failure.json"
         return '{"actual": true}'
     monkeypatch.setattr(journey, "run", run)
@@ -167,6 +193,10 @@ def test_live_workspace_rejects_owner_turnover(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: None)
     monkeypatch.setattr(journey, "healthy", lambda *_: selected)
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
+    manifest_root = tmp_path / "version"
+    manifest_root.mkdir()
+    (manifest_root / "manifest.json").write_text(json.dumps({"runtime": {"schema_digest": "sha256:" + "9" * 64}}))
+    monkeypatch.setattr(journey, "installation", lambda *_: (None, tmp_path, {"root": str(manifest_root)}))
     monkeypatch.setattr(live, "selection_for", lambda *_: selected)
     calls = iter((None, RuntimeError("Runtime owner changed")))
     def check(*_):
