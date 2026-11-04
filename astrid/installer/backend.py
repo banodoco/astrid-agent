@@ -692,6 +692,32 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 if stop_manager is not None:
                     stop_manager()
 
+            def pre_stop_selected_manager(identity):
+                # Runtime invokes this only after validating the owner and
+                # persisting stop intent under its interruption fence.
+                if not isinstance(identity, dict) or type(identity.get("pid")) is not int or identity["pid"] <= 0:
+                    raise ValueError("Runtime supplied an invalid manager stop identity.")
+                if identity["pid"] != owner_pid:
+                    raise ValueError("The Runtime owner changed before manager stop.")
+                current = self.service.recorded()
+                if (current != record or not current or foreground is not None
+                        or self.managed_by == "pinokio"):
+                    raise ValueError("The selected service changed before manager stop.")
+                if self.service.system not in {"darwin", "linux"}:
+                    raise ValueError("Cannot validate the service manager PID; refusing to stop it.")
+                selected = self.service.validate_stop_target(
+                    version, data, owner_pid=identity["pid"],
+                    expected_identity=launchd_identity, require_running=True)
+                if self.service.system == "darwin":
+                    if selected is None or selected != launchd_identity:
+                        raise ValueError("The launchd service changed before manager stop.")
+                    self.service._validated_launchd_stop = selected
+                    self.service._validated_launchd_stop_checked = True
+                    self.service.disable(owner_pid=identity["pid"])
+                else:
+                    self.service.disable()
+                    self.service.stop()
+
             def stop_selected_foreground():
                 current_record = self.service.recorded()
                 if ((current_record or {}).get("owner") != LABEL
@@ -702,6 +728,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 self.service.stop_foreground(expected=foreground)
 
             result = down(paths, boundary, stop_manager=stop_selected_manager,
+                          pre_stop_manager=(pre_stop_selected_manager
+                                            if self.managed_by != "pinokio" and foreground is None
+                                            and self.service.system in {"darwin", "linux"} else None),
                           stop_foreground=(stop_selected_foreground
                                            if restore_selection is None and isinstance(foreground, dict) else None),
                           restore_selection=restore_selection)

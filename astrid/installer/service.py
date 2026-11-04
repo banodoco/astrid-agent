@@ -549,7 +549,8 @@ class Service:
 
     def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None,
                              expected_identity: dict | None = None,
-                             require_stopped: bool = False) -> dict | None:
+                             require_stopped: bool = False,
+                             require_running: bool = False) -> dict | None:
         """Read-only confirmation that the named OS job belongs to this owner.
 
         The install selection alone cannot authorize stopping a label that was
@@ -561,6 +562,8 @@ class Service:
             self._validated_launchd_stop_checked = False
         if self.system == "linux":
             if not self.systemd():
+                if require_running:
+                    raise ValueError("Cannot validate the running systemd manager.")
                 foreground = self.recorded().get("foreground")
                 if self.path.exists() and (
                     not isinstance(foreground, dict)
@@ -574,9 +577,12 @@ class Service:
             fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
             pid = int(fields["MainPID"])
             if fields.get("LoadState") == "not-found" and pid == 0:
+                if require_running:
+                    raise ValueError("The systemd service is not running.")
                 return None
             if (fields.get("FragmentPath") != str(self.path)
-                    or pid not in {0, owner_pid}):
+                    or pid not in {0, owner_pid}
+                    or (require_running and (owner_pid is None or pid != owner_pid))):
                 raise ValueError("The systemd service does not match the selected Runtime owner.")
             self._validated_systemd_stop = True
             return None
@@ -586,6 +592,8 @@ class Service:
                 value = self.run(["launchctl", "print", target])
             except subprocess.CalledProcessError as exc:
                 if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
+                    if require_running:
+                        raise ValueError("The launchd service is not running.") from exc
                     if require_stopped:
                         self._validated_launchd_stop = None
                         self._validated_launchd_stop_checked = True
@@ -601,7 +609,7 @@ class Service:
             elif state == "running":
                 if owner_pid is None or pid != owner_pid:
                     raise ValueError("The launchd service does not match the selected Runtime owner.")
-            elif pid is not None:
+            elif pid is not None or require_running:
                 raise ValueError("The launchd service does not match the selected Runtime owner.")
             if require_stopped:
                 self._validated_launchd_stop = identity
@@ -877,7 +885,7 @@ class Service:
             f"-Argument {quote(subprocess.list2cmdline(argv[1:]))} -WorkingDirectory {quote(str(version.root))}; " +
             "$t | Set-ScheduledTask -Action $a | Out-Null")
 
-    def disable(self) -> None:
+    def disable(self, *, owner_pid: int | None = None) -> None:
         if self.system == "darwin":
             try:
                 selected = getattr(self, "_validated_launchd_stop", None)
@@ -891,7 +899,8 @@ class Service:
                 record = self.recorded()
                 data = Path(record["data_root"])
                 latest = self.validate_stop_target(
-                    None, data, owner_pid=None, expected_identity=selected, require_stopped=True)
+                    None, data, owner_pid=owner_pid, expected_identity=selected,
+                    require_stopped=owner_pid is None, require_running=owner_pid is not None)
                 if selected is None and latest is not None:
                     raise ValueError("A launchd service appeared after the C1 stop admission.")
                 if latest is None:

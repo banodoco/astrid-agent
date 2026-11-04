@@ -192,6 +192,18 @@ def test_unavailable_systemd_is_not_idle_proof_for_registered_manager(tmp_path, 
     assert calls == []
 
 
+@pytest.mark.parametrize('pid', [0, 456])
+def test_fenced_systemd_stop_requires_the_live_owner_pid(tmp_path, monkeypatch, pid):
+    from astrid.installer.service import Service
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    monkeypatch.setattr(backend.service, 'systemd', lambda: True)
+    monkeypatch.setattr(backend.service, 'run', lambda *_: (
+        f'MainPID={pid}\nFragmentPath={backend.service.path}\nLoadState=loaded'))
+    with pytest.raises(ValueError, match='does not match'):
+        Service.validate_stop_target(backend.service, old, data, owner_pid=123, require_running=True)
+    assert calls == []
+
+
 @pytest.mark.parametrize('operation', ['disable', 'stop'])
 def test_validated_systemd_unavailability_fails_instead_of_skipping_stop(tmp_path, monkeypatch, operation):
     from astrid.installer.service import Service
