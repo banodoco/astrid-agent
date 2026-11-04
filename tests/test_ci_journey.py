@@ -888,6 +888,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
                OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
                STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
                M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
+               DIAGNOSTIC_LEG="release0-to-release1", DIAGNOSTIC_KEEP_GOING="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
                M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
     env["JOURNEY_ROW"] = ""
@@ -923,6 +924,19 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     rows = matrix("true")
     assert len(rows) == 3
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
+    diagnostic_rows = matrix("true", DIAGNOSTIC_KEEP_GOING="true")
+    assert diagnostic_rows == rows
+    both = matrix("true", JOURNEY_ROW="direct", DIAGNOSTIC_KEEP_GOING="true", DIAGNOSTIC_LEG="both")
+    assert len(both) == 6
+    assert {(row["job_id"], row["leg"]) for row in both} == {
+        (f"direct-{os_name}", leg)
+        for os_name in ("linux", "macos", "windows")
+        for leg in ("release0-to-release1", "fresh-install")
+    }
+    rejected_both = config("true", DIAGNOSTIC_LEG="both")
+    assert rejected_both.returncode != 0 and "requires diagnostic_keep_going" in rejected_both.stderr
+    rejected = config("false", DIAGNOSTIC_KEEP_GOING="true")
+    assert rejected.returncode != 0 and "diagnostic_keep_going requires direct_only" in rejected.stderr
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
 

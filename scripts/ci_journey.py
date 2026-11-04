@@ -61,7 +61,7 @@ RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
-    "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
+    "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
@@ -599,7 +599,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     for source in sorted(evidence.iterdir(), key=lambda path: path.name):
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
-                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+                not (name.startswith("runtime-service-service-") and name.endswith(".log")) and
+                not re.fullmatch(r"keepgoing-stage-[0-9]{2}\.log", name)):
             continue
         if not source.is_file() or source.is_symlink():
             continue
@@ -1726,6 +1727,13 @@ def execute(args: argparse.Namespace) -> dict:
         diagnostic_start_at=diagnostic_start_at,
     )
     windows.EVIDENCE = evidence
+    keep_going = getattr(args, "diagnostic_keep_going", False)
+    if keep_going:
+        if __package__:
+            from . import ci_journey_keepgoing as keepgoing
+        else:
+            import ci_journey_keepgoing as keepgoing
+        keepgoing.write(evidence, keepgoing.initial(evidence, args))
     identity = runner_identity()
     if diagnostic_start_at is not None:
         # This path deliberately does not enter the normal lifecycle/cleanup
@@ -1760,6 +1768,14 @@ def execute(args: argparse.Namespace) -> dict:
                 raise
         assert_host_available("fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg, root, data)
     except Exception as exc:
+        if keep_going:
+            report = keepgoing.initial(evidence, args)
+            report["stages"].append({"stage": "preflight", "result": "fail", "forced_continuation_used": False,
+                                     "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
+            report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
+                                     "first_error": "Unsafe or unavailable preflight", "evidence_path": str(evidence)}
+                                    for name in (keepgoing.FRESH_STAGES if args.leg == "fresh-install" else keepgoing.STAGES))
+            keepgoing.write(evidence, report)
         failure_path = evidence / "journey-result.json"
         recorded = read_json(failure_path) if failure_path.is_file() else {
             "schema_version": 2, "receipt_kind": "release1-installed-lifecycle",
@@ -1786,7 +1802,8 @@ def execute(args: argparse.Namespace) -> dict:
             with sentinel_process(run_root, evidence) as (sentinel, birth):
                 primary_error = None
                 try:
-                    result = _execute_owned(args, root, data, evidence, sentinel, birth)
+                    result = (keepgoing.execute(args, root, data, evidence, sentinel, birth)
+                              if keep_going else _execute_owned(args, root, data, evidence, sentinel, birth))
                 except Exception as exc:
                     primary_error = exc
                     print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -1805,6 +1822,9 @@ def execute(args: argparse.Namespace) -> dict:
                         result_path = evidence / "journey-result.json"
                         try:
                             if (root / "current").is_file():
+                                if keep_going:
+                                    # Never uninstall a service whose current definition is not owned by this run.
+                                    assert_direct_service_ownership(root, data)
                                 _, _, installed = installation(root, data)
                                 installed_cli(installed, ["install", "--uninstall", "--root", str(root),
                                                           "--data-root", str(data)], evidence,
@@ -1848,10 +1868,35 @@ def execute(args: argparse.Namespace) -> dict:
                             write_json(result_path, recorded)
                         if "result" in locals():
                             result["final_cleanup"] = "retained-for-next-leg"
+                    if keep_going and "result" in locals() and result.get("final_cleanup") == "pass":
+                        result["stages"].append({"stage": "final-cleanup", "result": "pass",
+                                                 "forced_continuation_used": False, "first_error": None,
+                                                 "evidence_path": str(evidence / "final-uninstall.log"),
+                                                 "preconditions": [], "postconditions": []})
+                        keepgoing.write(evidence, result)
                     snapshot_failure_evidence(evidence, run_root, data, "after-cleanup")
                 return result
     except Exception as exc:
         # Context setup can fail before the lifecycle body has produced a receipt.
+        if keep_going:
+            report_path = evidence / "keepgoing-report.json"
+            report = read_json(report_path) if report_path.is_file() else keepgoing.initial(evidence, args)
+            report["stages"].append({"stage": "harness-or-cleanup", "result": "fail",
+                                     "forced_continuation_used": False,
+                                     "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
+            seen = {row["stage"] for row in report["stages"]}
+            report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
+                                     "first_error": "Unsafe or unavailable harness context", "evidence_path": str(evidence)}
+                                    for name in keepgoing.STAGES if name not in seen)
+            # Preserve any failure diagnostics already written to the result.
+            saved_path = evidence / "journey-result.json"
+            saved = read_json(saved_path) if saved_path.is_file() else {}
+            keepgoing.write(evidence, report)
+            diagnostic_receipt = read_json(saved_path)
+            for key in ("cleanup_error", "final_cleanup", "failure_diagnostics"):
+                if key in saved:
+                    diagnostic_receipt[key] = saved[key]
+            write_json(saved_path, diagnostic_receipt)
         result_path = evidence / "journey-result.json"
         recorded = read_json(result_path) if result_path.is_file() else {}
         if "before-cleanup" not in recorded.get("failure_diagnostics", {}) or recorded.get("status") != "fail":
@@ -2092,12 +2137,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-checkout", type=Path)
     parser.add_argument("--retain-for-next-leg", action="store_true",
                         help="keep only this run's installed service for the next named leg")
+    parser.add_argument("--diagnostic-keep-going", action="store_true", help="NON-PROOF direct lifecycle diagnostic")
     parser.add_argument("--diagnostic-start-at", choices=("release0-api-seed",),
                         help="DIAGNOSTIC ONLY: run one retained release-0 stage, never qualification")
     parser.add_argument("--diagnostic-state", type=Path,
                         help="exact run-owned precondition checkpoint for --diagnostic-start-at")
     args = parser.parse_args(argv)
     diagnostic = args.diagnostic_start_at is not None
+    if args.diagnostic_keep_going and (diagnostic or args.mode != "direct" or
+            args.leg not in {"release0-to-release1", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
+        parser.error("keep-going requires a disposable direct lifecycle matrix job")
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
     if bool(args.diagnostic_state) != diagnostic:
@@ -2153,6 +2202,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with without_provider_credentials():
             execute(args)
+        if args.diagnostic_keep_going:
+            return 1  # Diagnostic runs are never successful proof jobs.
     except Exception as exc:
         print(f"Journey failed: {exc}", file=sys.stderr)
         return 1
