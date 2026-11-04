@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import time
 
@@ -93,26 +94,44 @@ def _preseed_workspace_state(data: Path) -> dict:
 
     The diagnostic seed starts after the normal lifecycle has retained the
     release-0 installation.  Its checkpoint must therefore bind the actual
-    workspace bytes as well as the selected program version.  The journey owns
+    workspace bytes as well as the selected program version. The R0 realm's
+    root owner.lock is a live synchronization file, not workspace data: Windows
+    locks its first byte, so record its presence and size without reading it.
+    The journey owns
     this realm and no API operation is in flight at either call site; if it is
     nevertheless changing while it is read, decline the diagnostic rather than
     treating an uncertain state as the original pre-seed realm.
     """
     realm = journey.workspace_root(data)
 
-    def entries() -> list[dict[str, str]]:
+    def entries() -> list[dict]:
         found = []
-        for path in sorted(realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()):
-            relative = path.relative_to(realm).as_posix()
-            if path.is_symlink():
-                raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
-            if path.is_dir():
-                found.append({"path": relative, "kind": "directory"})
-            elif path.is_file():
-                found.append({"path": relative, "kind": "file",
-                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
-            else:
-                raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+
+        def visit(directory: Path) -> None:
+            # Unlike Path.rglob on some Python versions, scandir propagates
+            # enumeration errors instead of silently returning a partial tree.
+            with os.scandir(directory) as children:
+                paths = sorted((Path(child.path) for child in children), key=lambda path: path.name)
+            for path in paths:
+                relative = path.relative_to(realm).as_posix()
+                info = path.lstat()
+                if (stat.S_ISLNK(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                    raise RuntimeError("Diagnostic pre-seed workspace contains a symlink or reparse point")
+                if stat.S_ISDIR(info.st_mode):
+                    found.append({"path": relative, "kind": "directory"})
+                    visit(path)
+                elif stat.S_ISREG(info.st_mode):
+                    if relative == "owner.lock":
+                        found.append({"path": relative, "kind": "live-owner-lock", "size": info.st_size})
+                    else:
+                        found.append({"path": relative, "kind": "file",
+                                      "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+                else:
+                    raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+
+        visit(realm)
+        found.sort(key=lambda entry: entry["path"])
         return found
 
     first = entries()

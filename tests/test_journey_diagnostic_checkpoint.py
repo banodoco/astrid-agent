@@ -1,6 +1,8 @@
 """Focused F2 coverage for retained release-0 diagnostic checkpoint fidelity."""
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -166,3 +168,171 @@ def test_diagnostic_checkpoint_refuses_each_changed_retained_realm_before_seed(
     assert receipt["status"] == "fail"
     assert receipt["checks"] == {"preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}
     assert receipt["qualification"]["eligible"] is False
+
+
+def test_live_root_lock_is_inventoried_without_reading_and_data_stays_bound(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    realm = data / "runtime" / "realms" / "r0"
+    realm.mkdir(parents=True)
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    lock = realm / "owner.lock"
+    lock.write_bytes(b"locked byte")
+    # Real frozen R0 manifest bytes exercise the ordinary data path; they are
+    # fixture inputs, not a claim to be a captured realm database.
+    manifest = jumps.RELEASE0_FIXTURE / "served" / "install-manifest.json"
+    (realm / "data.json").write_bytes(manifest.read_bytes())
+    original_read = Path.read_bytes
+
+    def guarded_read(path):
+        if path == lock:
+            raise PermissionError("live lock must never be read")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+    before = jumps._preseed_workspace_state(data)
+    assert before["entry_count"] == 2
+    (realm / "data.json").write_bytes(b"changed")
+    assert jumps._preseed_workspace_state(data) != before
+    (realm / "data.json").write_bytes(original_read(manifest))
+    lock.write_bytes(b"different size")
+    assert jumps._preseed_workspace_state(data) != before
+    lock.unlink()
+    assert jumps._preseed_workspace_state(data) != before
+
+
+@pytest.mark.parametrize("name", ["realm.sqlite3", "nested/owner.lock", "instance.lock"])
+def test_unreadable_other_files_are_not_exempt(tmp_path, monkeypatch, name):
+    data = tmp_path / "data"
+    realm = data / "realm"
+    realm.mkdir(parents=True)
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    target = realm / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"data")
+    original_read = Path.read_bytes
+
+    def guarded_read(path):
+        if path == target:
+            raise PermissionError("unreadable data")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+    with pytest.raises(PermissionError, match="unreadable data"):
+        jumps._preseed_workspace_state(data)
+
+
+def test_census_rejects_enumeration_failure_and_symlink(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    realm = data / "realm"
+    (realm / "nested").mkdir(parents=True)
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        if path == realm / "nested":
+            raise PermissionError("cannot enumerate")
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", guarded_scandir)
+        with pytest.raises(PermissionError, match="cannot enumerate"):
+            jumps._preseed_workspace_state(data)
+    try:
+        (realm / "owner.lock").symlink_to(realm / "nested", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    with pytest.raises(RuntimeError, match="symlink or reparse point"):
+        jumps._preseed_workspace_state(data)
+
+
+def test_census_rejects_changes_between_passes(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    realm = data / "realm"
+    realm.mkdir(parents=True)
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    lock = realm / "owner.lock"
+    lock.write_bytes(b"a")
+    original_scandir = os.scandir
+    calls = 0
+
+    def changing_scandir(path):
+        nonlocal calls
+        if path == realm:
+            calls += 1
+            if calls == 2:
+                lock.write_bytes(b"changed size")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", changing_scandir)
+    with pytest.raises(RuntimeError, match="changed while checkpointing"):
+        jumps._preseed_workspace_state(data)
+
+
+def test_real_r0_realm_checkpoint_when_runtime_checkout_available(tmp_path, monkeypatch):
+    checkout = os.environ.get("JOURNEY_TEST_R0_RUNTIME")
+    if not checkout:
+        pytest.skip("set JOURNEY_TEST_R0_RUNTIME to the frozen R0 Runtime checkout")
+    revision = subprocess.check_output(
+        ["git", "-C", checkout, "rev-parse", "HEAD"], text=True).strip()
+    assert revision == jumps.RELEASE0_REFS["runtime"]
+    monkeypatch.syspath_prepend(checkout)
+    from runtime_protocol.store import RealmStore
+
+    data = tmp_path / "data"
+    realm = data / "runtime" / "realms" / "r0"
+    store = RealmStore.initialize(realm)
+    try:
+        journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+        lock = realm / "owner.lock"
+        assert lock.is_file()
+        assert (realm / "realm.sqlite3").is_file()
+        original_read = Path.read_bytes
+
+        def guarded_read(path):
+            if path == lock:
+                raise PermissionError("live R0 owner lock must not be read")
+            return original_read(path)
+
+        monkeypatch.setattr(Path, "read_bytes", guarded_read)
+        before = jumps._preseed_workspace_state(data)
+        assert before == jumps._preseed_workspace_state(data)
+        (realm / "extra-data").write_bytes(b"changed")
+        assert before != jumps._preseed_workspace_state(data)
+    finally:
+        store.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows byte-range locks")
+def test_native_windows_locked_owner_file_is_not_read(tmp_path):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                    ("hEvent", wintypes.HANDLE)]
+
+    data = tmp_path / "data"
+    realm = data / "realm"
+    realm.mkdir(parents=True)
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
+    lock = realm / "owner.lock"
+    lock.write_bytes(b"x")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                 wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    kernel.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    overlap = Overlapped()
+    with lock.open("r+b") as holder:
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(holder.fileno()))
+        if not kernel.LockFileEx(handle, 3, 0, 1, 0, ctypes.byref(overlap)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            with pytest.raises(PermissionError):
+                lock.read_bytes()
+            assert jumps._preseed_workspace_state(data)["entry_count"] == 1
+        finally:
+            if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlap)):
+                raise ctypes.WinError(ctypes.get_last_error())
