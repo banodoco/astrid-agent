@@ -400,6 +400,17 @@ def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
     assert not journey.windows_task_owned('present\nC:\\Users\\someone\\Astrid\\python.exe\n', root)
 
 
+@pytest.mark.parametrize(("output", "expected"), [
+    ('"haus.astrid.runtime" => true', True),
+    ('\t"haus.astrid.runtime" => disabled', True),
+    ('"haus.astrid.runtime" => false', False),
+    ('"haus.astrid.runtime" => enabled', False),
+    ('"haus.astrid.runtime.r1" => disabled', False),
+])
+def test_launchd_disabled_state_matches_only_exact_service_and_disabled_values(output, expected):
+    assert journey.launchd_service_is_disabled(output, "haus.astrid.runtime") is expected
+
+
 @pytest.mark.parametrize("phase,returncode,stderr,absent", [
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
     ("before-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),

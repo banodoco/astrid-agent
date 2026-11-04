@@ -1106,6 +1106,14 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
             "foreground_fallback": False, "evidence": str(evidence / "service-manager-prerequisite.log")}
 
 
+def launchd_service_is_disabled(output: str, service: str) -> bool:
+    """Match launchctl print-disabled's disabled state for one exact service."""
+    return re.search(
+        rf'(?m)^[ \t]*"{re.escape(service)}"[ \t]*=>[ \t]*(?:true|disabled)[ \t]*$',
+        output,
+    ) is not None
+
+
 def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0) -> dict:
     """Prove the selected direct service matches the lifecycle release phase."""
     if release not in {0, 1}:
@@ -1203,8 +1211,7 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
                                       text=True, timeout=30, check=False)
             if (disabled.returncode or old.returncode == 0
                     or "Could not find service" not in (old.stderr + old.stdout)
-                    or not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true',
-                                     disabled.stdout)):
+                    or not launchd_service_is_disabled(disabled.stdout, "haus.astrid.runtime")):
                 raise RuntimeError("Release-1 journey R0 LaunchAgent is not disabled and unloaded")
         return {"manager": "launchd", "service_path": str(plist), "foreground_fallback": False}
     if sys.platform == "win32":
