@@ -170,7 +170,7 @@ def test_live_identity_must_match_discovery_instance(tmp_path, monkeypatch):
         _backend(tmp_path).source_checkout_ownership(data)
 
 
-def test_selected_managed_version_skips_live_source_identity_conflict(tmp_path, monkeypatch):
+def test_selected_managed_version_refuses_live_source_identity_conflict(tmp_path, monkeypatch):
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
 
@@ -186,14 +186,13 @@ def test_selected_managed_version_skips_live_source_identity_conflict(tmp_path, 
                             "runtime_instance_id": "instance", "identity": identity}))
     installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
                         tmp_path / "profile", {}, 1, None)
-    # Before the managed-selection shortcut this same live source owner caused
-    # a conflict refusal. Without a selected version it remains a source.
     backend = _backend(tmp_path)
     assert backend.source_checkout_ownership(data)
-    assert not backend.source_checkout_ownership(data, installed)
+    with pytest.raises(RuntimeError, match="source identity conflicts with the selected managed version"):
+        backend.source_checkout_ownership(data, installed)
 
 
-def test_selected_managed_version_skips_unreadable_discovery(tmp_path):
+def test_selected_managed_version_refuses_malformed_discovery(tmp_path):
     from astrid_runtime.paths import RuntimePaths
 
     data = tmp_path / "data"
@@ -205,7 +204,8 @@ def test_selected_managed_version_skips_unreadable_discovery(tmp_path):
     backend = _backend(tmp_path)
     with pytest.raises(RuntimeError, match="Runtime discovery owner identity cannot be read"):
         backend.source_checkout_ownership(data)
-    assert not backend.source_checkout_ownership(data, installed)
+    with pytest.raises(RuntimeError, match="Runtime discovery owner identity cannot be read"):
+        backend.source_checkout_ownership(data, installed)
 
 
 @pytest.mark.parametrize("payload", [None, [], {}, {"release": True, "managed_by": None},
@@ -272,8 +272,9 @@ def test_non_object_discovery_is_not_a_stopped_owner(tmp_path, payload):
         _backend(tmp_path).source_checkout_ownership(data)
 
 
+@pytest.mark.parametrize("selected", [False, True])
 @pytest.mark.parametrize("change_during", ["process", "health"])
-def test_discovery_change_during_owner_observation_refuses(tmp_path, monkeypatch, change_during):
+def test_discovery_change_during_owner_observation_refuses(tmp_path, monkeypatch, change_during, selected):
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
 
@@ -298,5 +299,55 @@ def test_discovery_change_during_owner_observation_refuses(tmp_path, monkeypatch
 
     monkeypatch.setattr(platform, "process_identity", process)
     monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity", health)
+    installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
+                        tmp_path / "profile", {}, 1, None) if selected else None
     with pytest.raises(RuntimeError, match="Live Runtime startup identity cannot be verified"):
-        _backend(tmp_path).source_checkout_ownership(data)
+        _backend(tmp_path).source_checkout_ownership(data, installed)
+
+
+@pytest.mark.parametrize("initial", ["missing", "stale"])
+def test_selected_managed_version_refuses_discovery_changed_after_absence_observation(tmp_path, monkeypatch, initial):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    data = tmp_path / "data"
+    path = RuntimePaths.current(data_root=data).discovery_path
+    original = {"pid": 4242, "process_birth_id": "birth"}
+    if initial == "stale":
+        write_json(path, original)
+        def process(_pid):
+            write_json(path, {**original, "pid": 4243})
+            return None
+        monkeypatch.setattr(platform, "process_identity", process)
+    else:
+        read_bytes = Path.read_bytes
+        reads = 0
+        def read(path_arg):
+            nonlocal reads
+            if path_arg == path:
+                reads += 1
+                if reads == 2:
+                    write_json(path, original)
+            return read_bytes(path_arg)
+        monkeypatch.setattr(Path, "read_bytes", read)
+    installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
+                        tmp_path / "profile", {}, 1, None)
+    with pytest.raises(RuntimeError, match="discovery owner identity changed"):
+        _backend(tmp_path).source_checkout_ownership(data, installed)
+
+
+def test_selected_managed_version_accepts_verified_non_source_live_owner(tmp_path, monkeypatch):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    data = tmp_path / "data"
+    write_json(RuntimePaths.current(data_root=data).discovery_path, {
+        "pid": 4242, "process_birth_id": "birth", "runtime_instance_id": "instance",
+        "endpoint": "http://127.0.0.1:12345"})
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": "birth"})
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda *_args, **_kwargs: {"runtime_instance_id": "instance",
+                                                  "identity": {"release": 0, "managed_by": None}})
+    installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
+                        tmp_path / "profile", {}, 0, None)
+    assert not _backend(tmp_path).source_checkout_ownership(data, installed)

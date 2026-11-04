@@ -446,18 +446,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
         """Resolve whether the selected workspace belongs to source checkouts.
 
-        A selected managed version is classified without observing the live
-        owner, including a possible conflicting source owner. Otherwise, a
-        live owner's captured identity is authoritative. When stopped, the
+        A live owner's captured identity is authoritative even when a managed
+        version is selected. When stopped without a selected version, the
         retained Runtime source profile is admitted through Runtime's normal
         validator and its two paths must be Git checkout roots. A managed
         profile names the venv's installed product tree (``source_checkout``)
         and an unpacked Runtime archive (``runtime_checkout``); neither is a
         Git checkout root, so it cannot pass that check.
         """
-        if installed is not None:
-            return False
-
         from astrid_runtime.bootstrap import SourceProfile
         from astrid_runtime.identity import validate_live_owner_identity
         from astrid_runtime.paths import RuntimePaths
@@ -469,12 +465,24 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             discovery_bytes = paths.discovery_path.read_bytes()
             discovery = json.loads(discovery_bytes)
         except FileNotFoundError:
+            discovery_bytes = None
             discovery = None
             state = "stopped"
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("Runtime discovery owner identity cannot be read; refusing to change it.") from exc
         else:
             state = self._discovery_owner_state(discovery)
+
+        def check_discovery_unchanged() -> None:
+            try:
+                current_bytes = paths.discovery_path.read_bytes()
+            except FileNotFoundError:
+                current_bytes = None
+            except OSError as exc:
+                raise RuntimeError("Runtime discovery owner identity cannot be read; refusing to change it.") from exc
+            if current_bytes != discovery_bytes:
+                raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
+
         live_identity = None
         if state == "live":
             try:
@@ -486,17 +494,25 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
                 live_identity = validate_live_owner_identity(health, instance_id=instance_id)
                 # Bind the OS and HTTP observations to the same advertisement.
-                if paths.discovery_path.read_bytes() != discovery_bytes:
-                    raise ValueError("Runtime discovery owner identity changed; refusing to change it.")
+                check_discovery_unchanged()
             except Exception as exc:
                 raise RuntimeError("Live Runtime startup identity cannot be verified; refusing to change it.") from exc
             if live_identity.get("managed_by") == "source":
+                if installed is not None:
+                    raise RuntimeError("Live Runtime source identity conflicts with the selected managed version; refusing to change it.")
                 return True
+
+        # Managed profiles can name release archives rather than Git checkouts.
+        # Selection does not, by itself, establish the live owner's identity.
+        if installed is not None:
+            check_discovery_unchanged()
+            return False
 
         profile_path = paths.source_profiles_dir / "astrid.json"
         if not os.path.lexists(profile_path):
             if state == "stale" and installed is None:
                 raise RuntimeError("Stale Runtime discovery has no retained configuration to verify; refusing to change it.")
+            check_discovery_unchanged()
             return False
         try:
             profile = SourceProfile.load(profile_path, expected_profile="astrid")
@@ -506,6 +522,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError(f"Retained Runtime source configuration cannot be verified: {exc}") from exc
         if live_identity is not None:
             raise RuntimeError("Live Runtime identity conflicts with retained source checkout configuration; refusing to change it.")
+        check_discovery_unchanged()
         return True
 
     @staticmethod
