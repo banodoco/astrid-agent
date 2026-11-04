@@ -1278,6 +1278,19 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
     raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
 
 
+def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int) -> dict:
+    """Check the service contract supported by this platform during cleanup.
+
+    Windows fresh installs select Release 1, but Windows has no distinct
+    Release-1 direct-service ownership contract. Its supported Task Scheduler
+    check is the same install-root ownership check used by the normal fresh
+    install journey. Keep Release-1 ownership assertions strict on platforms
+    that implement them.
+    """
+    checked_release = 0 if sys.platform == "win32" else release
+    return assert_direct_service_ownership(root, data, release=checked_release)
+
+
 def candidate_checkouts(args: argparse.Namespace) -> dict | None:
     """Record and verify all four immutable candidate checkouts when supplied."""
     candidate_path = getattr(args, "candidate", None)
@@ -2012,7 +2025,7 @@ def execute(args: argparse.Namespace) -> dict:
                                 release = None
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
-                                    assert_direct_service_ownership(root, data, release=release)
+                                    assert_cleanup_service_ownership(root, data, release=release)
                                 elif is_linux_macos_upgrade:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                 if is_linux_macos_upgrade and release == 1:
