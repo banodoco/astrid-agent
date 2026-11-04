@@ -182,3 +182,116 @@ def test_fresh_install_failure_blocks_dependent_stages(tmp_path, monkeypatch):
     assert rows['release1-start']['result'] == 'not-run'
     assert rows['release1-task']['result'] == 'not-run'
     assert rows['sentinel']['result'] == 'pass'
+
+
+def test_prestop_runs_before_update_and_retains_nonproof(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'verify')
+    args.diagnostic_prestop_r0 = True
+    monkeypatch.setattr(keepgoing, 'prestop_r0', lambda *a: calls.append('prestop') or {'owner_lock_free': True})
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert calls.index('prestop') < calls.index('update')
+    assert rows['release0-prestop']['result'] == 'pass'
+    assert rows['release1-task']['result'] == rows['one-runtime']['result'] == rows['sentinel']['result'] == 'pass'
+    assert report['prestop_r0']['owner_lock_free'] and report['status'] == 'fail'
+    assert report['proof_mode'] == 'keep-going-diagnostic' and not report['qualification']['eligible']
+
+
+def test_failed_prestop_blocks_update_without_forcing(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.diagnostic_prestop_r0 = True
+    def refuse(*a):
+        raise RuntimeError('owner lock still held')
+    monkeypatch.setattr(keepgoing, 'prestop_r0', refuse)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release0-prestop']['result'] == 'fail'
+    assert rows['release1-update']['result'] == 'not-run' and 'update' not in calls
+    assert not rows['release0-prestop']['forced_continuation_used']
+
+
+@pytest.mark.parametrize('manager,commands', [
+    ('systemd-user', [['systemctl', '--user', 'stop', 'astrid.service'], ['systemctl', '--user', 'disable', 'astrid.service']]),
+    ('launchd', [['launchctl', 'bootout', 'gui/123/haus.astrid.runtime']]),
+    ('task-scheduler', []),
+])
+def test_prestop_uses_only_selected_native_manager_and_probes_lock(tmp_path, monkeypatch, manager, commands):
+    health = {'pid': 42, 'runtime_instance_id': 'old'}
+    calls = []
+    monkeypatch.setattr(journey, 'assert_direct_service_ownership', lambda *a: {'manager': manager})
+    monkeypatch.setattr(journey, 'assert_one_runtime', lambda *a: None)
+    monkeypatch.setattr(journey, 'healthy', lambda *a: health)
+    births = iter(['old-birth', None])
+    monkeypatch.setattr(journey, 'process_birth', lambda *a: next(births))
+    monkeypatch.setattr(journey, 'workspace_root', lambda *a: tmp_path)
+    monkeypatch.setattr(journey, 'runtime_processes', lambda *a: [])
+    monkeypatch.setattr(keepgoing, 'owner_lock_free', lambda *a: calls.append('probe') or True)
+    monkeypatch.setattr(keepgoing.os, 'getuid', lambda: 123, raising=False)
+    monkeypatch.setattr(journey, 'run', lambda cmd, *a, **kw: calls.append(cmd))
+    monkeypatch.setattr(journey.windows, 'powershell', lambda cmd, *a, **kw: calls.append(cmd))
+    result = keepgoing.prestop_r0(SimpleNamespace(candidate_runtime_checkout=tmp_path), tmp_path, tmp_path, tmp_path / 'ev', health, 42, 'old-birth')
+    assert result['owner_lock_free'] and calls[-1] == 'probe'
+    if manager == 'task-scheduler':
+        assert 'schtasks.exe /End' in calls[0] and 'Disable-ScheduledTask' in calls[0]
+    else:
+        assert calls[:-1] == commands
+
+
+def test_owner_lock_probe_respects_real_lock_and_does_not_change_bytes(tmp_path):
+    import subprocess
+    import sys
+    import os
+    runtime = os.environ.get('JOURNEY_TEST_RUNTIME_CHECKOUT')
+    if not runtime or sys.platform == 'win32':
+        pytest.skip('set JOURNEY_TEST_RUNTIME_CHECKOUT to run POSIX native lock contention')
+    from pathlib import Path
+    runtime = Path(runtime)
+    lock = tmp_path / 'owner.lock'
+    lock.write_bytes(b'unchanged')
+    child = subprocess.Popen([sys.executable, '-c', 'import fcntl,sys; f=open(sys.argv[1]); fcntl.flock(f,fcntl.LOCK_EX); print("locked",flush=True); sys.stdin.read()', str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'locked'
+        assert not keepgoing.owner_lock_free(tmp_path, runtime)
+    finally:
+        child.stdin.close()
+        child.wait(timeout=10)
+    assert keepgoing.owner_lock_free(tmp_path, runtime)
+    assert lock.read_bytes() == b'unchanged'
+    lock.unlink()
+    with pytest.raises(RuntimeError, match='missing or unsafe'):
+        keepgoing.owner_lock_free(tmp_path, runtime)
+
+
+def test_prestop_waits_for_lock_and_refuses_held_owner(tmp_path, monkeypatch):
+    health = {'pid': 42, 'runtime_instance_id': 'old'}
+    monkeypatch.setattr(journey, 'assert_direct_service_ownership', lambda *a: {'manager': 'systemd-user'})
+    monkeypatch.setattr(journey, 'assert_one_runtime', lambda *a: None)
+    monkeypatch.setattr(journey, 'healthy', lambda *a: health)
+    births = iter(['old-birth', None])
+    monkeypatch.setattr(journey, 'process_birth', lambda *a: next(births))
+    monkeypatch.setattr(journey, 'workspace_root', lambda *a: tmp_path)
+    monkeypatch.setattr(journey, 'runtime_processes', lambda *a: [])
+    monkeypatch.setattr(journey, 'run', lambda *a, **kw: None)
+    monkeypatch.setattr(keepgoing, 'owner_lock_free', lambda *a: False)
+    ticks = iter([0, 121])
+    monkeypatch.setattr(keepgoing.time, 'monotonic', lambda: next(ticks))
+    with pytest.raises(RuntimeError, match='realm lock did not stop'):
+        keepgoing.prestop_r0(SimpleNamespace(candidate_runtime_checkout=tmp_path), tmp_path, tmp_path, tmp_path / 'ev', health, 42, 'old-birth')
+
+
+def test_diagnostic_mode_cannot_be_accepted_as_proof_even_if_forged():
+    contract = {'job_id': 'direct-linux', 'mode': 'direct', 'runner': 'ubuntu-24.04', 'shell': 'sh'}
+    row = {'proof_mode': 'keep-going-diagnostic', 'receipt_kind': 'release1-installed-lifecycle', 'status': 'pass'}
+    candidate = {key: 'a' * 40 for key in ('app', 'agent', 'runtime', 'pinokio')}
+    errors = keepgoing.gate._release1_row_errors(candidate, contract, row)
+    assert any('diagnostic proof mode is not eligible' in error for error in errors)
+
+
+@pytest.mark.parametrize('mode,leg', [('direct', 'fresh-install'), ('pinokio-backend', 'release0-to-release1')])
+def test_prestop_cli_rejects_other_modes(tmp_path, mode, leg):
+    with pytest.raises(SystemExit) as exc:
+        journey.main(['--leg', leg, '--mode', mode, '--app-checkout', str(tmp_path),
+                      '--run-root', str(tmp_path / 'run'), '--root', str(tmp_path / 'run/program'),
+                      '--data-root', str(tmp_path / 'run/data'), '--diagnostic-prestop-r0'])
+    assert exc.value.code == 2
+    assert not (tmp_path / 'run').exists()

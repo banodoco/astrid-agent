@@ -2,6 +2,9 @@
 from pathlib import Path
 import json
 import os
+import stat
+import sys
+import time
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -19,6 +22,13 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
           "semantic-preservation", "release1-task", "one-runtime", "sentinel")
 
 
+def stages_for(args):
+    stages = list(FRESH_STAGES if args.leg == "fresh-install" else STAGES)
+    if getattr(args, "diagnostic_prestop_r0", False):
+        stages.insert(stages.index("release1-update"), "release0-prestop")
+    return stages
+
+
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
                 "release1-verify-install", "release1-task", "one-runtime", "sentinel")
 
@@ -27,7 +37,8 @@ def initial(evidence, args):
     return {"schema_version": 1, "proof_mode": PROOF_MODE, "classification": "NON-PROOF",
             "qualification": {"eligible": False}, "job_id": args.job_id,
             "scenario": args.leg, "status": "fail", "stages": [],
-            "evidence_root": str(evidence)}
+            "evidence_root": str(evidence),
+            "diagnostic_prestop_r0": getattr(args, "diagnostic_prestop_r0", False)}
 
 
 def write(evidence, report):
@@ -65,6 +76,67 @@ def write(evidence, report):
                 lines.append(f"  s{indexes[producer]} {edge} s{index}")
     lines.append("```")
     (evidence / "keepgoing-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+
+def owner_lock_free(realm: Path, runtime_checkout: Path) -> bool:
+    """Probe the existing lifetime lock with Runtime's own OS lock primitive."""
+    path = realm / "owner.lock"
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Selected realm owner.lock is missing or unsafe")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("Selected realm owner.lock is not a regular file")
+        # The candidate Runtime checkout is already verified against the frozen tuple.
+        sys.path.insert(0, str(runtime_checkout))
+        try:
+            from runtime_protocol import platform as native
+            if not Path(native.__file__).resolve().is_relative_to(runtime_checkout.resolve(strict=True)):
+                raise RuntimeError("Runtime lock primitive did not come from the verified checkout")
+        finally:
+            sys.path.pop(0)
+        try:
+            native.lock_file(fd, blocking=False)
+        except BlockingIOError:
+            return False
+        native.unlock_file(fd)
+        return True
+    finally:
+        os.close(fd)
+
+
+def prestop_r0(args, root, data, evidence, health, pid, birth):
+    """Stop only the validated installed service; uncertainty blocks the update."""
+    service = journey.assert_direct_service_ownership(root, data)
+    journey.assert_one_runtime(data)
+    if journey.healthy(data) != health or journey.process_birth(pid) != birth:
+        raise RuntimeError("Release-0 owner changed before diagnostic stop")
+    realm = journey.workspace_root(data)  # discovery can disappear during stop
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager = service["manager"]
+    if manager == "systemd-user":
+        journey.run(["systemctl", "--user", "stop", "astrid.service"], evidence / "prestop-stop.log", timeout=120)
+        journey.run(["systemctl", "--user", "disable", "astrid.service"], evidence / "prestop-disable.log", timeout=120)
+    elif manager == "launchd":
+        journey.run(["launchctl", "bootout", f"gui/{os.getuid()}/haus.astrid.runtime"], evidence / "prestop-stop.log", timeout=120)
+    elif manager == "task-scheduler":
+        journey.windows.EVIDENCE = evidence
+        journey.windows.powershell("$ErrorActionPreference='Stop'; schtasks.exe /End /TN '\\Astrid Runtime'; "
+                                   "if ($LASTEXITCODE -ne 0) { throw 'Scheduled task end failed' }; "
+                                   "Disable-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\' | Out-Null",
+                                   "prestop-task.log", show=False, timeout=120)
+    else:
+        raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    deadline = time.monotonic() + 120
+    while True:
+        owners = journey.runtime_processes(data)
+        if (journey.process_birth(pid) != birth and not owners
+                and owner_lock_free(realm, args.candidate_runtime_checkout)):
+            return {"manager": manager, "pid": pid, "birth": birth, "realm": str(realm), "owner_lock_free": True}
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Release-0 owner or realm lock did not stop; update refused")
+        time.sleep(1)
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
@@ -194,9 +266,13 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if not birth0:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
         state.update(health0=health, pid0=pid, birth0=birth0)
+    def stop0():
+        report["prestop_r0"] = prestop_r0(args, root, data, evidence / "release0", state["health0"], state["pid0"], state["birth0"])
+        state["stopped0"] = True
     def update():
-        journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        if not getattr(args, "diagnostic_prestop_r0", False):
+            journey.assert_direct_service_ownership(root, data)
+            journey.assert_one_runtime(data)
         journey.bootstrap(state["app"], state["candidate_path"], args.shell, "update", evidence / "release1", root, data)
         state["updated"] = True
     def start1():
@@ -238,7 +314,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release0-task", ["old", "keys"], task0, evidence / "release0-api-seed" / "release0-task")
     stage("release0-snapshot", ["old", "task0"], snap0, evidence / "release0-api-seed")
     stage("release0-owner", ["old"], owner0, evidence / "release0")
-    stage("release1-update", ["old", "health0", "app"], update, evidence / "release1" / "update-bootstrap.log")
+    update_dependencies = ["old", "health0", "app"]
+    if getattr(args, "diagnostic_prestop_r0", False):
+        producers["stopped0"] = "release0-prestop"
+        stage("release0-prestop", ["old", "health0", "before"], stop0, evidence / "release0")
+        update_dependencies.append("stopped0")
+    stage("release1-update", update_dependencies, update, evidence / "release1" / "update-bootstrap.log")
     stage("release1-start", ["updated"], start1, evidence / "release1")
     stage("release1-selection", ["started1", "health0"], select1, evidence / "release1")
     stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log", forced_dependencies=(("verified0", "release0-verify"),))
