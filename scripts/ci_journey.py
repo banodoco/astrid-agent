@@ -27,6 +27,7 @@ from pathlib import Path
 
 if __package__:
     from . import ci_windows_journey as windows
+    from . import journey_live_workspace as live_workspace
     from .journey_matrix import (
         M4_4A_OLD_LAUNCHER_REF,
         M4_4A_OLD_UPDATE_SHA256,
@@ -37,6 +38,7 @@ if __package__:
     )
 else:
     import ci_windows_journey as windows
+    import journey_live_workspace as live_workspace
     from journey_matrix import (
         M4_4A_OLD_LAUNCHER_REF,
         M4_4A_OLD_UPDATE_SHA256,
@@ -612,6 +614,18 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         except Exception as exc:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    # Never upload the helper's raw stdout, traceback, request, or selection.
+    source = evidence / "release0-api-seed" / "live-seed-failure.json"
+    target = destination / "live-seed-failure.json"
+    try:
+        target.unlink(missing_ok=True)
+        if source.is_file() and not source.is_symlink() and source.stat().st_size <= 4096:
+            value = json.loads(source.read_text(encoding="utf-8"))
+            if live_workspace.valid_failure_diagnostic(value):
+                write_json(target, value)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
 
     # Keep each R0 workspace census and exact native identities separately
     # from initial selection and from subsequent restart observations.
