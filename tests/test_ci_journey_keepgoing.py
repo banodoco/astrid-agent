@@ -311,3 +311,14 @@ def test_prestop_seven_checks_continue_after_service_check_failure(tmp_path, mon
     rows = {row['stage']: row for row in report['stages']}
     assert rows['release1-service']['result'] == 'fail'
     assert all(rows[name]['result'] == 'pass' for name in ('release1-release', 'release1-health', 'semantic-preservation', 'release1-task', 'one-runtime', 'sentinel'))
+
+
+def test_prestop_release_failure_does_not_suppress_other_checks(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.diagnostic_prestop_r0 = True
+    monkeypatch.setattr(keepgoing, 'prestop_r0', lambda *a: {'owner_lock_free': True})
+    monkeypatch.setattr(jumps, 'selected_candidate', lambda *a: (_ for _ in ()).throw(RuntimeError('wrong release tuple')))
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-release']['result'] == 'fail'
+    assert all(rows[name]['result'] == 'pass' for name in ('release1-service', 'release1-health', 'semantic-preservation', 'release1-task', 'one-runtime', 'sentinel'))

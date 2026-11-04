@@ -283,8 +283,10 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         state["started1"] = True
     def select1():
         path, selected_data, version = journey.installation(root, data)
-        if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != 1:
-            raise RuntimeError("Release-1 update did not retain data and activate release 1")
+        if selected_data != data or path == state["old_path"]:
+            raise RuntimeError("Release-1 update did not retain data and activate a new version")
+        if not getattr(args, "diagnostic_prestop_r0", False) and jumps.installed_release(version) != 1:
+            raise RuntimeError("Release-1 update did not select release 1")
         if getattr(args, "diagnostic_prestop_r0", False):
             state.update(version=version, version_path=path)
         else:
@@ -295,6 +297,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
             state.update(version=version, version_path=path)
     def check_release1():
+        if jumps.installed_release(state["version"]) != 1:
+            raise RuntimeError("Release-1 update did not select release 1")
         jumps.selected_candidate(state["manifest"], state["version"], state["old_tuple"])
     def check_health1():
         health = journey.healthy(data)
