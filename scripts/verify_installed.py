@@ -1,6 +1,7 @@
 """Test-side observations of an installed Astrid product; never repairs it."""
 from __future__ import annotations
 import argparse
+import ast
 import hashlib
 import ipaddress
 import json
@@ -187,7 +188,7 @@ def installed_runtime_contract(python, root, env, data_root):
     return value
 
 
-def _version_provenance_problems(version, manifest, version_path, *, r1_layout=False):
+def _version_provenance_problems(version, manifest, version_path, *, r1_layout=False, expected_launcher=None):
     problems = []
     version_root = Path(version.get('root', '')).resolve()
     record_root = Path(version_path).resolve().parent
@@ -212,21 +213,13 @@ def _version_provenance_problems(version, manifest, version_path, *, r1_layout=F
         problems.append('current selection does not match version record')
     if r1_layout:
         launcher = program_root / 'bin' / 'runtime'
-        expected_launcher = (
-            '#!/bin/sh\nset -eu\n'
-            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
-            'version=$(cat "$root/current")\n'
-            'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
-            '[ ${#version} -le 64 ] || exit 2\n'
-            'exec "$root/versions/$version/bin/runtime" "$@"\n'
-        )
         try:
             launcher_content = launcher.read_text(encoding='utf-8')
             if (launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK)
-                    or launcher_content != expected_launcher):
-                raise ValueError('fixed launcher does not match the reviewed dispatch wrapper')
+                    or not isinstance(expected_launcher, str) or launcher_content != expected_launcher):
+                raise ValueError('fixed launcher does not match candidate installer dispatch wrapper')
         except (OSError, ValueError):
-            problems.append('fixed runtime launcher does not match reviewed current-selection dispatch')
+            problems.append('fixed runtime launcher does not match candidate installer dispatch wrapper')
     profile = Path(version.get('profile', '')).absolute()
     python = Path(version.get('python', '')).absolute()
     if (not profile.is_relative_to(Path(version_root).absolute()) or not profile.is_file()
@@ -275,6 +268,8 @@ def _version_provenance_problems(version, manifest, version_path, *, r1_layout=F
 
 
 def _reviewed_runtime_schema(mode):
+    if mode != 'supported-legacy-schema':
+        return None
     try:
         releases = json.loads(RELEASES_PATH.read_text(encoding='utf-8'))
         rows = releases['format_review']['supported_runtime_schemas']
@@ -297,11 +292,6 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     problems = []
     if not isinstance(schema, dict):
         return ['no unique reviewed Runtime schema declaration']
-    if mode == 'identity-aware-version-record':
-        expected_layout = {'version_root': 'versions/<current>', 'current_file': 'current',
-                           'launcher': 'bin/runtime', 'launcher_target': 'dispatches-current-to-selected-version'}
-        if schema.get('installed_layout') != expected_layout:
-            problems.append('installed version layout does not match reviewed R1 contract')
     checks = {
         'schema mode': (schema.get('mode'), mode),
         'install manifest schema': (manifest.get('schema_version'), schema.get('install_manifest_schema_version')),
@@ -334,15 +324,75 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     for name in ('agent', 'runtime'):
         if source_refs.get(name) and manifest.get(name, {}).get('sha') != source_refs[name]:
             problems.append(f'manifest {name} source does not match reviewed schema')
-    if mode == 'identity-aware-version-record' and (
-            schema.get('health_identity_emitted') is not True
-            or schema.get('discovery_identity_emitted') is not True):
-        problems.append('reviewed Runtime sources do not emit the identity fields required for strict comparison')
     return problems
 
 
+def candidate_installer_contract(checkout, expected_sha):
+    """Read literal launcher and version-record fields from the selected installer."""
+    if checkout is None or not isinstance(expected_sha, str):
+        raise ValueError('candidate Agent checkout is required')
+    checkout = Path(checkout)
+    actual = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'],
+                            capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+    if actual != expected_sha:
+        raise ValueError('candidate Agent checkout does not match manifest pin')
+    source = subprocess.run(['git', '-C', str(checkout), 'show',
+                             actual + ':astrid/installer/boundary_registration.py'],
+                            capture_output=True, text=True, check=True, timeout=30).stdout
+    tree = ast.parse(source)
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_wrapper']
+    if len(functions) != 1 or len(functions[0].body) != 1 or not isinstance(functions[0].body[0], ast.Return):
+        raise ValueError('candidate installer wrapper cannot be read as a literal')
+    value = ast.literal_eval(functions[0].body[0].value)
+    if not isinstance(value, str) or not value:
+        raise ValueError('candidate installer wrapper is invalid')
+    core = subprocess.run(['git', '-C', str(checkout), 'show',
+                           actual + ':astrid/installer/core.py'],
+                          capture_output=True, text=True, check=True, timeout=30).stdout
+    classes = [node for node in ast.parse(core).body if isinstance(node, ast.ClassDef) and node.name == 'Version']
+    methods = ([node for node in classes[0].body if isinstance(node, ast.FunctionDef) and node.name == 'document']
+               if len(classes) == 1 else [])
+    if (len(methods) != 1 or len(methods[0].body) != 1 or not isinstance(methods[0].body[0], ast.Return)
+            or not isinstance(methods[0].body[0].value, ast.Dict)):
+        raise ValueError('candidate version record fields cannot be read as literals')
+    keys = [ast.literal_eval(key) for key in methods[0].body[0].value.keys]
+    if any(not isinstance(key, str) for key in keys) or len(set(keys)) != len(keys):
+        raise ValueError('candidate version record fields are invalid')
+    return value, set(keys)
+
+
+def candidate_input_problems(manifest, selected_manifest):
+    """Compare only claims actually present in the selected input and installation."""
+    if not isinstance(selected_manifest, dict):
+        return ['selected App install manifest is unavailable']
+    problems = []
+    for name in ('agent', 'runtime'):
+        if not isinstance(selected_manifest.get(name), dict) or not re.fullmatch(
+                r'[0-9a-f]{40}', str(selected_manifest[name].get('sha', ''))):
+            problems.append(f'selected {name} source pin is invalid')
+        elif manifest.get(name) != selected_manifest[name]:
+            problems.append(f'installed manifest {name} source differs from selected input')
+    # The installer may add its own VibeComfy default; it must not alter any
+    # selected input or add other keys. This does not authenticate its bytes.
+    for key, value in selected_manifest.items():
+        if key not in manifest or manifest[key] != value:
+            problems.append(f'installed manifest {key} differs from selected input')
+    if set(manifest) - set(selected_manifest) - {'vibecomfy'}:
+        problems.append('installed manifest contains unexpected fields')
+    return problems
+
+
+def inspect_workspace_schema(python, env, data_root, discovery):
+    script = ("import json,sys; from pathlib import Path; "
+              "from runtime_protocol.upgrade import inspect_canonical_schema; "
+              "print(json.dumps(inspect_canonical_schema(Path(sys.argv[1]), expected_realm_id=sys.argv[2])))")
+    result = subprocess.run([str(python), '-I', '-c', script, discovery['realm_root'], discovery['active_realm']],
+                            capture_output=True, text=True, env=env, cwd=str(data_root), timeout=120, check=True)
+    return json.loads(result.stdout)['version']
+
 def legacy_identity_observation(health, discovery, version, manifest, manifest_bytes,
-                                version_path, runtime_contract):
+                                version_path, runtime_contract, selected_manifest=None,
+                                expected_launcher=None, workspace_version=None, expected_version_fields=None):
     """Allow identity omission only for an exact, release-listed legacy bundle."""
     supported = None
     try:
@@ -359,9 +409,17 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
         problems = []
         if not identity_documents_match(health, discovery, version):
             problems.append('health/discovery/version identities are not exactly equal')
-        problems.extend(_reviewed_schema_problems(
-            _reviewed_runtime_schema('identity-aware-version-record'), 'identity-aware-version-record', health,
-            version, manifest, manifest_bytes, runtime_contract))
+        problems.extend(candidate_input_problems(manifest, selected_manifest))
+        if expected_version_fields is None or set(version) != expected_version_fields:
+            problems.append('version record fields do not match candidate installer')
+        # Current product staging discards archive identities and records no
+        # digest of the serialized installed manifest. Never substitute a
+        # verifier-created snapshot for an installer record.
+        problems.append('installer record of full staged Agent/Runtime source SHAs is unavailable')
+        problems.append('installer record of installed manifest byte digest is unavailable')
+        if (type(workspace_version) is not int or type(runtime_contract.get('workspace_schema_version')) is not int
+                or workspace_version != runtime_contract['workspace_schema_version']):
+            problems.append('workspace schema version does not match installed Runtime target')
         if health.get('status') != 'ok':
             problems.append('Runtime health is not ok')
         if health.get('protocol') != runtime_contract.get('protocol'):
@@ -370,7 +428,8 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
         if (not expected_digest or health.get('schema_digest') != expected_digest
                 or runtime_contract.get('schema_digest') != expected_digest):
             problems.append('health/installed Runtime schema digest does not match manifest')
-        problems.extend(_version_provenance_problems(version, manifest, version_path, r1_layout=True))
+        problems.extend(_version_provenance_problems(version, manifest, version_path, r1_layout=True,
+                                                     expected_launcher=expected_launcher))
         instance = health.get('runtime_instance_id')
         discovered_instance = discovery.get('runtime_instance_id')
         if not isinstance(instance, str) or not instance.strip() or instance != discovered_instance:
@@ -463,7 +522,7 @@ def observation_data_root(version_path, requested_data_root):
     return journey_data_roots.selection(program_root, requested_data_root)[1]
 
 
-def observe(version_path, data_root):
+def observe(version_path, data_root, selected_manifest_path=None, candidate_agent_checkout=None):
     data_root = observation_data_root(version_path, data_root)
     observations = {}
     details = {}
@@ -495,6 +554,22 @@ def observe(version_path, data_root):
     except Exception as exc:
         runtime_contract = {}
         runtime_contract_error = f'{type(exc).__name__}: {exc}'
+    selected_manifest = read(selected_manifest_path) if selected_manifest_path else None
+    expected_launcher = None
+    expected_version_fields = None
+    wrapper_error = None
+    workspace_version = None
+    workspace_error = None
+    if isinstance(version.get('identity'), dict):
+        try:
+            expected_launcher, expected_version_fields = candidate_installer_contract(
+                candidate_agent_checkout, (selected_manifest or {}).get('agent', {}).get('sha'))
+        except Exception as exc:
+            wrapper_error = f'{type(exc).__name__}: {exc}'
+        try:
+            workspace_version = inspect_workspace_schema(python, env, data_root, discovery)
+        except Exception as exc:
+            workspace_error = f'{type(exc).__name__}: {exc}'
     def identity_observation():
         if not all(isinstance(value, dict) for value in (health, discovery, version, manifest)):
             return False, {'mode': 'malformed-observation', 'health_type': type(health).__name__,
@@ -517,8 +592,14 @@ def observe(version_path, data_root):
                 'manifest_runtime_sha': manifest.get('runtime', {}).get('sha'),
                 'manifest_schema_digest': manifest.get('runtime', {}).get('schema_digest'),
             }
-        return legacy_identity_observation(health, discovery, version, manifest,
-                                          manifest_bytes, version_path, runtime_contract)
+        ok, detail = legacy_identity_observation(health, discovery, version, manifest,
+                                          manifest_bytes, version_path, runtime_contract,
+                                          selected_manifest, expected_launcher, workspace_version, expected_version_fields)
+        if wrapper_error:
+            detail['candidate_wrapper_error'] = wrapper_error
+        if workspace_error:
+            detail['workspace_schema_error'] = workspace_error
+        return ok, detail
     check('runtime.identity', identity_observation)
     services = declaration['services']
     health_rows = {r.get('name'): r for r in health.get('services', [])}
@@ -601,10 +682,12 @@ def main():
     parser.add_argument('--version', required=True)
     parser.add_argument('--data-root', required=True)
     parser.add_argument('--before')
+    parser.add_argument('--selected-manifest')
+    parser.add_argument('--candidate-agent-checkout')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     try:
-        receipt = evaluate(observe(args.version, args.data_root), args.mode, read(args.before) if args.before else None)
+        receipt = evaluate(observe(args.version, args.data_root, args.selected_manifest, args.candidate_agent_checkout), args.mode, read(args.before) if args.before else None)
     except Exception as exc:
         receipt = {'schema_version': 1, 'mode': args.mode, 'passed': False, 'failures': ['verifier'], 'error': f'{type(exc).__name__}: {exc}'}
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

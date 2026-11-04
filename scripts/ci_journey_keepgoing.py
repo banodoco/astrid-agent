@@ -193,7 +193,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-install", ["app"], fresh_install, evidence / "release1" / "install-bootstrap.log")
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
-        stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
+        stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence, selected_manifest=state["candidate_path"], candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None)), evidence / "verify-install.log")
         stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
@@ -273,9 +273,9 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         return {"result": "observed-passed" if passed else "observed-failed",
                 "observation": {"passed": passed, "failures": failures}}
     def verify_update():
-        journey.verify("update", state["version_path"], jumps.selected_data_root(root, data), evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
+        journey.verify("update", state["version_path"], jumps.selected_data_root(root, data), evidence, before=evidence / "release0-api-seed" / "verify-observe.json", selected_manifest=state["candidate_path"], candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None))
     def verify_install():
-        journey.verify("install", state["version_path"], jumps.selected_data_root(root, data), evidence)
+        journey.verify("install", state["version_path"], jumps.selected_data_root(root, data), evidence, selected_manifest=state["candidate_path"], candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None))
     def snap1():
         state["after"] = jumps.live_workspace(root, jumps.selected_data_root(root, data),
                                               evidence / "release1-api-observe", "snapshot", state["keys"],

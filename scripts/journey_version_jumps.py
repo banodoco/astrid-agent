@@ -688,8 +688,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         }
         result["checks"].update(release="pass", service="pass", health="pass")
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
-        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
-        journey.verify("install", version_path, active_data, evidence)
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json",
+                       selected_manifest=candidate_path, candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
+        journey.verify("install", version_path, active_data, evidence, selected_manifest=candidate_path,
+                       candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
         after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys,
                                release=1)
@@ -877,9 +879,11 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
             raise RuntimeError("The real historical Runtime survived the candidate update")
         result["checks"]["version_changed"] = "pass"
         result["checks"]["old_runtime_stopped"] = "pass"
-        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json",
+                       selected_manifest=candidate_path, candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
         # C1 needs fully healthy candidate/chat observations, including stale declarations.
-        journey.verify("install", version_path, active_data, evidence)
+        journey.verify("install", version_path, active_data, evidence, selected_manifest=candidate_path,
+                       candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
         result["import_origins"] = journey.read_json(evidence / "verify-install.json")["details"].get("origin.imports")
         result["service_action"] = service_action(root, data, version, old)
         result["checks"]["service_action"] = "pass"
@@ -921,7 +925,8 @@ def rerun(args, root, data, evidence, app, manifest_path, manifest, version, old
     if after_path != selected_path or after.get("identity") != version.get("identity"):
         raise RuntimeError("Same-release rerun unexpectedly changed selected version")
     journey.selected_tuple(manifest, after)
-    journey.verify("install", after_path, active_data, evidence)
+    journey.verify("install", after_path, active_data, evidence, selected_manifest=manifest_path,
+                   candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
     service_action(root, data, after)
     assert_preserved(before_old, workspace(after, active_data, evidence / "after-old", "snapshot", old_keys))
     assert_preserved(before_fresh, workspace(after, active_data, evidence / "after-fresh", "snapshot", keys))

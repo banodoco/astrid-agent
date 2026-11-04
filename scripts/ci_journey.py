@@ -1364,13 +1364,18 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
 
 
 def verify(mode: str, version_path: Path, data: Path, evidence: Path,
-           *, before: Path | None = None) -> Path:
+           *, before: Path | None = None, selected_manifest: Path | None = None,
+           candidate_agent_checkout: Path | None = None) -> Path:
     output = evidence / f"verify-{mode}.json"
     argv: list[str | Path] = [sys.executable, ROOT / "scripts" / "verify_installed.py",
                               "--mode", mode, "--version", version_path,
                               "--data-root", data, "--output", output]
     if before is not None:
         argv += ["--before", before]
+    if selected_manifest is not None:
+        argv += ["--selected-manifest", selected_manifest]
+    if candidate_agent_checkout is not None:
+        argv += ["--candidate-agent-checkout", candidate_agent_checkout]
     run(argv, evidence / f"verify-{mode}.log", timeout=180)
     if not output.is_file():
         raise RuntimeError(f"Shared verifier wrote no receipt: {output}")
@@ -1763,7 +1768,9 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         verify_mode = "update" if args.leg == "stale-update" else "install"
         try:
             verify(verify_mode, version_path, data, evidence,
-                   before=evidence / "verify-observe.json" if args.leg == "stale-update" else None)
+                   before=evidence / "verify-observe.json" if args.leg == "stale-update" else None,
+                   selected_manifest=manifest_path,
+                   candidate_agent_checkout=getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None))
         finally:
             receipt_path = evidence / f"verify-{verify_mode}.json"
             if receipt_path.is_file():

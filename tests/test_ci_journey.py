@@ -71,6 +71,20 @@ def test_tst_b1_each_install_update_leg_calls_shared_verifier(tmp_path, monkeypa
     assert commands[-1][-2:] == ["--before", str(tmp_path / "verify-observe.json")]
 
 
+def test_verifier_receives_candidate_manifest_and_checkout(tmp_path, monkeypatch):
+    commands = []
+    def run(argv, log, **kwargs):
+        commands.append(argv)
+        Path(argv[argv.index('--output') + 1]).write_text('{}')
+    monkeypatch.setattr(journey, 'run', run)
+    manifest, checkout = tmp_path / 'manifest.json', tmp_path / 'candidate-agent'
+    journey.verify('install', tmp_path / 'version.json', tmp_path / 'data', tmp_path,
+                   selected_manifest=manifest, candidate_agent_checkout=checkout)
+    argv = commands[0]
+    assert argv[argv.index('--selected-manifest') + 1] == manifest
+    assert argv[argv.index('--candidate-agent-checkout') + 1] == checkout
+
+
 def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
     installed = tmp_path / "installed"
     installed.mkdir()
