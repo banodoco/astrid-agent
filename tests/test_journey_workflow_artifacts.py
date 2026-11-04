@@ -34,7 +34,8 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     staged_names = set(re.findall(r"'([^']+)'", names_block))
     assert "release0-bootstrap.log" in staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
-    collector_names = set(re.findall(r'^\s*"([^\"]+)"\s*,?\s*$', collector_block, re.M))
+    collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
+    assert {"runtime-owner-selection.json", "runtime-owner-selection-context.json"} <= collector_names
     assert collector_names <= staged_names
     assert "^runtime-service-service-.+\\.log$" in guard
     assert "Unexpected staged evidence path" in guard

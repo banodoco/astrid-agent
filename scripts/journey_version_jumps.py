@@ -546,7 +546,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        journey.assert_release0_runtime(data, old_path, evidence)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
