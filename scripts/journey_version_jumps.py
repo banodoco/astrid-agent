@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import sys
 import time
 
@@ -480,6 +481,16 @@ def semantic_digest(value: dict) -> str:
 
 
 def task_after_update(version: dict, evidence: Path, project: str) -> str:
+    # Preserve the manifest from the exact version about to run the SDK. This
+    # is best-effort evidence collection and must not alter the journey result.
+    try:
+        source = Path(version["root"]) / "manifest.json"
+        if source.is_file() and not source.is_symlink():
+            evidence.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, evidence / "installed-manifest.json")
+    except (OSError, KeyError) as exc:
+        print(f"Journey installed manifest capture failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
     if sys.platform == "win32":
         journey.windows.EVIDENCE = evidence
         journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)

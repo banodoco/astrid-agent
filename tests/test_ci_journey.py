@@ -82,6 +82,49 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
                                {"root": str(installed)})
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_release1_task_failure_stages_sdk_response_and_selected_manifest(tmp_path, monkeypatch, exit_code):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "fresh-install"
+    task_evidence = evidence / "release1-working-task"
+    version_root = run_root / "program" / "versions" / "release1"
+    version_root.mkdir(parents=True)
+    manifest = b'{"agent":{"sha":"agent1"},"runtime":{"sha":"runtime1"}}\n'
+    (version_root / "manifest.json").write_bytes(manifest)
+    response = b'{"result":{"error":{"message":"admission denied"}},"details":{}}\n'
+
+    def fake_run(argv, *, stdout, **kwargs):
+        stdout.write(response.decode())
+        return SimpleNamespace(returncode=exit_code)
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    version = {"root": str(version_root), "python": sys.executable, "env": {}}
+    with pytest.raises(RuntimeError, match="Installed SDK did not admit|sdk-invocation.json: exit 7"):
+        jumps.task_after_update(version, task_evidence, "test-project")
+    # Staging must use this task's exact bytes and ignore unrelated task output.
+    (task_evidence / "other.json").write_text("private")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    shutil.rmtree(version_root)
+    journey.retain_named_evidence(evidence, "after-cleanup")
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = run_root / "evidence-upload" / phase
+        assert (staged / "sdk-invocation.json").read_bytes() == response
+        assert (staged / "installed-manifest.json").read_bytes() == manifest
+        assert not (staged / "other.json").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks may require Windows privileges")
+def test_release1_task_evidence_does_not_follow_symlinks(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    task_evidence = evidence / "release1-working-task"
+    task_evidence.mkdir(parents=True)
+    secret = tmp_path / "unrelated"
+    secret.write_text("unrelated")
+    (task_evidence / "sdk-invocation.json").symlink_to(secret)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert not (tmp_path / "run" / "evidence-upload" / "before-cleanup" / "sdk-invocation.json").exists()
+
+
 def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     """Create a retained release-0 state while stubbing only external products."""
     run_root = tmp_path / "run"
