@@ -24,56 +24,120 @@ READER_INPUTS = (
 )
 
 
-def _windows_schema_handle_is_safe(handle) -> bool:
+def _windows_schema_handle_is_safe(handle, *, diagnostic: dict | None = None) -> bool:
     """Admit a schema input with only user and privileged allow ACEs."""
     from runtime_protocol import windows_security as security
 
+    # Only facts observed by this invocation: no SID strings, paths, or ACL dump.
+    # Keep the last ACE only, so diagnostic size is independent of ACL length.
+    facts = diagnostic if diagnostic is not None else {}
+    facts["predicate"] = "security_api"
     adv, kernel = security._api()
     owner, dacl, descriptor = security.P(), security.P(), security.P()
+    facts["predicate"] = "security_query"
     result = adv.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None,
                                  ctypes.byref(dacl), None, ctypes.byref(descriptor))
     if result:
+        facts["status"] = result
         return False
     try:
+        facts["predicate"] = "token_user"
         user = security._user_sid()
+        facts["predicate"] = "token_default_owner"
         default_owner = security._default_owner_sid()
-        if (not owner or not adv.IsValidSid(owner)
-                or not (adv.EqualSid(owner, user) or adv.EqualSid(owner, default_owner))
-                or not dacl or not adv.IsValidAcl(dacl)):
+        facts["predicate"] = "owner_present"
+        if not owner:
+            return False
+        facts["predicate"] = "owner_valid"
+        if not adv.IsValidSid(owner):
+            return False
+        facts["predicate"] = "owner_matches_token"
+        owner_is_user = adv.EqualSid(owner, user)
+        if not (owner_is_user or adv.EqualSid(owner, default_owner)):
+            facts["owner"] = "neither_user_nor_default"
+            return False
+        facts["owner"] = "user" if owner_is_user else "default_owner"
+        facts["predicate"] = "dacl_present"
+        if not dacl:
+            return False
+        facts["predicate"] = "dacl_valid"
+        if not adv.IsValidAcl(dacl):
             return False
         acl = ctypes.cast(dacl, ctypes.POINTER(security._Acl)).contents
+        facts["ace_count"] = acl.count
         user_access = 0
+        facts["user_access"] = user_access
         for index in range(acl.count):
+            # Discard the previous ACE's facts before any potentially failing call.
+            for key in ("ace_type", "ace_flags", "ace_size", "ace_mask", "trustee"):
+                facts.pop(key, None)
+            facts.update(predicate="ace_read", ace_index=index)
             ace = security.P()
             if not adv.GetAce(dacl, index, ctypes.byref(ace)) or not ace:
                 return False
             header = ctypes.string_at(ace, 4)
             size = int.from_bytes(header[2:4], "little")
+            facts.update(predicate="ace_basic_allow", ace_type=header[0],
+                         ace_flags=header[1], ace_size=size)
             if header[0] != 0 or size < 16:
                 return False
             sid = security.P(ace.value + 8)
-            if not adv.IsValidSid(sid) or 8 + adv.GetLengthSid(sid) > size:
+            facts["predicate"] = "ace_sid_valid"
+            if not adv.IsValidSid(sid):
                 return False
+            facts["predicate"] = "ace_sid_fits"
+            if 8 + adv.GetLengthSid(sid) > size:
+                return False
+            # A basic, size-checked ACE has a DWORD mask before its validated SID.
+            facts["ace_mask"] = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
+            facts["predicate"] = "ace_trustee_allowed"
             if not adv.EqualSid(sid, user):
-                if security._sid_text(sid) not in {"S-1-5-18", "S-1-5-32-544"}:
+                trustee = security._sid_text(sid)
+                facts["trustee"] = {
+                    "S-1-5-18": "system", "S-1-5-32-544": "administrators",
+                    "S-1-5-32-545": "users", "S-1-5-11": "authenticated_users",
+                    "S-1-1-0": "everyone",
+                }.get(trustee, "other")
+                if trustee not in {"S-1-5-18", "S-1-5-32-544"}:
                     return False
             elif not header[1] & 8:  # INHERIT_ONLY_ACE does not grant this object access.
                 mask = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
                 # ACE masks contain effective file-specific rights: read/list and execute/traverse.
                 user_access |= mask
+                facts["trustee"] = "user"
+                facts["user_access"] = user_access
+            else:
+                facts["trustee"] = "user_inherit_only"
+        facts.update(predicate="user_read_traverse", required_access=0x21)
         return user_access & 0x21 == 0x21
     finally:
         kernel.LocalFree(descriptor)
 
 
+def _windows_schema_rejection(diagnostic: dict) -> None:
+    """Best-effort, bounded stderr evidence; never affect admission or cleanup."""
+    try:
+        # All values originate above or are numeric OS error codes, never exception text.
+        record = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+        sys.stderr.write("windows_schema_rejection " + record[:1024] + "\n")
+    except Exception:  # noqa: BLE001 - a broken diagnostic sink must not alter the guard.
+        pass
+
+
 def _windows_schema_path_is_safe(path: Path) -> bool:
     from runtime_protocol import windows_security as security
 
+    diagnostic = {"predicate": "handle_open"}
     try:
         with security._handle(path) as (handle, _info):
-            return _windows_schema_handle_is_safe(handle)
-    except OSError:
+            safe = _windows_schema_handle_is_safe(handle, diagnostic=diagnostic)
+    except OSError as exc:
+        diagnostic.update(errno=exc.errno, winerror=getattr(exc, "winerror", None))
+        _windows_schema_rejection(diagnostic)
         return False
+    if not safe:
+        _windows_schema_rejection(diagnostic)
+    return safe
 
 
 def _windows_installed_source(root: Path) -> Path | None:

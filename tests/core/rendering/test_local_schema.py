@@ -192,7 +192,7 @@ def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=
     def sid(number):
         # The capture's account SID uses domain subauthorities and RID 500.
         parts = [21, 3077485881, 3661871218, 4154919024, number] if number in (500, 501) else (
-            [32, 544] if number == 544 else [number])
+            [32, number] if number in (544, 545) else [number])
         return bytes([1, len(parts)]) + (5).to_bytes(6, "big") + b"".join(
             part.to_bytes(4, "little") for part in parts)
 
@@ -324,7 +324,7 @@ def test_windows_installed_schema_checks_both_source_and_destination(tmp_path, m
 @pytest.mark.parametrize("layout", ["source", "installed"])
 @pytest.mark.parametrize("case", ["safe", "user_distinct_default", "default_owner",
                                   "foreign", "owner", "process_owner"])
-def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout, case):
+def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, capsys, layout, case):
     from contextlib import contextmanager
     from types import SimpleNamespace
 
@@ -367,7 +367,7 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
         yield 1, None
 
     monkeypatch.setattr(security, "_handle", handle)
-    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
+    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix), stderr=sys.stderr))
     monkeypatch.setattr(_local_schema, "owned_by_current_user",
                         lambda *_args, **_kwargs: pytest.fail("owner-only DACL predicate was called"))
     if case in {"safe", "user_distinct_default", "default_owner"}:
@@ -378,6 +378,9 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
     else:
         with pytest.raises(ValueError, match="owner/mode"):
             _local_schema.verified_schema_path(root, str(schema))
+        diagnostic = json.loads(capsys.readouterr().err.strip().split(" ", 1)[1])
+        assert diagnostic["predicate"] == (
+            "ace_trustee_allowed" if case == "foreign" else "owner_matches_token")
 
 
 @pytest.mark.windows_native
@@ -513,3 +516,177 @@ def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, 
             if previous is not None:
                 security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(previous), 0, None, None))
             kernel.CloseHandle(token)
+
+
+@pytest.mark.parametrize("changes,predicate,details", [
+    ({"owner": 501}, "owner_matches_token", {"owner": "neither_user_nor_default"}),
+    ({"null_dacl": True}, "dacl_present", {"owner": "user"}),
+    ({"invalid_acl": True}, "dacl_valid", {}),
+    ({"ace_type": 1}, "ace_basic_allow", {"ace_type": 1, "ace_index": 0}),
+    ({"trustees": (500, 18, 501)}, "ace_trustee_allowed",
+     {"trustee": "other", "ace_index": 2, "ace_mask": 0x1F01FF, "ace_flags": 0}),
+    ({"owner": 544, "process_owner": 544, "trustees": (544, 18, 545),
+      "masks": (0x1F01FF, 0x1F01FF, 0x1200A9)}, "ace_trustee_allowed",
+     {"owner": "default_owner", "trustee": "users", "ace_mask": 0x1200A9,
+      "user_access": 0}),
+    ({"trustees": (544, 18, 18)}, "user_read_traverse", {"user_access": 0}),
+    ({"masks": (1, 0x1F01FF, 0x1F01FF)}, "user_read_traverse",
+     {"user_access": 1, "required_access": 0x21}),
+    ({"trustees": (500,), "flags": (8,)}, "user_read_traverse",
+     {"user_access": 0, "trustee": "user_inherit_only", "ace_flags": 8}),
+])
+def test_windows_schema_rejection_reports_same_handle_facts_after_cleanup(
+        monkeypatch, capsys, changes, predicate, details):
+    from contextlib import contextmanager
+
+    security = _windows_acl_fixture(monkeypatch, **changes)
+    adv, kernel = security._api()
+    events = []
+    query = adv.GetSecurityInfo
+
+    def get_security(handle, *args):
+        assert handle == 123
+        events.append("query")
+        return query(handle, *args)
+
+    @contextmanager
+    def handle(path):
+        events.append("open")
+        try:
+            yield 123, None
+        finally:
+            events.append("close")
+
+    report = _local_schema._windows_schema_rejection
+
+    def emit(facts):
+        events.append("emit")
+        report(facts)
+
+    monkeypatch.setattr(adv, "GetSecurityInfo", get_security)
+    monkeypatch.setattr(kernel, "LocalFree", lambda _descriptor: events.append("free"))
+    monkeypatch.setattr(security, "_handle", handle)
+    monkeypatch.setattr(_local_schema, "_windows_schema_rejection", emit)
+    assert not _local_schema._windows_schema_path_is_safe(Path("private-account/secret-schema"))
+    assert events == ["open", "query", "free", "close", "emit"]
+    output = capsys.readouterr()
+    assert not output.out
+    assert output.err.count("\n") == 1 and len(output.err) <= 1050
+    prefix, raw = output.err.strip().split(" ", 1)
+    assert prefix == "windows_schema_rejection"
+    facts = json.loads(raw)
+    assert facts["predicate"] == predicate
+    assert details.items() <= facts.items()
+    for private in ("private-account", "secret-schema", "S-1-", "3077485881"):
+        assert private not in output.err
+
+
+@pytest.mark.parametrize("failure,predicate", [
+    ("query", "security_query"), ("owner_missing", "owner_present"),
+    ("owner_invalid", "owner_valid"), ("ace_read", "ace_read"),
+    ("ace_null", "ace_read"), ("ace_short", "ace_basic_allow"),
+    ("sid_invalid", "ace_sid_valid"), ("sid_long", "ace_sid_fits"),
+])
+def test_windows_schema_diagnostic_distinguishes_malformed_security(monkeypatch, failure, predicate):
+    import ctypes
+
+    security = _windows_acl_fixture(monkeypatch)
+    adv, kernel = security._api()
+    freed = []
+    monkeypatch.setattr(kernel, "LocalFree", lambda _descriptor: freed.append(True))
+    if failure == "query":
+        monkeypatch.setattr(adv, "GetSecurityInfo", lambda *_args: 5)
+    elif failure == "owner_missing":
+        query = adv.GetSecurityInfo
+
+        def no_owner(*args):
+            result = query(*args)
+            ctypes.cast(args[3], ctypes.POINTER(ctypes.c_void_p))[0] = None
+            return result
+
+        monkeypatch.setattr(adv, "GetSecurityInfo", no_owner)
+    elif failure in {"owner_invalid", "sid_invalid"}:
+        valid = iter([False] if failure == "owner_invalid" else [True, False])
+        monkeypatch.setattr(adv, "IsValidSid", lambda _sid: next(valid))
+    elif failure in {"ace_read", "ace_null"}:
+        monkeypatch.setattr(adv, "GetAce", lambda *_args: int(failure == "ace_null"))
+    elif failure == "ace_short":
+        get_ace = adv.GetAce
+
+        def short_ace(*args):
+            result = get_ace(*args)
+            address = ctypes.cast(args[2], ctypes.POINTER(ctypes.c_void_p))[0]
+            ctypes.memmove(address + 2, b"\x0f\x00", 2)
+            return result
+
+        monkeypatch.setattr(adv, "GetAce", short_ace)
+    else:
+        monkeypatch.setattr(adv, "GetLengthSid", lambda _sid: 65535)
+    facts = {}
+    assert not _local_schema._windows_schema_handle_is_safe(1, diagnostic=facts)
+    assert facts["predicate"] == predicate
+    assert freed == ([] if failure == "query" else [True])
+    if failure == "query":
+        assert facts["status"] == 5
+
+
+@pytest.mark.parametrize("failure", ["handle_open", "token_user", "token_default_owner"])
+def test_windows_schema_oserror_diagnostic_omits_exception_text(monkeypatch, capsys, failure):
+    from contextlib import contextmanager
+
+    security = _windows_acl_fixture(monkeypatch)
+    _, kernel = security._api()
+    events = []
+
+    def fail():
+        error = OSError(13, "private-token-data", "secret-path")
+        error.winerror = 5
+        raise error
+
+    @contextmanager
+    def handle(_path):
+        if failure == "handle_open":
+            fail()
+        try:
+            yield 1, None
+        finally:
+            events.append("close")
+
+    monkeypatch.setattr(security, "_handle", handle)
+    monkeypatch.setattr(kernel, "LocalFree", lambda _descriptor: events.append("free"))
+    if failure != "handle_open":
+        name = "_user_sid" if failure == "token_user" else "_default_owner_sid"
+        monkeypatch.setattr(security, name, fail)
+    assert not _local_schema._windows_schema_path_is_safe(Path("secret-path"))
+    output = capsys.readouterr().err
+    facts = json.loads(output.strip().split(" ", 1)[1])
+    assert facts == {"predicate": failure, "errno": 13, "winerror": 5}
+    assert events == ([] if failure == "handle_open" else ["free", "close"])
+    assert "secret" not in output and "private" not in output
+
+
+@pytest.mark.parametrize("safe", [True, False])
+def test_windows_schema_diagnostic_sink_cannot_change_admission(monkeypatch, safe):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    security = _windows_acl_fixture(monkeypatch, owner=500 if safe else 501)
+    _, kernel = security._api()
+    events = []
+
+    @contextmanager
+    def handle(_path):
+        try:
+            yield 1, None
+        finally:
+            events.append("close")
+
+    def broken_sink(_text):
+        events.append("emit")
+        raise RuntimeError("broken stderr")
+
+    monkeypatch.setattr(security, "_handle", handle)
+    monkeypatch.setattr(kernel, "LocalFree", lambda _descriptor: events.append("free"))
+    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(stderr=SimpleNamespace(write=broken_sink)))
+    assert _local_schema._windows_schema_path_is_safe(Path("private")) is safe
+    assert events == ["free", "close"] + ([] if safe else ["emit"])
