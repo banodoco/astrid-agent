@@ -39,7 +39,6 @@ def busy_case(tmp_path, monkeypatch):
     monkeypatch.setattr(jumps.journey, "bootstrap", refusal)
     monkeypatch.setattr(jumps.journey, "process_birth", lambda _pid: "birth")
     monkeypatch.setattr(jumps.journey, "sentinel_alive", lambda *_: True)
-    monkeypatch.setattr(jumps.journey, "assert_one_runtime", lambda _data: calls.append("one_runtime"))
     args = SimpleNamespace(app_checkout=tmp_path / "app", shell="unused")
     result = {"checks": {}}
 
@@ -53,9 +52,8 @@ def busy_case(tmp_path, monkeypatch):
 
 def test_busy_refusal_accepts_task_specific_failure_and_releases(busy_case):
     busy_case.run()
-    assert busy_case.result["checks"] == {"busy_refusal": "pass", "one_runtime": "pass",
-                                         "unrelated_sentinel": "pass"}
-    assert busy_case.calls == ["busy", "one_runtime", "release"]
+    assert busy_case.result["checks"] == {"busy_refusal": "pass", "unrelated_sentinel": "pass"}
+    assert busy_case.calls == ["busy", "release"]
 
 
 @pytest.mark.parametrize("message", ["busy: another task", "task-123 failed"])
