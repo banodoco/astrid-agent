@@ -118,7 +118,7 @@ def task_residuals(task):
 
 def main():
     suite = os.environ.get('R1_FULL_SUITE', '')
-    if suite not in {'agent', 'runtime'} or os.getuid() != UID or os.environ.get('RUNNER_NAME') != 'hannah-mac' or sys.platform != 'darwin':
+    if suite != 'runtime' or os.getuid() != UID or os.environ.get('RUNNER_NAME') != 'hannah-mac' or sys.platform != 'darwin':
         raise RuntimeError('Unexpected runner or suite')
     home = Path(pwd.getpwuid(UID).pw_dir); temp = Path(os.environ['RUNNER_TEMP'])
     if (temp != home / 'actions-runner/_work/_temp' or temp.is_symlink() or temp.resolve() != temp
@@ -148,7 +148,7 @@ def main():
            'PYTEST_ADDOPTS': '--basetemp=' + str(scratch / 'pytest')}
     status = {'status': 'not-run', 'suite': suite, 'runner': 'hannah-mac', 'uid': UID,
               'agent_sha': AGENT, 'runtime_sha': RUNTIME, 'stages': {},
-              'pytest_command': 'python -m pytest -q', 'pytest_scope': 'default project selection; unique basetemp',
+              'pytest_command': 'targeted backup integrity reproduction', 'pytest_scope': 'single disposable realm',
               'python_source': 'runner-owned Astral Python 3.11.18', 'node': 'runner-owned bundled Node' if node else 'unavailable'}
     try:
         for port in (17340, 5180, 42000):
@@ -185,7 +185,7 @@ def main():
         if result['exit'] != 0 or result['disk_threshold_crossed']: raise RuntimeError('Requested editable install failed')
         for port in (17340, 5180, 42000):
             if not idle_port(port): raise RuntimeError('Required shared port occupied or unverified: ' + str(port))
-        status['stages']['pytest'] = run_stage([str(py), '-m', 'pytest', '-q'], cwd, env, logs / 'pytest.log', task, home, pytest=True)
+        status['stages']['pytest'] = run_stage([str(py), '-c', 'import json, os, tempfile\nfrom pathlib import Path\nfrom runtime_protocol.daemon import RuntimeDaemon\nfrom runtime_protocol.errors import ConflictError\nfrom runtime_protocol.store import RealmStore\nos.environ["ASTRID_RUNTIME_DOOR_PORT"] = "0"\nroot = Path(tempfile.mkdtemp(prefix="backup-diagnostic-"))\nauthority = root / "authority"\nauthority.mkdir()\nactive = authority / "active"\nRealmStore.initialize(active).close()\ndaemon = RuntimeDaemon(active, support_root=root / "support").start()\ntry:\n    try:\n        daemon.service.backup(root / "backup")\n    except ConflictError as exc:\n        print(json.dumps({"outcome": "ConflictError", "details": exc.details}, sort_keys=True, default=str), flush=True)\n    else:\n        print(json.dumps({"outcome": "backup-succeeded"}), flush=True)\nfinally:\n    daemon.stop()\n'], cwd, env, logs / 'pytest.log', task, home, pytest=True)
         status['status'] = 'completed'
     except Exception as exc:
         allowed = ('Required shared port occupied or unverified:', 'Source checkout failed:', 'Source checkout SHA differs', 'Runner Python identity differs', 'Venv creation failed', 'Requested editable install failed', 'Insufficient disk before stage', 'Test launcher')

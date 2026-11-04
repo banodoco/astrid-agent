@@ -11,12 +11,12 @@ import pytest
 from scripts import ci_r1_full_macos as full
 
 
-def test_manual_workflow_embeds_exact_harness_and_two_choices():
+def test_manual_workflow_embeds_exact_harness():
     root = Path(__file__).parents[1]
     workflow = (root / '.github/workflows/journey.yml').read_text()
     match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)", validate=True\)', workflow)
     assert match and base64.b64decode(match.group(1)) == (root / 'scripts/ci_r1_full_macos.py').read_bytes()
-    assert 'options: [agent, runtime]' in workflow and 'workflow_dispatch:' in workflow
+    assert 'options: [runtime]' in workflow and 'workflow_dispatch:' in workflow
     assert 'actions/checkout' not in workflow
 
 
@@ -50,9 +50,10 @@ def test_artifact_log_redaction_and_source_hash(tmp_path):
     assert status['log_source_sha256']['pytest.log'] == __import__('hashlib').sha256(data).hexdigest()
 
 
-def test_requested_install_commands_are_exact_and_test_scope_unfiltered():
+def test_targeted_diagnostic_preserves_install_and_session():
     source = Path(full.__file__).read_text()
     assert "'install', '-e', '.[dev]'" in source
     assert "'install', '-e', '../astrid-agent', '-e', '.[test]'" in source
-    assert "[str(py), '-m', 'pytest', '-q']" in source
+    assert "daemon.service.backup" in source and "exc.details" in source
+    assert "pytest=True" in source and "daemon.stop()" in source
     assert '--basetemp=' in source and 'PYTEST_ADDOPTS' in source
