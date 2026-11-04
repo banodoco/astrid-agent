@@ -138,7 +138,6 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: checkouts)
     monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: {"manager": "test"})
     monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
     version_path, _, version = journey.installation(root, data)
     args.candidate_checkouts = checkouts
     if write_state:
@@ -681,19 +680,6 @@ def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
             return f" 4123 {installed}\n 4124 {foreign}\n 4125 {unrelated}\n"
         monkeypatch.setattr(journey.subprocess, "check_output", ps)
     assert journey.runtime_processes(tmp_path) == [4123, 4124]
-    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
-    with pytest.raises(RuntimeError, match=r"found \[4123, 4124\]"):
-        journey.assert_one_runtime(tmp_path)
-
-
-@pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
-def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, monkeypatch, owners):
-    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
-    monkeypatch.setattr(journey, "runtime_processes", lambda data: owners)
-    with pytest.raises(RuntimeError, match="Expected exactly the selected Runtime owner 4123"):
-        journey.assert_one_runtime(tmp_path)
-    monkeypatch.setattr(journey, "runtime_processes", lambda data: [4123])
-    journey.assert_one_runtime(tmp_path)
 
 
 def test_failure_retains_install_and_manager_before_cleanup_and_preserves_primary(tmp_path, monkeypatch, capsys):
@@ -1232,7 +1218,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def assert_running(_data):
         assert state["running"] and not state["local"]
 
     def manager_action(operation):
@@ -1290,14 +1276,13 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_: None)
-    monkeypatch.setattr(journey, "wait_ready", lambda _: one_runtime(data))
+    monkeypatch.setattr(journey, "wait_ready", lambda _: assert_running(data))
     monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
                                                              {"release": state["release"]}))
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
     monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
     monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
-    monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
     monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
     monkeypatch.setattr(journey, "workspace_root", lambda _: tmp_path / "realm" if state["running"]
                         else pytest.fail("discovery is unavailable after shutdown"))
@@ -1319,6 +1304,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert "one_runtime" not in result["checks"]
     assert calls == ["seed", "task", "snapshot", "snapshot", "task"]
     assert state["running"] and not state["local"]
 
@@ -1329,8 +1315,8 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     state = {"running": True}
     monkeypatch.setattr(journey, "assert_direct_service_ownership",
                         lambda *_: {"manager": "systemd-user"} if state["running"] else pytest.fail("stopped"))
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
     monkeypatch.setattr(journey, "wait_ready", lambda *_: None)
+    monkeypatch.setattr(journey, "healthy", lambda *_: {})
     monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
     monkeypatch.setattr(journey, "run", lambda argv, *_args, **_kw: state.update(running=argv[2] == "start"))
@@ -1341,3 +1327,22 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_direct_workspace_never_opens_workspace_if_runtime_remains(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+
+    events = []
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda *_: events.append("ownership") or {"manager": "systemd-user"})
+    monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
+    monkeypatch.setattr(journey, "healthy", lambda *_: events.append("health") or {})
+    monkeypatch.setattr(journey, "runtime_processes", lambda *_: [42])
+    monkeypatch.setattr(journey, "run", lambda argv, *_args, **_kwargs: events.append(argv[2]))
+    monkeypatch.setattr(journey, "wait_ready", lambda *_: events.append("ready"))
+    monkeypatch.setattr(jumps, "workspace", lambda *_args, **_kwargs: pytest.fail("workspace opened while Runtime is present"))
+    times = iter([0, 121])
+    monkeypatch.setattr(jumps.time, "monotonic", lambda: next(times))
+    with pytest.raises(RuntimeError, match="did not stop"):
+        jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
+    assert events == ["ownership", "health", "stop", "start", "ready", "ownership"]

@@ -157,7 +157,6 @@ def test_c1_version_jump_uses_historical_bootstrap_then_candidate_and_checks_bef
     monkeypatch.setattr(journey, "installation", lambda *a: (Path(state["version"]["root"]) / "version.json", data, state["version"]))
     monkeypatch.setattr(journey, "selected_tuple", lambda selected, version: {
         "agent": selected["agent"]["sha"], "runtime": selected["runtime"]["sha"]})
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
     monkeypatch.setattr(journey, "healthy", lambda *_: {"pid": 123, "runtime_instance_id": state["version"]["root"]})
     monkeypatch.setattr(journey, "process_birth", lambda *_: "old-birth" if state["version"] == old else None)
     def verify(mode, version, workspace, folder, **kwargs):
@@ -259,7 +258,6 @@ def test_busy_refusal_keeps_safety_checks_without_counting_runtime_pids(tmp_path
     monkeypatch.setattr(journey, "bootstrap", lambda *_: (_ for _ in ()).throw(RuntimeError("busy")))
     monkeypatch.setattr(journey, "process_birth", lambda _pid: "birth")
     monkeypatch.setattr(journey, "sentinel_alive", lambda *_: True)
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: pytest.fail("must not count Runtime PIDs"))
     result = {"checks": {}}
     jumps.busy_refusal(argparse.Namespace(app_checkout=tmp_path, shell="sh"), root, data, evidence,
                        tmp_path / "manifest", {"root": str(old_root)}, 123, "birth",

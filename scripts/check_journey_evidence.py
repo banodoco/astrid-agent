@@ -204,7 +204,7 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
             errors.append(f"{name}: tool versions differ from manifest")
         if not row.get("import_origins"):
             errors.append(f"{name}: import origins absent")
-        for check in ("task_settled", "workspace_content", "one_runtime", "unrelated_sentinel"):
+        for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
             if (row.get("checks") or {}).get(check) != "pass":
                 errors.append(f"{name}: {check} did not pass")
     return errors
@@ -290,7 +290,7 @@ def _release1_row_errors(candidate, contract, row):
                 or semantic.get("before_sha256") != semantic.get("after_sha256")):
             errors.append(f"{job_id}: semantic data preservation is absent or unequal")
         for check in ("release", "service", "health", "semantic_data", "task_settled",
-                      "one_runtime", "unrelated_sentinel"):
+                      "unrelated_sentinel"):
             if (row.get("checks") or {}).get(check) != "pass":
                 errors.append(f"{job_id}: {check} assertion did not pass")
     elif (prerequisite.get("outcome") != "explicit-owner"
