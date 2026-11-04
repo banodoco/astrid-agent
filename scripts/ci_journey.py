@@ -57,7 +57,7 @@ TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
-                     "release0-to-release1")
+                     "release0-to-release1", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -2266,7 +2266,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--pinokio-backend-config is only valid for pinokio-backend")
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
-    if args.leg == "release0-to-release1":
+    if args.leg in {"release0-to-release1", "windows-upgrade-refusal"}:
+        if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
+            parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")
         if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
         if args.release0_fixture is None or not args.allow_release0_to_release1:

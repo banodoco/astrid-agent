@@ -13,6 +13,7 @@ import platform
 import re
 import secrets
 import stat
+import subprocess
 import sys
 import time
 
@@ -716,7 +717,85 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
     return result
 
 
+WINDOWS_REFUSAL = "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."
+
+
+def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Exercise the candidate update against an authentic populated R0 installation."""
+    result = {"schema_version": 1, "receipt_kind": "windows-upgrade-refusal",
+              "job_id": args.job_id, "scenario": args.leg, "mode": args.mode, "status": "not-run",
+              "shell": args.shell, **journey.runner_identity(), "os_build": platform.platform(),
+              "source_override_test_mode": False, "candidate_checkouts": args.candidate_checkouts,
+              "service_manager_prerequisite": args.service_manager_prerequisite,
+              "checks": {key: "not-run" for key in ("refusal", "semantic_data", "r0_selected", "unrelated_sentinel")}}
+    path = evidence / "journey-result.json"
+    journey.write_json(path, result)
+    try:
+        fixture, r0_manifest, result["release0_fixture"] = release0_admission(args)
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
+            raise RuntimeError("Refusal requires the frozen release-1 candidate")
+        if not journey.sentinel_observation(sentinel, birth)["alive"]:
+            raise RuntimeError("Sentinel exited before refusal journey")
+        bootstrap_release0(fixture, r0_manifest, args.shell, evidence / "release0", root, data)
+        start_direct_runtime(evidence / "release0")
+        journey.wait_ready(selected_data_root(root, data))
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or installed_release(old) != 0:
+            raise RuntimeError("Frozen bootstrap did not select R0")
+        journey.selected_tuple(journey.read_json(r0_manifest), old)
+        journey.assert_direct_service_ownership(root, data)
+        baseline = evidence / "release0-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = live_workspace(root, data, baseline, "seed", {"project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
+        before = live_workspace(root, data, baseline, "snapshot", keys)
+        env = {k: v for k, v in os.environ.items() if k.casefold() != "psmodulepath"}
+        env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+        log = evidence / "release1" / "update-bootstrap.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("w", encoding="utf-8") as stream:
+            process = subprocess.run([args.shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                      str(app / "public" / "install.ps1"), "--manifest", str(candidate_path),
+                                      "--root", str(root), "--data-root", str(data), "--update"],
+                                     env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=3600, check=False)
+        output = log.read_text(encoding="utf-8-sig", errors="replace")
+        if process.returncode == 0 or WINDOWS_REFUSAL not in output:
+            raise RuntimeError("Candidate update did not fail with the required Windows refusal")
+        result["refusal"] = {"exit_code": process.returncode, "message": WINDOWS_REFUSAL}
+        result["checks"]["refusal"] = "pass"
+        selected_path, selected_data, selected = journey.installation(root, data)
+        if selected_path != old_path or selected_data != old_data or installed_release(selected) != 0:
+            raise RuntimeError("Refusal did not retain the selected R0 installation and data root")
+        journey.selected_tuple(journey.read_json(r0_manifest), selected)
+        result["checks"]["r0_selected"] = "pass"
+        start_direct_runtime(evidence / "release0-after-refusal")
+        journey.wait_ready(data)
+        after = live_workspace(root, data, evidence / "release0-after-refusal", "snapshot", keys)
+        assert_preserved(before, after)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
+        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
+        result["semantic_data"] = {"identical": before_sha == after_sha, "before_sha256": before_sha, "after_sha256": after_sha}
+        result["checks"]["semantic_data"] = "pass"
+        if not journey.sentinel_observation(sentinel, birth)["alive"]:
+            raise RuntimeError("Sentinel exited during refusal journey")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(path, result)
+    return result
+
+
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    if args.leg == "windows-upgrade-refusal":
+        return execute_windows_refusal(args, root, data, evidence, sentinel, birth)
     if args.leg == "release0-to-release1":
         # This lifts only the legacy C1 Windows harness refusal: the admitted
         # path has exact release-0 bytes, an exact release-1 candidate, direct

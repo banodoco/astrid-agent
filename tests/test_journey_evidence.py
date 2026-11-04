@@ -45,6 +45,15 @@ def release1_receipts(tmp_path):
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
+        if contract["job_id"] == "direct-windows":
+            row["checks"]["workspace_content"] = "pass"
+            row["windows_upgrade_refusal"] = {
+                "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
+                "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
+                "release0_fixture": row["release0_fixture"], "semantic_data": row["semantic_data"],
+                "refusal": {"exit_code": 1, "message": "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."},
+                "checks": {key: "pass" for key in ("refusal", "semantic_data", "r0_selected", "unrelated_sentinel")},
+            }
         receipt = tmp_path / contract["job_id"] / "journey-result.json"
         receipt.parent.mkdir(exist_ok=True)
         receipt.write_text(json.dumps(row), encoding="utf-8")
@@ -175,9 +184,9 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     candidate = release1_receipts(tmp_path)
     direct = tmp_path / "direct-windows" / "journey-result.json"
     data = json.loads(direct.read_text())
-    data["semantic_data"]["after_sha256"] = "c" * 64
+    data["windows_upgrade_refusal"]["semantic_data"]["after_sha256"] = "c" * 64
     direct.write_text(json.dumps(data), encoding="utf-8")
-    assert any("direct-windows: semantic data preservation" in error
+    assert any("direct-windows: refusal semantic data preservation" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
     candidate = release1_receipts(tmp_path)
     direct = tmp_path / "direct-linux" / "journey-result.json"

@@ -267,32 +267,65 @@ def _release1_row_errors(candidate, contract, row):
         manager = row.get("service_manager")
         if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
             errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
-        if row.get("scenario") != "release0-to-release1":
-            errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
-        transition = row.get("release_transition")
-        if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
-                or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
-            errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
-        fixture = row.get("release0_fixture")
-        if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
-                or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
-                isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
-                for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
-                or fixture.get("sources") != {
-                    "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                    "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
-                }):
-            errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
-        semantic = row.get("semantic_data")
-        if (not isinstance(semantic, dict) or semantic.get("identical") is not True
-                or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
-                           for name in ("before_sha256", "after_sha256"))
-                or semantic.get("before_sha256") != semantic.get("after_sha256")):
-            errors.append(f"{job_id}: semantic data preservation is absent or unequal")
-        for check in ("release", "service", "health", "semantic_data", "task_settled",
-                      "unrelated_sentinel"):
-            if (row.get("checks") or {}).get(check) != "pass":
-                errors.append(f"{job_id}: {check} assertion did not pass")
+        if job_id == "direct-windows":
+            for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
+                if (row.get("checks") or {}).get(check) != "pass":
+                    errors.append(f"{job_id}: fresh {check} assertion did not pass")
+            refusal = row.get("windows_upgrade_refusal")
+            if not isinstance(refusal, dict):
+                errors.append(f"{job_id}: separate Windows upgrade refusal receipt is absent")
+            else:
+                if (refusal.get("receipt_kind") != "windows-upgrade-refusal" or
+                        refusal.get("job_id") != job_id or refusal.get("scenario") != "windows-upgrade-refusal" or
+                        refusal.get("mode") != "direct" or refusal.get("status") != "pass" or
+                        refusal.get("final_cleanup") != "pass" or refusal.get("source_override_test_mode") is not False or
+                        refusal.get("runner_image") != row.get("runner_image") or refusal.get("shell") != row.get("shell") or
+                        refusal.get("runner_provenance") != row.get("runner_provenance") or refusal.get("os_build") != row.get("os_build") or
+                        refusal.get("candidate_checkouts") != row.get("candidate_checkouts")):
+                    errors.append(f"{job_id}: refusal receipt identity, cleanup or candidate is invalid")
+                observation = refusal.get("refusal") or {}
+                if (type(observation.get("exit_code")) is not int or observation["exit_code"] == 0 or
+                        observation.get("message") != "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."):
+                    errors.append(f"{job_id}: required refusal and nonzero exit are absent")
+                fixture = refusal.get("release0_fixture") or {}
+                if (fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256 or
+                        fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or
+                        fixture.get("sources") != {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649", "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"} or
+                        not all(isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name]) for name in ("manifest_sha256", "provenance_sha256"))):
+                    errors.append(f"{job_id}: frozen refusal fixture provenance is absent or wrong")
+                semantic = refusal.get("semantic_data") or {}
+                if (semantic.get("identical") is not True or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name]) for name in ("before_sha256", "after_sha256")) or semantic.get("before_sha256") != semantic.get("after_sha256")):
+                    errors.append(f"{job_id}: refusal semantic data preservation is absent or unequal")
+                for check in ("refusal", "semantic_data", "r0_selected", "unrelated_sentinel"):
+                    if (refusal.get("checks") or {}).get(check) != "pass":
+                        errors.append(f"{job_id}: refusal {check} assertion did not pass")
+        else:
+            if row.get("scenario") != "release0-to-release1":
+                errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
+            transition = row.get("release_transition")
+            if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
+                    or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
+                errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
+            fixture = row.get("release0_fixture")
+            if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
+                    or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
+                    isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
+                    for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
+                    or fixture.get("sources") != {
+                        "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                        "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+                    }):
+                errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
+            semantic = row.get("semantic_data")
+            if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+                    or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                               for name in ("before_sha256", "after_sha256"))
+                    or semantic.get("before_sha256") != semantic.get("after_sha256")):
+                errors.append(f"{job_id}: semantic data preservation is absent or unequal")
+            for check in ("release", "service", "health", "semantic_data", "task_settled",
+                          "unrelated_sentinel"):
+                if (row.get("checks") or {}).get(check) != "pass":
+                    errors.append(f"{job_id}: {check} assertion did not pass")
     elif (prerequisite.get("outcome") != "explicit-owner"
           or prerequisite.get("managed_by") != "pinokio"
           or prerequisite.get("foreground_fallback") is not False):
@@ -306,6 +339,8 @@ def evaluate_release1_matrix(candidate, results):
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
+        if path.parent.name == "before-cleanup":
+            continue  # Diagnostic snapshot; final receipt is the after-cleanup observation.
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -394,6 +429,8 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
     found = {}
     paths = {}
     for path in Path(results).rglob("journey-result.json"):
+        if path.parent.name == "before-cleanup":
+            continue  # Diagnostic snapshot; final receipt is the after-cleanup observation.
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -743,6 +780,8 @@ def _visibility_receipts(results):
             target.setdefault(key, []).append(entry)
 
     for path in sorted(Path(results).rglob("journey-result.json")):
+        if path.parent.name == "before-cleanup":
+            continue  # Diagnostic snapshot; final receipt is the after-cleanup observation.
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
