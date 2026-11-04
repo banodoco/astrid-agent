@@ -17,21 +17,44 @@ SCAN_ROOTS = (Path("astrid/core"), Path("astrid/sdk"))
 PACKS_ROOT = ROOT / "astrid" / "packs"
 
 
-def _pack_inventory() -> tuple[set[str], set[str]]:
-    """Read pack ids and action capability ids from first-party manifests."""
+def _pack_inventory(root: Path = ROOT) -> tuple[set[str], set[str]]:
+    """Return first-party pack identities, even when their manifests are absent."""
     import yaml
 
     pack_names: set[str] = set()
     capability_ids: set[str] = set()
-    for manifest in sorted(PACKS_ROOT.glob("*/pack.yaml")):
-        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    packs_root = root / "astrid" / "packs"
+    if not packs_root.is_dir():
+        return pack_names, capability_ids
+    # The package directory is the stable identity source. Manifests are optional
+    # and can be temporarily missing while a pack is moved or reconstructed.
+    pack_names.update(
+        path.name for path in packs_root.iterdir()
+        if path.is_dir() and not path.name.startswith("_")
+    )
+    for manifest in sorted(packs_root.glob("*/pack.yaml")):
+        try:
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict):
+            continue
         pack_id = data.get("id")
         if not isinstance(pack_id, str) or not pack_id:
             continue
         pack_names.add(pack_id)
-        actions = data.get("capabilities", [])
-        if isinstance(actions, list):
-            capability_ids.update(f"{pack_id}.{action}" for action in actions if isinstance(action, str))
+        capabilities = data.get("capabilities", [])
+        if isinstance(capabilities, list):
+            for capability in capabilities:
+                if isinstance(capability, str):
+                    capability_ids.add(f"{pack_id}.{capability}")
+                elif isinstance(capability, dict) and isinstance(capability.get("id"), str):
+                    capability_ids.add(f"{pack_id}.{capability['id']}")
+        actions = data.get("actions", {})
+        if isinstance(actions, dict):
+            capability_ids.update(
+                f"{pack_id}.{action}" for action in actions if isinstance(action, str)
+            )
     return pack_names, capability_ids
 
 
@@ -43,6 +66,18 @@ def _module_name(node: ast.AST) -> str | None:
             return "astrid.packs"
         return "." * node.level + (node.module or "")
     return None
+
+
+def _module_names(node: ast.AST) -> list[str]:
+    """Return each imported module separately, including aliased mixed imports."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        if node.module == "astrid" and any(alias.name == "packs" for alias in node.names):
+            return ["astrid.packs"]
+        module = "." * node.level + (node.module or "")
+        return [module] if module else []
+    return []
 
 
 def _pack_name_hits(value: str, pack_names: set[str]) -> set[str]:
@@ -66,9 +101,9 @@ def scan_source(path: str, source: str, pack_names: set[str], capability_ids: se
     tree = ast.parse(source, filename=path)
     findings: Counter = Counter()
     for node in ast.walk(tree):
-        module = _module_name(node)
-        if module and (module.startswith("astrid.packs.") or module == "astrid.packs"):
-            findings[(path, "pack_import", module)] += 1
+        for module in _module_names(node):
+            if module.startswith("astrid.packs.") or module == "astrid.packs":
+                findings[(path, "pack_import", module)] += 1
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
             if value in capability_ids:
@@ -83,13 +118,19 @@ def scan_source(path: str, source: str, pack_names: set[str], capability_ids: se
 
 
 def collect_findings(root: Path = ROOT) -> Counter:
-    pack_names, capability_ids = _pack_inventory()
+    """Scan only the supplied checkout, including its pack inventory."""
+    root = root.resolve()
+    pack_names, capability_ids = _pack_inventory(root)
     findings: Counter = Counter()
     files: list[Path] = []
     for relative in SCAN_ROOTS:
-        files.extend((root / relative).rglob("*.py"))
+        scan_root = root / relative
+        if scan_root.is_dir():
+            files.extend(scan_root.rglob("*.py"))
     # Root-level facade modules are shared production surfaces too.
-    files.extend((root / "astrid").glob("*.py"))
+    facade_root = root / "astrid"
+    if facade_root.is_dir():
+        files.extend(facade_root.glob("*.py"))
     for source_path in sorted(set(files)):
         relative_path = source_path.relative_to(root).as_posix()
         findings.update(scan_source(relative_path, source_path.read_text(encoding="utf-8"), pack_names, capability_ids))
@@ -114,14 +155,21 @@ def check_baseline(findings: Counter, baseline_path: Path = BASELINE) -> list[st
 
 def main(argv: Iterable[str] = sys.argv[1:]) -> int:
     args = list(argv)
+    if args == ["--check"]:
+        args = []
     findings = collect_findings()
     if args == ["--write-baseline"]:
+        violations = check_baseline(findings)
+        if violations:
+            print("refusing to grow core pack-boundary baseline:", file=sys.stderr)
+            print("\n".join(f"  {item}" for item in violations), file=sys.stderr)
+            return 1
         BASELINE.parent.mkdir(parents=True, exist_ok=True)
         BASELINE.write_text(json.dumps({"schema": 1, "findings": _serialized(findings)}, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {sum(findings.values())} normalized findings to {BASELINE.relative_to(ROOT)}")
         return 0
     if args:
-        print("usage: python scripts/check_core_pack_boundary.py [--write-baseline]", file=sys.stderr)
+        print("usage: python scripts/check_core_pack_boundary.py [--check|--write-baseline]", file=sys.stderr)
         return 2
     violations = check_baseline(findings)
     if violations:
