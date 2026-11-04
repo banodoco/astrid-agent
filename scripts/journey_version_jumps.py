@@ -360,8 +360,22 @@ def assert_preserved(before: dict, after: dict) -> None:
         if before[key] != after[key]:
             raise RuntimeError("Update changed seeded workspace " + key)
     for observation in (before, after):
-        if observation["schema_version"] != observation["target_schema_version"]:
+        if "schema_digest" in observation or "target_schema_digest" in observation:
+            matches = (observation.get("schema_digest") is not None
+                       and observation.get("schema_digest") == observation.get("target_schema_digest"))
+        else:
+            matches = (observation.get("schema_version") is not None
+                       and observation.get("schema_version") == observation.get("target_schema_version"))
+        if not matches:
             raise RuntimeError("Selected realm does not match its Runtime schema")
+
+
+def schema_summary(before: dict, after: dict) -> dict:
+    if "schema_digest" in before and "schema_digest" in after:
+        return {"before": before["schema_digest"], "after": after["schema_digest"],
+                "target": after["target_schema_digest"]}
+    return {"before": before["schema_version"], "after": after["schema_version"],
+            "target": after["target_schema_version"]}
 
 
 def service_action(root: Path, data: Path, version: dict, old: dict | None = None) -> dict:
@@ -760,8 +774,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         result["checks"]["service_action"] = "pass"
         after = workspace(version, data, evidence / "after-update", "snapshot", keys)
         assert_preserved(before, after)
-        result["schema"] = {"before": before["schema_version"], "after": after["schema_version"],
-                            "target": after["target_schema_version"]}
+        result["schema"] = schema_summary(before, after)
         result["checks"]["workspace_content"] = result["checks"]["schema_migrated"] = "pass"
         journey.task(version, evidence / "candidate-task", "tst-c1-after")
         result["checks"]["task_settled"] = "pass"

@@ -111,6 +111,8 @@ def seed(client, project, generation, task_id=None, create_project=False):
 
 
 def snapshot(client, keys):
+    from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
+
     project = client.request("GET", path("projects", keys["project"]))
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
@@ -133,17 +135,16 @@ def snapshot(client, keys):
     task = client.request("GET", path("tasks", keys["task_id"]))
     if task["state"] != "succeeded" or "result" not in task:
         raise ValueError("Seeded task is no longer settled successfully with a result")
-    doctor = client.request("GET", path("doctor"))
-    schema = doctor["checks"]["schema"]
-    if schema["ok"] is not True or type(schema["actual_version"]) is not int or type(schema["expected_version"]) is not int:
-        raise ValueError("Runtime doctor did not verify the selected schema")
+    health = client.request("GET", path("health"))
+    if health.get("protocol") != PROTOCOL or health.get("schema_digest") != SCHEMA_DIGEST:
+        raise ValueError("Runtime health does not match the selected schema")
     return {"project": {k: project[k] for k in ("project_id", "slug", "name", "metadata")},
             "timeline": {"name": timeline["name"], "head": timeline["head_revision_id"],
                          "revision": {k: revision[k] for k in ("revision_id", "content_digest", "payload")}},
             "preferences": {k: preferences[k] for k in ("content", "version")},
             "task": {k: task[k] for k in ("task_id", "state", "spec", "result")},
             "cas_sha256": hashlib.sha256(payload).hexdigest(),
-            "schema_version": schema["actual_version"], "target_schema_version": schema["expected_version"]}
+            "schema_digest": health["schema_digest"], "target_schema_digest": SCHEMA_DIGEST}
 
 
 # These fields bind discovery to the owner selected by the parent. Do not pass
