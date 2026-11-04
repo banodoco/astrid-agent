@@ -119,6 +119,53 @@ def test_default_candidate_uses_current_remote_int_r1_heads(tmp_path):
     assert envelope["row"] == "direct-linux"
 
 
+def test_stale_explicit_agent_pin_fails_before_app_push_or_input(tmp_path, capsys):
+    agent_remote, agent_work, stale_agent_sha = make_repo(tmp_path, "agent-advancing")
+    (agent_work / "source.txt").write_text("new head\n", encoding="utf-8")
+    git("-C", str(agent_work), "add", "source.txt")
+    git("-C", str(agent_work), "commit", "--quiet", "-m", "advance int/r1")
+    git("-C", str(agent_work), "push", "--quiet", "origin", "int/r1")
+    runtime_remote, _, runtime_sha = make_repo(tmp_path, "runtime-current")
+    app_remote, app_work, _ = make_repo(
+        tmp_path,
+        "app-stale",
+        {
+            "public/install-manifest.json": '{"agent":{"sha":"old-agent"},"runtime":{"sha":"old-runtime"}}\n',
+            "public/install": "install\n",
+            "public/install.sh": "#!/bin/sh\n",
+            "public/install.ps1": "Write-Output install\n",
+        },
+    )
+    before = git("--git-dir", str(app_remote), "rev-parse", "refs/heads/int/r1")
+    output_dir = tmp_path / "stale-inputs"
+
+    try:
+        dispatch_candidate.main(
+            [
+                stale_agent_sha,
+                runtime_sha,
+                "direct-linux",
+                "stale-candidate.json",
+                "--agent-remote",
+                str(agent_remote),
+                "--runtime-remote",
+                str(runtime_remote),
+                "--app-repo",
+                str(app_work),
+                "--output-dir",
+                str(output_dir),
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("stale Agent SHA should fail closed for an int/r1 workflow candidate")
+
+    assert f"Agent SHA {stale_agent_sha} is not current int/r1 head" in capsys.readouterr().err
+    assert git("--git-dir", str(app_remote), "rev-parse", "refs/heads/int/r1") == before
+    assert not (output_dir / "stale-candidate.json").exists()
+
+
 def test_unfetchable_agent_sha_fails_before_app_push_or_input(tmp_path, capsys):
     agent_remote, _, _ = make_repo(tmp_path, "agent")
     runtime_remote, _, runtime_sha = make_repo(tmp_path, "runtime")

@@ -99,15 +99,28 @@ def main(argv=None):
     if not args.app_repo.is_dir():
         parser.error(f"App repository directory does not exist: {args.app_repo}; pass --app-repo")
 
-    # Default workflow candidates follow today's int/r1 heads. Explicit pins
-    # remain available for diagnostic use. In either case, verify exact
-    # fetchability before touching App or creating the relay input.
+    # Every int/r1 workflow candidate must follow today's int/r1 heads.
+    # Explicit SHAs are accepted for caller compatibility, but cannot pin a
+    # stale commit. Verify exact fetchability before touching App or creating
+    # the relay input.
     try:
+        current_agent = resolve_remote_int_r1(args.agent_remote, "Agent")
+        current_runtime = resolve_remote_int_r1(args.runtime_remote, "Runtime")
         if args.agent is None:
-            args.agent = resolve_remote_int_r1(args.agent_remote, "Agent")
-            args.runtime = resolve_remote_int_r1(args.runtime_remote, "Runtime")
+            args.agent = current_agent
+            args.runtime = current_runtime
         verify_remote_commit(args.agent_remote, args.agent, "Agent")
         verify_remote_commit(args.runtime_remote, args.runtime, "Runtime")
+        if args.agent != current_agent:
+            raise ValueError(
+                f"Agent SHA {args.agent} is not current int/r1 head {current_agent}; "
+                "int/r1 workflow candidates must install the current head"
+            )
+        if args.runtime != current_runtime:
+            raise ValueError(
+                f"Runtime SHA {args.runtime} is not current int/r1 head {current_runtime}; "
+                "int/r1 workflow candidates must install the current head"
+            )
     except ValueError as exc:
         parser.error(str(exc))
 
