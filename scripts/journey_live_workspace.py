@@ -11,6 +11,11 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
+if __package__:
+    from . import journey_data_roots
+else:
+    import journey_data_roots
+
 ERROR_CODES = frozenset({"runtime_error", "unauthorized", "conflict", "validation_error", "forbidden",
                          "unavailable", "not_found", "retired_route", "owner_busy", "realm_admission_failed",
                          "lease_fenced", "protocol_error", "invalid_request"})
@@ -158,19 +163,9 @@ SELECTION_FIELDS = ("endpoint", "realm_root", "active_realm", "runtime_instance_
 
 def selection_for(data, root, discovery):
     data, root = Path(data), Path(root)
-    marker_path = root / "install.json"
-    if marker_path.is_symlink():
-        raise ValueError("Live workspace install marker cannot be a symlink")
-    if marker_path.is_file():
-        marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        recorded_data = Path(marker["data_root"])
-        active_data = Path(marker.get("r1_data_root", marker["data_root"]))
-    else:
-        recorded_data = active_data = data
-    if (not data.is_absolute() or data != data.resolve(strict=True)
-            or not root.is_absolute() or root != root.resolve(strict=True)
-            or not recorded_data.is_absolute() or recorded_data != recorded_data.resolve(strict=True)
-            or data != active_data or root != recorded_data.parent / "program"):
+    recorded_data, active_data = journey_data_roots.selection(root, data)
+    if (data != active_data or root != recorded_data.parent / "program"
+            or not data.is_dir() or not recorded_data.is_dir() or not root.is_dir()):
         raise ValueError("Live workspace requires the owned program and data roots")
     owner_path = recorded_data.parent / "tst-b1-owner.json"
     if owner_path.is_symlink():

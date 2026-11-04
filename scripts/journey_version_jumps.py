@@ -19,12 +19,14 @@ import time
 if __package__:
     from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
+    from . import journey_data_roots
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import upgrade_release
     import journey_workspace
     import journey_live_workspace as live
+    import journey_data_roots
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -367,30 +369,11 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
 
 def selected_data_root(root: Path, data: Path, *, allow_r1: bool = True) -> Path:
     """Resolve the active R1 copy root while keeping R0 as install provenance."""
-    marker_path = Path(root) / "install.json"
-    if marker_path.is_symlink():
-        raise RuntimeError("Install marker cannot be a symlink")
-    if not marker_path.is_file():
-        return Path(data)
-    marker = journey.read_json(marker_path)
-    recorded = Path(marker.get("data_root", ""))
-    r1_value = marker.get("r1_data_root")
-    if not recorded.is_absolute():
-        raise RuntimeError("Install marker has an invalid data root")
-    if r1_value is None:
-        if recorded != Path(data):
-            raise RuntimeError("Selected data root is outside this journey")
-        return recorded
-    r1 = Path(r1_value)
-    if not r1.is_absolute() or r1 == recorded:
-        raise RuntimeError("Install marker has an invalid R1 data root")
-    if Path(data) == r1:
-        return r1 if allow_r1 else recorded
-    if Path(data) != recorded:
-        raise RuntimeError("Selected data root is outside this journey")
-    if not allow_r1:
-        return recorded
-    return r1
+    try:
+        recorded, active = journey_data_roots.selection(root, data)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise RuntimeError("Selected data root is outside this journey or invalid") from exc
+    return active if allow_r1 else recorded
 
 
 def assert_preserved(before: dict, after: dict) -> None:

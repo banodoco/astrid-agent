@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import shlex
 
 import pytest
 
@@ -30,9 +31,12 @@ def test_linux_r1_ownership_requires_active_r1_and_disabled_inactive_r0(tmp_path
 
     def run(argv, **_kwargs):
         calls.append(argv)
+        if argv[0] == "busctl":
+            command = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
+            return SimpleNamespace(returncode=0, stdout="a(sasbttttuii) 1 " + shlex.quote(command[0]) + " 6 " + shlex.join(command) + " false 0 0 0 0 0 0 0", stderr="")
         if argv[3] == "astrid-r1.service":
             fields = {"LoadState": "loaded", "FragmentPath": str(paths["r1"]),
-                      "ActiveState": "active", "UnitFileState": "enabled"}
+                      "ActiveState": "active", "UnitFileState": "enabled", "DropInPaths": ""}
         else:
             fields = {"LoadState": "loaded", "FragmentPath": str(paths["r0"]),
                       "ActiveState": "inactive", "UnitFileState": "disabled"}
@@ -44,16 +48,19 @@ def test_linux_r1_ownership_requires_active_r1_and_disabled_inactive_r0(tmp_path
     receipt = journey.assert_direct_service_ownership(root, data, release=1)
     assert receipt == {"manager": "systemd-user", "service_path": str(paths["r1"]),
                        "foreground_fallback": False}
-    assert [call[3] for call in calls] == ["astrid-r1.service", "astrid.service"]
+    assert [call[3] for call in calls if call[0] == "systemctl"] == ["astrid-r1.service", "astrid.service"]
 
     def active_r0(argv, **_kwargs):
+        if argv[0] == "busctl":
+            command = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
+            return SimpleNamespace(returncode=0, stdout="a(sasbttttuii) 1 " + shlex.quote(command[0]) + " 6 " + shlex.join(command) + " false 0 0 0 0 0 0 0", stderr="")
         if argv[3] == "astrid.service":
             return SimpleNamespace(returncode=0, stdout=(
                 f"LoadState=loaded\nFragmentPath={paths['r0']}\n"
-                "ActiveState=active\nUnitFileState=enabled\n"), stderr="")
+                "ActiveState=active\nUnitFileState=enabled\nDropInPaths=\n"), stderr="")
         return SimpleNamespace(returncode=0, stdout=(
             f"LoadState=loaded\nFragmentPath={paths['r1']}\n"
-            "ActiveState=active\nUnitFileState=enabled\n"), stderr="")
+            "ActiveState=active\nUnitFileState=enabled\nDropInPaths=\n"), stderr="")
 
     monkeypatch.setattr(journey.subprocess, "run", active_r0)
     with pytest.raises(RuntimeError, match="R0 service is not owned, disabled and inactive"):
@@ -90,7 +97,8 @@ def test_macos_r1_ownership_checks_r1_running_and_r0_disabled_unloaded(tmp_path,
                                    stdout='"haus.astrid.runtime" => true\n', stderr="")
         if argv[-1].endswith("runtime.r1"):
             target = argv[-1]
-            output = (f"{target} = {{\n  path = {paths['r1']}\n  state = running\n}}\n")
+            args = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
+            output = (f"{target} = {{\n  path = {paths['r1']}\n  state = running\n  arguments = {{\n" + "".join(f"    {arg}\n" for arg in args) + "  }\n}\n")
             return SimpleNamespace(returncode=0, stdout=output, stderr="")
         return SimpleNamespace(returncode=113, stdout="",
                                stderr='Could not find service "haus.astrid.runtime"\n')
@@ -105,8 +113,9 @@ def test_macos_r1_ownership_checks_r1_running_and_r0_disabled_unloaded(tmp_path,
 
     def r0_active(argv, **_kwargs):
         if argv[-1].endswith("runtime.r1"):
+            args = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
             return SimpleNamespace(returncode=0, stdout=(
-                f"{argv[-1]} = {{\n  path = {paths['r1']}\n  state = running\n}}\n"), stderr="")
+                f"{argv[-1]} = {{\n  path = {paths['r1']}\n  state = running\n  arguments = {{\n" + "".join(f"    {arg}\n" for arg in args) + "  }\n}\n"), stderr="")
         if argv[1] == "print-disabled":
             return SimpleNamespace(returncode=0,
                                    stdout='"haus.astrid.runtime" => false\n', stderr="")

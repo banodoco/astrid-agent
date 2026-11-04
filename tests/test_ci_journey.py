@@ -1272,7 +1272,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
     monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
-    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_, **_kwargs: None)
     monkeypatch.setattr(journey, "wait_ready", lambda _: assert_running(data))
     monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
                                                              {"release": state["release"]}))

@@ -14,6 +14,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1104,7 +1105,7 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
         unit = unit_dir / unit_name
         if not unit.is_file() or unit.is_symlink():
             raise RuntimeError(f"Direct journey did not install the owned {unit_name} unit")
-        properties = "LoadState,FragmentPath,ActiveState,UnitFileState" if release == 1 else (
+        properties = "LoadState,FragmentPath,ActiveState,UnitFileState,DropInPaths" if release == 1 else (
             "LoadState,FragmentPath,ActiveState")
         completed = subprocess.run(["systemctl", "--user", "show", unit_name,
                                     f"--property={properties}"], capture_output=True,
@@ -1116,6 +1117,29 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
             state = fields.get("ActiveState", "unknown")
             raise RuntimeError(f"Direct journey systemd user service is inactive (ActiveState={state})")
         if release == 1:
+            if fields.get("DropInPaths") != "":
+                raise RuntimeError("Release-1 systemd service has unknown or overridden configuration")
+            # Query the loaded D-Bus action, not just the unit file on disk.
+            object_path = "/org/freedesktop/systemd1/unit/astrid_2dr1_2eservice"
+            action = subprocess.run(["busctl", "--user", "--no-pager", "get-property",
+                                     "org.freedesktop.systemd1", object_path,
+                                     "org.freedesktop.systemd1.Service", "ExecStart"],
+                                    capture_output=True, text=True, timeout=30, check=False)
+            expected = [str(root / "bin" / "runtime"), "run", "--profile", "astrid",
+                        "--data-root", str(Path(str(data) + "-r1"))]
+            try:
+                parts = shlex.split(action.stdout.strip())
+                signature, count, executable, argc, *tail = parts
+                number = int(argc)
+                command, rest = tail[:number], tail[number:]
+                valid = (action.returncode == 0 and signature == "a(sasbttttuii)" and count == "1"
+                         and number == len(expected) and executable == expected[0] and command == expected
+                         and len(rest) == 8 and rest[0] in {"true", "false"}
+                         and all(value.isdecimal() for value in rest[1:]))
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                raise RuntimeError("Release-1 systemd service effective action is not the owned launcher")
             r0_unit = unit_dir / "astrid.service"
             if not r0_unit.is_file() or r0_unit.is_symlink():
                 raise RuntimeError("Release-1 journey did not retain the owned R0 systemd user unit")
@@ -1138,11 +1162,20 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
         domain = f"gui/{os.getuid()}"
         completed = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
                                    capture_output=True, text=True, timeout=30, check=False)
-        if completed.returncode or (release == 1 and (
-                f"{domain}/{label} = {{" not in completed.stdout
-                or f"path = {plist}" not in completed.stdout
-                or not re.search(r"(?m)^\s*state = running\s*$", completed.stdout))):
-            raise RuntimeError(f"Direct journey {label} LaunchAgent is not active from its owned plist")
+        if completed.returncode:
+            raise RuntimeError(f"Direct journey {label} LaunchAgent query failed")
+        if release == 1:
+            output = completed.stdout
+            target = f"{domain}/{label}"
+            paths = re.findall(r"(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$", output)
+            states = re.findall(r"(?m)^[ \t]*state = ([^\r\n]+?)[ \t]*$", output)
+            blocks = re.findall(r"(?ms)^[ \t]*arguments = \{[ \t]*\n(.*?)^[ \t]*\}[ \t]*$", output)
+            expected = [str(root / "bin" / "runtime"), "run", "--profile", "astrid",
+                        "--data-root", str(Path(str(data) + "-r1"))]
+            arguments = [line.strip() for line in blocks[0].splitlines()] if len(blocks) == 1 else []
+            if (not output.startswith(target + " = {\n") or paths != [str(plist)]
+                    or states != ["running"] or arguments != expected):
+                raise RuntimeError(f"Direct journey {label} LaunchAgent is not active from its owned plist and action")
         if release == 1:
             r0_plist = plist.with_name("haus.astrid.runtime.plist")
             if not r0_plist.is_file() or r0_plist.is_symlink():

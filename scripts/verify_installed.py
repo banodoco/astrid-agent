@@ -14,6 +14,11 @@ import urllib.request
 import urllib.parse
 
 
+if __package__:
+    from . import journey_data_roots
+else:
+    import journey_data_roots
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASES_PATH = ROOT / 'tests' / 'upgrade' / 'releases.json'
 
@@ -446,27 +451,8 @@ def observation_data_root(version_path, requested_data_root):
     that path or the recorded R1 path from callers, and keep legacy/fresh
     installs on their existing root.
     """
-    requested = Path(requested_data_root)
-    version_path = Path(version_path)
-    program_root = version_path.resolve().parents[2]
-    marker_path = program_root / 'install.json'
-    if marker_path.is_symlink():
-        raise ValueError('install.json cannot be a symlink')
-    if not marker_path.is_file():
-        return requested
-    marker = read(marker_path)
-    recorded = Path(marker['data_root'])
-    if not recorded.is_absolute():
-        raise ValueError('install.json data_root must be absolute')
-    r1_value = marker.get('r1_data_root')
-    if r1_value is None:
-        if requested != recorded:
-            raise ValueError('requested data root does not match install.json')
-        return recorded
-    r1 = Path(r1_value)
-    if not r1.is_absolute() or r1 == recorded or requested not in (recorded, r1):
-        raise ValueError('requested data root does not match install.json R1 selection')
-    return r1
+    program_root = Path(version_path).resolve().parents[2]
+    return journey_data_roots.selection(program_root, requested_data_root)[1]
 
 
 def observe(version_path, data_root):

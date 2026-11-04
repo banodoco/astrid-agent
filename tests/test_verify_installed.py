@@ -27,7 +27,7 @@ def test_observation_data_root_follows_recorded_r1_copy_and_keeps_fresh_root(tmp
     program = tmp_path / 'program'
     version = program / 'versions' / 'candidate' / 'version.json'
     version.parent.mkdir(parents=True)
-    r0, r1 = tmp_path / 'data', tmp_path / 'copied-data'
+    r0, r1 = tmp_path / 'data', tmp_path / 'data-r1'
     marker = program / 'install.json'
     marker.write_text(json.dumps({'data_root': str(r0), 'r1_data_root': str(r1)}))
 
