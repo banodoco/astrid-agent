@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -601,16 +602,78 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return True
 
     def publish_launch_admission(self, version: Version, data: Path) -> None:
-        """Refresh the selected install's launch action before its first C1 stop."""
+        """Retain R0 registration, or publish admission for a current service."""
         if self.managed_by == "pinokio":
+            return
+        registration = self.service.release0_registration(data)
+        if registration is not None:
+            active = getattr(self, "_update_transaction", None)
+            if active is not None:
+                transaction = active[0]
+                context = transaction.setdefault("transaction_context", {})
+                saved = context.setdefault("release0_service", registration)
+                if saved != registration:
+                    raise ValueError("The retained R0 service changed during the update.")
+                write_json(self.root / "update-transaction.json", transaction)
             return
         self.service.publish_launch_admission(version, data)
 
-    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
-        """Run Runtime's single fenced stop and validated manager handoff.
+    @staticmethod
+    def _wait_owner_lock_free(realm: Path, *, timeout: float = 100) -> None:
+        """Try-lock the existing inode; never read, copy, create or remove it."""
+        lock = realm / "owner.lock"
+        deadline = time.monotonic() + timeout
+        try:
+            fd = os.open(lock, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Runtime realm owner lock is not a regular file.")
 
-        Returns C1's result; callers that ignore it are unaffected.
-        """
+            def unchanged():
+                latest = lock.lstat()
+                if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError("Runtime realm owner lock changed during stop.")
+
+            while True:
+                unchanged()
+                try:
+                    platform.lock_file(fd, blocking=False)
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("The R0 service stopped but its realm owner lock is still held.")
+                    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                else:
+                    try:
+                        unchanged()
+                        return
+                    finally:
+                        platform.unlock_file(fd)
+        finally:
+            os.close(fd)
+
+    def _stop_release0(self, data: Path, registration: dict, *, stop_manager=None) -> dict:
+        from astrid_runtime.bootstrap import _bootstrap_mutex, _selected_stop_realm
+        from astrid_runtime.paths import RuntimePaths
+        from runtime_protocol.lifecycle import interruption_fence
+
+        paths = RuntimePaths.current(data_root=data)
+        self.preflight_stop(data)
+        with _bootstrap_mutex(paths):
+            realm, root = _selected_stop_realm(paths)
+            with interruption_fence(root) as idle:
+                self.service.stop_release0(data, registration)
+                self._wait_owner_lock_free(root)
+                if stop_manager is not None:
+                    stop_manager()
+        # R0 has already stopped. Calling down() here would re-admit stale R0
+        # advertisements and could signal a reused PID. Startup owns their cleanup.
+        return {"status": "stopped", "realm_id": realm["realm_id"], "idle": idle}
+
+    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
+        """Stop an owned R0 service via its manager; use Runtime C1 otherwise."""
         try:
             from astrid_runtime.bootstrap import down
             from astrid_runtime.paths import RuntimePaths
@@ -622,6 +685,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                            or record.get("program_root") != str(self.root)
                            or record.get("data_root") != str(data)):
                 raise ValueError("The service record does not match the selected installation.")
+            if self.managed_by != "pinokio":
+                registration = self.service.release0_registration(data)
+                if registration is not None:
+                    return self._stop_release0(data, registration, stop_manager=stop_manager)
+                if (version is not None and version.release == 0
+                        and self.service.system in {"linux", "darwin"}
+                        and version.python == version.root / "py/bin/python"
+                        and os.path.lexists(self.service.path)
+                        and record.get("foreground") is None):
+                    raise ValueError("The R0 service registration cannot be validated; refusing PID stop.")
             paths = RuntimePaths.current(data_root=data)
             if (self.managed_by != "pinokio" and self.service.system == "linux"
                     and self._foreground_stop_retired
@@ -1111,7 +1184,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 "data_root": str(data), "managed_by": "pinokio",
             })
         else:
-            self.service.register(version, data)
+            active = getattr(self, "_update_transaction", None)
+            saved = ((active[0].get("transaction_context") or {}).get("release0_service")
+                     if active is not None and active[1] else None)
+            if saved is not None and version.document() == saved.get("version"):
+                self.service.restore_release0(version, data, saved)
+            else:
+                self.service.register(version, data)
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ASTRID_BUN_EXECUTABLE</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/bun/bun-darwin-aarch64/bun</string>
+		<key>ASTRID_CAPABILITY_MATRIX_PATH</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/a/config/astrid-beta-capabilities.json</string>
+		<key>ASTRID_FFMPEG_EXECUTABLE</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/ffmpeg/ffmpeg</string>
+		<key>ASTRID_FFPROBE_EXECUTABLE</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/ffmpeg/ffprobe</string>
+		<key>ASTRID_HOST_EXECUTION_PROFILE</key>
+		<string>installed</string>
+		<key>ASTRID_INSTALL_FFMPEG_SOURCE</key>
+		<string>download</string>
+		<key>ASTRID_INSTALL_FFMPEG_VERSION</key>
+		<string>7.0.2-https://www.martin-riedl.de</string>
+		<key>ASTRID_INSTALL_FFPROBE_VERSION</key>
+		<string>7.0.2-https://www.martin-riedl.de</string>
+		<key>ASTRID_INSTALL_OMP_COMMIT</key>
+		<string>78f0e0960f471c2c62b943272a48c33366f239fe</string>
+		<key>ASTRID_INSTALL_OMP_SOURCE</key>
+		<string>fork</string>
+		<key>ASTRID_INSTALL_OMP_VERSION</key>
+		<string>18.12.6</string>
+		<key>ASTRID_NODE_EXECUTABLE</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/node/node-v20.19.4-darwin-arm64/bin/node</string>
+		<key>ASTRID_REMOTION_PROJECT_DIR</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/a/remotion</string>
+		<key>ASTRID_RUNTIME_DATA_ROOT</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/data</string>
+		<key>ASTRID_RUNTIME_DOOR_PORT</key>
+		<string>17340</string>
+		<key>ASTRID_SOURCE_PROVENANCE_ROOT</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/a</string>
+		<key>ASTRID_TIMELINE_SCHEMA_PYTHONPATH</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/a/remotion/node_modules/@banodoco/timeline-schema/python</string>
+		<key>BUN_INSTALL</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/omp</string>
+		<key>BUN_INSTALL_BIN</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/omp/bin</string>
+		<key>PATH</key>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/py/bin:/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/omp/bin:/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/bun/bun-darwin-aarch64:/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/node/node-v20.19.4-darwin-arm64/bin:/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/tools/ffmpeg:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PYTHONIOENCODING</key>
+		<string>utf-8</string>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>90</integer>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>haus.astrid.runtime</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/py/bin/python</string>
+		<string>-X</string>
+		<string>utf8</string>
+		<string>-I</string>
+		<string>-c</string>
+		<string>import json,os,sys
+from pathlib import Path
+path=Path('/Users/runner/work/_temp/astrid-r1-direct-macos/program/service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/Users/runner/work/_temp/astrid-r1-direct-macos/data', '--source-manifest', '/Users/runner/work/_temp/astrid-r1-direct-macos/program/versions/3204bb00-6d53a190-f5ad2f61/profile.json']))</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/runner/work/_temp/astrid-r1-direct-macos/home/Library/Logs/Astrid Runtime/runtime-service.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/runner/work/_temp/astrid-r1-direct-macos/home/Library/Logs/Astrid Runtime/runtime-service.log</string>
+</dict>
+</plist>

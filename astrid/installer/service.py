@@ -317,6 +317,32 @@ def _release0_service_command(version: Version, data: Path, *, windows: bool, lo
     return [str(python), "-X", "utf8", "-I", "-c", script]
 
 
+def _release0_render(system: str, version: Version, data: Path, log: Path,
+                     env_file: Path) -> str:
+    """The frozen POSIX renderer from R0 (3204bb00), for admission/rollback."""
+    log = log.with_name("runtime-service.log")
+    argv = _release0_service_command(version, data, windows=False, log=log, env_file=env_file)
+    environment = {key: value for key, value in version.env.items()
+                   if key not in {"ASTRID_INSTALL_RELEASE", "ASTRID_INSTALL_MANAGED_BY"}}
+    if system == "darwin":
+        return plistlib.dumps({
+            "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
+            "KeepAlive": True, "ExitTimeOut": 90, "EnvironmentVariables": environment,
+            "StandardOutPath": str(log), "StandardErrorPath": str(log),
+        }, sort_keys=True).decode("utf-8")
+    if system != "linux":
+        raise ValueError("R0 service admission requires a POSIX manager.")
+    executable = " ".join(systemd_quote(arg).replace("$", "$$") for arg in argv)
+    settings = "".join("Environment=" + systemd_quote(key + "=" + value) + "\n"
+                       for key, value in sorted(environment.items()))
+    return ("[Unit]\nDescription=Astrid Runtime\n\n[Service]\n"
+            f"ExecStart={executable}\n{settings}Restart=always\nRestartSec=5\n"
+            "KillMode=mixed\nTimeoutStopSec=90\n"
+            f"StandardOutput={systemd_quote('append:' + str(log))}\n"
+            f"StandardError={systemd_quote('append:' + str(log))}\n"
+            "\n[Install]\nWantedBy=default.target\n")
+
+
 def systemd_quote(value: str) -> str:
     # systemd performs specifier expansion even inside double quotes.
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
@@ -547,14 +573,114 @@ class Service:
         }
         return identity, {"state": state, "pid": pid}
 
+    def release0_registration(self, data: Path) -> dict | None:
+        """Admit the complete, untouched R0 unit, bound to a retained version."""
+        if self.system not in {"linux", "darwin"} or not os.path.lexists(self.path):
+            return None
+        info = self.path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        raw = self.path.read_bytes().decode("utf-8")
+        # Ordinary R1 registrations and foreground-only installs retain C1.
+        if "settings=json.loads(path.read_text" not in raw:
+            return None
+        record = self.recorded()
+        for folder in (self.root / "versions").glob("*"):
+            if folder.is_symlink() or not (folder / "version.json").is_file():
+                continue
+            version = Version.load(read_json(folder / "version.json"))
+            if version.root != absolute(folder):
+                raise ValueError("The retained service version is outside this installation.")
+            if version.release != 0 or version.managed_by is not None:
+                continue
+            for env_file in (self.env_file, version.root / "service-env.json"):
+                if raw != _release0_render(self.system, version, data, self.log, env_file):
+                    continue
+                if not owned_by_current_user(self.path, info):
+                    raise ValueError("The R0 service file is not installer-owned.")
+                if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                        or record.get("data_root") != str(data) or record.get("foreground") is not None):
+                    raise ValueError("The R0 service has no matching install selection.")
+                return {"version": version.document(), "text": raw, "path": str(self.path),
+                        "mode": stat.S_IMODE(info.st_mode)}
+        return None
+
+    def _validate_release0_stop(self, data: Path, registration: dict) -> bool:
+        if self.release0_registration(data) != registration:
+            raise ValueError("The R0 service changed before manager stop.")
+        if self.system == "linux":
+            value = self.run(["systemctl", "--user", "show", "astrid.service",
+                              "--property=FragmentPath,DropInPaths,LoadState"], timeout=10)
+            fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+            if (fields.get("FragmentPath") != str(self.path)
+                    or fields.get("LoadState") != "loaded" or fields.get("DropInPaths") != ""):
+                raise ValueError("The systemd service does not match the selected R0 registration.")
+        else:
+            target = f"gui/{platform.current_user()}/{LABEL}"
+            try:
+                value = self.run(["launchctl", "print", target], timeout=10)
+            except subprocess.CalledProcessError as exc:
+                if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
+                    return False  # Already unloaded; the lifetime lock must still be free.
+                raise
+            identity, _observation = self._launchd_stop_identity(value, data)
+            action = plistlib.loads(registration["text"].encode())["ProgramArguments"]
+            if list(identity["arguments"]) != action:
+                raise ValueError("The loaded launchd service does not match the selected R0 registration.")
+        if self.release0_registration(data) != registration:
+            raise ValueError("The R0 service changed before manager stop.")
+        return True
+
+    def stop_release0(self, data: Path, registration: dict) -> None:
+        """Stop R0 through its validated manager, never through a PID."""
+        loaded = self.validate_stop_target(None, data, owner_pid=None, registration=registration)
+        if self.system == "linux":
+            # Reload only the validated, unchanged file. Reject overrides before
+            # and after reload, so the manager executes the admitted R0 action.
+            self.run(["systemctl", "--user", "daemon-reload"], timeout=10)
+            self.validate_stop_target(None, data, owner_pid=None, registration=registration)
+            self.run(["systemctl", "--user", "stop", "astrid.service"], timeout=100)
+        elif loaded:
+            target = f"gui/{platform.current_user()}/{LABEL}"
+            self.run(["launchctl", "bootout", target], timeout=100)
+
+    def restore_release0(self, version: Version, data: Path, registration: dict) -> None:
+        """Restore the exact saved R0 unit after a failed candidate activation."""
+        if (registration.get("version") != version.document()
+                or registration.get("path") != str(self.path)
+                or type(registration.get("mode")) is not int
+                or registration["text"] not in {
+                    _release0_render(self.system, version, data, self.log, env_file)
+                    for env_file in (self.env_file, version.root / "service-env.json")}):
+            raise ValueError("The retained R0 service does not match rollback selection.")
+        # An unrelated replacement must never be overwritten by rollback.
+        if self.release0_registration(data) != registration:
+            # Reuse the owned-action validator for the stopped candidate file.
+            self._publish_posix_launch_admission(version, data, validate_only=True)
+        if self.path.read_bytes().decode("utf-8") != registration["text"]:
+            _atomic_write_text(self.path, registration["text"])
+            self.path.chmod(registration["mode"])
+        if self.system == "darwin":
+            self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+        else:
+            self.run(["systemctl", "--user", "daemon-reload"])
+        persist_install_identity(version, self.root, selection=self.selection, fields={
+            "owner": LABEL, "program_root": str(self.root), "data_root": str(data),
+            "service_settings": self.settings(),
+        })
+
     def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None,
                              expected_identity: dict | None = None,
-                             require_stopped: bool = False) -> dict | None:
+                             require_stopped: bool = False,
+                             registration: dict | None = None) -> dict | bool | None:
         """Read-only confirmation that the named OS job belongs to this owner.
 
         The install selection alone cannot authorize stopping a label that was
-        replaced outside the installer. Runtime still owns the actual stop.
+        replaced outside the installer. R0 uses its exact retained registration;
+        later owners retain Runtime's C1 stop handoff.
         """
+        if registration is not None:
+            return self._validate_release0_stop(data, registration)
         self._validated_systemd_stop = False
         if self.system == "darwin" and not require_stopped:
             self._validated_launchd_stop = None
@@ -725,7 +851,7 @@ class Service:
                         return True
         return False
 
-    def _publish_posix_launch_admission(self, version: Version, data: Path) -> None:
+    def _publish_posix_launch_admission(self, version: Version, data: Path, *, validate_only: bool = False) -> None:
         if not self.path.exists() and not self.path.is_symlink():
             return  # Autostart off stays off.
         message = f"The Astrid service {self.path} has an unknown or changed action/owner. Re-run the install line to repair it."
@@ -810,6 +936,9 @@ class Service:
                                       for line in lines if line not in bindings).encode("utf-8")
         except (KeyError, TypeError, IndexError, AttributeError, UnicodeError, plistlib.InvalidFileException) as exc:
             raise ValueError(message) from exc
+        if validate_only:
+            confirm_unchanged()
+            return
         # Keep properties and permissions; recheck the observed file immediately
         # before atomic publication. A failed write never truncates the old unit.
         with tempfile.NamedTemporaryFile(dir=self.path.parent, prefix=".astrid-", delete=False) as pending:

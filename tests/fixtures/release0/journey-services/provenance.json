@@ -1,0 +1,13 @@
+{
+  "run": 41625801442,
+  "files": {
+    "linux.service": {
+      "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-linux/before-cleanup/unit-file-before-cleanup.txt",
+      "sha256": "d64b8eebf61ef8e97c76a66b160c1d6dff68edcce206ca9e91b60e87a818338e"
+    },
+    "darwin.plist": {
+      "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41625801442/journey-receipt-direct-macos/before-cleanup/unit-file-before-cleanup.txt",
+      "sha256": "ede59039f7e9807de04e60b30350867e884cef856cfb8aee1fa183eeb2ba40b6"
+    }
+  }
+}
