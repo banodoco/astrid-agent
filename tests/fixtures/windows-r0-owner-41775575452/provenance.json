@@ -1,0 +1,24 @@
+{
+  "run_id": "41775575452",
+  "harness_sha": "ebc181f210e6d0c41fa0df623267079c6e8f6c00",
+  "candidate_agent_sha": "705a31922f63ea1abc8544a4d74e546f564a17c5",
+  "release0_agent_sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+  "release0_runtime_sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+  "files": {
+    "runtime-owner-selection.json": {
+      "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41775575452/journey-receipt-direct-windows/before-cleanup/runtime-owner-selection.json",
+      "bytes": 39575,
+      "sha256": "7888fa090a4c157c5e6d9635b64bd5f27e53fb68289788413dfb725ff5a4a7b4"
+    },
+    "runtime-owner-selection-context.json": {
+      "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41775575452/journey-receipt-direct-windows/before-cleanup/runtime-owner-selection-context.json",
+      "bytes": 1656,
+      "sha256": "1de24b96df757ea86345441cbe5f13c92dbf624b2ce2ad197f48f390b61135f0"
+    },
+    "unit-file-before-cleanup.txt": {
+      "source": "/home/user/merge-docs-fresh/docs/merge-plan/evidence/actions/41775575452/journey-receipt-direct-windows/before-cleanup/unit-file-before-cleanup.txt",
+      "bytes": 5425,
+      "sha256": "7aebb6424ada9927c9ef71e959f398656f26d971138681d77cea567ac4fa3707"
+    }
+  }
+}
