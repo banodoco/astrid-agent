@@ -77,15 +77,27 @@ def test_windows_queries_actual_task_and_propagates_errors(tmp_path):
     service = Service(tmp_path / "program", tmp_path / "log", None,
                       home=tmp_path / "home", system="win32")
     calls = []
-    service.powershell = lambda script: calls.append(script) or ""
+    service.powershell = lambda script: calls.append(script) or "ASTRID_TASK_COUNT=0\n"
     assert not r0_stop.is_r0_installation(service.root, service)
-    service.powershell = lambda script: calls.append(script) or "Astrid Runtime\n"
+    service.powershell = lambda script: calls.append(script) or "ASTRID_TASK_COUNT=1\n"
     assert r0_stop.is_r0_installation(service.root, service)
-    assert all("Get-ScheduledTask" in script for script in calls)
+    assert all("Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop" in script for script in calls)
+    assert all("$_.TaskPath -eq '\\'" in script for script in calls)
     def unavailable(script):
         raise OSError("Task Scheduler unavailable")
     service.powershell = unavailable
     with pytest.raises(OSError, match="unavailable"):
+        r0_stop.is_r0_installation(service.root, service)
+
+
+@pytest.mark.parametrize("output", ["", "Astrid Runtime", "ASTRID_TASK_COUNT=2",
+                                    "ASTRID_TASK_COUNT=0\nwarning", "error\nASTRID_TASK_COUNT=0",
+                                    "ASTRID_TASK_COUNT=00", "ASTRID_TASK_COUNT=0\nASTRID_TASK_COUNT=0"])
+def test_windows_task_query_uncertainty_never_means_absent(tmp_path, output):
+    service = Service(tmp_path / "program", tmp_path / "log", None,
+                      home=tmp_path / "home", system="win32")
+    service.powershell = lambda script: output
+    with pytest.raises(ValueError, match="ambiguous or malformed"):
         r0_stop.is_r0_installation(service.root, service)
 
 

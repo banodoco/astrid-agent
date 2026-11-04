@@ -92,3 +92,28 @@ and continued no-command Windows refusals. They neither register a task nor
 test native scheduler serialization/mutation, launch custody, adoption or
 rollback. Native tests and the independent data check remain prerequisites
 for eventual Windows integration; no workflow change or pin bump is included.
+
+## Initial R0 observation
+
+`windows_task_admission.observe_selected_r0` is a read-only building block, not
+an enabled handoff or a production integration. Under the caller-held installer
+selection lock it reads the selected direct R0 Version and installer record,
+then enumerates the root scheduler folder, obtains the current token SID and
+exports the one matching task in a single PowerShell invocation. It rechecks
+the selection afterward and admits only the exact R0 command reconstructed
+from that Version, data root, log and historical sidecar location. It applies
+the definition verifier to the export and returns an in-memory snapshot and
+its enabled bit. Missing, duplicate, malformed, inaccessible or foreign
+observations refuse; only an explicit, successful empty enumeration means
+absence. The captured action's environment must serialize exactly as the
+selected version's environment; harmless historical order changes may refuse.
+
+Initial admission checks the supported definition shape and freezes its
+metadata, triggers and settings; it does not independently establish that
+those settings were originally installed by Astrid. A same-name replacement
+can race or imitate the definition, and a successful observation establishes
+neither running state nor owner-lock release. The snapshot is not durable or
+journal-bound and must not be used to authorize mutation, recovery, or restart.
+Windows handoff remains refused until those gaps and the other platform work
+above are resolved and independently reviewed. The query has not been qualified
+on a native Windows scheduler; a Linux fixture replay is not that evidence.

@@ -13,6 +13,39 @@ from astrid.installer.service import Service
 pytestmark = pytest.mark.windows_installer
 
 
+@pytest.mark.parametrize("scenario", ["absent", "present", "other_folder", "duplicate", "failure"])
+def test_existence_query_requires_an_unambiguous_root_result(tmp_path, scenario):
+    """Run the query against a fake cmdlet; never contact Task Scheduler."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    assert powershell
+    task = "[pscustomobject]@{TaskName='Astrid Runtime';TaskPath='\\'}"
+    bodies = {
+        "absent": "",
+        "present": task,
+        "other_folder": "[pscustomobject]@{TaskName='Astrid Runtime';TaskPath='\\Other\\'}",
+        "duplicate": f"{task}; {task}",
+        "failure": "throw 'Task Scheduler unavailable'",
+    }
+
+    def run(argv):
+        prelude = ("function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskPath); "
+                   + bodies[scenario] + " }; ")
+        result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command",
+                                 prelude + argv[-1]], capture_output=True, text=True,
+                                timeout=30, check=True)
+        return result.stdout
+
+    manager = Service(tmp_path / "program", tmp_path / "log", run, home=tmp_path, system="win32")
+    if scenario == "duplicate":
+        with pytest.raises(ValueError, match="ambiguous or malformed"):
+            manager.login_service_exists()
+    elif scenario == "failure":
+        with pytest.raises(subprocess.CalledProcessError):
+            manager.login_service_exists()
+    else:
+        assert manager.login_service_exists() is (scenario == "present")
+
+
 @pytest.mark.parametrize("operation", ["stop", "unregister"])
 @pytest.mark.parametrize("scenario", ["absent", "present", "lookup_failure", "action_failure"])
 def test_task_cleanup_preserves_powershell_success_and_failure(tmp_path, operation, scenario):
