@@ -70,8 +70,9 @@ try:
   stop_owned(); done('r0-stopped-and-lock-free')
   database=realm/'realm.sqlite3'
   if database.is_symlink() or not database.is_file() or not database.resolve().is_relative_to(data): raise RuntimeError('R0 database identity unsafe')
-  with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as connection:
-   rows=connection.execute('SELECT id FROM realm').fetchall()
+  connection=sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)
+  try: rows=connection.execute('SELECT id FROM realm').fetchall()
+  finally: connection.close()
   if len(rows)!=1 or not isinstance(rows[0][0],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',rows[0][0]): raise RuntimeError('R0 realm identity ambiguous')
   realm_id=rows[0][0]; done('r0-realm-identity')
   venv=base/'r1-venv'; py=Path(sys.executable); j.run([py,'-m','venv',venv],evidence/'venv.log',timeout=300); interp=venv/'bin/python'
