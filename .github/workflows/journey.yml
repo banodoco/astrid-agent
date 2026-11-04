@@ -793,6 +793,7 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
             'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'project-create-capture-status.json', 'sdk-capture-status.json',
+            'release1-task-sdk-invocation.json', 'release1-task-installed-source.json',
             'live-seed-failure.json', 'live-snapshot-failure.json', 'windows-schema-acl.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
@@ -846,6 +847,29 @@ jobs:
                     $capture.task_refs -isnot [string] -or
                     @('zero', 'one', 'multiple', 'unknown') -cnotcontains $capture.task_refs) {
                   throw "Invalid SDK capture values: $relative"
+                }
+              }
+              if ($name -eq 'release1-task-sdk-invocation.json' -and $file.Length -gt 131072) {
+                throw "Oversized release-1 task invocation capture: $relative"
+              }
+              if ($name -eq 'release1-task-installed-source.json') {
+                if ($file.Length -gt 1024) { throw "Oversized installed source receipt: $relative" }
+                try { $source = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
+                catch { throw "Malformed installed source receipt: $relative" }
+                $keys = @($source.PSObject.Properties.Name)
+                $expectedKeys = @('schema', 'release', 'agent_sha', 'runtime_sha', 'manifest_sha256')
+                if ($source -isnot [PSCustomObject] -or $keys.Count -ne $expectedKeys.Count) {
+                  throw "Invalid installed source receipt: $relative"
+                }
+                foreach ($key in $expectedKeys) {
+                  if ($keys -cnotcontains $key) { throw "Invalid installed source fields: $relative" }
+                }
+                if ($source.schema -isnot [string] -or $source.schema -cne 'astrid.failed-release1-task-source.v1' -or
+                    ($source.release -isnot [int] -and $source.release -isnot [long]) -or $source.release -ne 1 -or
+                    $source.agent_sha -isnot [string] -or $source.agent_sha -cnotmatch '^[0-9a-f]{40}$' -or
+                    $source.runtime_sha -isnot [string] -or $source.runtime_sha -cnotmatch '^[0-9a-f]{40}$' -or
+                    $source.manifest_sha256 -isnot [string] -or $source.manifest_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                  throw "Invalid installed source values: $relative"
                 }
               }
               if ($name -in @('live-seed-failure.json', 'live-snapshot-failure.json')) {

@@ -64,6 +64,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "windows-schema-acl.json", "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
+    "release1-task-sdk-invocation.json", "release1-task-installed-source.json",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
@@ -99,6 +100,40 @@ def capture_failed_windows_fresh_install(root: Path, evidence: Path) -> None:
         capture.capture(root, root.parent, evidence)
     except Exception:
         pass
+
+
+def capture_failed_release1_task(evidence: Path, version: dict) -> None:
+    """Best-effort bounded SDK output and source identity for a failed fresh R1 task."""
+    if sys.platform not in {"linux", "darwin"}:
+        return
+    try:
+        invocation = evidence / "release1-working-task" / "sdk-invocation.json"
+        if invocation.is_file() and not invocation.is_symlink():
+            size = invocation.stat().st_size
+            if size <= SDK_CAPTURE_LIMIT:
+                (evidence / "release1-task-sdk-invocation.json").write_bytes(invocation.read_bytes())
+        manifest_path = Path(version["root"]) / "manifest.json"
+        if (manifest_path.is_file() and not manifest_path.is_symlink()
+                and manifest_path.stat().st_size <= 65536):
+            raw = manifest_path.read_bytes()
+            manifest = json.loads(raw)
+            agent = manifest.get("agent") if isinstance(manifest, dict) else None
+            runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
+            agent_sha = agent.get("sha") if isinstance(agent, dict) else None
+            runtime_sha = runtime.get("sha") if isinstance(runtime, dict) else None
+            if (manifest.get("release") == 1 and isinstance(agent_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", agent_sha)
+                    and isinstance(runtime_sha, str) and re.fullmatch(r"[0-9a-f]{40}", runtime_sha)):
+                write_json(evidence / "release1-task-installed-source.json", {
+                    "schema": "astrid.failed-release1-task-source.v1",
+                    "release": 1,
+                    "agent_sha": agent_sha,
+                    "runtime_sha": runtime_sha,
+                    "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                })
+    except Exception as exc:
+        print(f"Failed release-1 task evidence capture unavailable ({type(exc).__name__})",
+              file=sys.stderr, flush=True)
 
 
 def _git_show(checkout: Path, ref: str, path: str) -> bytes:
@@ -1780,7 +1815,12 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             windows.snapshot("processes-host-ready.json")
             windows.task(task_project)
         else:
-            task(version, evidence, task_project)
+            try:
+                task(version, evidence, task_project)
+            except Exception:
+                if (args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct"):
+                    capture_failed_release1_task(evidence, version)
+                raise
         result["checks"]["task_settled"] = "pass"
         if args.leg == "fresh-install":
             marker = workspace_root(data) / "tst-b1-workspace-marker.txt"

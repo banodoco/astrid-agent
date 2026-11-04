@@ -1,5 +1,6 @@
 """Synthetic checks for the journey's bounded, status-only SDK observations."""
 import json
+import hashlib
 import subprocess
 import sys
 
@@ -269,6 +270,53 @@ def test_cleanup_failure_is_reported_without_replacing_primary(monkeypatch, tmp_
                 POPEN.kill(child)
             POPEN.wait(child, timeout=3)
             child.stdout.close()
+
+
+def test_failed_release1_task_retains_bounded_invocation_and_closed_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    evidence = tmp_path / "run" / "evidence"
+    task_evidence = evidence / "release1-working-task"
+    task_evidence.mkdir(parents=True)
+    invocation = b'{"ok":false,"error":"not_found"}\n'
+    (task_evidence / "sdk-invocation.json").write_bytes(invocation)
+    version_root = tmp_path / "program" / "versions" / "v1"
+    version_root.mkdir(parents=True)
+    manifest = {"release": 1, "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}}
+    raw_manifest = json.dumps(manifest, separators=(",", ":")).encode()
+    (version_root / "manifest.json").write_bytes(raw_manifest)
+
+    journey.capture_failed_release1_task(evidence, {"root": str(version_root)})
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    staged = tmp_path / "evidence-upload" / "before-cleanup"
+    assert (staged / "release1-task-sdk-invocation.json").read_bytes() == invocation
+    source = json.loads((staged / "release1-task-installed-source.json").read_text())
+    assert source == {
+        "schema": "astrid.failed-release1-task-source.v1",
+        "release": 1,
+        "agent_sha": "a" * 40,
+        "runtime_sha": "b" * 40,
+        "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+    }
+    assert str(version_root) not in json.dumps(source)
+
+
+def test_failed_release1_task_capture_omits_oversized_invocation(monkeypatch, tmp_path):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    evidence = tmp_path / "evidence"
+    task_evidence = evidence / "release1-working-task"
+    task_evidence.mkdir(parents=True)
+    (task_evidence / "sdk-invocation.json").write_bytes(b"x" * (journey.SDK_CAPTURE_LIMIT + 1))
+    version_root = tmp_path / "version"
+    version_root.mkdir()
+    (version_root / "manifest.json").write_text(json.dumps({
+        "release": 1, "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40},
+    }))
+
+    journey.capture_failed_release1_task(evidence, {"root": str(version_root)})
+
+    assert not (evidence / "release1-task-sdk-invocation.json").exists()
+    assert (evidence / "release1-task-installed-source.json").is_file()
 
 
 def test_buffer_allocation_failure_reaps_launched_child(monkeypatch, tmp_path):

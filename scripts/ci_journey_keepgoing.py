@@ -189,12 +189,18 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         def fresh_sentinel():
             if not journey.sentinel_observation(sentinel, birth)["alive"]:
                 raise RuntimeError("Unrelated sentinel did not survive fresh installation")
+        def fresh_task():
+            try:
+                return jumps.task_after_update(state["version"], evidence / "release1-working-task", project)
+            except Exception:
+                journey.capture_failed_release1_task(evidence, state["version"])
+                raise
         stage("admission", [], fresh_admission, evidence)
         stage("release1-install", ["app"], fresh_install, evidence / "release1" / "install-bootstrap.log")
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
-        stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
+        stage("release1-task", ["version"], fresh_task, evidence / "release1-working-task")
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
     def admission():
