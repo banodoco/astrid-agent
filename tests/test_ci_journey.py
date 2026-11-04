@@ -1424,3 +1424,27 @@ def test_windows_fresh_bootstrap_capture_precedes_snapshot_and_cleanup(tmp_path,
         journey.execute(args)
     assert calls[:4] == ['bootstrap', 'capture', 'before-cleanup', 'cleanup']
     assert journey.read_json(run_root / 'evidence' / 'fresh-install' / 'journey-result.json')['error'] == 'ValueError: primary'
+
+
+@pytest.mark.parametrize("platform,relative_log_dir", [
+    ("linux", Path("home/.local/state/astrid-runtime/logs")),
+    ("darwin", Path("home/Library/Logs/Astrid Runtime")),
+])
+def test_capture_runtime_service_logs_retains_native_service_log(tmp_path, monkeypatch, platform,
+                                                                 relative_log_dir):
+    run_root = tmp_path / "run"
+    log_dir = run_root / relative_log_dir
+    log_dir.mkdir(parents=True)
+    contents = b"old" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 8)
+    (log_dir / "runtime-service.log").write_bytes(contents)
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    expected = contents[-journey.EVIDENCE_LOG_LIMIT:]
+    assert (evidence / "runtime-service-native.log").read_bytes() == expected
+    staged = run_root / "evidence-upload" / "before-cleanup" / "runtime-service-native.log"
+    assert staged.read_bytes() == expected

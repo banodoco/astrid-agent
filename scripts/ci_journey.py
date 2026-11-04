@@ -71,6 +71,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
     "runtime-service-runtime.log",
+    "runtime-service-native.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -588,12 +589,14 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    paths = [log_dir / "install.log", log_dir / "runtime.log", log_dir / "runtime-service.log",
+             *sorted(log_dir.glob("service-*.log"))]
     for source in paths:
         if source.is_symlink() or not source.is_file():
             continue
         name = ("install.log" if source.name == "install.log" else
                 "runtime-service-runtime.log" if source.name == "runtime.log" else
+                "runtime-service-native.log" if source.name == "runtime-service.log" else
                 f"runtime-service-{source.name}")
         target = evidence / name
         try:
