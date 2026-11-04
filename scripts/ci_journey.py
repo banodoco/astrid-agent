@@ -64,7 +64,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
-    "runtime-owner-processes.json",
+    "runtime-owner-processes.json", "runtime-owner-selection.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
@@ -1228,6 +1228,76 @@ def assert_one_runtime(data: Path) -> None:
     discovery = healthy(data)
     owners = runtime_processes(data)
     if owners != [int(discovery["pid"])]:
+        raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
+
+
+def _windows_command_parts(command: str) -> tuple[str, str] | None:
+    # The executable is either one quoted path or an unquoted whitespace-free
+    # path. Preserve the entire argument tail, including newlines and quoting.
+    match = re.fullmatch(r'(?s)(?:"([^"\r\n]+)"|([^\s"]+))(\s+.+)', command)
+    return (match.group(1) or match.group(2), match.group(3)) if match else None
+
+
+def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path) -> bool:
+    """Recognize only the selected venv redirector and its direct child."""
+    owners = [row for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    if len(owners) != 2:
+        return False
+    try:
+        child_pid = int(discovery["pid"])
+        child, = [row for row in owners if int(row["ProcessId"]) == child_pid]
+        parent, = [row for row in owners if int(row["ProcessId"]) != child_pid]
+        parent_pid = int(parent["ProcessId"])
+        if child_pid <= 0 or parent_pid <= 0 or int(child["ParentProcessId"]) != parent_pid:
+            return False
+        parent_birth, child_birth = int(parent["Birth"]), int(child["Birth"])
+        if not 0 < parent_birth < child_birth or discovery.get("process_birth_id") != f"windows-creation:{child_birth}":
+            return False
+        venv = version_path.parent / "py"
+        launcher = venv / "Scripts" / "pythonw.exe"
+        config = venv / "pyvenv.cfg"
+        for path in (version_path.parent, venv, venv / "Scripts", launcher, config):
+            if path.is_symlink() or getattr(path.stat(), "st_file_attributes", 0) & 0x400:
+                return False
+        if not launcher.is_file() or not config.is_file():
+            return False
+        homes = [m.group(1).strip() for line in config.read_text(encoding="utf-8").splitlines()
+                 if (m := re.fullmatch(r"\s*home\s*=\s*(.*?)\s*", line, re.IGNORECASE))]
+        if len(homes) != 1 or not ntpath.isabs(homes[0]) or not ntpath.splitdrive(homes[0])[0]:
+            return False
+        expected_parent = ntpath.normcase(ntpath.normpath(str(launcher)))
+        expected_child = ntpath.normcase(ntpath.normpath(ntpath.join(homes[0], "pythonw.exe")))
+        parent_image = ntpath.normcase(ntpath.normpath(parent["ExecutablePath"]))
+        child_image = ntpath.normcase(ntpath.normpath(child["ExecutablePath"]))
+        parent_command = _windows_command_parts(parent["CommandLine"])
+        child_command = _windows_command_parts(child["CommandLine"])
+        return bool(parent_image == expected_parent and child_image == expected_child
+                    and parent_image != child_image and parent_command and child_command
+                    and ntpath.normcase(ntpath.normpath(parent_command[0])) == parent_image
+                    and ntpath.normcase(ntpath.normpath(child_command[0])) == child_image
+                    and parent_command[1] == child_command[1])
+    except (KeyError, TypeError, ValueError, OSError, UnicodeError):
+        return False
+
+
+def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> None:
+    """R0 selection permits one verified Windows venv launcher/owner pair."""
+    if sys.platform != "win32":
+        assert_one_runtime(data)
+        return
+    discovery = healthy(data)
+    previous_evidence = windows.EVIDENCE
+    try:
+        windows.EVIDENCE = evidence
+        rows = json.loads(windows.powershell(
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,"
+            "@{Name='Birth';Expression={if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString() }}} | ConvertTo-Json -Compress",
+            "runtime-owner-selection.json", show=False, timeout=30))
+    finally:
+        windows.EVIDENCE = previous_evidence
+    rows = rows if isinstance(rows, list) else [rows]
+    owners = [int(row["ProcessId"]) for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    if owners != [int(discovery["pid"])] and not _windows_r0_pair(rows, discovery, version_path):
         raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
 
 
