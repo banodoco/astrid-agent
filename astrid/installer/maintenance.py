@@ -72,10 +72,8 @@ def _load_owned_marker(root: Path, data: Path, selection: Path) -> dict:
             or selected.get("program_root") != str(root) or selected.get("data_root") != str(data)
             or marker.get("data_root") != str(data)):
         raise MaintenanceRefusal("unknown-ownership", "The selected installation ownership is not proven.")
-    generation = marker.get("installation_generation", 0)
-    if type(generation) is not int or generation < 0:
-        raise MaintenanceRefusal("unknown-ownership", "The installation generation is not valid.")
-    return marker
+    raise MaintenanceRefusal("copy-update-required",
+        "Automatic data recovery requires safe copy adoption. Both roots are kept; contact support.")
 
 
 def _validate_paths(root: Path, data: Path) -> None:
@@ -122,7 +120,7 @@ def _tree_manifest(root: Path) -> dict:
 def _evidence(root: Path, selection: Path) -> tuple[list[dict], dict[str, bytes]]:
     paths = (
         ("install", root / "install.json"),
-        ("journal", root / "update-transaction.json"),
+        ("journal", root / "update-journal.r1.json"),
         ("current", root / "current"),
         ("selection", selection),
     )
@@ -316,7 +314,7 @@ def _publish(root: Path, selection: Path, marker: dict, plan: dict, receipt_path
                   "plan_sha256": plan["plan_sha256"], "disposition": receipt["disposition"]}
     updated_marker = {**marker, "installation_generation": plan["new_installation_generation"],
                       "maintenance_settlement": settlement}
-    updated_selection = {**selected, "data_root": str(working_data),
+    updated_selection = {**selected, "r1_data_root": str(working_data),
                          "installation_generation": plan["new_installation_generation"],
                          "maintenance_settlement": settlement}
     # The unresolved job/journal fields are intentionally neither rewritten nor

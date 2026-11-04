@@ -406,9 +406,9 @@ def test_generated_command_pending_journal_admission_table(
         versions[name] = version
     (root / "current").write_text(selected + "\n")
     if step is not None:
-        write_json(root / "update-transaction.json", {
+        write_json(root / "update-journal.r1.json", {
             "format": "astrid-install-update/v1", "operation_id": "f" * 32,
-            "transaction_kind": "migration", "step": step,
+            "transaction_kind": "app", "step": step,
             "data_root": str(data), "realm": {"realm_id": "realm", "realm_root": str(data / "realm")},
             "old": versions["old"].document(), "candidate": versions["candidate"].document(),
             # Historical extras cannot admit the wrong phase or version.
@@ -480,7 +480,7 @@ def test_generated_command_rejects_malformed_or_mismatched_journal_before_runtim
         transaction["old"]["identity"]["release"] = 999
     elif mutation == "env":
         transaction["old"]["env"] = {"PATH": 99}
-    journal = root / "update-transaction.json"
+    journal = root / "update-journal.r1.json"
     write_json(journal, {} if mutation == "empty" else transaction)
     if mutation == "json":
         journal.write_text("{broken")
@@ -506,9 +506,9 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
     (root / "current").write_text("old\n")
     manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
     write_json(manager.selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
-    write_json(root / "update-transaction.json", {
+    write_json(root / "update-journal.r1.json", {
         "format": "astrid-install-update/v1", "operation_id": "a" * 32,
-        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
+        "transaction_kind": "app", "step": "migrated", "data_root": str(data),
         "realm": {"realm_id": "realm", "realm_root": str(data / "realm")},
         "old": version.document(), "candidate": version.document(),
     })
@@ -581,7 +581,7 @@ def _legacy_posix_action(version, data, env_file, *, operation=None):
         script += (
             f"_astrid_operation_id={operation!r}\n"
             f"_astrid_version={version.document()!r}\n"
-            f"_astrid_transaction_path=Path({str(version.root.parent.parent / 'update-transaction.json')!r})\n"
+            f"_astrid_transaction_path=Path({str(version.root.parent.parent / 'update-journal.r1.json')!r})\n"
             "try:\n"
             "    _astrid_tx=json.loads(_astrid_transaction_path.read_text(encoding='utf-8'))\n"
             "    _astrid_intent=_astrid_tx.get('launch_intent') or {}\n"
@@ -629,11 +629,11 @@ def _posix_action_fixture(tmp_path, monkeypatch, system, form):
                                    "preferences": {"autostart": False}, "unrelated": "preserved"})
     transaction = {
         "format": "astrid-install-update/v1", "operation_id": "a" * 32,
-        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
+        "transaction_kind": "app", "step": "migrated", "data_root": str(data),
         "realm": {"realm_id": "realm", "realm_root": str(data / "realm")},
         "old": version.document(), "candidate": version.document(),
     }
-    write_json(root / "update-transaction.json", transaction)
+    write_json(root / "update-journal.r1.json", transaction)
     canonical = command(version, data, env_file=manager.env_file)
     action = canonical if form == "canonical" else _legacy_posix_action(
         version, data, manager.env_file, operation=transaction["operation_id"] if form == "bound" else None)
@@ -722,7 +722,7 @@ def test_posix_migrates_only_known_action_and_preserves_service_properties(tmp_p
     assert not data.exists()
     for step in ("switched", "rollback_selected"):
         transaction["step"] = step
-        write_json(manager.root / "update-transaction.json", transaction)
+        write_json(manager.root / "update-journal.r1.json", transaction)
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:

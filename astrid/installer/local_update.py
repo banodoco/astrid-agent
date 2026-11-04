@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
+from .copy_update import selected_data as active_data
 from .backend import Backend
 from .core import (
     TERMINAL_STEPS,
@@ -201,12 +202,14 @@ def _backend(root: Path) -> Backend:
 def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
     marker = read_json(root / "install.json")
     recorded = backend.service.recorded()
-    if (marker.get("owner") != LABEL or marker.get("data_root") is None
+    if not marker.get("r1_data_root"):
+        raise ValueError("Quit Astrid to finish updating. Copy adoption requires the install line.")
+    if (marker.get("owner") != LABEL or active_data(marker) is None
             or recorded.get("owner") != LABEL or recorded.get("program_root") != str(root)
-            or recorded.get("uninstalled") or recorded.get("data_root") != marker.get("data_root")
+            or recorded.get("uninstalled") or active_data(recorded) != active_data(marker)
             or recorded.get("managed_by") != marker.get("managed_by")):
         raise ValueError("The selected Astrid installation is invalid.")
-    data = absolute(marker["data_root"])
+    data = absolute(active_data(marker))
     if not separate_roots(root, data):
         raise ValueError("Program files and the workspace must be separate.")
     old = current(root)
@@ -230,9 +233,9 @@ def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
             or recorded_realm_root != active_realm_root):
         raise ValueError("The selected workspace does not match the installation record.")
     identity = {key: recorded.get(key) for key in (
-        "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root",
+        "owner", "managed_by", "program_root", "data_root", "r1_data_root", "realm_id", "realm_root",
     )}
-    identity["install_marker"] = {key: marker.get(key) for key in ("owner", "managed_by", "data_root")}
+    identity["install_marker"] = {key: marker.get(key) for key in ("owner", "managed_by", "data_root", "r1_data_root")}
     return old, data, identity
 
 
@@ -252,7 +255,7 @@ def _assert_selection(root: Path, backend: Backend, expected_versions: tuple[Ver
 
 
 def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
-    transaction = read_json(root / "update-transaction.json")
+    transaction = read_json(root / "update-journal.r1.json")
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return False
     owner = transaction.get("transaction_context")
@@ -315,12 +318,10 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
         hooks.call("verify-editor", version, selected_realm, rollback=True)
 
     installer = Installer(root, data, backend, say=say)
-    with _backend_step(backend, "restore", "restore-workspace"):
-        _at_step("recover-transaction", recover_transaction,
-                 root, data, backend, stop=stop, switch_old=select_old,
-                 activate_old=activate_old,
-                 restore_workspace=transaction.get("transaction_kind") == "migration", say=say,
-                 save=lambda step, **details: installer._save_update(transaction, step, **details))
+    _at_step("recover-transaction", recover_transaction,
+             root, data, backend, stop=stop, switch_old=select_old,
+             activate_old=activate_old, say=say,
+             save=lambda step, **details: installer._save_update(transaction, step, **details))
     hooks.call("release-app", previous, realm)
     return True
 
@@ -467,22 +468,15 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
         hooks.call("start-editor", previous, selected_realm, rollback=True)
         hooks.call("verify-editor", previous, selected_realm, rollback=True)
 
-    def backup(previous, workspace, selected_realm):
-        return _at_step("backup-workspace", backend.backup, previous, workspace, selected_realm)
-
-    def migrate(candidate_version, workspace, _realm):
-        _at_step("upgrade-runtime", backend.upgrade, candidate_version, workspace)
-        _at_step("stop-runtime", backend.stop, candidate_version, workspace)
+    if not repair:
+        raise ValueError("This update requires copy adoption. Quit Astrid and run the install line again.")
 
     try:
-        with _backend_step(backend, "restore", "restore-workspace"), \
-                _backend_step(backend, "finish", "finish-runtime"):
+        with _backend_step(backend, "finish", "finish-runtime"):
             _at_step("run-transaction", installer._run_update_transaction,
                      old, realm, prepare=prepare, stop=stop, switch_candidate=select,
                      switch_old=select_old, activate=activate, activate_old=activate_old,
-                     backup=backup if not repair else None,
-                     migrate=migrate if not repair else None,
-                     restore_workspace=not repair, kind="app" if repair else "migration",
+                     kind="app",
                      transaction_context=context)
     except Exception as exc:
         if not getattr(exc, "step", None):
@@ -491,7 +485,7 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
             # The shared writer must have durably closed the staged journal
             # before App preparation resources can be released.
             try:
-                journal = read_json(root / "update-transaction.json")
+                journal = read_json(root / "update-journal.r1.json")
             except Exception as journal_error:  # noqa: BLE001 - preserve the structured Runtime refusal
                 exc.add_note(f"Could not confirm the busy refusal journal was terminal: {journal_error}")
             else:
@@ -537,7 +531,7 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
                     stdin: TextIO, stdout: TextIO, say=print) -> dict:
     hooks: HookClient
     if action["action"] == "recover":
-        pending = read_json(root / "update-transaction.json")
+        pending = read_json(root / "update-journal.r1.json")
         if (pending and pending.get("step") not in TERMINAL_STEPS
                 and not owned_by_local_update(pending)):
             raise LocalUpdateStepError(

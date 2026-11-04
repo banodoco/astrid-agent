@@ -30,6 +30,7 @@ from .core import (
     switch,
     update_required,
 )
+from .copy_update import selected_data as active_data
 from .custody import operation, stopped_custody
 from .launcher import publish_runtime_runner
 from .service import installer_lock_path, pinokio_lock_paths, pinokio_owned
@@ -131,9 +132,11 @@ def selection_lock(path: Path, backend):
 
 def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[Version, Path, dict]:
     marker, recorded = read_json(root / "install.json"), backend.service.recorded()
+    if not marker.get("r1_data_root"):
+        raise ValueError("Quit Astrid to finish updating. Copy adoption for the previous app needs the install line.")
     if (not pinokio_owned(marker) or not pinokio_owned(recorded)
             or recorded.get("program_root") != str(root) or recorded.get("uninstalled")
-            or marker.get("data_root") != recorded.get("data_root")):
+            or active_data(marker) != active_data(recorded)):
         raise ValueError("App updates require the selected, existing Pinokio installation.")
     transaction = pending_transaction(root)
     if transaction and not allow_transaction:
@@ -141,12 +144,12 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
     old = current(root)
     if old is None or not old.python.is_file():
         raise ValueError("The installed app is incomplete; use the regular installer to repair it.")
-    data = absolute(recorded["data_root"])
+    data = absolute(active_data(recorded))
     if not separate_roots(root, data):
         raise ValueError("Program files and the workspace must be separate.")
     # Foreground PID changes are expected; workspace and manager changes are not.
     identity = {key: recorded.get(key) for key in (
-        "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root", "identity")}
+        "owner", "managed_by", "program_root", "data_root", "r1_data_root", "realm_id", "realm_root", "identity")}
     return old, data, identity
 
 
@@ -432,7 +435,7 @@ class PinokioLifecycle:
 
 def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bool:
     """Recover Pinokio's shared journal while its operation lock is held."""
-    pending = read_json(root / "update-transaction.json")
+    pending = read_json(root / "update-journal.r1.json")
     if not pending or pending.get("step") in TERMINAL_STEPS:
         return False
     if owned_by_local_update(pending):
@@ -485,7 +488,7 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
                 stop=stop_recovery, switch_old=recover_selection,
                 activate_old=lambda previous, workspace, realm: lifecycle.start(
                     previous, workspace, realm["realm_id"]),
-                restore_workspace=pending.get("transaction_kind") != "app", say=say,
+                say=say,
                 save=lambda step, **details: installer._save_update(
                     pending, step, **details),
             )
@@ -571,11 +574,8 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
                 except Exception:  # noqa: BLE001 - same best-effort setup as C2
                     say("Couldn't add Astrid's skill to your agents; see the log.")
 
-        def migrate(candidate: Version, workspace: Path, _realm: dict) -> None:
-            backend.upgrade(candidate, workspace)
-            # Runtime upgrade owns a temporary daemon, stopped by C1 before
-            # the retained foreground session is admitted.
-            backend.stop(candidate, workspace)
+        if not no_migration and not repair:
+            raise ValueError("This update requires copy adoption. Quit Astrid and run the install line again.")
 
         installer = Installer(root, data, backend, say=say, managed_by="pinokio")
         installer._run_update_transaction(
@@ -584,9 +584,6 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             activate=activate,
             activate_old=lambda previous, workspace, selected_realm: lifecycle.start(
                 previous, workspace, selected_realm["realm_id"]),
-            backup=backend.backup if not no_migration and not repair else None,
-            migrate=migrate if not no_migration and not repair else None,
-            restore_workspace=not no_migration and not repair,
             kind="app" if no_migration or repair else "migration",
         )
         say("Astrid is updated and running.")

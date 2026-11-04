@@ -33,6 +33,8 @@ from .core import (
     write_json,
 )
 
+from .copy_update import data_fields, selected_data
+
 LABEL = "haus.astrid.runtime"
 TASK = "Astrid Runtime"
 # The only keys service-env.json may set. ASTRID_ALLOW_UNQUALIFIED_GPU no longer
@@ -184,7 +186,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
     if version.root.parent.name != "versions":
         return False  # Source checkouts are outside the managed launch contract.
     root = absolute(version.root.parent.parent)
-    path = absolute(root / "update-transaction.json")
+    path = absolute(root / "update-journal.r1.json")
     try:
         selected = current(root)
         if selected is None or selected.document() != version.document():
@@ -195,14 +197,28 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
         if (transaction.get("format") != "astrid-install-update/v1"
                 or not isinstance(transaction.get("operation_id"), str)
                 or re.fullmatch(r"[0-9a-f]{32}", transaction["operation_id"]) is None
-                or transaction.get("transaction_kind") not in {None, "app", "migration"}
-                or absolute(transaction["data_root"]) != absolute(data)):
+                or transaction.get("transaction_kind") not in {"app", "copy"}
+                or (absolute(transaction["data_root"]) != absolute(data)
+                    and not (transaction.get("transaction_kind") == "copy"
+                             and transaction.get("step") == "rolled_back"
+                             and absolute(transaction["source_data_root"]) == absolute(data)))):
             raise ValueError("Invalid update journal identity.")
 
         realm = transaction.get("realm")
         if (not isinstance(realm, dict) or not isinstance(realm.get("realm_id"), str)
                 or not realm["realm_id"] or absolute(realm["realm_root"]) != Path(realm["realm_root"])):
             raise ValueError("Invalid update workspace identity.")
+        if transaction.get("transaction_kind") == "copy":
+            source = absolute(transaction["source_data_root"])
+            target = absolute(transaction["data_root"])
+            if (target != source.with_name(source.name + "-r1")
+                    or not absolute(realm["realm_root"]).is_relative_to(source)):
+                raise ValueError("Invalid copy update roots.")
+            adopted = transaction.get("adopted_realm")
+            if transaction.get("step") in {"activating", "complete"} and (
+                    not isinstance(adopted, dict) or adopted.get("realm_id") != realm["realm_id"]
+                    or adopted.get("realm_root") != str(target / "runtime" / "realms" / realm["realm_id"])):
+                raise ValueError("Invalid adopted workspace identity.")
         terminal = transaction.get("step") in {"complete", "rolled_back"}
 
         def retained(value):
@@ -226,7 +242,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
             return False
         if version.managed_by == "pinokio" and not custody:
             raise ValueError("Choose Update to finish")
-        allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
+        allowed = candidate if step in {"switched", "activating"} else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
         context = transaction.get("transaction_context") or {}
@@ -487,7 +503,7 @@ class Service:
 
         record = self.recorded()
         if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
-                or record.get("data_root") != str(data)):
+                or selected_data(record) != str(data)):
             raise ValueError("The launchd service has no matching install selection.")
         try:
             observed_stat = self.path.lstat()
@@ -635,7 +651,7 @@ class Service:
             return ([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
                     if windows else argv)
 
-        transaction = read_json(self.root / "update-transaction.json")
+        transaction = read_json(self.root / "update-journal.r1.json")
         for folder in (self.root / "versions").iterdir():
             if folder.is_symlink() or not (folder / "version.json").is_file():
                 continue
@@ -705,7 +721,7 @@ class Service:
                     binding = (
                         f"_astrid_operation_id={replay_id!r}\n"
                         f"_astrid_version={historical_version}\n"
-                        f"_astrid_transaction_path=Path({str(self.root / 'update-transaction.json')!r})\n"
+                        f"_astrid_transaction_path=Path({str(self.root / 'update-journal.r1.json')!r})\n"
                         "try:\n"
                         "    _astrid_tx=json.loads(_astrid_transaction_path.read_text(encoding='utf-8'))\n"
                         "    _astrid_intent=_astrid_tx.get('launch_intent') or {}\n"
@@ -733,7 +749,7 @@ class Service:
         observed_stat = self.path.lstat()
         if (not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat)
                 or selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
-                or selection.get("data_root") != str(data)):
+                or selected_data(selection) != str(data)):
             raise ValueError(message)
         observed = self.path.read_bytes()
 
@@ -842,7 +858,7 @@ class Service:
             return
         selection = self.recorded()
         if (selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
-                or selection.get("data_root") != str(data)):
+                or selected_data(selection) != str(data)):
             raise ValueError("The Astrid Runtime scheduled task has no matching install selection. Re-run the install line to repair it.")
         # Decode only the final argument emitted by list2cmdline. Re-encoding
         # must reproduce the entire action; no shell/code is executed here.
@@ -889,7 +905,7 @@ class Service:
                 if selected is not None and not self.path.exists():
                     raise ValueError("The selected launchd service file disappeared before bootout.")
                 record = self.recorded()
-                data = Path(record["data_root"])
+                data = Path(selected_data(record))
                 latest = self.validate_stop_target(
                     None, data, owner_pid=None, expected_identity=selected, require_stopped=True)
                 if selected is None and latest is not None:
@@ -921,7 +937,7 @@ class Service:
         record = self.recorded()
         if record.get("foreground") != expected:
             raise ValueError("The selected foreground owner changed before stop.")
-        catalog = read_json(absolute(record["data_root"]) / "runtime" / "catalog.json")
+        catalog = read_json(absolute(selected_data(record)) / "runtime" / "catalog.json")
         realm_id = catalog.get("selected_realm_id")
         realm = next((row for row in catalog.get("realms", [])
                       if row.get("realm_id") == realm_id), None)
@@ -977,6 +993,44 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
+    def require_stopped_for_copy(self, data: Path) -> None:
+        """Read-only manager admission. The installer never quits R0 for users."""
+        from .copy_update import QUIT
+        if self.system == "darwin":
+            # Even a momentarily idle KeepAlive job can relaunch the source.
+            # Require the user's Quit to have unloaded it entirely.
+            try:
+                self.run(["launchctl", "print", f"gui/{platform.current_user()}/{LABEL}"])
+            except subprocess.CalledProcessError as exc:
+                if ("Could not find service" in str(exc.output)
+                        or "Could not find specified service" in str(exc.output)):
+                    return
+                raise ValueError("The previous Astrid service state could not be established.") from exc
+            raise ValueError(QUIT)
+        if self.system == "linux" and self.systemd():
+            value = self.run(["systemctl", "--user", "show", "astrid.service",
+                              "--property=MainPID,FragmentPath,LoadState,ActiveState,SubState,Job"])
+            fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+            if (fields.get("MainPID") == "0" and fields.get("LoadState") == "not-found"
+                    and not fields.get("Job")):
+                return
+            if (fields.get("MainPID") != "0" or fields.get("FragmentPath") != str(self.path)
+                    or fields.get("LoadState") != "loaded"
+                    or fields.get("ActiveState") != "inactive" or fields.get("SubState") != "dead"
+                    or fields.get("Job")):
+                raise ValueError(QUIT)
+            return
+        if self.system == "linux":
+            foreground = self.recorded().get("foreground")
+            if not isinstance(foreground, dict) or type(foreground.get("pid")) is not int or not foreground.get("birth_id"):
+                raise ValueError("The previous Astrid supervisor cannot be established; quit Astrid and repair its service selection.")
+            # Any extant process, including a reused PID, leaves this record
+            # uncertain. This read-only path never signals or cleans it up.
+            if platform.process_identity(foreground["pid"]) is not None:
+                raise ValueError(QUIT)
+            return
+        raise ValueError("Safe stopped-only copy admission is unavailable for this service manager.")
+
     def register(self, version: Version, data: Path) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
@@ -986,6 +1040,10 @@ class Service:
         _atomic_write_text(self.path, render(
             self.system, version, data, self.log, user=user, env_file=self.env_file,
         ))
+        persist_install_identity(version, self.root, selection=self.selection, fields={
+            "owner": LABEL, "program_root": str(self.root),
+            **data_fields(self.recorded(), data), "service_settings": settings,
+        })
         if self.system == "darwin":
             self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         elif self.system == "linux":
@@ -997,10 +1055,6 @@ class Service:
         else:
             xml_path = str(self.path).replace("'", "''")
             self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
-        persist_install_identity(version, self.root, selection=self.selection, fields={
-            "owner": LABEL, "program_root": str(self.root),
-            "data_root": str(data), "service_settings": settings,
-        })
 
     def settings(self) -> dict:
         settings = read_json(self.env_file)

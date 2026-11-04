@@ -32,7 +32,7 @@ def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
     if version is None:
         raise ValueError("Astrid isn't fully installed. Choose Pinokio's Reset button, then install again.")
     ticket = os.environ.pop("ASTRID_INSTALL_CUSTODY", None)
-    activating = launch_admission(version, absolute(record["data_root"]), custody=ticket is not None)
+    activating = launch_admission(version, absolute((record.get("r1_data_root") or record["data_root"])), custody=ticket is not None)
     if not activating and (root / "install.json").is_file():
         # The journal admits only the activation selected by this updater.
         # Ordinary Start still contends with online candidate preparation.
@@ -46,7 +46,7 @@ def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
 
         if not activating:
             raise ValueError("The stopped update does not authorize this foreground activation.")
-        connection = attach(json.loads(ticket), root, version, absolute(record["data_root"]))
+        connection = attach(json.loads(ticket), root, version, absolute((record.get("r1_data_root") or record["data_root"])))
         try:
             if system != "win32":
                 connection.set_inheritable(True)
@@ -77,7 +77,7 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int | None,
     version = current(root)
     if version is None:
         raise ValueError("Astrid isn't fully installed. Choose Pinokio's Reset button, then install again.")
-    data = absolute(record["data_root"])
+    data = absolute((record.get("r1_data_root") or record["data_root"]))
     launch_admission(version, data, custody=custody_fd is not None)
     env = {key: value for key, value in os.environ.items() if key not in {
         "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",

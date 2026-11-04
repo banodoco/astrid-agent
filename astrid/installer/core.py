@@ -38,10 +38,6 @@ def is_lifecycle_refusal(exc: BaseException) -> bool:
             and isinstance(exc.details, dict) and exc.details.get("safe") is False)
 
 
-class BackupSpaceError(RuntimeError):
-    """The update cannot fit its workspace backup on the program disk."""
-
-
 def linked(path: Path) -> bool:
     if path.is_symlink():
         return True
@@ -75,16 +71,20 @@ def read_json(path: Path) -> dict:
 
 
 def write_json(path: Path, value: dict) -> None:
-    from runtime_protocol.platform import durable_replace
+    from runtime_protocol import platform
 
+    path = absolute(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    durable_replace(temporary, path)
+    descriptor, temporary = platform.private_temporary(path.parent, ".r1-json-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.durable_replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 TERMINAL_STEPS = frozenset({"complete", "rolled_back"})
@@ -92,7 +92,10 @@ TERMINAL_STEPS = frozenset({"complete", "rolled_back"})
 
 def pending_transaction(root: Path) -> dict | None:
     """Return the update journal under root only while its step is not terminal."""
-    journal = read_json(root / "update-transaction.json")
+    legacy = read_json(absolute(root / "update-transaction.json"))
+    if legacy and legacy.get("step") not in TERMINAL_STEPS:
+        raise ValueError("An earlier in-place update is unfinished. Contact support; no workspace data was restored.")
+    journal = read_json(absolute(root / "update-journal.r1.json"))
     if not journal or journal.get("step") in TERMINAL_STEPS:
         return None
     return journal
@@ -238,20 +241,28 @@ def current(root: Path) -> Version | None:
 def switch(root: Path, version: Version) -> None:
     from runtime_protocol.platform import durable_replace
 
+    pointer_path = absolute(root / "current")
+    if pointer_path.exists() and (not pointer_path.is_file() or pointer_path.stat().st_nlink != 1):
+        raise ValueError("The current version pointer is not a private regular file.")
     name = version_id(version.root.name)
     if version.root != root / "versions" / name:
         raise ValueError("The current pointer must name a managed version.")
-    pointer = root / "current.tmp"
-    with pointer.open("w", encoding="utf-8", newline="\n") as stream:
-        stream.write(name + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    durable_replace(pointer, root / "current")
+    from runtime_protocol import platform
+    descriptor, pointer = platform.private_temporary(root, ".r1-current-")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(name + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        durable_replace(pointer, root / "current")
+    finally:
+        Path(pointer).unlink(missing_ok=True)
+
 
 
 @contextmanager
 def update_context(backend, transaction: dict, *, recovering: bool = False):
-    """Expose the existing transaction solely for restore selection validation."""
+    """Expose the durable transaction to lifecycle adapters."""
     previous = getattr(backend, "_update_transaction", None)
     backend._update_transaction = (transaction, recovering)
     try:
@@ -261,13 +272,16 @@ def update_context(backend, transaction: dict, *, recovering: bool = False):
 
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
-                        stop, switch_old, activate_old, save,
-                        restore_workspace: bool = True) -> None:
-    """Apply the shared stop, optional restore, selection and ready rollback."""
+                        stop, switch_old, activate_old, save) -> None:
+    """Restore selection only; copy updates never replay workspace images."""
+    if transaction.get("transaction_kind") == "copy":
+        from .copy_update import rollback
+        return rollback(root, data, backend, transaction, save)
+    if transaction.get("transaction_kind") != "app":
+        raise ValueError("Legacy in-place migration recovery needs manual support; both roots are kept.")
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
     realm = transaction["realm"]
-    backup = transaction.get("backup")
     kind = transaction.get("transaction_kind", "migration")
     with update_context(backend, transaction, recovering=True):
         # Before migration the old version owns manager cleanup. A later
@@ -280,8 +294,6 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
             stop_version = candidate or old
         stop(stop_version, data)
         save("recovering")
-        if backup is not None and restore_workspace and kind == "migration":
-            backend.restore(old, data, realm, backup)
         switch_old(old, candidate)
         save("rollback_selected")
         activate_old(old, data, realm)
@@ -289,8 +301,7 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
 
 
 def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
-                       activate_old, restore_workspace: bool = True,
-                       say=print, save=None) -> None:
+                       activate_old, say=print, save=None) -> None:
     """Replay one interrupted update using its retained old version.
 
     A durable ``staged`` record is still pre-stop: recovery closes it without
@@ -298,15 +309,16 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     must be fenced again because the process may have died between stop and
     publishing ``stopped``.
     """
-    transaction = read_json(absolute(root / "update-transaction.json"))
+    transaction = read_json(absolute(root / "update-journal.r1.json"))
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
-            or absolute(transaction["data_root"]) != absolute(data)):
+            or (transaction.get("transaction_kind") != "copy"
+                and absolute(transaction["data_root"]) != absolute(data))):
         raise ValueError("The interrupted update identity does not match this installation.")
-    if transaction.get("transaction_kind") not in {None, "migration", "app"}:
+    if transaction.get("transaction_kind") not in {"copy", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save
     if persist_callback is None:
@@ -320,21 +332,16 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         transaction.update(step=step, **details)
         persist_callback(step, **details)
 
-    # New journals publish staged before any stop or workspace backup. The old
-    # v1 migration writer published staged only after stop and backup, so it
-    # still needs the rollback path below.
-    if (transaction.get("step") == "staged"
-            and transaction.get("transaction_kind") in {"migration", "app"}
-            and transaction.get("backup") is None):
+    if transaction.get("transaction_kind") == "copy":
+        from .copy_update import rollback
+        say("Recovering the interrupted Astrid update. Both workspace roots are kept.")
+        rollback(root, data, backend, transaction, write_step)
+        return
+    if transaction.get("step") == "staged":
         write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
     absolute(realm["realm_root"])
-    backup = transaction.get("backup")
-    if backup and "root" in backup:
-        retained = absolute(backup["root"])
-        if retained.parent != absolute(root / "backups"):
-            raise ValueError("The interrupted update backup is outside this installation.")
     install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
     if publish is not None:
@@ -342,7 +349,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     say("Recovering the interrupted Astrid update.")
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
-        activate_old=activate_old, restore_workspace=restore_workspace,
+        activate_old=activate_old,
         save=write_step,
     )
     install_launcher(root)
@@ -383,7 +390,7 @@ class Installer:
                 raise ValueError("Invalid stopped-update activation context.")
             context["pinokio_lifetime_custody"] = True
         transaction.update(step=step, **details)
-        write_json(absolute(self.root / "update-transaction.json"), transaction)
+        write_json(absolute(self.root / "update-journal.r1.json"), transaction)
         binding = transaction.get("update_job")
         if step == "staged" and isinstance(binding, dict):
             marker_path = absolute(self.root / "install.json")
@@ -398,7 +405,8 @@ class Installer:
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
-        pending = read_json(absolute(self.root / "update-transaction.json"))
+        pending_transaction(self.root)  # also refuse an unfinished legacy journal
+        pending = read_json(absolute(self.root / "update-journal.r1.json"))
         if pending and pending.get("step") not in TERMINAL_STEPS and owned_by_local_update(pending):
             raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
         if pending and pending.get("step") not in TERMINAL_STEPS \
@@ -423,8 +431,7 @@ class Installer:
 
     def _run_update_transaction(self, old: Version, realm: dict, *, prepare, stop,
                                  switch_candidate, switch_old, activate, activate_old,
-                                 backup=None, migrate=None, restore_workspace: bool = True,
-                                 kind: str = "migration",
+                                 kind: str = "app",
                                  transaction_context: dict | None = None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
@@ -432,12 +439,14 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
+        if kind != "app" or old.release == 0:
+            raise ValueError("This update requires stopped-only copy adoption; run the install line again.")
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
                 "transaction_kind": kind, "data_root": str(self.data),
-                "old": old.document(), "realm": realm, "backup": None,
+                "old": old.document(), "realm": realm,
                 "candidate": candidate.document(),
             }
             log = getattr(self.backend, "log", None)
@@ -465,7 +474,6 @@ class Installer:
                     rollback_transaction(
                         self.root, self.data, self.backend, transaction,
                         stop=stop, switch_old=switch_old, activate_old=activate_old,
-                        restore_workspace=restore_workspace,
                         save=lambda step, **details: self._save_update(
                             transaction, step, **details),
                     )
@@ -490,29 +498,87 @@ class Installer:
                     rollback_after(failure)
                 raise
 
-            backup_image = None
             try:
                 self._save_update(transaction, "stopped")
-                if backup is not None:
-                    backup_image = backup(old, self.data, realm)
-                    transaction["backup"] = backup_image
-                    self._save_update(transaction, "backed_up", backup=backup_image)
-                if migrate is not None:
-                    migrate(candidate, self.data, realm)
-                    self._save_update(transaction, "migrated")
                 switch_candidate(candidate)
                 self._save_update(transaction, "switched")
                 activate(candidate, self.data, realm)
                 install_launcher(self.root)
                 self._save_update(transaction, "verified")
-                self._last_update_backup = backup_image
-                if kind == "migration":
-                    self.backend.finish(old, candidate, backup_image)
                 self._save_update(transaction, "complete")
                 return candidate
             except (Exception, KeyboardInterrupt) as failure:
                 rollback_after(failure)
                 raise
+
+    def _run_copy_update(self, old: Version, manifest: dict) -> None:
+        from .copy_update import (candidate_selections, fingerprint, prepare_candidate_files,
+                                  publish_prepared_launchers, rollback, save_service, stopped_source)
+        old_data = self.data
+        original_current = current(self.root)
+        new_data = absolute(old_data.with_name(old_data.name + "-r1"))
+        if not separate_roots(self.root, new_data):
+            raise ValueError("Keep program files and both workspaces in separate directories.")
+        # An existing destination can contain accepted R1 work. Never resume by
+        # re-adopting or deleting it, even after rollback or failed adoption.
+        if new_data.exists():
+            raise ValueError(f"The retained R1 workspace already exists at {new_data}; both roots are kept. Contact support to select it safely.")
+        pointer = absolute(self.root / "current")
+        if pointer.exists() and pointer.stat().st_nlink != 1:
+            raise ValueError("The current version pointer is not a private regular file.")
+        realm = self.backend.source_workspace(old_data)
+        self.backend.require_stopped_source(old_data, realm)
+        with stopped_source(self.backend, old_data, realm):
+            before = fingerprint(old_data)
+            saved = save_service(self.backend)
+        self.say("Installing Astrid.")
+        candidate = self.backend.stage(manifest, self.root, new_data)
+        candidate_service = prepare_candidate_files(self.backend, candidate, new_data, saved)
+        transaction = {
+            "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
+            "transaction_kind": "copy", "candidate_service": candidate_service, "source_data_root": str(old_data),
+            "data_root": str(new_data), "source_fingerprint": before,
+            "old": old.document(), "candidate": candidate.document(), "realm": realm,
+            "saved_service": saved,
+            "candidate_selections": candidate_selections(self.backend, candidate, new_data, realm, saved, before),
+        }
+        self._save_update(transaction, "staged")
+        try:
+            self._save_update(transaction, "adopting")
+            selected = self.backend.adopt(candidate, new_data, old_data, realm)
+            self._save_update(transaction, "adopted", adopted_realm=selected)
+            with stopped_source(self.backend, old_data, realm):
+                if fingerprint(old_data) != before:
+                    raise ValueError("Previous workspace changed during the update; the update was refused before switching.")
+                if save_service(self.backend) != saved:
+                    raise ValueError("The previous service selection changed during the update.")
+                if current(self.root) != original_current:
+                    raise ValueError("The selected version changed during the update; refusing to switch.")
+                self._save_update(transaction, "switching")
+                switch(self.root, candidate)
+                self._save_update(transaction, "switched")
+            self.data = new_data
+            self._save_update(transaction, "activating", activation_intent=True)
+            marker = read_json(self.root / "install.json")
+            write_json(self.root / "install.json", {**marker, "r1_data_root": str(new_data)})
+            self.backend.register(candidate, new_data)
+            # Retain divergence evidence with the active selection, preserving
+            # its permanent legacy data_root key.
+            selection = self.backend.service.selection
+            record = read_json(selection)
+            write_json(selection, {**record, "r0_source": {
+                "path": str(old_data), "fingerprint": before}})
+            publish_prepared_launchers(self.backend, saved, candidate_service)
+            self.backend.start(candidate, new_data)
+            self.backend.verify(candidate, new_data, realm["realm_id"])
+            self._save_update(transaction, "complete")
+        except (Exception, KeyboardInterrupt):
+            rollback(self.root, old_data, self.backend, transaction,
+                     lambda step, **details: self._save_update(transaction, step, **details))
+            self.data = old_data
+            raise
+        self.say(f"Your previous version is kept at {old_data}")
+        self._ready()
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
@@ -541,6 +607,8 @@ class Installer:
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
+        from .copy_update import warn_divergence
+        warn_divergence(self.backend, self.say)
         # The public install path is also the normal update check. Compare
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.
@@ -566,6 +634,9 @@ class Installer:
             if not delete_data:
                 self.say(f"Workspace kept at {self.data}.")
             return
+
+        if old and old.release == 0 and mode != "update":
+            raise ValueError("Quit Astrid to finish updating. Run the install line again.")
 
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
@@ -609,6 +680,11 @@ class Installer:
             self.backend.open()
             return
 
+        if old and not self.backend.service.recorded().get("r1_data_root"):
+            if self.managed_by == "pinokio":
+                raise ValueError("Quit Astrid and run the install line to adopt the previous workspace.")
+            return self._run_copy_update(old, manifest)
+
         has_workspace = self.backend.has_workspace(self.data)
         reinstall = old is None and has_workspace and self.backend.reinstallable(self.data)
         realm = self.backend.workspace(old, self.data) if old else None
@@ -631,13 +707,6 @@ class Installer:
                                and candidate_schema["identity"]["version"] == candidate_schema["target"])
                 prepared_candidate = candidate
                 return candidate
-
-            def migrate(candidate: Version, data: Path, _realm: dict) -> None:
-                self.say("Updating the workspace with Astrid Runtime.")
-                self.backend.upgrade(candidate, data)
-                # upgrade owns its temporary daemon; return ownership to the
-                # selected login service before switching versions.
-                self.backend.stop(candidate, data)
 
             def select(candidate: Version) -> None:
                 switch(self.root, candidate)
@@ -668,23 +737,20 @@ class Installer:
             # Choose the workspace policy before constructing the transaction;
             # the shared runner receives its callbacks as concrete values.
             prepare()
+            if not same_schema:
+                raise ValueError("This update needs a workspace migration; both roots are kept. Contact support.")
             self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self.backend.stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=None if same_schema else self.backend.backup,
-                migrate=None if same_schema else migrate, kind="migration",
+                kind="app",
             )
-            backup_image = getattr(self, "_last_update_backup", None)
-            if backup_image:
-                self.say(f"A backup of your workspace is kept at {backup_image['root']}.")
             self._ready()
             return
 
         candidate_version: Version | None = None
-        backup = None
         try:
             self.say("Installing Astrid.")
             candidate_version = self.backend.stage(manifest, self.root, self.data)
@@ -709,7 +775,7 @@ class Installer:
                 self.backend.sync_skills(candidate_version)
             except Exception:  # noqa: BLE001 - skill setup must never fail installation
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
-            self.backend.finish(old, candidate_version, backup)
+            self.backend.finish(old, candidate_version)
         except (Exception, KeyboardInterrupt) as failure:
             if is_lifecycle_refusal(failure):
                 raise

@@ -13,7 +13,6 @@ from . import update_job
 from .backend import Backend
 from .core import (
     TERMINAL_STEPS,
-    BackupSpaceError,
     Installer,
     RuntimeOperationError,
     VerificationError,
@@ -110,8 +109,28 @@ def main(argv: list[str] | None = None) -> int:
                             or any(char not in "0123456789abcdef" for char in args.update_job)):
         parser().error("--update-job is invalid.")
     from runtime_protocol import platform
-    log = platform.log_dir() / "install.log"
+    # Runtime's Windows default log directory is inside R0's data root.
+    # R1 installer diagnostics must be outside both retained workspaces,
+    # including when admission refuses before staging.
+    log = default_program_root(Path.home(), sys.platform).parent / "astrid-installer-r1" / "install.log"
+    safe_log = False
     try:
+        from .service import install_selection
+        log = absolute(log)
+        for target in (log, log.with_name("runtime-service.log")):
+            target = absolute(target)
+            if target.exists() and (not target.is_file() or target.stat().st_nlink != 1):
+                raise ValueError("An installer-owned log is not a private regular file.")
+        installed_record = read_json(absolute(install_selection(Path.home(), sys.platform)))
+        root = absolute(args.root or default_program_root(Path.home(), sys.platform))
+        local_record = read_json(absolute(root / "install.json"))
+        roots = [installed_record.get("data_root"), installed_record.get("r1_data_root"),
+                 local_record.get("data_root"), local_record.get("r1_data_root"),
+                 args.data_root, platform.data_root()]
+        for source in roots:
+            if source and log.is_relative_to(absolute(source)):
+                raise ValueError("Installer logs must be outside the retained workspace roots.")
+        safe_log = True
         platform.private_directory(log.parent)
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         uv = args.uv or default_uv()
@@ -131,14 +150,14 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             backend.managed_by = "pinokio"
-            pending = read_json(root / "update-transaction.json")
+            pending = read_json(root / "update-journal.r1.json")
             # A running session holds lifetime admission. A stopped operation
             # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
             from .custody import operation
 
             if not pending or pending.get("step") in TERMINAL_STEPS:
-                preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
+                preflight_pinokio_update(root, backend, absolute(marker.get("r1_data_root") or marker["data_root"]))
             with operation(root, backend):
                 if pending and pending.get("step") not in TERMINAL_STEPS:
                     recover_app(root, backend)
@@ -234,9 +253,17 @@ def main(argv: list[str] | None = None) -> int:
                     backend = Backend(root, log, uv, process_control=process_control)
                     prior = read_json(root / "install.json")
                 if not recorded and prior.get("owner") == LABEL and prior.get("data_root"):
-                    recorded = {"data_root": prior["data_root"]}
+                    recorded = {key: prior[key] for key in ("data_root", "r1_data_root") if prior.get(key)}
                 backend.managed_by = managed_by
-                data = absolute(recorded.get("data_root") or args.data_root or platform.data_root())
+                data = absolute(recorded.get("r1_data_root") or recorded.get("data_root") or args.data_root or platform.data_root())
+                fresh_fields = None
+                if (mode in {"install", "update"} and not recorded and current(root) is None
+                        and not prior.get("data_root")):
+                    legacy_data = data
+                    if legacy_data.exists() and any(legacy_data.iterdir()):
+                        raise ValueError("The previous workspace has no proven installation identity; repair its selection before updating.")
+                    data = absolute(legacy_data.with_name(legacy_data.name + "-r1"))
+                    fresh_fields = {"data_root": str(legacy_data), "r1_data_root": str(data)}
                 if sys.platform == "win32":
                     for name, path in (("program directory", root), ("workspace", data)):
                         managed, installer_state = path.resolve(), lock_path.parent.resolve()
@@ -295,18 +322,23 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("This Astrid runs from source checkouts; update those instead.")
                     # Preflight each fresh operation once, before install/selection
                     # claims or staging. Every real stop still takes Runtime's fence.
-                    backend.preflight_stop(data)
+                    if mode in {"install", "update"} and installed and not recorded.get("r1_data_root"):
+                        realm = backend.source_workspace(data)
+                        backend.require_stopped_source(data, realm)
+                    else:
+                        backend.preflight_stop(data)
                 if release_stale_selection:
                     write_json(backend.service.selection, recorded)
                 if mode not in {"uninstall", "doctor"}:
                     platform.private_directory(root)
-                    marker = {**marker, "owner": LABEL, "data_root": str(data)}
+                    from .copy_update import data_fields
+                    marker = {**marker, "owner": LABEL, **(fresh_fields or data_fields(marker, data))}
                     if managed_by:
                         marker["managed_by"] = managed_by
                     write_json(root / "install.json", marker)
                     if managed_by == "pinokio":
                         write_json(backend.service.selection, {**recorded, "owner": LABEL,
-                                   "program_root": str(root), "data_root": str(data), "managed_by": "pinokio"})
+                                   "program_root": str(root), **data_fields(recorded, data), "managed_by": "pinokio"})
                 print(f"Using your workspace at {data}.")
                 manifest = {}
                 if mode not in {"uninstall", "doctor"}:
@@ -339,11 +371,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         with contextlib.suppress(OSError):
+            if not safe_log:
+                raise OSError("No safe installer log destination was established.")
             with log.open("a", encoding="utf-8") as stream:
                 platform.owner_only(stream.fileno())
                 traceback.print_exc(file=stream)
         print(FAILURE_MESSAGE)
-        if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
+        if isinstance(failure, (ValueError, RuntimeOperationError)):
             print(str(failure))
             if isinstance(failure, RuntimeOperationError) and failure.details is not None:
                 print(json.dumps(failure.details, ensure_ascii=False))

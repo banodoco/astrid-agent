@@ -201,10 +201,10 @@ def _CUSTODY_ATTACH(ticket, root, version, data):
         root, data = absolute(root), absolute(data)
         marker = read_json(root / "install.json")
         if (marker.get("owner") != "haus.astrid.runtime" or marker.get("managed_by") != "pinokio"
-                or absolute(marker["data_root"]) != data or current(root) != version
+                or absolute(marker.get("r1_data_root") or marker["data_root"]) != data or current(root) != version
                 or not launch_admission(version, data, custody=True)):
             raise ValueError("The stopped update does not authorize this foreground activation.")
-        journal = read_json(root / "update-transaction.json")
+        journal = read_json(root / "update-journal.r1.json")
         try:
             with (root / ".app-update.lock").open("r+b") as operation_lock:
                 try:
