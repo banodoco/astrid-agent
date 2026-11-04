@@ -125,6 +125,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Tests inspect historical Agent commits with git show.
+          fetch-depth: 0
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
@@ -136,6 +139,8 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
+          # Tests archive historical Runtime commits as well as the locked one.
+          fetch-depth: 0
 
       - name: Restore pip cache (C-08)
         id: c08-agent-ci-3
@@ -169,8 +174,9 @@ jobs:
       - name: Install package with dev extras
         run: python -m pip install -e '.[dev]'
 
-      - name: Install the pinned Runtime and client
-        run: python scripts/ci_install_runtime.py
+      # Runtime-owned test fixtures live beside its source, outside the wheel.
+      - name: Install the pinned Runtime and client from the checkout
+        run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
