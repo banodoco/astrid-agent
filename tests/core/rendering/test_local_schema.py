@@ -182,7 +182,7 @@ def test_role_aware_canonical_contract_is_shared_and_does_not_mutate_payload():
 
 def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=(500, 18, 544),
                          flags=(16, 16, 0), masks=None, ace_type=0, null_dacl=False,
-                         invalid_acl=False):
+                         invalid_acl=False, enabled_groups=()):
     """Model the retained SDDL with native ACE buffers and Runtime's API seam."""
     import ctypes
     from types import SimpleNamespace
@@ -192,7 +192,7 @@ def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=
     def sid(number):
         # The capture's account SID uses domain subauthorities and RID 500.
         parts = [21, 3077485881, 3661871218, 4154919024, number] if number in (500, 501) else (
-            [32, 544] if number == 544 else [number])
+            [32, number] if number in (544, 545) else [number])
         return bytes([1, len(parts)]) + (5).to_bytes(6, "big") + b"".join(
             part.to_bytes(4, "little") for part in parts)
 
@@ -233,10 +233,16 @@ def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=
         return "S-1-5-" + "-".join(str(int.from_bytes(raw[i:i+4], "little"))
                                     for i in range(8, len(raw), 4))
 
+    def check_membership(_token, value, result):
+        number = int.from_bytes(sid_bytes(value)[-4:], "little")
+        ctypes.cast(result, ctypes.POINTER(ctypes.c_int))[0] = number in enabled_groups
+        return 1
+
     adv = SimpleNamespace(GetSecurityInfo=get_security, GetAce=get_ace,
                           IsValidSid=lambda _sid: True, IsValidAcl=lambda _acl: not invalid_acl,
                           GetLengthSid=lambda value: len(sid_bytes(value)),
                           EqualSid=lambda a, b: sid_bytes(a) == sid_bytes(b),
+                          CheckTokenMembership=check_membership,
                           GetSecurityDescriptorControl=lambda _d, control, _r: 1)
     kernel = SimpleNamespace(LocalFree=lambda _descriptor: None)
     monkeypatch.setattr(security, "_api", lambda: (adv, kernel))
@@ -264,7 +270,7 @@ def test_windows_captured_acl_same_owner_is_admitted(monkeypatch):
     {"ace_type": 1},
     {"null_dacl": True},
     {"invalid_acl": True},
-    {"trustees": (544, 18, 18)},  # No effective user ACE.
+    {"trustees": (544, 18, 18), "enabled_groups": ()},  # No effective user ACE.
     {"masks": (0, 0x1F01FF, 0x1F01FF)},
     {"masks": (0x20000, 0x1F01FF, 0x1F01FF)},  # READ_CONTROL alone.
     {"masks": (1, 0x1F01FF, 0x1F01FF)},  # Read without execute/traverse.
@@ -287,6 +293,22 @@ def test_windows_schema_combines_effective_user_aces(monkeypatch):
     _windows_acl_fixture(monkeypatch, trustees=(500, 500, 18), flags=(0, 0, 0),
                          masks=(1, 0x20, 0x1F01FF))
     assert _local_schema._windows_schema_handle_is_safe(1)
+
+
+def test_windows_schema_accepts_captured_admin_and_users_read_acl(monkeypatch):
+    _windows_acl_fixture(monkeypatch, owner=544, process_owner=544,
+                         trustees=(544, 18, 545), flags=(0, 0, 0),
+                         masks=(0x1F01FF, 0x1F01FF, 0x1200A9), enabled_groups=(544, 545))
+    assert _local_schema._windows_schema_handle_is_safe(1)
+
+
+def test_windows_schema_rejects_users_write_and_disabled_groups(monkeypatch):
+    for masks, enabled in [((0x1F01FF, 0x1F01FF, 0x1200AB), (544, 545)),
+                           ((0x1F01FF, 0x1F01FF, 0x1200A9), ())]:
+        _windows_acl_fixture(monkeypatch, owner=544, process_owner=544,
+                             trustees=(544, 18, 545), flags=(0, 0, 0),
+                             masks=masks, enabled_groups=enabled)
+        assert not _local_schema._windows_schema_handle_is_safe(1)
 
 
 @pytest.mark.parametrize("bad", [None, "source", "destination"])

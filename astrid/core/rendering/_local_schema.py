@@ -25,10 +25,12 @@ READER_INPUTS = (
 
 
 def _windows_schema_handle_is_safe(handle) -> bool:
-    """Admit a schema input with only user and privileged allow ACEs."""
+    """Admit trusted owners and reject write grants to unprivileged groups."""
     from runtime_protocol import windows_security as security
 
     adv, kernel = security._api()
+    adv.CheckTokenMembership.argtypes = [security.P, security.P, ctypes.POINTER(ctypes.c_int)]
+    adv.CheckTokenMembership.restype = ctypes.c_int
     owner, dacl, descriptor = security.P(), security.P(), security.P()
     result = adv.GetSecurityInfo(handle, 1, 5, ctypes.byref(owner), None,
                                  ctypes.byref(dacl), None, ctypes.byref(descriptor))
@@ -54,12 +56,21 @@ def _windows_schema_handle_is_safe(handle) -> bool:
             sid = security.P(ace.value + 8)
             if not adv.IsValidSid(sid) or 8 + adv.GetLengthSid(sid) > size:
                 return False
-            if not adv.EqualSid(sid, user):
-                if security._sid_text(sid) not in {"S-1-5-18", "S-1-5-32-544"}:
+            mask = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
+            is_user = bool(adv.EqualSid(sid, user))
+            if not is_user:
+                sid_text = security._sid_text(sid)
+                if sid_text == "S-1-5-32-545":  # BUILTIN Users: read and execute only.
+                    if mask & ~0x1200A9:
+                        return False
+                elif sid_text not in {"S-1-5-18", "S-1-5-32-544"}:
                     return False
-            elif not header[1] & 8:  # INHERIT_ONLY_ACE does not grant this object access.
-                mask = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
-                # ACE masks contain effective file-specific rights: read/list and execute/traverse.
+                # Only enabled groups grant the current token access.
+                member = ctypes.c_int()
+                if not adv.CheckTokenMembership(None, sid, ctypes.byref(member)):
+                    return False
+                is_user = bool(member.value)
+            if is_user and not header[1] & 8:  # INHERIT_ONLY_ACE
                 user_access |= mask
         return user_access & 0x21 == 0x21
     finally:
