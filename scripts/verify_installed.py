@@ -14,6 +14,11 @@ import urllib.request
 import urllib.parse
 
 
+if __package__:
+    from . import journey_data_roots
+else:
+    import journey_data_roots
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASES_PATH = ROOT / 'tests' / 'upgrade' / 'releases.json'
 
@@ -439,7 +444,19 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                           'problems': problems}
 
 
+def observation_data_root(version_path, requested_data_root):
+    """Use the R1 copy location recorded by install.json when one is selected.
+
+    The original data_root remains the install's R0 provenance. Accept either
+    that path or the recorded R1 path from callers, and keep legacy/fresh
+    installs on their existing root.
+    """
+    program_root = Path(version_path).resolve().parents[2]
+    return journey_data_roots.selection(program_root, requested_data_root)[1]
+
+
 def observe(version_path, data_root):
+    data_root = observation_data_root(version_path, data_root)
     observations = {}
     details = {}
     def check(name, fn):

@@ -21,6 +21,25 @@ def test_update_only_fails_regressions_and_reports_preexisting():
     assert not evaluate({'observations': {'old': False}}, 'install')['passed']
 
 
+def test_observation_data_root_follows_recorded_r1_copy_and_keeps_fresh_root(tmp_path):
+    from scripts.verify_installed import observation_data_root
+
+    program = tmp_path / 'program'
+    version = program / 'versions' / 'candidate' / 'version.json'
+    version.parent.mkdir(parents=True)
+    r0, r1 = tmp_path / 'data', tmp_path / 'data-r1'
+    marker = program / 'install.json'
+    marker.write_text(json.dumps({'data_root': str(r0), 'r1_data_root': str(r1)}))
+
+    assert observation_data_root(version, r0) == r1
+    assert observation_data_root(version, r1) == r1
+
+    marker.write_text(json.dumps({'data_root': str(r0)}))
+    assert observation_data_root(version, r0) == r0
+    with pytest.raises(ValueError, match='does not match'):
+        observation_data_root(version, r1)
+
+
 def test_missing_required_tool_is_readiness_failure_not_provenance_failure(tmp_path):
     from scripts.verify_installed import required_tool_origin_observation
 

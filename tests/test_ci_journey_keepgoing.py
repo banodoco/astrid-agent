@@ -9,6 +9,35 @@ from scripts import ci_journey_keepgoing as keepgoing
 from scripts import journey_version_jumps as jumps
 
 
+def test_fresh_release1_keeps_standard_service_identity(tmp_path, monkeypatch):
+    app = tmp_path / 'app'
+    app.mkdir()
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_text('{}')
+    args = SimpleNamespace(job_id='direct-linux', mode='direct', leg='fresh-install',
+                           shell='sh', app_checkout=app, candidate=candidate)
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    manifest = {'release': 1}
+    calls = []
+    monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
+    monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
+    monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
+    monkeypatch.setattr(journey, 'bootstrap', lambda *a: None)
+    monkeypatch.setattr(jumps, 'start_direct_runtime', lambda *a: None)
+    monkeypatch.setattr(journey, 'wait_ready', lambda *a, **k: None)
+    monkeypatch.setattr(journey, 'installation', lambda *a: (root / 'version.json', data, manifest))
+    monkeypatch.setattr(jumps, 'installed_release', lambda version: version['release'])
+    monkeypatch.setattr(journey, 'selected_tuple', lambda *a: None)
+    monkeypatch.setattr(journey, 'assert_direct_service_ownership',
+                        lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(journey, 'verify', lambda *a, **k: None)
+    monkeypatch.setattr(jumps, 'task_after_update', lambda *a: None)
+    monkeypatch.setattr(journey, 'assert_one_runtime', lambda *a: None)
+    report = keepgoing.execute(args, root, data, tmp_path / 'evidence', SimpleNamespace(pid=1), 'birth')
+    assert all(stage['result'] == 'pass' for stage in report['stages'])
+    assert calls == [((root, data), {})]
+
+
 @pytest.mark.parametrize("wrong_selection,change_at", [
     (None, 0),
     *((kind, stage) for kind in ("path", "data", "release", "version") for stage in (1, 2)),
@@ -32,7 +61,8 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: calls.append("bootstrap0"))
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: calls.append("start"))
-    monkeypatch.setattr(journey, "wait_ready", lambda *a: None)
+    monkeypatch.setattr(jumps, "selected_data_root", lambda root, data: data.parent / ("data-r1" if state["release"] else "data"))
+    monkeypatch.setattr(journey, "wait_ready", lambda data: calls.append(("ready", data)))
     def installation(*_):
         if state["snapshot"] and state["release"] == 0:
             state["checks"] += 1
@@ -44,10 +74,12 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     monkeypatch.setattr(journey, "installation", installation)
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a: calls.append("ownership"))
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda *a: calls.append("one"))
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda *a, **_kwargs: calls.append("ownership"))
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda data: calls.append(("one", data)))
     def verify(mode, *args, **kwargs):
         calls.append("verify-" + mode)
+        calls.append(("verify-root", mode, args[1]))
         receipt = args[2] / f"verify-{mode}.json"
         receipt.parent.mkdir(parents=True, exist_ok=True)
         passed = mode != "observe"
@@ -63,9 +95,13 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
                 state["snapshot"] = True
         return {"project": "p"} if args[4] == "seed" else {"snapshot": True}
     monkeypatch.setattr(jumps, "direct_workspace", workspace)
+    def live_workspace(root, data, evidence, action, request, *, release):
+        calls.append(("live", data, release))
+        return {"snapshot": True}
+    monkeypatch.setattr(jumps, "live_workspace", live_workspace)
     monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
-    monkeypatch.setattr(journey, "healthy", lambda *a: {"pid": state["pid"],
-                                                         "runtime_instance_id": str(state["pid"])} )
+    monkeypatch.setattr(journey, "healthy", lambda data: calls.append(("health", data)) or
+                        {"pid": state["pid"], "runtime_instance_id": str(state["pid"])})
     def process_birth(pid):
         calls.append(("birth", pid))
         return f"birth-{pid}" if state["release"] == 0 else None
@@ -94,6 +130,12 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
         return
     assert rows["release0-owner"]["result"] == "pass"
     assert rows["release1-selection"]["result"] == "pass"
+    r0, r1 = tmp_path / "data", tmp_path / "data-r1"
+    assert ("ready", r0) in calls and ("ready", r1) in calls
+    assert ("health", r0) in calls and ("health", r1) in calls
+    assert ("verify-root", "observe", r0) in calls
+    assert ("verify-root", "update", r1) in calls and ("verify-root", "install", r1) in calls
+    assert ("live", r1, 1) in calls and ("one", r1) in calls
     assert ("birth", 3) in calls[calls.index("update") + 1:]
     observation = rows["release0-verify"]
     assert observation["result"] == "observed-failed"

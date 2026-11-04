@@ -246,15 +246,15 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         state["updated"] = True
     def start1():
         jumps.start_direct_runtime(evidence / "release1")
-        journey.wait_ready(data)
+        journey.wait_ready(jumps.selected_data_root(root, data))
         state["started1"] = True
     def select1():
         path, selected_data, version = journey.installation(root, data)
         if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not retain data and activate release 1")
         jumps.selected_candidate(state["manifest"], version, state["old_tuple"])
-        journey.assert_direct_service_ownership(root, data)
-        health = journey.healthy(data)
+        journey.assert_direct_service_ownership(root, data, release=1)
+        health = journey.healthy(jumps.selected_data_root(root, data))
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
         state.update(version=version, version_path=path)
@@ -269,11 +269,13 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         return {"result": "observed-passed" if passed else "observed-failed",
                 "observation": {"passed": passed, "failures": failures}}
     def verify_update():
-        journey.verify("update", state["version_path"], data, evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
+        journey.verify("update", state["version_path"], jumps.selected_data_root(root, data), evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
     def verify_install():
-        journey.verify("install", state["version_path"], data, evidence)
+        journey.verify("install", state["version_path"], jumps.selected_data_root(root, data), evidence)
     def snap1():
-        state["after"] = jumps.direct_workspace(root, state["version"], data, evidence / "release1-api-observe", "snapshot", state["keys"])
+        state["after"] = jumps.live_workspace(root, jumps.selected_data_root(root, data),
+                                              evidence / "release1-api-observe", "snapshot", state["keys"],
+                                              release=1)
     def preserve():
         jumps.assert_preserved(state["before"], state["after"])
         if jumps.semantic_digest(state["before"]) != jumps.semantic_digest(state["after"]):
@@ -298,6 +300,6 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
     stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
-    stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(data), evidence)
+    stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(jumps.selected_data_root(root, data)), evidence)
     stage("sentinel", [], check_sentinel, evidence)
     return report

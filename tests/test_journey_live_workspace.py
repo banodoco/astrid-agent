@@ -164,7 +164,7 @@ def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeyp
 
     events = []
     selected = {"realm_root": str(tmp_path / "realm"), "runtime_instance_id": "r0"}
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: events.append("owner"))
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_, release: events.append(("owner", release)))
     monkeypatch.setattr(journey, "healthy", lambda *_: events.append("health") or selected)
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
     manifest_root = tmp_path / "version"
@@ -183,14 +183,14 @@ def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeyp
         return '{"actual": true}'
     monkeypatch.setattr(journey, "run", run)
     assert jumps.live_workspace(tmp_path, tmp_path, tmp_path / "evidence", "snapshot", {}) == {"actual": True}
-    assert events == ["owner", "health", "check", "api", "check", "owner"]
+    assert events == [("owner", 0), "health", "check", "api", "check", ("owner", 0)]
 
 
 def test_live_workspace_rejects_owner_turnover(tmp_path, monkeypatch):
     from scripts import ci_journey as journey
 
     selected = {"realm_root": str(tmp_path / "realm")}
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: None)
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_, release: None)
     monkeypatch.setattr(journey, "healthy", lambda *_: selected)
     monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
     manifest_root = tmp_path / "version"
@@ -210,7 +210,8 @@ def test_live_workspace_rejects_owner_turnover(tmp_path, monkeypatch):
 
 
 def test_selection_rejects_changed_discovery_before_mutation(tmp_path, monkeypatch):
-    root, data, realm = (tmp_path / name for name in ("program", "data", "realm"))
+    root, data = tmp_path / "program", tmp_path / "data"
+    realm = data / "realm"
     for directory in (root, data / "runtime", realm):
         directory.mkdir(parents=True)
     (tmp_path / "tst-b1-owner.json").write_text(json.dumps({
@@ -230,6 +231,48 @@ def test_selection_rejects_changed_discovery_before_mutation(tmp_path, monkeypat
     credential.write_text("replacement")
     with pytest.raises(RuntimeError, match="owner changed"):
         live.check_selection(data, root, selected)
+
+
+def test_r1_copy_selection_uses_active_root_and_keeps_r0_owner_binding(tmp_path):
+    root = tmp_path / "program"
+    r0, r1 = tmp_path / "data", tmp_path / "data-r1"
+    realm = r1 / "runtime" / "realms" / "realm"
+    root.mkdir()
+    (r1 / "runtime").mkdir(parents=True)
+    realm.mkdir(parents=True)
+    (r0).mkdir()
+    (root / "install.json").write_text(json.dumps({
+        "data_root": str(r0), "r1_data_root": str(r1)}))
+    (tmp_path / "tst-b1-owner.json").write_text(json.dumps({
+        "schema_version": 1, "run_id": "b" * 32, "root": str(root), "data_root": str(r0)}))
+    credential = r1 / "runtime" / "credentials" / "owner.token"
+    credential.parent.mkdir()
+    credential.write_text("secret")
+    discovery = {"endpoint": "http://127.0.0.1:4321", "realm_root": str(realm),
+                 "active_realm": "realm", "runtime_instance_id": "r1", "pid": 12,
+                 "process_birth_id": "birth", "credential_file": str(credential)}
+
+    selected = live.selection_for(r1, root, discovery)
+
+    assert selected["realm_root"] == str(realm)
+    assert selected["run_id"] == "b" * 32
+
+
+def test_selected_data_root_prefers_recorded_r1_copy_and_preserves_legacy(tmp_path):
+    r0, r1 = tmp_path / "data", tmp_path / "data-r1"
+    root = tmp_path / "program"
+    root.mkdir()
+    marker = root / "install.json"
+    marker.write_text(json.dumps({"data_root": str(r0), "r1_data_root": str(r1)}))
+
+    assert jumps.selected_data_root(root, r0) == r1
+    assert jumps.selected_data_root(root, r1) == r1
+    assert jumps.selected_data_root(root, r1, allow_r1=False) == r0
+
+    marker.write_text(json.dumps({"data_root": str(r0)}))
+    assert jumps.selected_data_root(root, r0) == r0
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        jumps.selected_data_root(root, r1)
 
 
 def test_existing_project_preferences_are_not_overwritten():
@@ -277,7 +320,8 @@ def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_pa
     thread.start()
     try:
         run_root = tmp_path / "run"
-        root, data, realm = (run_root / name for name in ("program", "data", "realm"))
+        root, data = run_root / "program", run_root / "data"
+        realm = data / "realm"
         for directory in (root, data / "runtime", realm):
             directory.mkdir(parents=True)
         credential = data / "token"
@@ -290,7 +334,7 @@ def test_live_seed_failure_is_staged_without_credentials_or_response_body(tmp_pa
                      "process_birth_id": "birth", "credential_file": str(credential)}
         (data / "runtime/discovery.json").write_text(json.dumps(discovery))
         evidence = run_root / "evidence" / "release0-to-release1"
-        monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_: None)
+        monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_, release: None)
         monkeypatch.setattr(journey, "healthy", lambda *_: discovery)
         monkeypatch.setattr(journey, "workspace_root", lambda *_: realm)
         with pytest.raises(RuntimeError, match="seed.json: exit 1"):
