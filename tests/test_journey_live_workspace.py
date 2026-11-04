@@ -47,7 +47,7 @@ def test_preservation_rejects_changed_data_and_wrong_schema():
     for key in ("project", "timeline", "preferences", "task", "cas_sha256"):
         with pytest.raises(RuntimeError, match="changed seeded workspace"):
             jumps.assert_preserved(before, {**after, key: {"value": 2}})
-    with pytest.raises(RuntimeError, match="Runtime schema"):
+    with pytest.raises(RuntimeError, match="candidate schema"):
         jumps.assert_preserved(before, {**after, "schema_version": 31})
 
 

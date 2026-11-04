@@ -284,11 +284,11 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
         baseline = evidence / DIAGNOSTIC_START_STAGE
         journey.verify("observe", journey.installation(root, data)[0], data, baseline)
         project = "tst-m4-3b-release0"
-        keys = live_workspace(root, data, baseline, "seed", {
+        keys = direct_workspace(root, version, data, baseline, "seed", {
             "project": project, "generation": "release0", "task_id": None, "create_project": True})
         result["checks"]["seed"] = "pass"
         keys["task_id"] = task_after_update(version, baseline / "release0-task", project)
-        live_workspace(root, data, baseline, "snapshot", keys)
+        direct_workspace(root, version, data, baseline, "snapshot", keys)
         result["checks"]["snapshot"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
@@ -360,9 +360,8 @@ def assert_preserved(before: dict, after: dict) -> None:
             raise RuntimeError("Update did not retain seeded workspace " + key)
         if before[key] != after[key]:
             raise RuntimeError("Update changed seeded workspace " + key)
-    for observation in (before, after):
-        if observation["schema_version"] != observation["target_schema_version"]:
-            raise RuntimeError("Selected realm does not match its Runtime schema")
+    if after["schema_version"] != after["target_schema_version"]:
+        raise RuntimeError("Selected realm was not migrated to the candidate schema")
 
 
 def service_action(root: Path, data: Path, version: dict, old: dict | None = None) -> dict:
@@ -636,11 +635,14 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         baseline = evidence / "release0-api-seed"
         journey.verify("observe", old_path, data, baseline)
         project = "tst-m4-3b-release0"
-        keys = live_workspace(root, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys = direct_workspace(root, old, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True},
+            release0_version_path=old_path)
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = live_workspace(root, data, baseline, "snapshot", keys)
-        # Identify the live R0 owner that the update must replace.
+        before = direct_workspace(root, old, data, baseline, "snapshot", keys,
+                                  release0_version_path=old_path)
+        # The helper temporarily stops the service, so identify the actual R0
+        # owner that the update must replace after the last offline observation.
         old_health = journey.healthy(data)
         old_pid = int(old_health["pid"])
         old_birth = journey.process_birth(old_pid)
@@ -673,11 +675,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = live_workspace(root, data, evidence / "release1-api-observe", "snapshot", keys)
+        after = direct_workspace(root, version, data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
-        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
-        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
-        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
+        before_sha, after_sha = semantic_digest(before), semantic_digest(after)
         if before_sha != after_sha:
             raise RuntimeError("Release-1 semantic snapshot digest differs after exact preservation")
         result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}

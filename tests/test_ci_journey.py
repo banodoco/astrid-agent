@@ -167,7 +167,7 @@ def test_diagnostic_stage_start_fails_closed_for_invalid_preconditions(tmp_path,
         state["release1_candidate"]["tuple"]["agent"] = "a" * 40
         journey.write_json(args.diagnostic_state, state)
     calls = []
-    monkeypatch.setattr(jumps, "live_workspace", lambda *unused: calls.append(unused))
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: calls.append(unused))
     with pytest.raises(RuntimeError, match="precondition file is absent|preconditions are stale"):
         jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
     assert calls == []
@@ -184,7 +184,7 @@ def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_pa
     calls = []
     monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: calls.append("verify"))
     monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
-    def workspace(_root, _data, _evidence, action, request):
+    def workspace(_root, _version, _data, _evidence, action, request):
         calls.append(action)
         if action == "seed":
             assert request == {"project": "tst-m4-3b-release0", "generation": "release0",
@@ -193,7 +193,7 @@ def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_pa
         assert action == "snapshot"
         assert request == {"project": "tst-m4-3b-release0", "task_id": "task-1"}
         return {"snapshot": "ok"}
-    monkeypatch.setattr(jumps, "live_workspace", workspace)
+    monkeypatch.setattr(jumps, "direct_workspace", workspace)
     result = jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
     assert calls == ["verify", "seed", "snapshot"]
     assert result["status"] == "pass"
@@ -1211,7 +1211,7 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
-def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, manager):
+def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps
 
     root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
@@ -1259,8 +1259,10 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         manager_action("stop" if "Stop-ScheduledTask" in code else "start")
         return ""
 
-    def workspace(_root, _data, _evidence, action, request):
-        assert state["running"] and not state["local"]
+    def workspace(version, _data, _evidence, action, request, *, realm):
+        # A second RuntimeService would fail this simulated exclusive lock.
+        assert not state["running"] and not state["local"]
+        assert realm == tmp_path / "realm"
         state["local"] = True
         try:
             calls.append(action)
@@ -1306,7 +1308,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     monkeypatch.setattr(journey, "process_birth", lambda pid: str(pid) if pid == state["pid"] else None)
     monkeypatch.setattr(journey, "run", run)
     monkeypatch.setattr(journey.windows, "powershell", powershell)
-    monkeypatch.setattr(jumps, "live_workspace", workspace)
+    monkeypatch.setattr(jumps, "workspace", workspace)
     monkeypatch.setattr(jumps, "task_after_update", task)
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions",
@@ -1319,7 +1321,8 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
-    assert calls == ["seed", "task", "snapshot", "snapshot", "task"]
+    assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
+                     "stop", "snapshot", "start", "task"]
     assert state["running"] and not state["local"]
 
 

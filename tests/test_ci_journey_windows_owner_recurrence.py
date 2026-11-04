@@ -233,7 +233,7 @@ def test_workspace_captures_survive_cleanup_without_overwriting_initial_selectio
             assert observation["context"]["native_creation_filetimes"] == initial["native_creation_filetimes"]
 
 
-def test_authentic_leg_uses_live_r0_without_workspace_restart(workspace_rig, monkeypatch):
+def test_authentic_leg_routes_both_r0_operations_through_the_scoped_rule(workspace_rig, monkeypatch):
     rig = workspace_rig
     candidate_path = rig.root.parent / "candidate.json"
     app = rig.root.parent / "app"
@@ -258,10 +258,6 @@ def test_authentic_leg_uses_live_r0_without_workspace_restart(workspace_rig, mon
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(journey, "verify", lambda *_: None)
     monkeypatch.setattr(jumps, "task_after_update", lambda *_: "task-1")
-    def live(_root, _data, _evidence, action, request):
-        rig.events.append(action)
-        return {"project": request["project"]} if action == "seed" else {}
-    monkeypatch.setattr(jumps, "live_workspace", live)
     monkeypatch.setattr(journey, "process_birth", lambda _: "old-birth")
 
     def update_boundary(*_args, **_kwargs):
@@ -271,8 +267,8 @@ def test_authentic_leg_uses_live_r0_without_workspace_restart(workspace_rig, mon
     with pytest.raises(RuntimeError, match="reached update boundary"):
         jumps.execute_release0_to_release1(
             args, rig.root, rig.data, rig.evidence.parent, SimpleNamespace(pid=9000), "sentinel-birth")
-    assert rig.events == ["bootstrap-r0", "seed", "snapshot"]
-    assert rig.native_calls == [4284, 8384]  # original selected R0 owner
+    assert rig.events == ["bootstrap-r0", "stop", "workspace", "start", "stop", "workspace", "start"]
+    assert rig.native_calls == [4284, 8384] * 5  # selection, seed before/after, snapshot before/after
     receipt = journey.read_json(rig.evidence.parent / "journey-result.json")
     assert receipt["release_transition"] is None
     assert receipt["status"] == "fail"
