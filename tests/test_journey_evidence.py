@@ -262,6 +262,12 @@ def test_release1_aggregate_accepts_full_staged_receipts_with_capture_status(tmp
         assert (stage / "sdk-capture-status.json").is_file()
         shutil.copytree(stage, aggregate_root / job)
     assert not gate.evaluate_release1_matrix(candidate, aggregate_root)
+    direct = aggregate_root / "direct-linux" / "journey-result.json"
+    failed = json.loads(direct.read_text())
+    failed["checks"]["task_settled"] = "not-run"
+    direct.write_text(json.dumps(failed))
+    assert any("direct-linux: task_settled assertion did not pass" in error
+               for error in gate.evaluate_release1_matrix(candidate, aggregate_root))
 
 
 def test_direct_receipts_require_observed_checks_without_pid_count(tmp_path):

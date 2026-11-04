@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -1282,33 +1283,69 @@ def valid_sdk_capture_status(value: object) -> bool:
 
 
 def installed_cli_with_capture(version: dict, argv: list[str], evidence: Path, name: str,
-                               *, status_name: str, module: str = "astrid") -> str:
-    """Observe a bounded prefix after the existing CLI call; never publish its bytes."""
-    condition = "failure"
+                               *, status_name: str, module: str = "astrid",
+                               timeout: int = 300) -> str:
+    """Bound combined output locally; publish only a closed status observation.
+
+    Project and task status names identify the call, not a Runtime owner.
+    Size classifies combined stdout/stderr; timeout sizes are only bytes observed
+    before termination. Never parse timeout output or a stream without EOF.
+    """
+    status = {"schema": "astrid.sdk-capture-status.v1", "exit_condition": "failure",
+              "response_size": "unavailable", "json_object": None,
+              "ok": None, "task_refs": "unknown"}
     try:
-        output = installed_cli(version, argv, evidence, name, module=module)
-        condition = "success"
-        return output
-    except subprocess.TimeoutExpired:
-        condition = "timeout"
-        raise
-    finally:
+        evidence.mkdir(parents=True, exist_ok=True)
+        (evidence / name).unlink(missing_ok=True)
+        env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+        env.update(version["env"])
+        command = [str(version["python"]), "-I", "-m", module, *argv]
+        reader = None
+        reader_joined = False
+        process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
-            status = {"schema": "astrid.sdk-capture-status.v1", "exit_condition": condition,
-                      "response_size": "unavailable", "json_object": None,
-                      "ok": None, "task_refs": "unknown"}
-            # A failed start could leave an old output file, so only interpret output
-            # following a successful call. The existing CLI owns all task semantics.
-            if condition == "success":
+            retained = bytearray()
+            overflow = False
+            reader_failed = False
+
+            def drain() -> None:
+                nonlocal overflow, reader_failed
                 try:
-                    with (evidence / name).open("rb") as stream:
-                        raw = stream.read(SDK_CAPTURE_LIMIT + 1)
-                except OSError:
-                    raw = None
-                if raw is not None:
-                    status["response_size"] = ("over_limit" if len(raw) > SDK_CAPTURE_LIMIT else
-                                               "within_limit" if raw else "empty")
-                if raw is not None and len(raw) <= SDK_CAPTURE_LIMIT:
+                    while True:
+                        chunk = process.stdout.read(8192)
+                        if not chunk:
+                            break
+                        remaining = SDK_CAPTURE_LIMIT - len(retained)
+                        retained.extend(chunk[:remaining])
+                        if len(chunk) > remaining:
+                            overflow = True
+                except (OSError, ValueError):
+                    reader_failed = True
+
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+            timed_out = False
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as timeout_error:
+                timed_out = True
+                status["exit_condition"] = "timeout"
+                try:
+                    process.kill()
+                    process.wait()
+                except BaseException as cleanup_error:
+                    timeout_error.add_note(f"Child timeout cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}")
+                    raise timeout_error
+            reader.join(timeout=2)
+            reader_joined = True
+            incomplete = reader.is_alive() or reader_failed
+            if not reader.is_alive():
+                process.stdout.close()
+            status["exit_condition"] = "timeout" if timed_out else "success" if process.returncode == 0 else "failure"
+            if not incomplete:
+                raw = bytes(retained)
+                status["response_size"] = ("over_limit" if overflow else "within_limit" if raw else "empty")
+                if not timed_out and not overflow:
                     try:
                         value = json.loads(raw.decode("utf-8-sig", errors="replace"))
                         status["json_object"] = isinstance(value, dict)
@@ -1318,10 +1355,44 @@ def installed_cli_with_capture(version: dict, argv: list[str], evidence: Path, n
                             details = value.get("details")
                             refs = details.get("astridTaskRefs") if isinstance(details, dict) else None
                             if isinstance(refs, list):
-                                status["task_refs"] = ("zero" if not refs else
-                                                       "one" if len(refs) == 1 else "multiple")
-                    except (ValueError, UnicodeError):
+                                status["task_refs"] = "zero" if not refs else "one" if len(refs) == 1 else "multiple"
+                    except (ValueError, UnicodeError, RecursionError):
                         status["json_object"] = False
+                try:
+                    (evidence / name).write_bytes(raw)
+                except OSError:
+                    if not timed_out and not process.returncode:
+                        raise
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, timeout)
+            if process.returncode:
+                raise RuntimeError(f"{name}: exit {process.returncode}; see {evidence / name}")
+            if incomplete or overflow:
+                raise RuntimeError(f"{name}: response capture incomplete or over limit")
+            return raw.decode("utf-8-sig", errors="replace")
+        except BaseException as primary:
+            # Only the process we launched is ours to terminate.  In particular,
+            # never close its buffered pipe while a reader may be blocked on an
+            # inherited writer: close() could otherwise wait forever for its lock.
+            try:
+                process.kill()
+            except BaseException as cleanup_error:
+                primary.add_note(f"Child termination failed: {type(cleanup_error).__name__}: {cleanup_error}")
+            else:
+                try:
+                    process.wait()
+                except BaseException as cleanup_error:
+                    primary.add_note(f"Child reap failed: {type(cleanup_error).__name__}: {cleanup_error}")
+            try:
+                if not reader_joined and reader is not None and reader.ident is not None:
+                    reader.join(timeout=2)
+                if reader is None or reader.ident is None or not reader.is_alive():
+                    process.stdout.close()
+            except BaseException as cleanup_error:
+                primary.add_note(f"Reader cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}")
+            raise
+    finally:
+        try:
             SDK_CAPTURE_RECEIPTS.setdefault(evidence.absolute(), {})[status_name] = status
         except (OSError, ValueError, TypeError, RecursionError):
             # Diagnostics cannot replace the original result or exception.
@@ -1393,6 +1464,8 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
 def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
     """Exercise the installed SDK through a settled, materialized SFX output."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
+    for name in ("project.json", "sdk-invocation.json"):
+        (evidence / name).unlink(missing_ok=True)
     for phase in ("before-cleanup", "after-cleanup"):
         for name in SDK_CAPTURE_STATUS_NAMES:
             try:
