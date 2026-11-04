@@ -1,4 +1,4 @@
-import fcntl, hashlib, json, os, plistlib, re, subprocess, sys, time, traceback
+import fcntl, hashlib, json, os, plistlib, re, subprocess, sys, time, traceback, uuid
 from pathlib import Path
 base=Path(sys.argv[1]); driver=base/'driver'; app=base/'candidate-app'; run=base/'run'; data=run/'data'; home=run/'home'; root=home/'.local/share/astrid'; evidence=base/'evidence'; evidence.mkdir()
 sys.path.insert(0,str(driver/'scripts'))
@@ -13,6 +13,9 @@ def runner_owners(data):
   elif rows: rows[-1][1]+='\n'+line
  return [pid for pid,cmd in rows if j._runtime_owner_command(cmd)]
 j.runtime_processes=runner_owners
+run.mkdir(mode=0o700)
+with (run/'tst-b1-owner.json').open('x',encoding='utf-8') as owner:
+ json.dump({'schema_version':1,'run_id':uuid.uuid4().hex,'root':str(root),'data_root':str(data)},owner); owner.write('\n')
 status={'stages':{},'outcome':'not-run','cleanup':'unverified'}
 def done(name):
  status['stages'][name]='pass'; print('STAGE '+name+' pass',flush=True)
