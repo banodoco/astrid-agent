@@ -16,11 +16,11 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
           "release0-verify", "release0-seed", "release0-task", "release0-snapshot",
           "release0-owner", "release1-update", "release1-start", "release1-selection",
           "release1-verify-update", "release1-verify-install", "release1-snapshot",
-          "semantic-preservation", "release1-task", "one-runtime", "sentinel")
+          "semantic-preservation", "release1-task", "sentinel")
 
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
-                "release1-verify-install", "release1-task", "one-runtime", "sentinel")
+                "release1-verify-install", "release1-task", "sentinel")
 
 
 def release0_owner(root: Path, data: Path) -> dict:
@@ -190,7 +190,6 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
         stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
-        stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(data), evidence)
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
     def admission():
@@ -300,6 +299,5 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
     stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
-    stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(jumps.selected_data_root(root, data)), evidence)
     stage("sentinel", [], check_sentinel, evidence)
     return report

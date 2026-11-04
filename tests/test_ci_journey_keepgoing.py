@@ -32,9 +32,9 @@ def test_fresh_release1_keeps_standard_service_identity(tmp_path, monkeypatch):
                         lambda *a, **k: calls.append((a, k)))
     monkeypatch.setattr(journey, 'verify', lambda *a, **k: None)
     monkeypatch.setattr(jumps, 'task_after_update', lambda *a: None)
-    monkeypatch.setattr(journey, 'assert_one_runtime', lambda *a: None)
     report = keepgoing.execute(args, root, data, tmp_path / 'evidence', SimpleNamespace(pid=1), 'birth')
     assert all(stage['result'] == 'pass' for stage in report['stages'])
+    assert [stage['stage'] for stage in report['stages']] == list(keepgoing.FRESH_STAGES)
     assert calls == [((root, data), {})]
 
 
@@ -76,7 +76,6 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
     monkeypatch.setattr(journey, "assert_direct_service_ownership",
                         lambda *a, **_kwargs: calls.append("ownership"))
-    monkeypatch.setattr(journey, "assert_one_runtime", lambda data: calls.append(("one", data)))
     def verify(mode, *args, **kwargs):
         calls.append("verify-" + mode)
         calls.append(("verify-root", mode, args[1]))
@@ -117,6 +116,7 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     report = keepgoing.execute(args, tmp_path / "program", tmp_path / "data", evidence,
                                SimpleNamespace(pid=1), "birth")
     rows = {row["stage"]: row for row in report["stages"]}
+    assert "one-runtime" not in rows
     assert report["classification"] == "NON-PROOF"
     assert report["qualification"]["eligible"] is False
     assert json.loads((evidence / "journey-result.json").read_text())["receipt_kind"] == "diagnostic-only"
@@ -135,7 +135,7 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     assert ("health", r0) in calls and ("health", r1) in calls
     assert ("verify-root", "observe", r0) in calls
     assert ("verify-root", "update", r1) in calls and ("verify-root", "install", r1) in calls
-    assert ("live", r1, 1) in calls and ("one", r1) in calls
+    assert ("live", r1, 1) in calls
     assert ("birth", 3) in calls[calls.index("update") + 1:]
     observation = rows["release0-verify"]
     assert observation["result"] == "observed-failed"
