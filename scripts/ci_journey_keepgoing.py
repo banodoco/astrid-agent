@@ -34,6 +34,17 @@ def release0_owner(root: Path, data: Path) -> dict:
     return {"service": service, "health": health, "pid": pid, "birth": birth}
 
 
+def capture_release0_update_owner(root: Path, data: Path, old_path: Path) -> dict:
+    """Bind update preflight to the live owner after offline R0 workspace work."""
+    version_path, selected_data, version = journey.installation(root, data)
+    if (selected_data != data or version_path != old_path
+            or jumps.installed_release(version) != 0):
+        raise RuntimeError("Release-0 installation changed before the direct release-1 update")
+    # direct_workspace intentionally stops and restarts Runtime, so the owner
+    # captured during initial selection cannot be used after seed/snapshot.
+    return release0_owner(root, data)
+
+
 def assert_release0_owner(root: Path, data: Path, owner: dict) -> dict:
     """Require the same healthy R0 service owner immediately before update."""
     journey.assert_direct_service_ownership(root, data)
@@ -215,7 +226,6 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         path, selected_data, old = journey.installation(root, data)
         if selected_data != data or jumps.installed_release(old) != 0:
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
-        state["selected_owner"] = release0_owner(root, data)
         old_tuple = journey.selected_tuple(journey.read_json(state["manifest0"]), old)
         jumps.write_diagnostic_release0_preconditions(
             args, root, data, fixture_receipt=report["release0_fixture"],
@@ -230,9 +240,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     def snap0():
         state["before"] = release0_workspace(root, state["old"], data, evidence / "release0-api-seed", "snapshot", state["keys"])
     def owner0():
-        health = assert_release0_owner(root, data, state["selected_owner"])
-        state.update(health0=health, pid0=state["selected_owner"]["pid"],
-                     birth0=state["selected_owner"]["birth"])
+        owner = capture_release0_update_owner(root, data, state["old_path"])
+        state.update(health0=owner["health"], pid0=owner["pid"], birth0=owner["birth"])
     def update():
         assert_release0_owner(root, data, {"health": state["health0"],
                                            "pid": state["pid0"], "birth": state["birth0"]})

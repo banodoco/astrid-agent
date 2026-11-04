@@ -103,6 +103,39 @@ def test_release0_owner_requires_a_process_birth_identity(monkeypatch, tmp_path)
         keepgoing.release0_owner(tmp_path / "root", tmp_path / "data")
 
 
+def test_update_owner_is_recaptured_after_intentional_release0_restart(monkeypatch, tmp_path):
+    root, data, old_path = tmp_path / "root", tmp_path / "data", tmp_path / "r0"
+    version = {"root": str(old_path)}
+    service = {"manager": "systemd-user"}
+    health = {"pid": 522, "runtime_instance_id": "restarted-r0-instance"}
+    calls = []
+    monkeypatch.setattr(keepgoing.journey, "installation",
+                        lambda actual_root, actual_data: (calls.append("installation") or
+                                                          (old_path, data, version)))
+    monkeypatch.setattr(keepgoing.jumps, "installed_release", lambda selected: 0)
+    monkeypatch.setattr(keepgoing.journey, "assert_direct_service_ownership",
+                        lambda actual_root, actual_data: calls.append("service") or service)
+    monkeypatch.setattr(keepgoing.journey, "healthy",
+                        lambda actual_data: calls.append("health") or health)
+    monkeypatch.setattr(keepgoing.journey, "process_birth",
+                        lambda pid: calls.append(("birth", pid)) or "new-birth")
+
+    owner = keepgoing.capture_release0_update_owner(root, data, old_path)
+
+    assert owner == {"service": service, "health": health, "pid": 522, "birth": "new-birth"}
+    assert calls == ["installation", "service", "health", ("birth", 522)]
+
+
+def test_update_owner_recapture_rejects_changed_release0_selection(monkeypatch, tmp_path):
+    root, data, old_path = tmp_path / "root", tmp_path / "data", tmp_path / "r0"
+    monkeypatch.setattr(keepgoing.journey, "installation",
+                        lambda *_: (tmp_path / "replacement", data, {"root": "replacement"}))
+    monkeypatch.setattr(keepgoing.jumps, "installed_release", lambda _: 0)
+
+    with pytest.raises(RuntimeError, match="Release-0 installation changed"):
+        keepgoing.capture_release0_update_owner(root, data, old_path)
+
+
 def test_update_preflight_requires_same_live_service_owner(monkeypatch, tmp_path):
     calls = []
     owner = {"health": {"pid": 431, "runtime_instance_id": "r0-instance"},
