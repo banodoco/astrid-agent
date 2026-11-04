@@ -23,6 +23,7 @@ def release1_receipts(tmp_path):
                                                                             "ImageOS": image_os,
                                                                             "ImageVersion": "test"},
                "candidate_checkouts": {name: {"sha": sha} for name, sha in candidate.items()},
+               "run_roots": {"program": "/run/program", "data": "/run/data"},
                "sources": {name: {"sha": candidate[name]} for name in ("app", "agent", "runtime")},
                "installed_tuple": {name: candidate[name] for name in ("app", "agent", "runtime")},
                "import_origins": {"runtime": "/owned/runtime"},
@@ -42,6 +43,13 @@ def release1_receipts(tmp_path):
             }
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
                                     "after_sha256": "b" * 64}
+            if contract["job_id"] in {"direct-linux", "direct-macos"}:
+                row["upgrade_uninstall_refusal"] = {
+                    "exit_code": 1,
+                    "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
+                    "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
+                    "service_manager": {"manager": "native", "foreground_fallback": False},
+                }
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
@@ -202,6 +210,13 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     data["installed_tuple"]["runtime"] = "e" * 40
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-macos: runtime installed/source identity differs" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-linux" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["upgrade_uninstall_refusal"]["message"] = "unrelated failure"
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-linux: required preserved-state uninstall refusal" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 

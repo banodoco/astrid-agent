@@ -327,6 +327,19 @@ def _release1_row_errors(candidate, contract, row):
                                for name in ("before_sha256", "after_sha256"))
                     or semantic.get("before_sha256") != semantic.get("after_sha256")):
                 errors.append(f"{job_id}: semantic data preservation is absent or unequal")
+            refusal = row.get("upgrade_uninstall_refusal")
+            if (not isinstance(refusal, dict) or type(refusal.get("exit_code")) is not int
+                    or refusal.get("exit_code") == 0
+                    or refusal.get("message") != (
+                        "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade "
+                        "isn't supported yet. Both data folders were kept.")
+                    or refusal.get("r0_data_root") != (row.get("run_roots") or {}).get("data")
+                    or not isinstance(refusal.get("r1_data_root"), str)
+                    or refusal.get("r1_data_root") == refusal.get("r0_data_root")
+                    or not isinstance(refusal.get("service_manager"), dict)
+                    or refusal["service_manager"].get("foreground_fallback") is not False
+                    or refusal["service_manager"].get("manager") != (row.get("service_manager") or {}).get("manager")):
+                errors.append(f"{job_id}: required preserved-state uninstall refusal is absent or invalid")
             for check in ("release", "service", "health", "semantic_data", "task_settled",
                           "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":

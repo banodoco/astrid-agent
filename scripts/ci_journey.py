@@ -1424,6 +1424,49 @@ def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
                env=env, timeout=timeout)
 
 
+UPGRADE_UNINSTALL_REFUSAL = (
+    "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. "
+    "Both data folders were kept."
+)
+
+
+def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data: Path,
+                                               evidence: Path) -> dict:
+    """Prove #222's R0-to-R1 uninstall refusal leaves the upgrade intact."""
+    log = evidence / "final-uninstall.log"
+    try:
+        installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                  "--data-root", str(data)], evidence,
+                      "final-uninstall.log", timeout=1800)
+    except RuntimeError as exc:
+        if not re.search(r"final-uninstall\.log: exit [1-9][0-9]*; see ", str(exc)):
+            raise RuntimeError("Release-1 uninstall did not exit with a refusal") from exc
+    else:
+        raise RuntimeError("Release-1 uninstall unexpectedly succeeded")
+
+    try:
+        output = log.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise RuntimeError("Release-1 uninstall refusal log is unavailable") from exc
+    if output.splitlines().count(UPGRADE_UNINSTALL_REFUSAL) != 1:
+        raise RuntimeError("Release-1 uninstall did not emit the required upgrade refusal")
+    current = root / "current"
+    if not current.is_file():
+        raise RuntimeError("Release-1 uninstall refusal removed the selected version")
+    version_path, selected_data, selected = installation(root, data)
+    if (version_path != Path(installed["root"]) / "version.json" or selected_data != data
+            or read_json(Path(selected["root"]) / "manifest.json").get("release") != 1):
+        raise RuntimeError("Release-1 uninstall refusal changed the selected installation")
+    marker = read_json(root / "install.json")
+    r1_data = marker.get("r1_data_root")
+    if not isinstance(r1_data, str) or not Path(r1_data).is_dir() or not data.is_dir():
+        raise RuntimeError("Release-1 uninstall refusal did not retain both data folders")
+    service = assert_direct_service_ownership(root, data, release=1)
+    return {"exit_code": 1, "message": UPGRADE_UNINSTALL_REFUSAL,
+            "r0_data_root": str(data), "r1_data_root": r1_data,
+            "service_manager": service}
+
+
 def valid_sdk_capture_status(value: object) -> bool:
     return (isinstance(value, dict) and set(value) == {
         "schema", "exit_condition", "response_size", "json_object", "ok", "task_refs"
@@ -1956,25 +1999,39 @@ def execute(args: argparse.Namespace) -> dict:
                     if not getattr(args, "retain_for_next_leg", False):
                         result_path = evidence / "journey-result.json"
                         try:
+                            expected_upgrade_refusal = False
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                     assert_direct_service_ownership(root, data, release=release)
-                                installed_cli(installed, ["install", "--uninstall", "--root", str(root),
-                                                          "--data-root", str(data)], evidence,
-                                              "final-uninstall.log", timeout=1800)
-                                if (root / "current").exists() or (not narrow_refusal and runtime_processes(data)):
-                                    raise RuntimeError("Owned installation remained after final uninstall")
+                                release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
+                                if (args.leg == "release0-to-release1" and sys.platform in {"linux", "darwin"}
+                                        and release == 1):
+                                    refusal = assert_release1_upgrade_uninstall_refusal(installed, root, data, evidence)
+                                    expected_upgrade_refusal = True
+                                    if result_path.is_file():
+                                        recorded = read_json(result_path)
+                                        recorded["upgrade_uninstall_refusal"] = refusal
+                                        write_json(result_path, recorded)
+                                else:
+                                    installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                                              "--data-root", str(data)], evidence,
+                                                  "final-uninstall.log", timeout=1800)
+                                    if root.joinpath("current").exists():
+                                        raise RuntimeError("Owned installation remained after final uninstall")
+                            if not expected_upgrade_refusal and not narrow_refusal and runtime_processes(data):
+                                raise RuntimeError("Owned Runtime processes remained after final uninstall")
                             cleanup_sentinel = None if narrow_refusal else sentinel_observation(sentinel, birth)
                             if result_path.is_file() and not narrow_refusal:
                                 recorded = read_json(result_path)
                                 recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
                                 write_json(result_path, recorded)
-                            if narrow_refusal:
-                                assert_host_available("cleanup", root, data, skip_process_check=True)
-                            else:
-                                assert_host_available("cleanup", root, data)
+                            if not expected_upgrade_refusal:
+                                if narrow_refusal:
+                                    assert_host_available("cleanup", root, data, skip_process_check=True)
+                                else:
+                                    assert_host_available("cleanup", root, data)
                             if not narrow_refusal and not cleanup_sentinel["alive"]:
                                 raise RuntimeError("Unrelated sentinel did not survive final uninstall")
                             if result_path.is_file():

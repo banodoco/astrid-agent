@@ -515,6 +515,40 @@ def test_tst_b1_final_cleanup_uses_exact_owned_roots_and_rechecks_manager(tmp_pa
     assert recorded["final_cleanup"] == "pass"
 
 
+@pytest.mark.parametrize("message,accepted", [
+    (journey.UPGRADE_UNINSTALL_REFUSAL, True),
+    ("unrelated uninstall failure", False),
+])
+def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves_install(
+        tmp_path, monkeypatch, message, accepted):
+    root, data, r1_data = tmp_path / "program", tmp_path / "data", tmp_path / "data-r1"
+    version_root = root / "versions" / "v1"
+    version_root.mkdir(parents=True)
+    data.mkdir()
+    r1_data.mkdir()
+    (root / "current").write_text("v1\n")
+    journey.write_json(root / "install.json", {"data_root": str(data), "r1_data_root": str(r1_data)})
+    journey.write_json(version_root / "manifest.json", {"release": 1})
+    version = {"root": str(version_root), "python": "python", "env": {}}
+    monkeypatch.setattr(journey, "installation", lambda *_: (version_root / "version.json", data, version))
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *_, **__: {"manager": "native"})
+
+    def refuse(_version, _argv, evidence, name, **_kwargs):
+        (evidence / name).write_text(message + "\n")
+        raise RuntimeError(f"{name}: exit 1; see {evidence / name}")
+
+    monkeypatch.setattr(journey, "installed_cli", refuse)
+    if accepted:
+        result = journey.assert_release1_upgrade_uninstall_refusal(version, root, data, tmp_path / "evidence")
+        assert result["message"] == journey.UPGRADE_UNINSTALL_REFUSAL
+        assert result["r1_data_root"] == str(r1_data)
+    else:
+        with pytest.raises(RuntimeError, match="required upgrade refusal"):
+            journey.assert_release1_upgrade_uninstall_refusal(version, root, data, tmp_path / "evidence")
+    assert (root / "current").read_text() == "v1\n"
+    assert data.is_dir() and r1_data.is_dir()
+
+
 def test_tst_b1_cli_requires_owned_roots_before_any_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "bootstrap", lambda *unused: (_ for _ in ()).throw(
         AssertionError("bootstrap must not run")))
