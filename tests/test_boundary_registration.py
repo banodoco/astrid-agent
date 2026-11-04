@@ -407,9 +407,10 @@ def test_fixed_launcher_tracks_pointer_and_uses_staged_environment_profile_and_s
     # These records simulate the future C commit. This is a launcher test,
     # never a claim of successful adoption or a production upgrade.
     write_json(backend.service.selection, {**selected, "r1_data_root": str(destination),
-        "service_label": registration.R1_LINUX, "realm_id": "r0", "realm_root": str(destination / "runtime/realms/r0")})
+        "service_label": registration.R1_LINUX, "realm_id": "r0", "r1_realm_root": str(destination / "runtime/realms/r0"),
+        "identity": version.document()["identity"]})
     write_json(backend.root / "install.json", {"owner": registration.R0_MAC,
-        "data_root": selected["data_root"], "r1_data_root": str(destination)})
+        "data_root": selected["data_root"], "r1_data_root": str(destination), "identity": version.document()["identity"]})
     write_json(backend.root / "service-env.json", {"ASTRID_WARM_IDLE_SECONDS": "42"})
     for index in (1, 2):
         if index == 2:

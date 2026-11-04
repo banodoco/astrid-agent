@@ -153,3 +153,36 @@ def test_launchd_sigkill_after_publication_link_replays(mac_case, publication):
         assert manager.calls.index(["launchctl", "disable", "gui/501/haus.astrid.runtime.r1"]) < manager.calls.index(
             ["launchctl", "enable", "gui/501/haus.astrid.runtime"])
     assert (snapshot(realm.parent), snapshot(destination), manager.path.read_bytes()) == before
+
+
+def test_launchd_activation_enables_and_bootstraps_only_the_new_label(mac_case):
+    manager, tx, version, realm, destination = mac_case
+    tx.prepare(version, realm.parent, 'r0', realm)
+    run = manager.run
+    def launchctl(argv, *, timeout):
+        if list(map(str, argv)) == ['launchctl', 'bootstrap', 'gui/501', str(tx.r1_path)]:
+            manager.calls.append(list(map(str, argv)))
+            manager.r1_loaded = True
+            return ''
+        return run(argv, timeout=timeout)
+    manager.run = launchctl
+    manager.calls.clear()
+    tx.activate()
+    assert manager.r1_loaded and not manager.enabled
+    enable = ['launchctl', 'enable', 'gui/501/haus.astrid.runtime.r1']
+    bootstrap = ['launchctl', 'bootstrap', 'gui/501', str(tx.r1_path)]
+    assert manager.calls.index(enable) < manager.calls.index(bootstrap)
+    assert not any(call == ['launchctl', 'enable', 'gui/501/haus.astrid.runtime'] for call in manager.calls)
+    tx.recover()
+    assert manager.enabled and manager.loaded and not manager.r1_loaded
+
+
+def test_launchd_activation_never_enables_changed_job(mac_case):
+    manager, tx, version, realm, destination = mac_case
+    tx.prepare(version, realm.parent, 'r0', realm)
+    manager.r1_loaded = manager.foreign_r1 = True
+    manager.calls.clear()
+    with pytest.raises(ValueError, match='action changed'):
+        tx.activate()
+    assert not any(call[1] in {'enable', 'bootstrap', 'kickstart'} for call in manager.calls)
+    assert not manager.enabled

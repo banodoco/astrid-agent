@@ -1,0 +1,545 @@
+"""C: real Runtime offline adoption + persistent OS-manager simulation.
+
+No native daemon is launched. Actual owner locks, subprocess Runtime CLI,
+full source manifests and SIGKILL cuts exercise the serialized handoff.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import pytest
+from runtime_protocol import platform
+from runtime_protocol.store import RealmStore
+from astrid_runtime import workspace_copy
+from astrid_runtime.bootstrap import BootstrapConfig, SourceProfile
+from astrid_runtime.paths import RuntimePaths
+from astrid_runtime.workspace_adopt import WorkspaceAdoptError, adopt_workspace
+
+from astrid.installer import adoption_receipt, boundary_handoff as handoff
+from astrid.installer import boundary_registration as registration, cli, r0_stop
+from astrid.installer.backend import Backend
+from astrid.installer.core import Version, current, read_json, write_json
+from tests.test_installer_r0_entry import public_case, state
+
+pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='persistent Linux manager simulation and POSIX kill cuts')
+
+
+def snapshot(root):
+    result = {}
+    for path in [root, *root.rglob('*')]:
+        info = path.lstat()
+        result[str(path.relative_to(root))] = (info.st_dev, info.st_ino, info.st_uid, info.st_gid,
+            info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+    return result
+
+
+@pytest.fixture
+def case(tmp_path, monkeypatch):
+    root, data, realm, service, manager = public_case(tmp_path, monkeypatch)
+    shutil.rmtree(realm)
+    RealmStore.initialize(realm, realm_id='r0').close()
+    catalog = read_json(data / 'runtime/catalog.json')
+    catalog['realms'][0]['display_name'] = 'R0 workspace'
+    write_json(data / 'runtime/catalog.json', catalog)
+    (data / 'credentials').mkdir()
+    (data / 'credentials/retained.json').write_text('{"private":"source credential"}')
+    (data / 'empty').mkdir()
+    (data / 'runtime/discovery.json').write_text('OPAQUE legacy state; do not parse')
+    media = realm / 'cas/sha256/ab/media'
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b'immutable media')
+    shim = tmp_path / 'commands/systemctl'
+    body = shim.read_text().replace('print("FragmentPath=" + state["unit"])',
+        'print("FragmentPath=" + state["unit"])\n'
+        '    print("ActiveState=" + ("active" if state["running"] else "inactive"))\n'
+        '    print("UnitFileState=" + ("enabled" if state["enabled"] else "disabled"))')
+    body = body.replace('print("LoadState=loaded\\nActiveState=" + state["r1"])',
+        'print("LoadState=loaded\\nActiveState=" + state["r1"])\n'
+        f'    print("FragmentPath=" + state.get("r1_fragment", {str(service.path.with_name(registration.R1_LINUX))!r}))\n'
+        '    print("DropInPaths=" + state.get("dropins", ""))\n'
+        '    print("UnitFileState=" + ("enabled" if state.get("r1_enabled") else "disabled"))')
+    body = body.replace('else:\n    raise SystemExit("unexpected manager mutation: " + repr(args))', f'''
+elif args == ["--user", "daemon-reload"]:
+    exists = Path({str(service.path.with_name(registration.R1_LINUX))!r}).exists()
+    if exists and state["r1"] == "absent": state["r1"] = "inactive"
+    if not exists: state["r1"] = "absent"
+    path.write_text(json.dumps(state))
+elif args == ["--user", "disable", "--now", "astrid-r1.service"]:
+    if state.get("fail_r1_stop"): raise SystemExit("injected stop failure")
+    state.update(r1="inactive", r1_enabled=False)
+    path.write_text(json.dumps(state))
+elif args == ["--user", "enable", "--now", "astrid-r1.service"]:
+    assert not state["enabled"] and not state["running"], "two service owners"
+    state.update(r1="active", r1_enabled=True)
+    path.write_text(json.dumps(state))
+else:
+    raise SystemExit("unexpected manager mutation: " + repr(args))
+''')
+    shim.write_text(body)
+    backend = Backend(root, service.home / 'install.log', Path(sys.executable))
+    backend.console_diagnostics = True
+    destination = Path(str(data) + '-r1')
+    runtime_root = Path(workspace_copy.__file__).parent.parent
+    version_root = root / 'versions/release1'
+
+    def stage(manifest, selected_root, target, *, copy_from):
+        assert target == destination and selected_root == root and copy_from == data
+        version_root.mkdir()
+        profile = SourceProfile('astrid', str(runtime_root), str(Path(__file__).parent.parent))
+        write_json(version_root / 'profile.json', profile.as_dict())
+        version = Version(version_root, Path(sys.executable), version_root / 'profile.json',
+                          {'ASTRID_RUNTIME_DATA_ROOT': str(target)}, release=1)
+        write_json(version_root / 'version.json', version.document())
+        write_json(version_root / 'manifest.json', manifest)
+        registration.stage_runtime_launcher(version)
+        return version
+
+    run = backend.run
+    runtime_calls = []
+    def runtime_cli(argv, **options):
+        if 'astrid_runtime' in argv:
+            runtime_calls.append(list(map(str, argv)))
+            assert list(argv[6:])[:2] == ['workspace', 'adopt']
+            # Shared interpreter; expose the exact checked-out Runtime without
+            # creating/installing a venv. Preserve the real command arguments.
+            script = f'import sys; sys.path.insert(0, {str(runtime_root)!r}); from astrid_runtime.cli import main; raise SystemExit(main())'
+            return run([sys.executable, '-c', script, *argv[6:]], **options)
+        return run(argv, **options)
+
+    verified = []
+    def verify(version, target, realm_id, **options):
+        assert target == destination and realm_id == 'r0'
+        assert state(manager)['r1'] == 'active' and not state(manager)['running']
+        assert current(root) == version
+        selected = read_json(service.selection)
+        assert selected['realm_root'] == str(realm)
+        assert selected['r1_realm_root'] == str(destination / 'runtime/realms/r0')
+        # R0's existing lock remains held throughout selection and activation.
+        with (realm / 'owner.lock').open('rb') as lock:
+            with pytest.raises(BlockingIOError):
+                platform.lock_file(lock.fileno(), blocking=False)
+        verified.append(target)
+
+    monkeypatch.setattr(backend, 'stage', stage)
+    monkeypatch.setattr(backend, 'run', runtime_cli)
+    monkeypatch.setattr(backend, 'verify', verify)
+    return SimpleNamespace(root=root, data=data, realm=realm, service=backend.service, manager=manager,
+        backend=backend, destination=destination, runtime_calls=runtime_calls, verified=verified,
+        tx=handoff.BoundaryHandoff(backend), manifest={'release': 1})
+
+
+def upgrade(c):
+    return c.tx.run(c.data, lambda: c.manifest, say=lambda _: None)
+
+
+def r1_work(c):
+    database = c.destination / 'runtime/realms/r0/realm.sqlite3'
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE accepted_r1_work (value TEXT)')
+        db.execute('INSERT INTO accepted_r1_work VALUES (?)', ('never lose this work',))
+
+
+def assert_r0(c):
+    manager = state(c.manager)
+    assert manager['enabled'] and manager['running']
+    assert manager['r1'] == 'absent' and not manager.get('r1_enabled')
+    assert current(c.root).release == 0
+    assert 'r1_data_root' not in read_json(c.service.selection)
+
+
+def test_real_cli_copy_receipt_activation_rerun_and_rollback_after_work(case, monkeypatch):
+    c = case
+    for path in [*c.data.rglob('*'), c.data]:
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    before = snapshot(c.data), c.service.path.read_bytes()
+    upgrade(c)
+    assert (snapshot(c.data), c.service.path.read_bytes()) == before
+    assert c.runtime_calls and c.verified
+    call = c.runtime_calls[0]
+    assert call[6:8] == ['workspace', 'adopt']
+    assert all(flag in call for flag in ('--read-only-source', '--no-start', '--json', '--source-manifest'))
+    assert call[call.index('--data-root') + 1] == str(c.destination)
+    value = read_json(handoff.journal_path(c.service))
+    receipt = read_json(c.destination / adoption_receipt.RECEIPT)
+    assert value['phase'] == 'complete' and value['receipt'] == receipt
+    assert receipt['source_inventory_sha256'] == adoption_receipt.observe(c.data)['inventory']
+    assert receipt['source_manifest_sha256'] == hashlib.sha256(Path(value['candidate']['profile']).read_bytes()).hexdigest()
+    assert receipt['started'] is False
+    assert read_json(c.root / 'install.json')['r1_data_root'] == str(c.destination)
+    assert read_json(c.service.selection)['version'] == value['candidate']
+    assert str(c.destination) in c.service.path.with_name(registration.R1_LINUX).read_text()
+    # A completed rerun selects only R1 and does not invoke the old preflight.
+    monkeypatch.setattr(c.backend, 'verify', lambda version, data, realm_id: c.verified.append(data))
+    assert handoff.handle(c.root, c.data, c.backend)
+    assert c.verified[-1] == c.destination and len(c.runtime_calls) == 1
+    r1_work(c)
+    retained = snapshot(c.destination)
+    c.tx.recover(rollback=True)
+    assert_r0(c)
+    assert snapshot(c.destination) == retained
+    assert (snapshot(c.data), c.service.path.read_bytes()) == before
+    with sqlite3.connect(c.destination / 'runtime/realms/r0/realm.sqlite3') as db:
+        assert db.execute('SELECT value FROM accepted_r1_work').fetchall() == [('never lose this work',)]
+    assert handoff.handle(c.root, c.data, c.backend, rollback=True)
+    with pytest.raises(ValueError, match='retained'):
+        handoff.handle(c.root, c.data, c.backend, manifest_loader=lambda: c.manifest)
+
+
+def in_process_adopt(c, monkeypatch):
+    def runtime(version, target, *args, profile=False):
+        assert args == ('workspace', 'adopt', '--from', str(c.data), '--realm-id', 'r0', '--read-only-source', '--no-start')
+        assert profile and target == c.destination
+        return adopt_workspace(RuntimePaths.current(data_root=target), object(),
+            BootstrapConfig(source_manifest=version.profile), source=c.data,
+            realm_id='r0', read_only_source=True, no_start=True)
+    monkeypatch.setattr(c.backend, 'runtime', runtime)
+    return runtime
+
+
+def test_injected_writer_mid_copy_discards_candidate_and_restores_r0(case, monkeypatch):
+    c = case
+    in_process_adopt(c, monkeypatch)
+    copy = workspace_copy._copy_tree
+    original = (c.data / 'credentials/retained.json').read_bytes()
+    injected = []
+    def writer(*args):
+        copy(*args)
+        if not injected:
+            injected.append(True)
+            (c.data / 'credentials/retained.json').write_bytes(original + b' external writer')
+            injected.append(snapshot(c.data))
+    monkeypatch.setattr(workspace_copy, '_copy_tree', writer)
+    with pytest.raises(WorkspaceAdoptError, match='changed while updating'):
+        upgrade(c)
+    assert snapshot(c.data) == injected[-1]  # only the external writer changed R0
+    assert not c.destination.exists()
+    assert not list(c.data.parent.glob('.data-r1.adopt-*'))
+    assert_r0(c)
+
+
+@pytest.mark.parametrize('bad', ['response', 'receipt', 'profile', 'identity', 'inventory', 'boolean', 'catalog'])
+def test_receipt_gate_refuses_before_selection_and_keeps_both_roots(case, monkeypatch, bad):
+    c = case
+    runtime = in_process_adopt(c, monkeypatch)
+    before = snapshot(c.data)
+    def tamper(*args, **options):
+        result = runtime(*args, **options)
+        result = dict(result)
+        receipt = c.destination / adoption_receipt.RECEIPT
+        if bad == 'profile':
+            Path(args[0].profile).write_text('{}')
+        elif bad == 'catalog':
+            write_json(c.destination / 'runtime/catalog.json', {})
+        else:
+            field, value = {'response': ('source', '/foreign'), 'receipt': ('operation_id', 'bad'),
+                'identity': ('source_root_inode', 0), 'inventory': ('post_inventory_sha256', '0' * 64),
+                'boolean': ('started', 0)}[bad]
+            result[field] = value
+            if bad != 'response':
+                write_json(receipt, result)
+        return result
+    monkeypatch.setattr(c.backend, 'runtime', tamper)
+    with pytest.raises((ValueError, KeyError)):
+        upgrade(c)
+    assert snapshot(c.data) == before and c.destination.exists()
+    assert_r0(c)
+    assert not c.verified
+
+
+def test_busy_r0_refused_and_reenabled_without_copy(case, monkeypatch):
+    c = case
+    before = snapshot(c.data), snapshot(c.root), c.service.path.read_bytes()
+    wait = r0_stop._wait_for_owner_lock
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', lambda path, *_: wait(path, .02, .005))
+    with (c.realm / 'owner.lock').open('rb') as lock:
+        platform.lock_file(lock.fileno(), blocking=False)
+        with pytest.raises(ValueError, match='Finish or cancel'):
+            upgrade(c)
+    assert_r0(c)
+    assert not c.destination.exists() and not c.runtime_calls
+    assert (snapshot(c.data), snapshot(c.root), c.service.path.read_bytes()) == before
+
+
+def kill_child(action):
+    child = os.fork()
+    if child == 0:
+        try:
+            action()
+        finally:
+            os._exit(99)
+    _, result = os.waitpid(child, 0)
+    assert os.WIFSIGNALED(result) and os.WTERMSIG(result) == signal.SIGKILL
+
+
+def die():
+    os.kill(os.getpid(), signal.SIGKILL)
+
+
+@pytest.mark.parametrize('cut', ['handoff-journal-link', 'stop', 'staging', 'adopting', 'runtime-published', 'receipt-returned',
+    'adopted', 'registering', 'registration-journal', 'launcher', 'definition', 'switching',
+    'marker', 'selection', 'pointer', 'selected-mirror', 'starting', 'enabled', 'verified', 'complete'])
+def test_sigkill_each_adoption_and_switch_step_recovers_one_owner(case, monkeypatch, cut):
+    c = case
+    before = snapshot(c.data), c.service.path.read_bytes()
+    runtime = in_process_adopt(c, monkeypatch)
+    save = c.tx._save
+    publish = registration._publish
+    run = c.backend.run
+    verify = c.backend.verify
+    targets = {'registration-journal': c.tx.registration.journal, 'launcher': c.tx.registration.launcher,
+        'definition': c.tx.registration.r1_path, 'marker': c.root / 'install.json',
+        'selection': c.service.selection, 'pointer': c.root / 'current',
+        'selected-mirror': c.destination / 'update-journal.r1.json'}
+    def child_action():
+        link = registration.os.link
+        def linked(source, target, **options):
+            link(source, target, **options)
+            if cut == 'handoff-journal-link' and target == c.tx.journal: die()
+        registration.os.link = linked
+        def saved(value, **options):
+            save(value, **options)
+            if value['phase'] == cut: die()
+        c.tx._save = saved
+        def published(path, content, **options):
+            publish(path, content, **options)
+            if path == targets.get(cut): die()
+        registration._publish = published
+        def manager_run(argv, **options):
+            result = run(argv, **options)
+            if cut == 'stop' and list(argv) == ['systemctl', '--user', 'disable', '--now', 'astrid.service']: die()
+            if cut == 'enabled' and list(argv) == ['systemctl', '--user', 'enable', '--now', 'astrid-r1.service']: die()
+            return result
+        c.backend.run = manager_run
+        c.backend.service.run = manager_run
+        def returned(*args, **options):
+            result = runtime(*args, **options)
+            if cut == 'receipt-returned': die()
+            return result
+        c.backend.runtime = returned
+        actual_publish = workspace_copy._publish
+        def runtime_published(*args):
+            actual_publish(*args)
+            if cut == 'runtime-published': die()
+        workspace_copy._publish = runtime_published
+        def verified(*args, **options):
+            verify(*args, **options)
+            if cut == 'verified': die()
+        c.backend.verify = verified
+        upgrade(c)
+    kill_child(child_action)
+    assert (snapshot(c.data), c.service.path.read_bytes()) == before
+    # The only committed completion is safe to keep. Every other cut switches
+    # back, even when a plausible published receipt exists.
+    if cut == 'complete':
+        monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
+        assert handoff.handle(c.root, c.data, c.backend)
+        assert state(c.manager)['r1'] == 'active' and not state(c.manager)['running']
+        c.tx.recover(rollback=True)
+    else:
+        assert handoff.handle(c.root, c.data, c.backend)
+    assert_r0(c)
+    assert (snapshot(c.data), c.service.path.read_bytes()) == before
+    if c.destination.exists():
+        retained = snapshot(c.destination)
+        with pytest.raises(ValueError, match='retained'):
+            handoff.handle(c.root, c.data, c.backend)
+        assert snapshot(c.destination) == retained
+
+
+@pytest.mark.parametrize('cut', ['intent', 'stopped', 'marker', 'selection', 'pointer', 'r1-definition-removed',
+                               'r0-enabled', 'registration-removed', 'rolled_back'])
+def test_sigkill_during_rollback_replays_after_r1_work(case, monkeypatch, cut):
+    c = case
+    upgrade(c)
+    r1_work(c)
+    before = snapshot(c.data), snapshot(c.destination), c.service.path.read_bytes()
+    save, publish, unlink, run = c.tx._save, registration._publish, Path.unlink, c.backend.run
+    def action():
+        def saved(value, **options):
+            save(value, **options)
+            if (cut == 'intent' and value['phase'] == 'rolling_back') or value['phase'] == cut: die()
+        c.tx._save = saved
+        def published(path, content, **options):
+            publish(path, content, **options)
+            targets = {'marker': c.root / 'install.json', 'selection': c.service.selection, 'pointer': c.root / 'current'}
+            if path == targets.get(cut): die()
+        registration._publish = published
+        def removed(path, *args, **options):
+            unlink(path, *args, **options)
+            if ((cut == 'r1-definition-removed' and path == c.tx.registration.r1_path)
+                    or (cut == 'registration-removed' and path == c.tx.registration.journal)): die()
+        Path.unlink = removed
+        def manager_run(argv, **options):
+            result = run(argv, **options)
+            if cut == 'stopped' and list(argv) == ['systemctl', '--user', 'disable', '--now', 'astrid-r1.service']: die()
+            if cut == 'r0-enabled' and list(argv) == ['systemctl', '--user', 'enable', '--now', 'astrid.service']: die()
+            return result
+        c.backend.service.run = manager_run
+        c.tx.recover(rollback=True)
+    kill_child(action)
+    assert handoff.handle(c.root, c.data, c.backend, rollback=True)
+    assert_r0(c)
+    assert (snapshot(c.data), snapshot(c.destination), c.service.path.read_bytes()) == before
+
+
+@pytest.mark.parametrize('problem', ['busy', 'changed-unit', 'foreign-manager', 'changed-selection', 'failed-stop'])
+def test_rollback_refuses_uncertain_r1_without_restarting_r0(case, monkeypatch, problem):
+    c = case
+    upgrade(c)
+    r1_work(c)
+    if problem == 'changed-unit':
+        c.tx.registration.r1_path.write_text('foreign service')
+    elif problem == 'foreign-manager':
+        state(c.manager, r1_fragment='/foreign/service')
+    elif problem == 'changed-selection':
+        selected = read_json(c.service.selection)
+        write_json(c.service.selection, {**selected, 'r1_data_root': '/foreign/data'})
+    elif problem == 'failed-stop':
+        state(c.manager, fail_r1_stop=True)
+    before = snapshot(c.data), snapshot(c.destination)
+    wait = r0_stop._wait_for_owner_lock
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', lambda path, *_: wait(path, .02, .005))
+    lock = (c.destination / 'runtime/realms/r0/owner.lock').open('rb')
+    try:
+        if problem == 'busy': platform.lock_file(lock.fileno(), blocking=False)
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            c.tx.recover(rollback=True)
+    finally:
+        lock.close()
+    assert not state(c.manager)['enabled']
+    assert handoff.journal_path(c.service).exists()
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+
+
+def test_cli_serializes_boundary_and_never_calls_legacy_paths(case, monkeypatch):
+    c = case
+    # A local test manifest avoids network. Staging is the only replaced
+    # product operation; Runtime adoption and service calls remain real paths.
+    manifest = c.root.parent / 'manifest.json'
+    write_json(manifest, c.manifest)
+    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
+    monkeypatch.setattr(cli, 'validate_manifest', lambda value: value)
+    monkeypatch.setattr(c.backend, 'preflight_stop', lambda *a: pytest.fail('legacy preflight'))
+    monkeypatch.setattr(c.backend, 'source_checkout_ownership', lambda *a: pytest.fail('legacy discovery'))
+    from astrid.installer.service import installer_lock_path
+    stage = c.backend.stage
+    def under_lock(*args, **options):
+        with installer_lock_path(c.service.home, 'linux').open('rb') as lock:
+            with pytest.raises(BlockingIOError): platform.lock_file(lock.fileno(), blocking=False)
+        return stage(*args, **options)
+    monkeypatch.setattr(c.backend, 'stage', under_lock)
+    assert cli.main(['--root', str(c.root), '--manifest', str(manifest), '--uv', sys.executable]) == 0
+    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
+    assert cli.main(['--root', str(c.root)]) == 0
+    r1_work(c)
+    before = snapshot(c.data), snapshot(c.destination)
+    assert cli.main(['--root', str(c.root), '--rollback']) == 0
+    assert_r0(c)
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+
+
+def test_rollback_retains_r1_lock_until_r0_restart(case, monkeypatch):
+    c = case
+    upgrade(c)
+    run = c.service.run
+    observed = []
+    def manager(argv, **options):
+        if list(argv) == ['systemctl', '--user', 'enable', '--now', 'astrid.service']:
+            with (c.destination / 'runtime/realms/r0/owner.lock').open('rb') as lock:
+                with pytest.raises(BlockingIOError): platform.lock_file(lock.fileno(), blocking=False)
+            observed.append(True)
+        return run(argv, **options)
+    monkeypatch.setattr(c.service, 'run', manager)
+    c.tx.recover(rollback=True)
+    assert observed
+    assert_r0(c)
+
+
+@pytest.mark.parametrize('alias', [False, True])
+def test_real_service_declarations_relocate_retained_and_inherited_r0_write_paths(case, monkeypatch, alias):
+    c = case
+    old = current(c.root)
+    source = c.data
+    if alias:
+        source = c.root.parent / 'source-alias'
+        source.symlink_to(c.data, target_is_directory=True)
+    write_json(old.profile, {'service_declaration': str(old.root / 'services.json')})
+    write_json(old.root / 'services.json', {'services': [{'name': 'chat', 'env': {
+        'ASTRID_ACP_CWD': str(source / 'chat'),
+        'ASTRID_ACP_SESSION_DIR': str(source / 'chat/sessions'),
+        'ASTRID_ACP_SYSTEM_PROMPT_FILE': str(source / 'prompt.txt'),
+    }}]})
+    monkeypatch.setenv('ASTRID_ACP_PROFILE', str(source / 'profile.json'))
+    monkeypatch.setenv('ASTRID_ACP_SESSION_DIR', str(source / 'wrong-sessions'))
+    folder = c.root / 'declaration-test'
+    folder.mkdir()
+    run = Backend.run.__get__(c.backend)
+    def declaration(argv, **options):
+        # Run the actual declaration API with this checkout and shared Python.
+        script = f'import sys; sys.path.insert(0, {str(Path(__file__).parent.parent)!r}); ' + argv[5]
+        return run([sys.executable, '-c', script, *argv[6:]], **options)
+    monkeypatch.setattr(c.backend, 'run', declaration)
+    before = snapshot(c.data)
+    path = c.backend._declare_services(folder=folder, agent=Path(__file__).parent.parent,
+        data=c.destination, python=Path(sys.executable), bun='/pinned/bun', env={}, old=old, copy_from=c.data)
+    services = read_json(path)['services']
+    for service in services:
+        assert service['env']['ASTRID_RUNTIME_DATA_ROOT'] == str(c.destination)
+        assert service['env']['ASTRID_SUPPORT_ROOT'] == str(c.destination)
+    chat = next(row['env'] for row in services if row['name'] == 'chat')
+    assert chat['ASTRID_ACP_CWD'] == str(c.destination / 'chat')
+    assert chat['ASTRID_ACP_SESSION_DIR'] == str(c.destination / 'chat/sessions')
+    assert chat['ASTRID_ACP_SYSTEM_PROMPT_FILE'] == str(c.destination / 'prompt.txt')
+    assert chat['ASTRID_ACP_PROFILE'] == str(c.destination / 'profile.json')
+    assert snapshot(c.data) == before
+
+
+def test_real_r0_v31_fixture_migrates_copies_legacy_edit_and_rolls_back_after_work(case, monkeypatch):
+    c = case
+    fixture = Path(__file__).parent / 'fixtures/upgrade/r0-legacy-timeline'
+    expected = read_json(fixture / 'expected.json')
+    assert hashlib.sha256((fixture / 'realm.sqlite3').read_bytes()).hexdigest() == expected['database_sha256']
+    for suffix in ('-wal', '-shm', '-journal'):
+        (c.realm / ('realm.sqlite3' + suffix)).unlink(missing_ok=True)
+    shutil.copyfile(fixture / 'realm.sqlite3', c.realm / 'realm.sqlite3')
+    # Preserve the real R0 identity rather than manufacturing a current-schema
+    # source. Catalog and owner.lock are fixture setup, before the observation.
+    with sqlite3.connect(c.realm / 'realm.sqlite3') as db:
+        realm_id = db.execute('SELECT id FROM realm').fetchone()[0]
+    catalog = read_json(c.data / 'runtime/catalog.json')
+    catalog['selected_realm_id'] = catalog['realms'][0]['realm_id'] = realm_id
+    write_json(c.data / 'runtime/catalog.json', catalog)
+    for path in [*c.data.rglob('*'), c.data]:
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    before = snapshot(c.data)
+    verified = []
+    def verify(version, data, selected):
+        assert selected == realm_id and data == c.destination
+        assert RealmStore.inspect_realm(data / 'runtime/realms' / realm_id, deep=True)['ok']
+        verified.append(selected)
+    monkeypatch.setattr(c.backend, 'verify', verify)
+    upgrade(c)
+    receipt = read_json(c.destination / adoption_receipt.RECEIPT)
+    assert receipt['source_version'] == 31 and receipt['target_version'] == 33
+    assert verified == [realm_id] and snapshot(c.data) == before
+    database = c.destination / 'runtime/realms' / realm_id / 'realm.sqlite3'
+    with sqlite3.connect(database) as db:
+        row = db.execute('SELECT id,project_id,kind,content_json,version FROM project_documents WHERE id=?',
+                         (expected['document']['id'],)).fetchone()
+        assert dict(zip(('id', 'project_id', 'kind', 'content_json', 'version'), row)) == expected['document']
+        db.execute('CREATE TABLE accepted_r1_work (value TEXT)')
+        db.execute('INSERT INTO accepted_r1_work VALUES (?)', ('keep both histories',))
+    retained = snapshot(c.destination)
+    c.tx.recover(rollback=True)
+    assert_r0(c)
+    assert snapshot(c.data) == before and snapshot(c.destination) == retained
