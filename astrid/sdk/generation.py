@@ -1182,6 +1182,8 @@ class GenerationFacade:
                        'inputs': inventory,
                        'effective_values': effective_values,
                        'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
+        if source == 'workflow' and candidate.get('license_notice'):
+            description['license_notice'] = candidate['license_notice']
         readiness = readiness_envelope(entry=description, target=(
             {'engine': 'comfyui', 'placement': 'runpod', 'state': 'pending_host_readiness'} if is_remote_target else target_record),
                                       issues=compare_versions(recorded, observed))

@@ -1,0 +1,42 @@
+{
+  "vibecomfy_revision": "1b2e242c",
+  "template_id": "image/qwen_image_2_1_turbo",
+  "inputs": {
+    "prompt": "a copper teapot on a blue table",
+    "width": 512,
+    "height": 512,
+    "seed": 42
+  },
+  "source": {
+    "path": "vibecomfy/porting/cache/object_info/comfy_core@zz-official-426f5eea.json",
+    "sha256": "670591d0cef34d4e5718b0d2eabc3a2e49e1c77c1bd1c5974cf7f717373d58d6"
+  },
+  "class_types": [
+    "CFGGuider",
+    "CLIPLoader",
+    "EmptyLatentImage",
+    "KSamplerSelect",
+    "ManualSigmas",
+    "QwenImage21Cache",
+    "RandomNoise",
+    "SamplerCustomAdvanced",
+    "SaveImage",
+    "TextEncodeQwenImage21",
+    "UNETLoader",
+    "VAEDecode",
+    "VAELoader"
+  ],
+  "normalization": "Cached inputs/outputs are translated to the ComfyUI HTTP input/output/output_name/output_is_list fields; all schema values are preserved.",
+  "fixture_model_inventory": {
+    "UNETLoader": {
+      "unet_name": "qwen_image_2.1_turbo_int8_convrot.safetensors"
+    },
+    "CLIPLoader": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors"
+    },
+    "VAELoader": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    }
+  },
+  "model_inventory_note": "Only the three empty dynamically resolved model choices are populated, using the committed Qwen template defaults. These are simulated server inventory, not installed model bytes."
+}

@@ -2587,7 +2587,17 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # and the bundle's lock/provenance gates remain in force.
             from vibecomfy.schema import get_target_schema_provider
 
-            target_schema = get_target_schema_provider(server_url=self._http_origin)
+            try:
+                bound_model_root = validate_model_root_binding(
+                    host_session.get("model_root_binding"),
+                    verify_files=True,
+                )
+            except ModelRootBindingError as exc:
+                raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
+            target_schema = get_target_schema_provider(
+                server_url=self._http_origin, auxiliary_model_custody="target",
+                target_model_assets=bound_model_root.inventory,
+            )
             refresh = getattr(target_schema, "refresh", None)
             if callable(refresh):
                 refresh()
@@ -2599,13 +2609,6 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # same verified root explicitly.  Without this, a worker with an
             # otherwise healthy session falls back to VibeComfy's empty
             # default models directory and falsely reports a missing model.
-            try:
-                bound_model_root = validate_model_root_binding(
-                    host_session.get("model_root_binding"),
-                    verify_files=True,
-                )
-            except ModelRootBindingError as exc:
-                raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
             if provenance is not None:
                 provenance.installed(self._host_profile)
             environment_model_root = os.environ.get(MODEL_ROOT_ENV)

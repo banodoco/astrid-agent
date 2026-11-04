@@ -16,6 +16,17 @@ EXACT_VAE = r"FLUX1\ae.safetensors"
 TURBO_UNET = "z_image_turbo_bf16.safetensors"
 
 
+def test_local_foley_inventory_and_text_project_license(monkeypatch, capsys):
+    monkeypatch.setattr(listing, '_targets', lambda: [])
+    rows = listing.generation_rows('audio')
+    row = next(row for row in rows if row['id'] == 'audio/hunyuan_video_foley')
+    assert (row['kind'], row['mode'], row['backend']) == ('audio', 'sfx', 'local')
+    assert row['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    monkeypatch.setattr(listing, 'generation_rows', lambda kind: [row])
+    assert listing.main(['list', '--kind', 'audio']) == 0
+    assert row['license_notice'] in capsys.readouterr().out
+
+
 def _row(**changes):
     """Synthetic row for declaration/cloud CLI tests, independent of the catalog."""
     return {

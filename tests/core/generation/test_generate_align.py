@@ -529,3 +529,44 @@ def test_catalog_without_model_roles_retains_original_fail_closed_gate(fake):
     assert caught.value.code == 'missing_model'
     assert caught.value.readiness['fixes'][0]['argv'][-2:] == ['--entry', 'z-image']
     assert not fake.target.root.exists()
+
+
+def test_foley_alignment_projects_the_real_complete_declaration_without_downloads(tmp_path, monkeypatch):
+    """Proven pattern: test_target_asset_declaration's canonical ready loader."""
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.model_assets import _referenced_model_values
+    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **k: pytest.fail('offline declaration made a request'))
+    monkeypatch.setattr('socket.socket.connect', lambda *a, **k: pytest.fail('offline declaration opened a socket'))
+    entry_id = 'audio/hunyuan_video_foley'
+    workflow = workflow_from_ready(entry_id)
+    assets = workflow.metadata['model_assets']
+    manifests = alignment.catalog_manifests(entry_id)
+    models = manifests[0]['modes'][0]['models']
+    assert [(model.name, model.destination, model.url, model.bytes, model.sha256) for model in models] == [
+        (asset['name'], f"{asset['subdir']}/{asset['name']}", asset['url'], asset['size_bytes'], asset['sha256'])
+        for asset in assets]
+    picked = {row['value'] for row in _referenced_model_values(workflow)}
+    assert any(model.name not in picked for model in models), 'must include non-picker auxiliary declarations'
+    target = alignment.ManagedAssetTarget(tmp_path / 'engine', tmp_path / 'engine/models',
+        tmp_path / 'engine/nodes', sys.executable, 'http://127.0.0.1:8188', 'a' * 64,
+        tmp_path / 'engine/cache.json')
+    report = alignment.align(entry_id=entry_id, target=target,
+        opener=lambda *a, **k: pytest.fail('declaration inspection downloaded weights'))
+    assert report['entries'][0]['status'] == 'not_ready'
+    assert report['total_missing_bytes'] == sum(asset['size_bytes'] for asset in assets)
+    assert len(report['entries'][0]['modes'][0]['models']) == len(assets)
+    assert not target.root.exists()
+
+
+@pytest.mark.parametrize('damage', [
+    {'name': 'windows\\model.bin'}, {'subdir': None}, {'size_bytes': True},
+    {'sha256': 'g' * 64}, {'url': 'http://fixture.invalid/model.bin'},
+])
+def test_invalid_unselected_declarations_grant_no_inventory_authority(damage):
+    from astrid.core.generation.asset_gaps import declared_model_specs
+    from astrid.core.generation.engine_contracts import EngineError
+    asset = {'name': 'model.bin', 'subdir': 'models', 'url': 'https://fixture.invalid/model.bin',
+             'sha256': 'a' * 64, 'size_bytes': 20, **damage}
+    assert declared_model_specs([asset], require_complete=False) == ()
+    with pytest.raises(EngineError):
+        declared_model_specs([asset])
