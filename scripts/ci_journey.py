@@ -61,6 +61,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
+    "fresh-install-bootstrap-full.log", "ffmpeg-diagnostic-receipt.json",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "sdk-invocation.json",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
@@ -591,7 +592,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             continue
         target = destination / name
         try:
-            if source.suffix == ".log":
+            if source.suffix == ".log" and name != "fresh-install-bootstrap-full.log":
                 with source.open("rb") as stream:
                     stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
                     target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
@@ -625,6 +626,17 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
     try:
+        # The fresh-install bootstrap log is nested; retain every byte, including
+        # acquisition failures, within the existing artifact size boundary.
+        recorded = read_json(result_path) if result_path.is_file() else {}
+        if recorded.get("scenario") == "fresh-install" and recorded.get("proof_mode") == "keep-going-diagnostic":
+            source = evidence / "release1" / "install-bootstrap.log"
+            target = evidence / "fresh-install-bootstrap-full.log"
+            if source.is_file() and not source.is_symlink() and not target.exists():
+                try:
+                    shutil.copyfile(source, target)
+                except OSError as exc:
+                    print(f"Fresh-install bootstrap log capture failed: {exc}", file=sys.stderr, flush=True)
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
         retain_named_evidence(evidence, phase)
@@ -1475,6 +1487,9 @@ def execute(args: argparse.Namespace) -> dict:
         else:
             import ci_journey_keepgoing as keepgoing
         keepgoing.write(evidence, keepgoing.initial(evidence, args))
+        if args.leg == "fresh-install":
+            write_json(evidence / keepgoing.ffmpeg_receipt.RECEIPT,
+                       keepgoing.ffmpeg_receipt.unavailable("preflight or capture not completed"))
     identity = runner_identity()
     if diagnostic_start_at is not None:
         # This path deliberately does not enter the normal lifecycle/cleanup

@@ -5,11 +5,12 @@ import os
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
-    from . import check_journey_evidence as gate
+    from . import check_journey_evidence as gate, ffmpeg_diagnostic_receipt as ffmpeg_receipt
 else:
     import ci_journey as journey
     import journey_version_jumps as jumps
     import check_journey_evidence as gate
+    import ffmpeg_diagnostic_receipt as ffmpeg_receipt
 
 PROOF_MODE = "keep-going-diagnostic"
 STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selection",
@@ -19,8 +20,8 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
           "semantic-preservation", "release1-task", "one-runtime", "sentinel")
 
 
-FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
-                "release1-verify-install", "release1-task", "one-runtime", "sentinel")
+FRESH_STAGES = ("admission", "release1-install", "release1-ffmpeg-receipt", "release1-start",
+                "release1-selection", "release1-verify-install", "release1-task", "one-runtime", "sentinel")
 
 
 def initial(evidence, args):
@@ -148,6 +149,10 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Unrelated sentinel did not survive fresh installation")
         stage("admission", [], fresh_admission, evidence)
         stage("release1-install", ["app"], fresh_install, evidence / "release1" / "install-bootstrap.log")
+        # Capture immediately after bootstrap, independently of runtime startup.
+        stage("release1-ffmpeg-receipt", [],
+              lambda: ffmpeg_receipt.capture(journey, gate, args, root, data, state, evidence),
+              evidence / ffmpeg_receipt.RECEIPT)
         stage("release1-start", ["updated"], fresh_start, evidence / "release1")
         stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
         stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")

@@ -182,3 +182,53 @@ def test_fresh_install_failure_blocks_dependent_stages(tmp_path, monkeypatch):
     assert rows['release1-start']['result'] == 'not-run'
     assert rows['release1-task']['result'] == 'not-run'
     assert rows['sentinel']['result'] == 'pass'
+
+
+def test_fresh_receipt_runs_after_bootstrap_even_if_startup_fails(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.leg = 'fresh-install'
+    def capture(_journey, _gate, _args, _root, _data, state, _evidence):
+        assert state['updated'] is True
+        calls.append('receipt')
+    monkeypatch.setattr(keepgoing.ffmpeg_receipt, 'capture', capture)
+    def fail_start(*args):
+        calls.append('failed-start')
+        raise RuntimeError('startup failure')
+    monkeypatch.setattr(jumps, 'start_direct_runtime', fail_start)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-ffmpeg-receipt']['result'] == 'pass'
+    assert rows['release1-start']['result'] == 'fail'
+    assert calls.index('update') < calls.index('receipt') < calls.index('failed-start')
+
+
+def test_failed_bootstrap_still_attempts_receipt(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'update')
+    args.leg = 'fresh-install'
+    def capture(_journey, _gate, _args, _root, _data, state, _evidence):
+        assert 'updated' not in state
+        calls.append('receipt')
+        raise RuntimeError('bootstrap did not succeed')
+    monkeypatch.setattr(keepgoing.ffmpeg_receipt, 'capture', capture)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-install']['result'] == 'fail'
+    assert rows['release1-ffmpeg-receipt']['result'] == 'fail' and 'receipt' in calls
+
+
+def test_fresh_preflight_failure_leaves_inconclusive_sidecar(tmp_path, monkeypatch):
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    monkeypatch.setattr(journey, 'runner_identity', lambda: {})
+    monkeypatch.setattr(journey, 'assert_runner_identity', lambda _: (_ for _ in ()).throw(RuntimeError('preflight failed')))
+    monkeypatch.setattr(journey, 'snapshot_failure_evidence', lambda *args: None)
+    run_root = tmp_path / 'fresh'
+    args = SimpleNamespace(run_root=run_root, root=run_root / 'program', data_root=run_root / 'data',
+                           job_id='direct-linux', mode='direct', leg='fresh-install', shell='sh',
+                           diagnostic_start_at=None, diagnostic_keep_going=True)
+    with pytest.raises(RuntimeError, match='preflight failed'):
+        journey.execute(args)
+    evidence = run_root / 'evidence/fresh-install'
+    result = json.loads((evidence / 'ffmpeg-diagnostic-receipt.json').read_text())
+    assert result['status'] == 'inconclusive' and 'not completed' in result['reason']
+    report = json.loads((evidence / 'keepgoing-report.json').read_text())
+    assert next(row for row in report['stages'] if row['stage'] == 'release1-ffmpeg-receipt')['result'] == 'not-run'
