@@ -29,6 +29,18 @@ def within(path, root):
         return False
 
 
+def required_tool_origin_observation(found, root):
+    """Check provenance only for required tools that resolved to executables.
+
+    Missing tools are a capability-readiness problem.  They have no resolved
+    path whose origin can be verified; capabilities.required remains the
+    fail-closed readiness check for every required capability.
+    """
+    resolved = {name: path for name, path in found.items() if path}
+    return (all(within(path, root) for path in resolved.values()),
+            {'tools': found, 'install_root': str(root)})
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -510,7 +522,7 @@ def observe(version_path, data_root):
     # Runtime's declared environment inherits the installed version environment.
     service_path = host_env.get('PATH', env.get('PATH', ''))
     found = {name: shutil.which(name, path=service_path) for name in names}
-    check('origin.required_tools', lambda: (all(path and within(path, root) for path in found.values()), {'tools': found, 'install_root': str(root)}))
+    check('origin.required_tools', lambda: required_tool_origin_observation(found, root))
     check('capabilities.required', lambda: (bool(required) and ready.get('status') == 'ready' and ready.get('runtime_instance_id') == health.get('runtime_instance_id') and all(actual.get(i, {}).get('ready') is True for i in required), {'required': required, 'unready': [i for i in required if actual.get(i, {}).get('ready') is not True]}))
     # Optional failure reasons must be attributable to a declared preflight class;
     # report the exact missing items, including credentials without their values.

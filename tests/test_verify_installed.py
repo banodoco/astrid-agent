@@ -21,6 +21,41 @@ def test_update_only_fails_regressions_and_reports_preexisting():
     assert not evaluate({'observations': {'old': False}}, 'install')['passed']
 
 
+def test_missing_required_tool_is_readiness_failure_not_provenance_failure(tmp_path):
+    from scripts.verify_installed import required_tool_origin_observation
+
+    root = tmp_path / 'install'
+    root.mkdir()
+    ffmpeg = root / 'tools' / 'ffmpeg'
+    ffmpeg.parent.mkdir()
+    ffmpeg.write_text('installed')
+    origin_ok, detail = required_tool_origin_observation(
+        {'ffmpeg': str(ffmpeg), 'codex': None}, root)
+
+    assert origin_ok
+    assert detail['tools'] == {'ffmpeg': str(ffmpeg), 'codex': None}
+    receipt = evaluate({'observations': {
+        'origin.required_tools': origin_ok,
+        'capabilities.required': False,
+    }}, 'install')
+    assert receipt['failures'] == ['capabilities.required']
+
+
+def test_resolved_required_tool_outside_install_still_fails_provenance(tmp_path):
+    from scripts.verify_installed import required_tool_origin_observation
+
+    root = tmp_path / 'install'
+    root.mkdir()
+    outside = tmp_path / 'runner' / 'codex'
+    outside.parent.mkdir()
+    outside.write_text('external')
+
+    origin_ok, detail = required_tool_origin_observation({'codex': str(outside)}, root)
+
+    assert not origin_ok
+    assert detail['tools']['codex'] == str(outside)
+
+
 @pytest.mark.omp
 def test_broken_real_bridge_model_command_fails_verify(tmp_path):
     bun = os.environ.get('ASTRID_TEST_BUN')
