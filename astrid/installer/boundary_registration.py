@@ -1,7 +1,7 @@
 """Disabled R1 registration and durable rollback at the frozen R0 boundary.
 
-The public installer replays this journal before Piece A's stop recovery. C must
-supply adoption and selection/activation commit; this module never enables R1.
+The public installer replays this journal before Piece A's stop recovery.
+BoundaryHandoff owns adoption, selection and activation authority.
 All calls require the per-user installer lock, just like r0_stop.
 """
 from __future__ import annotations
@@ -135,7 +135,11 @@ if (selection.get("owner") != "haus.astrid.runtime" or selection.get("program_ro
         or marker.get("r1_data_root") != data
         or not isinstance(selection.get("realm_id"), str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}", selection["realm_id"])
-        or selection.get("realm_root") != str(Path(data) / "runtime/realms" / selection["realm_id"])
+        or selection.get("r1_realm_root") != str(Path(data) / "runtime/realms" / selection["realm_id"])
+        or not isinstance(selection.get("realm_root"), str)
+        or not Path(selection["realm_root"]).is_relative_to(Path(selection["data_root"]))
+        or marker.get("identity") != version["identity"]
+        or selection.get("identity") != version["identity"]
         or selection.get("service_label") != {R1_LINUX if sys.platform == 'linux' else R1_MAC!r}
         or args != ["run", "--profile", "astrid", "--data-root", data]
         or (root / "current").read_text(encoding="utf-8").rstrip("\\n") != Path(version["root"]).name):
@@ -309,7 +313,31 @@ class BoundaryRegistration:
         self._save(value)
         return self.journal
 
-    def recover(self):
+    def activate(self):
+        """Enable only the journal-bound new label; C owns selection and health."""
+        value = read_json(_regular(self.journal))
+        if value.get("phase") != "disabled" or value.get("program_root") != str(self.root):
+            raise ValueError("R1 registration is not ready for activation.")
+        expected = self._check_files(value)
+        if any(not path.exists() for path in expected):
+            raise ValueError("R1 registration is incomplete.")
+        if self.system == "linux":
+            if self._linux_state() is None:
+                raise ValueError("R1 manager entry is missing.")
+            self._run(["systemctl", "--user", "enable", "--now", R1_LINUX])
+            state = self._linux_state()
+            if state is None or state.get("UnitFileState") != "enabled" or state.get("ActiveState") != "active":
+                raise ValueError("R1 activation is uncertain; recovery intent retained.")
+        else:
+            target = f"gui/{self.uid}/{R1_MAC}"
+            loaded = self._mac_state(value)
+            self._run(["launchctl", "enable", target])
+            if not loaded:
+                self._run(["launchctl", "bootstrap", f"gui/{self.uid}", self.r1_path])
+            if not self._mac_state(value):
+                raise ValueError("R1 activation is uncertain; recovery intent retained.")
+
+    def recover(self, *, restore_selection=None):
         """Disable owned R1, wait for its lock, remove owned files, restore R0."""
         if not os.path.lexists(self.journal):
             return False
@@ -358,36 +386,39 @@ class BoundaryRegistration:
                 if self._mac_state(value):
                     raise ValueError("R1 remained loaded; R0 was not restarted.")
         r0_stop._wait_for_owner_lock(destination / "runtime/realms" / value["realm_id"], 90, .2)
-        # C must extend the commit protocol before changing pointer/selection.
-        # Until then, an unexpected switch cannot authorize R0 restart.
-        if (self.root / "current").read_text(encoding="utf-8") != value["old_pointer"]:
-            raise ValueError("Version pointer changed; preserve both roots for handoff recovery.")
-        selection = read_json(self.service.selection)
-        marker = read_json(self.root / "install.json")
-        if selection.get("r1_data_root") or marker.get("r1_data_root"):
-            raise ValueError("R1 selection was committed; use the adoption handoff recovery.")
-        self._check_files(value)
-        for path in expected:
-            if os.path.lexists(path):
-                path.unlink()
-                r0_stop._sync_directory(path.parent)
-        if self.system == "linux":
-            self._run(["systemctl", "--user", "daemon-reload"])
-        r0_stop._require_no_r1(self.service)
-        intent_path = r0_stop._marker_path(self.service)
-        if os.path.lexists(intent_path):
-            if read_json(_regular(intent_path)) != value["r0_intent"]:
-                raise ValueError("R0 recovery intent changed; R0 was not restarted.")
-            value["phase"] = "restoring_r0"
-            self._save(value)
-            r0_stop.recover_r0(self.service)  # Revalidates R0 bytes and manager.
-        elif value["phase"] != "restoring_r0":
-            raise ValueError("R0 recovery intent is missing; preserve both roots.")
-        else:
-            # Crash after A removed its intent but before B removed its journal.
-            if r0_stop._unit_digest(self.service) != value["r0_intent"]["unit_sha256"]:
-                raise ValueError("R0 service changed after recovery.")
-            r0_stop._validate_manager(self.service, self.uid)
-        self.journal.unlink()
-        r0_stop._sync_directory(self.journal.parent)
+        with r0_stop.owner_lock(destination / "runtime/realms" / value["realm_id"]):
+            if restore_selection is not None:
+                # C's replayable callback runs only AFTER the owned new service is
+                # disabled/stopped and its data lock proves it has released custody.
+                restore_selection()
+            if (self.root / "current").read_text(encoding="utf-8") != value["old_pointer"]:
+                raise ValueError("Version pointer changed; preserve both roots for handoff recovery.")
+            selection = read_json(self.service.selection)
+            marker = read_json(self.root / "install.json")
+            if selection.get("r1_data_root") or marker.get("r1_data_root"):
+                raise ValueError("R1 selection was committed; use the adoption handoff recovery.")
+            self._check_files(value)
+            for path in expected:
+                if os.path.lexists(path):
+                    path.unlink()
+                    r0_stop._sync_directory(path.parent)
+            if self.system == "linux":
+                self._run(["systemctl", "--user", "daemon-reload"])
+            r0_stop._require_no_r1(self.service)
+            intent_path = r0_stop._marker_path(self.service)
+            if os.path.lexists(intent_path):
+                if read_json(_regular(intent_path)) != value["r0_intent"]:
+                    raise ValueError("R0 recovery intent changed; R0 was not restarted.")
+                value["phase"] = "restoring_r0"
+                self._save(value)
+                r0_stop.recover_r0(self.service)  # Revalidates R0 bytes and manager.
+            elif value["phase"] != "restoring_r0":
+                raise ValueError("R0 recovery intent is missing; preserve both roots.")
+            else:
+                # Crash after A removed its intent but before B removed its journal.
+                if r0_stop._unit_digest(self.service) != value["r0_intent"]["unit_sha256"]:
+                    raise ValueError("R0 service changed after recovery.")
+                r0_stop._validate_manager(self.service, self.uid)
+            self.journal.unlink()
+            r0_stop._sync_directory(self.journal.parent)
         return True

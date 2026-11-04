@@ -1,10 +1,11 @@
 """Stop the registered R0 service and wait for its realm owner lock.
 
-The direct installer holds its per-user lock while using this boundary. Piece A
-ends by restoring R0 and refusing: adoption and R1 activation belong to B/C.
+The direct installer holds its per-user lock while using this boundary.
+The handoff retains this stop intent until rollback restores R0.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -70,13 +71,6 @@ class R0StopError(ValueError):
     """R0 could not be stopped safely; the upgrade must be refused."""
 
 
-STAGING_REFUSAL = (
-    "R0 is enabled again. The R0-to-R1 upgrade was not completed: "
-    "this installer still needs R1 registration and copy-only adoption (Pieces B/C). "
-    "Keep using R0 until those pieces are available, then run the install line again."
-)
-
-
 def _read_record(path):
     from .core import absolute, read_json
     path = absolute(path)
@@ -97,24 +91,6 @@ def _selected_realm(data):
     if len(matches) != 1 or not isinstance(matches[0].get("data_root"), str):
         raise R0StopError("R0's selected realm is ambiguous; no service was stopped.")
     return selected, absolute(matches[0]["data_root"])
-
-
-def _completed_adopt(data, realm, destination):
-    # Runtime #29's durable receipt is runtime/adopt-journal.json, state
-    # complete. Its source/destination fields name realms, not support roots.
-    # Do not accept a loose receipt.json or a claimed ok=true as this evidence.
-    try:
-        realm_id, source = _selected_realm(data)
-        adopted_id, adopted = _selected_realm(destination)
-        receipt = _read_record(destination / "runtime" / "adopt-journal.json")
-        expected = destination / "runtime" / "realms" / realm_id
-        return (source == realm and adopted_id == realm_id and adopted == expected
-                and receipt.get("state") == "complete" and receipt.get("realm_id") == realm_id
-                and receipt.get("source") == str(realm)
-                and receipt.get("destination") == str(expected)
-                and receipt.get("backup_identity") is None)
-    except (OSError, ValueError, TypeError):
-        return False
 
 
 def is_r0_installation(root):
@@ -157,39 +133,9 @@ def refuse_unintegrated_r1_handoff(root, service):
     if (marker.get("r1_data_root") or selection.get("r1_data_root")
             or definition.exists() or definition.is_symlink()):
         raise R0StopError(
-            "An R1 handoff is already present. This Piece A installer cannot update or activate it; "
-            "use the completed R1 registration/adoption installer. Both roots were kept."
+            "An R1 handoff is already present without matching adoption authority. "
+            "Preserve both roots and recover its installer journal before proceeding."
         )
-
-
-def stage_r0_upgrade(root, data, backend, *, say=print):
-    """Real install entry boundary, before legacy recovery, preflight or writes.
-
-    Caller holds the existing per-user installer lock. There is deliberately no
-    successful handoff in A: after proving stop/lock, restore R0 and refuse.
-    """
-    service = backend.service
-    from .boundary_registration import journal_path
-
-    # B owns partial registration recovery. It must exclude R1 before A can
-    # re-enable R0; never replay the legacy in-place transaction for this intent.
-    if os.path.lexists(journal_path(service)) and backend.recover_r1_registration():
-        raise R0StopError("Recovered the interrupted R1 registration. " + STAGING_REFUSAL)
-    if recover_r0(service):
-        raise R0StopError("Recovered the interrupted R0 stop. " + STAGING_REFUSAL)
-    refuse_unintegrated_r1_handoff(root, service)
-    refuse_legacy_r0_recovery(root)
-    from .core import pending_transaction
-
-    if pending_transaction(root):
-        return  # only a verified R1 journal can reach existing R1 recovery
-    if not is_r0_installation(root):
-        return
-    _, realm = _selected_realm(data)  # read catalog only; never launch R0/R1 to inspect it
-    say("Astrid will restart to update.")
-    stop_r0_and_wait(service, realm, data_root=data)
-    recover_r0(service)
-    raise R0StopError(STAGING_REFUSAL)
 
 
 def _launchd_uid():
@@ -309,6 +255,30 @@ def _marker_path(service):
     return installer_lock_path(service.home, service.system).parent / "astrid-r0-upgrade-in-progress.json"
 
 
+@contextmanager
+def owner_lock(realm):
+    """Retain the existing read-only lifetime lock through a selection switch."""
+    from .core import absolute
+    path = absolute(realm) / "owner.lock"
+    before = path.lstat()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    locked = False
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(before.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise R0StopError("Owner lock changed while opening it.")
+        platform.lock_file(fd, blocking=False)
+        locked = True
+        if (path.lstat().st_dev, path.lstat().st_ino) != (opened.st_dev, opened.st_ino):
+            raise R0StopError("Owner lock changed while acquiring it.")
+        yield
+    finally:
+        if locked:
+            platform.unlock_file(fd)
+        os.close(fd)
+
+
 def _sync_directory(path):
     if os.name != "nt":
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -387,8 +357,7 @@ def stop_r0_and_wait(service, realm_root: Path, *, data_root: Path | None = None
     if marker.is_relative_to(data_root) or marker.is_relative_to(service.root):
         raise R0StopError("The recovery marker must be outside the R0 roots.")
     destination = Path(str(data_root) + "-r1")
-    if ((destination.exists() or destination.is_symlink())
-            and not _completed_adopt(data_root, realm_root, destination)):
+    if os.path.lexists(destination):
         raise R0StopError(f"The R1 destination already exists: {destination}.")
     uid = _launchd_uid() if service.system == "darwin" else None
     _validate_manager(service, uid)

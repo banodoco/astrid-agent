@@ -313,7 +313,7 @@ def test_public_cli_nested_default_log_preserves_selected_roots(tmp_path, monkey
     result = subprocess.run([sys.executable, "-m", "astrid", "install"],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "upgrade was not completed" in result.stdout
+    assert "pinned user-local uv" in result.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -359,8 +359,8 @@ def test_public_cli_recovers_interrupted_stop_with_nested_read_only_source(tmp_p
         assert not state(manager)["enabled"]
         state(manager, kill_after_disable=False)
         recovered = invoke(root)
-        assert recovered.returncode == 1, recovered.stdout + recovered.stderr
-        assert "Recovered the interrupted R0 stop" in recovered.stdout
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert "Recovered the previous R0 service" in recovered.stdout
         assert state(manager)["enabled"] and state(manager)["running"]
         assert not r0_stop._marker_path(service).exists()
         assert (snapshot(root), snapshot(data)) == before
@@ -386,10 +386,10 @@ def test_public_cli_log_becoming_unwritable_cannot_block_manager_recovery(tmp_pa
     before = snapshot(root), snapshot(data)
     result = invoke(root)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "upgrade was not completed" in result.stdout
+    assert "pinned user-local uv" in result.stdout
     assert "diagnostic destination unavailable" in result.stdout
     assert "R0 restored" in result.stdout
-    assert "R0StopError" in result.stderr  # failure handler also falls back
+    assert "pinned user-local uv" in result.stderr  # failure handler also falls back
     assert "Details:" not in result.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
@@ -415,7 +415,7 @@ def test_public_cli_log_alias_into_source_is_console_only(tmp_path, monkeypatch,
             os.link(source_log, log_dir / "install.log")
     before = snapshot(root), snapshot(data)
     result = invoke(root)
-    assert result.returncode == 1 and "upgrade was not completed" in result.stdout
+    assert result.returncode == 1 and "pinned user-local uv" in result.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -434,7 +434,7 @@ def test_real_cli_stops_restores_and_refuses_without_legacy_writes(tmp_path, mon
         result = invoke(root)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "Astrid will restart to update" in result.stdout
-        assert "upgrade was not completed" in result.stdout
+        assert "pinned user-local uv" in result.stdout
         assert "Open https://astrid.haus" not in result.stdout
         assert (snapshot(root), snapshot(data), service.path.read_bytes()) == before
         assert ["--user", "disable", "--now", "astrid.service"] in state(manager)["calls"]
@@ -478,8 +478,8 @@ def test_sigkill_in_manager_stop_real_cli_rerun_recovers(tmp_path, monkeypatch):
     assert not state(manager)["enabled"]
     state(manager, kill_after_disable=False)
     recovered = invoke(root)
-    assert recovered.returncode == 1
-    assert "Recovered the interrupted R0 stop" in recovered.stdout
+    assert recovered.returncode == 0
+    assert "Recovered the previous R0 service" in recovered.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -547,7 +547,7 @@ def test_public_cli_wrong_manager_binding_refuses_before_stop(tmp_path, monkeypa
     before = snapshot(root), snapshot(data)
     result = invoke(root)
     assert result.returncode == 1 and "FragmentPath does not match" in result.stdout
-    assert len(state(manager)["calls"]) == 1
+    assert not any("enable" in call or "disable" in call for call in state(manager)["calls"])
     assert (snapshot(root), snapshot(data)) == before
 
 
@@ -594,7 +594,7 @@ def test_installer_api_cannot_bypass_entry_boundary(tmp_path, monkeypatch):
     assert (snapshot(root), snapshot(data)) == before
 
 
-def test_completed_exact_source_adopt_is_recognized_without_destination_writes(tmp_path):
+def test_legacy_adopt_journal_never_authorizes_destination_reuse(tmp_path):
     manager, realm = setup_case(tmp_path, "linux")
     data = realm.parent
     catalog(data, realm)
@@ -602,22 +602,14 @@ def test_completed_exact_source_adopt_is_recognized_without_destination_writes(t
     adopted = destination / "runtime" / "realms" / "r0"
     adopted.mkdir(parents=True)
     catalog(destination, adopted)
-    receipt = destination / "runtime" / "adopt-journal.json"
-    write_json(receipt, {"state": "complete", "realm_id": "r0", "source": str(realm),
-                         "destination": str(adopted), "backup_identity": None})
+    write_json(destination / "runtime/adopt-journal.json", {
+        "state": "complete", "realm_id": "r0", "source": str(realm),
+        "destination": str(adopted), "backup_identity": None})
     before = snapshot(data), snapshot(destination)
-    r0_stop.stop_r0_and_wait(manager, realm, data_root=data)
-    assert not manager.enabled
-    r0_stop.recover_r0(manager)
-    assert manager.enabled
-    assert (snapshot(data), snapshot(destination)) == before
-    value = json.loads(receipt.read_text())
-    value["source"] = "/foreign/realm"
-    write_json(receipt, value)
-    manager.calls.clear()
     with pytest.raises(r0_stop.R0StopError, match="already exists"):
         r0_stop.stop_r0_and_wait(manager, realm, data_root=data)
     assert manager.calls == []
+    assert (snapshot(data), snapshot(destination)) == before
 
 
 def test_captures_match_real_r0_evidence():

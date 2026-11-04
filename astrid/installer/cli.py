@@ -64,11 +64,12 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
 
 def _retained_r0_roots(service) -> list[Path]:
     from .boundary_registration import retained_roots
+    from .boundary_handoff import retained_roots as handoff_roots
     from .r0_stop import _marker_path
 
     intent = read_json(absolute(_marker_path(service)))
     roots = [absolute(intent[key]) for key in ("program_root", "data_root")] if intent else []
-    return roots + retained_roots(service)
+    return roots + retained_roots(service) + handoff_roots(service)
 
 
 def _provisional_roots(root: Path, requested_data: Path | None, service, mode: str) -> list[Path]:
@@ -85,7 +86,12 @@ def _provisional_roots(root: Path, requested_data: Path | None, service, mode: s
         marker = read_json(program / "install.json")
         if marker.get("owner") == LABEL and marker.get("data_root"):
             protected.append(absolute(marker["data_root"]))
-    protected.append(absolute(recorded.get("data_root") or requested_data or platform.data_root()))
+        if marker.get("owner") == LABEL and marker.get("r1_data_root"):
+            protected.append(absolute(marker["r1_data_root"]))
+    selected_data = absolute(recorded.get("data_root") or requested_data or platform.data_root())
+    protected.extend((selected_data, absolute(str(selected_data) + "-r1")))
+    if recorded.get("r1_data_root"):
+        protected.append(absolute(recorded["r1_data_root"]))
     return protected + _retained_r0_roots(service)
 
 
@@ -112,6 +118,7 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--update", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
     mode.add_argument("--uninstall", action="store_true")
+    mode.add_argument("--rollback", action="store_true", help="switch back to the retained R0 service, keeping both data roots")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
                       help="write a redacted support bundle using the installed version")
     mode.add_argument("--update-recovery", action="store_true",
@@ -133,7 +140,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    mode = ("update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
+    mode = ("rollback" if args.rollback else "update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
     if args.apply and mode != "update-recovery":
         parser().error("--apply is only valid with --update-recovery.")
@@ -166,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_job and (not args.root or not args.root.is_absolute() or not args.data_root
                             or not args.data_root.is_absolute() or not args.manifest
                             or args.update_app or args.uninstall or args.doctor is not None
-                            or args.managed_by or args.sandbox or args.delete_data or args.update):
+                            or args.managed_by or args.sandbox or args.delete_data or args.update or args.rollback):
         parser().error("--update-job requires the selected absolute roots and manifest.")
     if args.update_job and (len(args.update_job) != 32
                             or any(char not in "0123456789abcdef" for char in args.update_job)):
@@ -310,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
                 data = absolute(recorded.get("data_root") or args.data_root or platform.data_root())
-                protected = [root, data, *_retained_r0_roots(backend.service)]
+                protected = [root, data, absolute(str(data) + "-r1"), *_retained_r0_roots(backend.service)]
                 _check_installer_state(lock_path, *protected)
                 if not separate_roots(root, data):
                     raise ValueError("Keep program files and the workspace in separate directories.")
@@ -328,12 +335,22 @@ def main(argv: list[str] | None = None) -> int:
                 backend.console_diagnostics = log is None
                 if log is not None:
                     backend.log = log
-                if mode in {"install", "update"} and managed_by != "pinokio":
-                    from .r0_stop import stage_r0_upgrade
+                if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
+                    from .boundary_handoff import handle
+
+                    def candidate_manifest():
+                        if not uv.is_absolute() or not uv.is_file():
+                            raise ValueError("Run the install line to provide the pinned user-local uv.")
+                        path = args.manifest or root / "install-manifest.json"
+                        if not args.manifest:
+                            download("https://astrid.haus/install-manifest.json", path)
+                        return validate_manifest(read_json(path))
 
                     # R0's data stays read-only. This must precede legacy
                     # journal replay, Runtime preflight, staging and claims.
-                    stage_r0_upgrade(root, data, backend)
+                    if handle(root, data, backend, manifest_loader=candidate_manifest,
+                              rollback=mode == "rollback"):
+                        return 0
                 else:
                     from .boundary_registration import journal_path
                     from .r0_stop import refuse_unintegrated_r1_handoff
@@ -342,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
                         raise ValueError("An R1 registration needs recovery. Run the install line again before this operation.")
                     if managed_by != "pinokio":
                         refuse_unintegrated_r1_handoff(root, backend.service)
+                    elif mode == "rollback":
+                        raise ValueError("Copy-only service rollback is available for direct installations.")
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":

@@ -271,12 +271,25 @@ class Backend:
                    if key in option_names and isinstance(value, str) and value}
         return chat_cwd, options
 
-    def _selected_chat_settings(self, old: Version | None, data: Path) -> tuple[Path, dict[str, str]]:
+    def _selected_chat_settings(self, old: Version | None, data: Path, *, copy_from: Path | None = None) -> tuple[Path, dict[str, str]]:
         record = self.service.recorded()
-        retained = record.get("chat_settings") if record.get("data_root") == str(data) else None
+        retained = record.get("chat_settings") if record.get("data_root") in {str(data), str(copy_from)} else None
         chat_cwd, chat_options = self._prior_chat_settings(old, retained)
         if chat_cwd is None:
             chat_cwd = Path(os.environ.get("ASTRID_ACP_CWD") or data / "chat")
+        if copy_from is not None:
+            # The full-root copy carries these stores too. No supervised R1
+            # service may retain an absolute write path into the R0 source,
+            # including an inherited setting or a symlink alias of that root.
+            source_root = absolute(copy_from)
+            def relocate(value):
+                path = Path(value)
+                resolved = path.resolve() if path.is_absolute() else path
+                return str(data / resolved.relative_to(source_root)) if resolved.is_relative_to(source_root) else str(path)
+            chat_cwd = Path(relocate(chat_cwd))
+            for key in ("ASTRID_ACP_PROFILE", "ASTRID_ACP_SESSION_DIR", "ASTRID_ACP_SYSTEM_PROMPT_FILE", "ASTRID_ACP_COMMAND"):
+                value = chat_options.get(key, os.environ.get(key, ""))
+                chat_options[key] = relocate(value) if value else ""
         return chat_cwd, chat_options
 
     def _external_chat_command(self, command: str) -> bool:
@@ -322,9 +335,9 @@ class Backend:
         return True
 
     def _declare_services(self, *, folder: Path, agent: Path, data: Path, python: Path,
-                          bun: str, env: dict[str, str], old: Version | None) -> Path:
+                          bun: str, env: dict[str, str], old: Version | None, copy_from: Path | None = None) -> Path:
         """Run the candidate package's declaration API and write its profile input."""
-        chat_cwd, chat_options = self._selected_chat_settings(old, data)
+        chat_cwd, chat_options = self._selected_chat_settings(old, data, copy_from=copy_from)
         command = chat_options.get("ASTRID_ACP_COMMAND")
         if command and not self._external_chat_command(command):
             self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
@@ -928,7 +941,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     target.unlink()
                 copy_support(item, target)
 
-    def stage(self, manifest: dict, root: Path, data: Path) -> Version:
+    def stage(self, manifest: dict, root: Path, data: Path, *, copy_from: Path | None = None) -> Version:
         install_release(manifest)
         # Repair needs only the installed Runtime. Require bootstrap inputs
         # only when dispatch actually prepares a fresh candidate.
@@ -1002,6 +1015,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         services_path = self._declare_services(
             folder=folder, agent=product_root, data=data, python=python,
             bun=env["ASTRID_BUN_EXECUTABLE"], env=env, old=prior,
+            copy_from=copy_from,
         )
         # Compute the admitted source identity in the installed environment.
         digest = self.run([python, "-X", "utf8", "-I", "-c", "from astrid.core.execution.generic_host import source_checkout_digest; import pathlib,sys; print(source_checkout_digest(pathlib.Path(sys.argv[1])))", product_root], extra_env=env)
