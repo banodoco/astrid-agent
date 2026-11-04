@@ -543,6 +543,10 @@ def _checkpoint_release0_selection(path: Path, result: dict) -> None:
             temporary = Path(stream.name)
             json.dump(result, stream, indent=2, sort_keys=True)
             stream.write("\n")
+        if os.name == "posix":
+            # Preserve the existing receipt's access mode before replacing it.
+            # If this fails, leave the old receipt intact.
+            temporary.chmod(stat.S_IMODE(path.stat().st_mode))
         os.replace(temporary, path)
     except Exception as exc:
         # Diagnostics must not introduce another failure into the journey.
@@ -682,9 +686,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
         if selecting_release0:
-            result["release0_selection"].update(result="fail", error=f"{type(exc).__name__}: {exc}")
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+            result["release0_selection"].update(result="fail", error=error)
+        result.update(status="fail", error=error)
         raise
     finally:
         journey.write_json(result_path, result)

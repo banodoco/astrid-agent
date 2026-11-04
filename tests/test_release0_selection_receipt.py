@@ -1,4 +1,6 @@
 """Receipt persistence at the genuine normal R0 selection boundary."""
+import os
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -203,6 +205,43 @@ def test_selection_exception_identity_and_receipt(complete_journey, monkeypatch)
     assert recorded["release0_selection"] == {"result": "fail", "error": "RuntimeError: owner failure"}
     assert recorded["status"] == "fail"
     assert ctx.stages == []
+
+
+def test_selection_exception_is_formatted_once(complete_journey, monkeypatch):
+    class SingleStringError(Exception):
+        calls = 0
+
+        def __str__(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("second conversion failed")
+            return "owner failure"
+
+    ctx = complete_journey
+    original = SingleStringError()
+    def fail(*_):
+        raise original
+    monkeypatch.setattr(journey, "assert_release0_runtime", fail)
+    with pytest.raises(SingleStringError) as caught:
+        ctx.execute()
+    assert caught.value is original
+    assert original.calls == 1
+    recorded = journey.read_json(ctx.evidence / "journey-result.json")
+    assert recorded["release0_selection"] == {"result": "fail", "error": "SingleStringError: owner failure"}
+    assert recorded["status"] == "fail"
+    assert recorded["error"] == "SingleStringError: owner failure"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode preservation")
+def test_checkpoint_preserves_receipt_mode(tmp_path):
+    receipt = tmp_path / "journey-result.json"
+    journey.write_json(receipt, {"status": "not-run"})
+    receipt.chmod(0o644)
+    jumps._checkpoint_release0_selection(receipt, {"status": "pass"})
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o644
+    assert journey.read_json(receipt) == {"status": "pass"}
+    journey.write_json(receipt, {"status": "fail"})
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o644
 
 
 def test_checkpoint_diagnostic_failure_is_contained(complete_journey, monkeypatch):
