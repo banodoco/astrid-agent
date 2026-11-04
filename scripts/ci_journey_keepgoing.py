@@ -26,6 +26,8 @@ def stages_for(args):
     stages = list(FRESH_STAGES if args.leg == "fresh-install" else STAGES)
     if getattr(args, "diagnostic_prestop_r0", False):
         stages.insert(stages.index("release1-update"), "release0-prestop")
+        index = stages.index("release1-selection") + 1
+        stages[index:index] = ["release1-release", "release1-service", "release1-health"]
     return stages
 
 
@@ -283,12 +285,21 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         path, selected_data, version = journey.installation(root, data)
         if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not retain data and activate release 1")
-        jumps.selected_candidate(state["manifest"], version, state["old_tuple"])
-        journey.assert_direct_service_ownership(root, data)
+        if getattr(args, "diagnostic_prestop_r0", False):
+            state.update(version=version, version_path=path)
+        else:
+            jumps.selected_candidate(state["manifest"], version, state["old_tuple"])
+            journey.assert_direct_service_ownership(root, data)
+            health = journey.healthy(data)
+            if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
+                raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
+            state.update(version=version, version_path=path)
+    def check_release1():
+        jumps.selected_candidate(state["manifest"], state["version"], state["old_tuple"])
+    def check_health1():
         health = journey.healthy(data)
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
-        state.update(version=version, version_path=path)
     def verify0():
         journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
         state["verified0"] = True
@@ -322,6 +333,10 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-update", update_dependencies, update, evidence / "release1" / "update-bootstrap.log")
     stage("release1-start", ["updated"], start1, evidence / "release1")
     stage("release1-selection", ["started1", "health0"], select1, evidence / "release1")
+    if getattr(args, "diagnostic_prestop_r0", False):
+        stage("release1-release", ["version"], check_release1, evidence / "release1")
+        stage("release1-service", ["version"], lambda: journey.assert_direct_service_ownership(root, data), evidence / "release1")
+        stage("release1-health", ["version", "health0"], check_health1, evidence / "release1")
     stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log", forced_dependencies=(("verified0", "release0-verify"),))
     stage("release1-verify-install", ["version"], verify_install, evidence / "verify-install.log")
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
