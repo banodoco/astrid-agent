@@ -788,9 +788,9 @@ def rerun(args, root, data, evidence, app, manifest_path, manifest, version, old
 def busy_refusal(args, root, data, evidence, manifest_path, old,
                  old_pid, old_birth, sentinel, birth, result):
     keys = workspace(old, data, evidence / "busy", "busy", {})
-    protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
-                                                     data / "runtime/discovery.json")}
     try:
+        protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
+                                                         data / "runtime/discovery.json")}
         try:
             journey.bootstrap(args.app_checkout, manifest_path, args.shell, "update", evidence / "busy", root, data)
         except RuntimeError:
