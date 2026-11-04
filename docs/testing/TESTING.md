@@ -675,6 +675,8 @@ manifest. The command does not launch Runtime. It fails before changing the
 reviewed row if any provenance or layout check fails.
 
 The reviewed R1 path rule contains no run-specific version suffix: `current`
-must select a directory directly under `versions`, and `bin/runtime` must
-resolve inside that selected directory. Verifier identity, manifest, source,
-protocol and schema comparisons remain exact.
+must select a directory directly under `versions`. The fixed `bin/runtime`
+entry point must be the reviewed wrapper that reads `current` and dispatches to
+`versions/<current>/bin/runtime`; the version-local launcher remains inside the
+selected directory. Verifier identity, manifest, source, protocol and schema
+comparisons remain exact.

@@ -212,13 +212,21 @@ def _version_provenance_problems(version, manifest, version_path, *, r1_layout=F
         problems.append('current selection does not match version record')
     if r1_layout:
         launcher = program_root / 'bin' / 'runtime'
+        expected_launcher = (
+            '#!/bin/sh\nset -eu\n'
+            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+            'version=$(cat "$root/current")\n'
+            'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+            '[ ${#version} -le 64 ] || exit 2\n'
+            'exec "$root/versions/$version/bin/runtime" "$@"\n'
+        )
         try:
-            launcher_target = launcher.resolve(strict=True)
-            launcher_target.relative_to(version_root)
-            if not launcher.is_file():
-                raise ValueError('launcher is not a file')
+            launcher_content = launcher.read_text(encoding='utf-8')
+            if (launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK)
+                    or launcher_content != expected_launcher):
+                raise ValueError('fixed launcher does not match the reviewed dispatch wrapper')
         except (OSError, ValueError):
-            problems.append('fixed runtime launcher does not resolve inside selected version')
+            problems.append('fixed runtime launcher does not match reviewed current-selection dispatch')
     profile = Path(version.get('profile', '')).absolute()
     python = Path(version.get('python', '')).absolute()
     if (not profile.is_relative_to(Path(version_root).absolute()) or not profile.is_file()
@@ -291,7 +299,7 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
         return ['no unique reviewed Runtime schema declaration']
     if mode == 'identity-aware-version-record':
         expected_layout = {'version_root': 'versions/<current>', 'current_file': 'current',
-                           'launcher': 'bin/runtime', 'launcher_target': 'inside-selected-version'}
+                           'launcher': 'bin/runtime', 'launcher_target': 'dispatches-current-to-selected-version'}
         if schema.get('installed_layout') != expected_layout:
             problems.append('installed version layout does not match reviewed R1 contract')
     checks = {

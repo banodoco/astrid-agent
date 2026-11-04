@@ -277,7 +277,16 @@ def _identity_aware_fixture(tmp_path):
     version_launcher.write_text('#!/bin/sh\nexit 0\n')
     program_bin = program / 'bin'
     program_bin.mkdir()
-    (program_bin / 'runtime').symlink_to(version_launcher)
+    fixed_launcher = program_bin / 'runtime'
+    fixed_launcher.write_text(
+        '#!/bin/sh\nset -eu\n'
+        'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+        'version=$(cat "$root/current")\n'
+        'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+        '[ ${#version} -le 64 ] || exit 2\n'
+        'exec "$root/versions/$version/bin/runtime" "$@"\n'
+    )
+    fixed_launcher.chmod(0o755)
     raw = base64.b64decode(source['manifest_base64'])
     installed_manifest = dict(source['manifest'])
     releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
@@ -404,20 +413,18 @@ def test_identity_aware_version_outside_versions_fails_closed(tmp_path):
 
 
 @pytest.mark.posix_native
-def test_identity_aware_launcher_resolving_to_another_version_fails_closed(tmp_path):
+def test_identity_aware_launcher_dispatching_to_another_version_fails_closed(tmp_path):
     from scripts.verify_installed import legacy_identity_observation
     fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path)
     program = Path(fixture['version']['root']).parents[1]
-    other = program / 'versions' / 'other' / 'bin' / 'runtime'
-    other.parent.mkdir(parents=True)
-    other.write_text('#!/bin/sh\nexit 0\n')
     launcher = program / 'bin' / 'runtime'
-    launcher.unlink()
-    launcher.symlink_to(other)
+    launcher.write_text(launcher.read_text().replace(
+        'exec "$root/versions/$version/bin/runtime" "$@"',
+        'exec "$root/versions/other/bin/runtime" "$@"'))
     ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
                                                fixture['manifest'], raw, version_path, runtime)
     assert not ok
-    assert 'fixed runtime launcher does not resolve inside selected version' in details['problems']
+    assert 'fixed runtime launcher does not match reviewed current-selection dispatch' in details['problems']
 
 
 @pytest.mark.parametrize(('field', 'value', 'problem'), [
