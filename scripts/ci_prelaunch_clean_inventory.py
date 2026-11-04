@@ -154,7 +154,8 @@ def main():
         def git(*args): return subprocess.run(["/usr/bin/git","-C",str(checkout),"-c","core.hooksPath=/dev/null",*args],env=env,capture_output=True,text=True,timeout=30,check=True).stdout.strip()
         try:
             checkout_identity={"head":git("rev-parse","HEAD"), "origin_expected":git("config","--get","remote.origin.url") in ("https://github.com/banodoco/astrid-agent", "https://github.com/banodoco/astrid-agent.git"), "dirty":bool(git("status","--porcelain","--untracked-files=all"))}
-        except Exception: checkout_identity={"status":"unverified"}
+        except Exception as e:
+            checkout_identity={"status":"unverified", "git_entry_present":(checkout/'.git').exists(), "git_entry_symlink":(checkout/'.git').is_symlink(), "error_type":type(e).__name__, "returncode":getattr(e,'returncode',None)}
     result = {"checkout_identity": checkout_identity, "children": children, "schema": "prelaunch-clean-inventory/v1", "uid": UID, "runner": "hannah-mac",
               "read_only": True, "paths": inventory, "task_processes": task_processes(),
               "notes": ["Sizes are logical bytes, deduplicated per path; symlinks, mount points and foreign-owned directories are not followed.",
