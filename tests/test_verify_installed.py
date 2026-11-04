@@ -249,19 +249,31 @@ def _legacy_identity_fixture(tmp_path):
     return fixture, version_path, runtime
 
 
-def _identity_aware_fixture(tmp_path):
-    import base64
+# Observed on the R1 candidate of CI run 41918361034; never pinned by the verifier.
+CANDIDATE_AGENT = '9360824b' + '1' * 32
+CANDIDATE_RUNTIME = '9fc53b77' + '2' * 32
+CANDIDATE_DIGEST = 'sha256:9628bb5f' + '3' * 56
+DEFAULT_VIBECOMFY = 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'
+
+
+def _identity_aware_fixture(tmp_path, *, agent=None, runtime_sha=None, digest=None, workspace=31,
+                            launcher=True, label=None):
     source = json.loads((Path(__file__).parent / 'fixtures/upgrade/identity_aware_version_v1.json').read_text())
+    manifest = json.loads(json.dumps(source['manifest']))
+    manifest['agent']['sha'] = agent or manifest['agent']['sha']
+    manifest['runtime']['sha'] = runtime_sha or manifest['runtime']['sha']
+    manifest['runtime']['schema_digest'] = digest or manifest['runtime']['schema_digest']
     program = tmp_path / 'program'
-    root = program / 'versions' / 'e8d04151-d8704b7a-identityaware'
+    root = program / 'versions' / f"{manifest['agent']['sha'][:8]}-{manifest['runtime']['sha'][:8]}-identityaware"
     root.mkdir(parents=True)
     (root / 'r').mkdir()
     (root / 'a').mkdir()
     (root / 'bin').mkdir()
     (root / 'v').mkdir()
     (root / 'py').mkdir()
-    (program / 'current').write_text(root.name)
-    (program / 'install.json').write_text(json.dumps({'managed_by': None}))
+    (program / 'current').write_text(root.name + '\n')
+    marker = {'managed_by': None, **({'service_label': label} if label else {})}
+    (program / 'install.json').write_text(json.dumps(marker))
     profile = root / 'profile.json'
     source_checkout = root / 'a' / 'source'
     source_checkout.mkdir(parents=True)
@@ -275,37 +287,50 @@ def _identity_aware_fixture(tmp_path):
     python.write_text('fixture python')
     version_launcher = root / 'bin' / 'runtime'
     version_launcher.write_text('#!/bin/sh\nexit 0\n')
-    program_bin = program / 'bin'
-    program_bin.mkdir()
-    fixed_launcher = program_bin / 'runtime'
-    fixed_launcher.write_text(
-        '#!/bin/sh\nset -eu\n'
-        'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
-        'version=$(cat "$root/current")\n'
-        'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
-        '[ ${#version} -le 64 ] || exit 2\n'
-        'exec "$root/versions/$version/bin/runtime" "$@"\n'
-    )
-    fixed_launcher.chmod(0o755)
-    raw = base64.b64decode(source['manifest_base64'])
-    installed_manifest = dict(source['manifest'])
-    releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
-    schema = next(row for row in releases['format_review']['supported_runtime_schemas']
-                  if row.get('mode') == 'identity-aware-version-record')
-    installed_manifest['vibecomfy'] = {'sha': schema['installed_manifest_vibecomfy_default_sha']}
+    if launcher:
+        program_bin = program / 'bin'
+        program_bin.mkdir()
+        fixed_launcher = program_bin / 'runtime'
+        fixed_launcher.write_text(
+            '#!/bin/sh\nset -eu\n'
+            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+            'version=$(cat "$root/current")\n'
+            'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+            '[ ${#version} -le 64 ] || exit 2\n'
+            'exec "$root/versions/$version/bin/runtime" "$@"\n'
+        )
+        fixed_launcher.chmod(0o755)
+    # The installer records the parsed manifest plus its default VibeComfy pin.
+    installed_manifest = {**manifest, 'vibecomfy': {'sha': DEFAULT_VIBECOMFY}}
     raw = (json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n').encode()
     (root / 'manifest.json').write_bytes(raw)
     version_path = root / 'version.json'
-    identity = {'release': source['manifest']['release'], 'managed_by': None}
+    identity = {'release': manifest['release'], 'managed_by': None}
     fixture = {
-        'manifest': source['manifest'],
-        'health': {**source['health_shape'], 'identity': identity},
+        'manifest': installed_manifest,
+        'health': {**source['health_shape'], 'schema_digest': manifest['runtime']['schema_digest'], 'identity': identity},
         'discovery': {**source['discovery_shape'], 'identity': identity},
         'version': {'root': str(root), 'python': str(python), 'profile': str(profile), 'env': {}, 'identity': identity},
     }
-    runtime = {'protocol': source['health_shape']['protocol'], 'schema_digest': source['manifest']['runtime']['schema_digest'],
-               'workspace_schema_version': 31}
+    runtime = {'protocol': source['health_shape']['protocol'], 'schema_digest': manifest['runtime']['schema_digest'],
+               'workspace_schema_version': workspace}
     return fixture, version_path, runtime, raw
+
+
+def _observe_identity(fixture, version_path, runtime, raw, **kwargs):
+    from scripts.verify_installed import legacy_identity_observation
+    return legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
+                                       fixture['manifest'], raw, version_path, runtime, **kwargs)
+
+
+def _rewrite_installed_manifest(fixture, mutate):
+    root = Path(fixture['version']['root'])
+    installed = json.loads((root / 'manifest.json').read_text())
+    mutate(installed)
+    raw = (json.dumps(installed, indent=2, sort_keys=True) + '\n').encode()
+    (root / 'manifest.json').write_bytes(raw)
+    fixture['manifest'] = installed
+    return raw
 
 
 def test_supported_legacy_schema_accepts_matching_instance_and_exact_provenance(tmp_path):
@@ -374,20 +399,32 @@ def test_installed_manifest_noncanonical_writer_representation_fails(tmp_path):
     assert 'installed manifest representation does not match reviewed installer writer' in details['problems']
 
 
-@pytest.mark.parametrize('unknown_schema', [
-    {'workspace_schema_version': 32},
-    {'schema_digest': 'sha256:' + 'f' * 64},
-])
-def test_identity_aware_unknown_or_newer_schema_fails_closed_with_matching_identity(tmp_path, unknown_schema):
-    from scripts.verify_installed import legacy_identity_observation
+def test_identity_aware_newer_workspace_schema_is_accepted_when_runtime_reports_it(tmp_path):
+    fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path, workspace=33)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert ok, details['problems']
+    assert details['runtime_contract']['workspace_schema_version'] == 33
+
+
+@pytest.mark.parametrize('surface', ['runtime-contract', 'health'])
+def test_identity_aware_schema_digest_disagreeing_with_manifest_fails_closed(tmp_path, surface):
     fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path)
-    runtime.update(unknown_schema)
-    fixture['health']['schema_digest'] = runtime['schema_digest']
-    ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
-                                               fixture['manifest'], raw, version_path, runtime)
+    if surface == 'runtime-contract':
+        runtime['schema_digest'] = 'sha256:' + 'f' * 64
+    else:
+        fixture['health']['schema_digest'] = 'sha256:' + 'f' * 64
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
     assert not ok
     assert fixture['health']['identity'] == fixture['discovery']['identity'] == fixture['version']['identity']
-    assert any('reviewed schema' in problem for problem in details['problems'])
+    assert 'health/installed Runtime schema digest does not match manifest' in details['problems']
+
+
+@pytest.mark.parametrize('workspace', [None, 0, '33'])
+def test_identity_aware_missing_runtime_workspace_schema_fails_closed(tmp_path, workspace):
+    fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path, workspace=workspace)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert not ok
+    assert 'installed Runtime workspace schema version is missing or invalid' in details['problems']
 
 
 def test_identity_aware_current_selection_mismatch_fails_closed(tmp_path):
@@ -424,32 +461,136 @@ def test_identity_aware_launcher_dispatching_to_another_version_fails_closed(tmp
     ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
                                                fixture['manifest'], raw, version_path, runtime)
     assert not ok
-    assert 'fixed runtime launcher does not match reviewed current-selection dispatch' in details['problems']
+    assert 'fixed runtime launcher does not match installer current-selection dispatch' in details['problems']
 
 
-@pytest.mark.parametrize(('field', 'value', 'problem'), [
-    ('installed_manifest_sha256', 'f' * 64, 'installed manifest content does not match reviewed schema'),
-    ('schema_digest', 'sha256:' + 'f' * 64, 'Runtime schema digest does not match reviewed schema'),
-    ('agent', 'f' * 40, 'manifest agent source does not match reviewed schema'),
+@pytest.mark.posix_native
+@pytest.mark.parametrize(('launcher', 'label', 'expected'), [
+    (False, None, True),
+    (False, 'astrid-r1.service', False),
+    (False, 'haus.astrid.runtime.r1', False),
+    (True, 'astrid-r1.service', True),
 ])
-def test_identity_aware_altered_reviewed_pin_fails_closed(tmp_path, monkeypatch, field, value, problem):
-    from scripts import verify_installed as verifier
+def test_identity_aware_fixed_launcher_required_only_with_r1_label(tmp_path, launcher, label, expected):
+    fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path, launcher=launcher, label=label)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert ok is expected, details['problems']
+    assert ('fixed runtime launcher does not match installer current-selection dispatch'
+            in details['problems']) is not expected
+
+
+@pytest.mark.posix_native
+def test_identity_aware_launcher_compares_to_installer_supplied_bytes(tmp_path):
     fixture, version_path, runtime, raw = _identity_aware_fixture(tmp_path)
-    releases_path = Path(__file__).parent / 'upgrade/releases.json'
-    releases = json.loads(releases_path.read_text())
-    row = next(row for row in releases['format_review']['supported_runtime_schemas']
-               if row.get('mode') == 'identity-aware-version-record')
-    if field == 'agent':
-        row['reviewed_source_refs']['agent'] = value
-    else:
-        row[field] = value
+    ok, details = _observe_identity(fixture, version_path, runtime, raw,
+                                    launcher_template='#!/bin/sh\nexec other\n',
+                                    launcher_template_source='installed-installer')
+    assert not ok
+    assert details['launcher_template_source'] == 'installed-installer'
+    assert 'fixed runtime launcher does not match installer current-selection dispatch' in details['problems']
+
+
+def test_documented_launcher_template_matches_installer_generator():
+    from astrid.installer.boundary_registration import _wrapper
+    from scripts.verify_installed import DOCUMENTED_R1_LAUNCHER
+    assert _wrapper() == DOCUMENTED_R1_LAUNCHER
+
+
+def test_r1_candidate_passes_by_self_consistency_without_pinned_row(tmp_path, monkeypatch):
+    """A new landing's SHAs, digest and schema pass with no reviewed R1 row."""
+    from scripts import verify_installed as verifier
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST, workspace=33)
+    releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
+    rows = releases['format_review']['supported_runtime_schemas']
+    releases['format_review']['supported_runtime_schemas'] = [
+        row for row in rows if row.get('mode') != 'identity-aware-version-record']
     temporary = tmp_path / 'releases.json'
     temporary.write_text(json.dumps(releases))
     monkeypatch.setattr(verifier, 'RELEASES_PATH', temporary)
-    ok, details = verifier.legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
-                                                        fixture['manifest'], raw, version_path, runtime)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert ok, details['problems']
+    assert details['mode'] == 'identity-aware'
+    assert details['manifest_agent_sha'] == CANDIDATE_AGENT
+    assert details['manifest_runtime_sha'] == CANDIDATE_RUNTIME
+    assert details['runtime_contract'] == {'protocol': 'workspace.v1', 'schema_digest': CANDIDATE_DIGEST,
+                                           'workspace_schema_version': 33}
+
+
+@pytest.mark.parametrize('name', ['agent', 'runtime'])
+def test_r1_candidate_source_sha_mismatching_installed_version_fails(tmp_path, name):
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    raw = _rewrite_installed_manifest(fixture, lambda value: value[name].update(sha='f' * 40))
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert not ok
+    assert 'installed version id does not match manifest Agent/Runtime pins' in details['problems']
+
+
+@pytest.mark.parametrize(('tamper', 'problem'), [
+    ('noncanonical-bytes', 'installed manifest bytes do not match installer writer output'),
+    ('schema-digest', 'health/installed Runtime schema digest does not match manifest'),
+    ('missing-vibecomfy', 'installed manifest vibecomfy pin is not a full Git SHA'),
+    ('short-agent-sha', 'installed manifest agent pin is not a full Git SHA'),
+    ('release', 'version identity does not match installed manifest/manager provenance'),
+])
+def test_r1_candidate_tampered_installed_manifest_fails(tmp_path, tamper, problem):
+    fixture, version_path, runtime, raw = _identity_aware_fixture(
+        tmp_path, agent=CANDIDATE_AGENT, runtime_sha=CANDIDATE_RUNTIME, digest=CANDIDATE_DIGEST)
+    root = Path(fixture['version']['root'])
+    if tamper == 'noncanonical-bytes':
+        raw = raw.replace(b'  "agent"', b'    "agent"', 1)
+        (root / 'manifest.json').write_bytes(raw)
+    elif tamper == 'schema-digest':
+        raw = _rewrite_installed_manifest(fixture, lambda value: value['runtime'].update(
+            schema_digest='sha256:' + 'e' * 64))
+    elif tamper == 'missing-vibecomfy':
+        raw = _rewrite_installed_manifest(fixture, lambda value: value.pop('vibecomfy'))
+    elif tamper == 'short-agent-sha':
+        raw = _rewrite_installed_manifest(fixture, lambda value: value['agent'].update(sha=CANDIDATE_AGENT[:8]))
+    else:
+        raw = _rewrite_installed_manifest(fixture, lambda value: value.update(release=2))
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
     assert not ok
     assert problem in details['problems']
+
+
+@pytest.mark.parametrize(('key', 'value', 'problem'), [
+    ('agent_sha', 'f' * 40, 'agent_sha mismatch'),
+    ('installed_manifest_sha256', 'f' * 64, 'installed_manifest_sha256 mismatch'),
+    ('workspace_schema_version', 33, 'workspace_schema_version mismatch'),
+])
+def test_r0_legacy_served_row_is_still_enforced(tmp_path, monkeypatch, key, value, problem):
+    from scripts import verify_installed as verifier
+    fixture, version_path, runtime = _legacy_identity_fixture(tmp_path)
+    raw = (Path(fixture['version']['root']) / 'manifest.json').read_bytes()
+    assert _observe_identity(fixture, version_path, runtime, raw)[0]
+    releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
+    served = next(row for row in releases['releases'] if row.get('id') == 'served')
+    served['supported_legacy_identity_schema'][key] = value
+    temporary = tmp_path / 'releases.json'
+    temporary.write_text(json.dumps(releases))
+    monkeypatch.setattr(verifier, 'RELEASES_PATH', temporary)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert not ok
+    assert details['mode'] == 'supported-legacy-schema'
+    assert problem in details['problems']
+
+
+def test_r0_legacy_reviewed_schema_row_is_still_enforced(tmp_path, monkeypatch):
+    from scripts import verify_installed as verifier
+    fixture, version_path, runtime = _legacy_identity_fixture(tmp_path)
+    raw = (Path(fixture['version']['root']) / 'manifest.json').read_bytes()
+    releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
+    row = next(row for row in releases['format_review']['supported_runtime_schemas']
+               if row.get('mode') == 'supported-legacy-schema')
+    row['reviewed_source_refs']['runtime'] = 'f' * 40
+    temporary = tmp_path / 'releases.json'
+    temporary.write_text(json.dumps(releases))
+    monkeypatch.setattr(verifier, 'RELEASES_PATH', temporary)
+    ok, details = _observe_identity(fixture, version_path, runtime, raw)
+    assert not ok
+    assert 'manifest runtime source does not match reviewed schema' in details['problems']
 
 
 def test_identity_aware_release_missing_health_and_discovery_identity_fails_closed(tmp_path):

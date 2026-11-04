@@ -21,6 +21,19 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASES_PATH = ROOT / 'tests' / 'upgrade' / 'releases.json'
+# The fixed <program>/bin/runtime that astrid.installer.boundary_registration
+# _wrapper() writes. Used only when the installed installer cannot be asked.
+DOCUMENTED_R1_LAUNCHER = (
+    '#!/bin/sh\nset -eu\n'
+    'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
+    'version=$(cat "$root/current")\n'
+    'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+    '[ ${#version} -le 64 ] || exit 2\n'
+    'exec "$root/versions/$version/bin/runtime" "$@"\n'
+)
+# BoundaryHandoff stamps install.json with one of these once R1 owns the install.
+R1_SERVICE_LABELS = frozenset({'astrid-r1.service', 'haus.astrid.runtime.r1'})
+R1_VERSION_RECORD_KEYS = frozenset({'env', 'identity', 'profile', 'python', 'root'})
 
 
 def read(path):
@@ -187,7 +200,28 @@ def installed_runtime_contract(python, root, env, data_root):
     return value
 
 
-def _version_provenance_problems(version, manifest, version_path, *, r1_layout=False):
+def installer_manifest_bytes(manifest):
+    """The bytes astrid.installer.core.write_json records for a parsed manifest."""
+    return (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode()
+
+
+def installed_launcher_template(python, env, data_root):
+    """Ask the installed Agent's installer for the fixed launcher it writes."""
+    probe = ('import json; from astrid.installer.boundary_registration import _wrapper; '
+             'print(json.dumps(_wrapper()))')
+    try:
+        result = subprocess.run([str(python), '-I', '-c', probe], capture_output=True, text=True,
+                                env=env, cwd=str(data_root), timeout=30, check=True)
+        value = json.loads(result.stdout.strip().splitlines()[-1])
+        if isinstance(value, str) and value:
+            return value, 'installed-installer'
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        pass
+    return DOCUMENTED_R1_LAUNCHER, 'documented-template'
+
+
+def _version_provenance_problems(version, manifest, version_path, *, r1_layout=False,
+                                 launcher_template=None):
     problems = []
     version_root = Path(version.get('root', '')).resolve()
     record_root = Path(version_path).resolve().parent
@@ -212,21 +246,23 @@ def _version_provenance_problems(version, manifest, version_path, *, r1_layout=F
         problems.append('current selection does not match version record')
     if r1_layout:
         launcher = program_root / 'bin' / 'runtime'
-        expected_launcher = (
-            '#!/bin/sh\nset -eu\n'
-            'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
-            'version=$(cat "$root/current")\n'
-            'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
-            '[ ${#version} -le 64 ] || exit 2\n'
-            'exec "$root/versions/$version/bin/runtime" "$@"\n'
-        )
         try:
-            launcher_content = launcher.read_text(encoding='utf-8')
-            if (launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK)
-                    or launcher_content != expected_launcher):
-                raise ValueError('fixed launcher does not match the reviewed dispatch wrapper')
-        except (OSError, ValueError):
-            problems.append('fixed runtime launcher does not match reviewed current-selection dispatch')
+            label = read(program_root / 'install.json').get('service_label')
+        except (OSError, ValueError, AttributeError, TypeError):
+            label = None
+        # BoundaryRegistration publishes the fixed launcher before the handoff
+        # stamps the R1 label; a fresh R1 install has neither.
+        if label in R1_SERVICE_LABELS or os.path.lexists(launcher):
+            expected_launcher = (launcher_template or DOCUMENTED_R1_LAUNCHER).encode()
+            try:
+                if (launcher.is_symlink() or not launcher.is_file() or not os.access(launcher, os.X_OK)
+                        or launcher.read_bytes() != expected_launcher):
+                    raise ValueError('fixed launcher does not match the installer dispatch wrapper')
+            except (OSError, ValueError):
+                problems.append('fixed runtime launcher does not match installer current-selection dispatch')
+        manifest_file = version_root / 'manifest.json'
+        if manifest_file.is_symlink() or not manifest_file.is_file():
+            problems.append('installed manifest is not a regular file in the version')
     profile = Path(version.get('profile', '')).absolute()
     python = Path(version.get('python', '')).absolute()
     if (not profile.is_relative_to(Path(version_root).absolute()) or not profile.is_file()
@@ -297,11 +333,6 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     problems = []
     if not isinstance(schema, dict):
         return ['no unique reviewed Runtime schema declaration']
-    if mode == 'identity-aware-version-record':
-        expected_layout = {'version_root': 'versions/<current>', 'current_file': 'current',
-                           'launcher': 'bin/runtime', 'launcher_target': 'dispatches-current-to-selected-version'}
-        if schema.get('installed_layout') != expected_layout:
-            problems.append('installed version layout does not match reviewed R1 contract')
     checks = {
         'schema mode': (schema.get('mode'), mode),
         'install manifest schema': (manifest.get('schema_version'), schema.get('install_manifest_schema_version')),
@@ -319,7 +350,7 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     default_vibecomfy = schema.get('installed_manifest_vibecomfy_default_sha')
     if default_vibecomfy and 'vibecomfy' not in installed_manifest:
         installed_manifest['vibecomfy'] = {'sha': default_vibecomfy}
-    canonical_manifest_bytes = (json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n').encode()
+    canonical_manifest_bytes = installer_manifest_bytes(installed_manifest)
     installed_manifest_sha = hashlib.sha256(canonical_manifest_bytes).hexdigest()
     if manifest_bytes != canonical_manifest_bytes:
         problems.append('installed manifest representation does not match reviewed installer writer')
@@ -334,16 +365,54 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     for name in ('agent', 'runtime'):
         if source_refs.get(name) and manifest.get(name, {}).get('sha') != source_refs[name]:
             problems.append(f'manifest {name} source does not match reviewed schema')
-    if mode == 'identity-aware-version-record' and (
-            schema.get('health_identity_emitted') is not True
-            or schema.get('discovery_identity_emitted') is not True):
-        problems.append('reviewed Runtime sources do not emit the identity fields required for strict comparison')
+    return problems
+
+
+def _pin_sha(manifest, name):
+    pin = manifest.get(name)
+    sha = pin.get('sha') if isinstance(pin, dict) else None
+    return sha if isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{40}', sha) else None
+
+
+def _candidate_self_consistency_problems(version, manifest, manifest_bytes, runtime_contract):
+    """Bind the R1 candidate to its own install inputs, not hand-pinned values.
+
+    The candidate changes with every landing. The caller binds the manifest's
+    schema digest to the installed contract and live health, and the layout
+    to the version record; R0 legacy identity stays pinned in releases.json.
+    """
+    problems = []
+    agent, runtime = _pin_sha(manifest, 'agent'), _pin_sha(manifest, 'runtime')
+    for name, sha in (('agent', agent), ('runtime', runtime), ('vibecomfy', _pin_sha(manifest, 'vibecomfy'))):
+        if sha is None:
+            problems.append(f'installed manifest {name} pin is not a full Git SHA')
+    # astrid.installer.core.new_version_id names the version after the pins it installed.
+    if agent and runtime and not Path(version.get('root', '')).name.startswith(f'{agent[:8]}-{runtime[:8]}-'):
+        problems.append('installed version id does not match manifest Agent/Runtime pins')
+    if manifest_bytes != installer_manifest_bytes(manifest):
+        problems.append('installed manifest bytes do not match installer writer output')
+    if type(manifest.get('schema_version')) is not int:
+        problems.append('install manifest schema version is missing')
+    release = manifest.get('release')
+    if type(release) is not int or release < 1:
+        problems.append('R1 candidate manifest release is not identity-aware')
+    protocol = runtime_contract.get('protocol')
+    if not isinstance(protocol, str) or not protocol:
+        problems.append('installed Runtime protocol is missing')
+    workspace = runtime_contract.get('workspace_schema_version')
+    if type(workspace) is not int or workspace < 1:
+        problems.append('installed Runtime workspace schema version is missing or invalid')
+    missing = R1_VERSION_RECORD_KEYS - set(version)
+    if missing:
+        problems.append('version record is missing fields: ' + ', '.join(sorted(missing)))
     return problems
 
 
 def legacy_identity_observation(health, discovery, version, manifest, manifest_bytes,
-                                version_path, runtime_contract):
-    """Allow identity omission only for an exact, release-listed legacy bundle."""
+                                version_path, runtime_contract, *, launcher_template=None,
+                                launcher_template_source=None):
+    """Check an R1 candidate by self-consistency; allow identity omission only
+    for the exact, release-listed R0 legacy bundle."""
     supported = None
     try:
         releases = json.loads(RELEASES_PATH.read_text(encoding='utf-8'))
@@ -359,9 +428,7 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
         problems = []
         if not identity_documents_match(health, discovery, version):
             problems.append('health/discovery/version identities are not exactly equal')
-        problems.extend(_reviewed_schema_problems(
-            _reviewed_runtime_schema('identity-aware-version-record'), 'identity-aware-version-record', health,
-            version, manifest, manifest_bytes, runtime_contract))
+        problems.extend(_candidate_self_consistency_problems(version, manifest, manifest_bytes, runtime_contract))
         if health.get('status') != 'ok':
             problems.append('Runtime health is not ok')
         if health.get('protocol') != runtime_contract.get('protocol'):
@@ -370,7 +437,8 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
         if (not expected_digest or health.get('schema_digest') != expected_digest
                 or runtime_contract.get('schema_digest') != expected_digest):
             problems.append('health/installed Runtime schema digest does not match manifest')
-        problems.extend(_version_provenance_problems(version, manifest, version_path, r1_layout=True))
+        problems.extend(_version_provenance_problems(version, manifest, version_path, r1_layout=True,
+                                                     launcher_template=launcher_template))
         instance = health.get('runtime_instance_id')
         discovered_instance = discovery.get('runtime_instance_id')
         if not isinstance(instance, str) or not instance.strip() or instance != discovered_instance:
@@ -392,6 +460,8 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                            'version_python': version.get('python'),
                            'version_profile': version.get('profile'),
                            'version_env_fields': sorted(version.get('env', {})) if isinstance(version.get('env'), dict) else None,
+                           'launcher_template_source': launcher_template_source or (
+                               'caller' if launcher_template else 'documented-template'),
                            'problems': problems}
 
     problems = []
@@ -517,8 +587,13 @@ def observe(version_path, data_root):
                 'manifest_runtime_sha': manifest.get('runtime', {}).get('sha'),
                 'manifest_schema_digest': manifest.get('runtime', {}).get('schema_digest'),
             }
+        launcher_template = launcher_source = None
+        if any(value.get('identity') is not None for value in (health, discovery, version)):
+            launcher_template, launcher_source = installed_launcher_template(python, env, data_root)
         return legacy_identity_observation(health, discovery, version, manifest,
-                                          manifest_bytes, version_path, runtime_contract)
+                                          manifest_bytes, version_path, runtime_contract,
+                                          launcher_template=launcher_template,
+                                          launcher_template_source=launcher_source)
     check('runtime.identity', identity_observation)
     services = declaration['services']
     health_rows = {r.get('name'): r for r in health.get('services', [])}
