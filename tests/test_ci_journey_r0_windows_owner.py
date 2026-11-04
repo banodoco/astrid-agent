@@ -1,5 +1,6 @@
 """R0 service selection: only a verified venv redirector may be collapsed."""
 
+import base64
 import copy
 import hashlib
 import json
@@ -127,10 +128,11 @@ def test_failed_selection_evidence_survives_both_failure_snapshots(r0_pair, tmp_
     evidence = run_root / "evidence" / "release0-to-release1"
     evidence.mkdir(parents=True)
     # The requested R0 run failed before a task definition was available.
-    unit = journey.ROOT / "tests/fixtures/windows-r0-failed-capture/unit-file-before-cleanup.txt"
-    assert hashlib.sha256(unit.read_bytes()).hexdigest() == "43455756c8329d444713a668423f71131e89d7b19ca4bac3c5c9f68e5ef0f127"
-    assert unit.read_bytes() == b"Task Scheduler definition unavailable\r\n"
-    (evidence / unit.name).write_bytes(unit.read_bytes())
+    unit = journey.ROOT / "tests/fixtures/windows-r0-failed-capture/unit-file-before-cleanup.b64"
+    unit_bytes = base64.b64decode(unit.read_bytes())
+    assert hashlib.sha256(unit_bytes).hexdigest() == "43455756c8329d444713a668423f71131e89d7b19ca4bac3c5c9f68e5ef0f127"
+    assert unit_bytes == b"Task Scheduler definition unavailable\r\n"
+    (evidence / "unit-file-before-cleanup.txt").write_bytes(unit_bytes)
     journey.write_json(evidence / "journey-result.json", {"scenario": "release0-to-release1", "status": "fail"})
     rows[1]["ParentProcessId"] = 999  # two independent owners must still fail
     monkeypatch.setattr(journey.sys, "platform", "win32")
@@ -155,7 +157,7 @@ def test_failed_selection_evidence_survives_both_failure_snapshots(r0_pair, tmp_
         staged = run_root / "evidence-upload" / phase
         assert json.loads((staged / "runtime-owner-selection.json").read_text(encoding="utf-8")) == rows
         assert journey.read_json(staged / "runtime-owner-selection-context.json") == context
-        assert (staged / unit.name).read_bytes() == unit.read_bytes()
+        assert (staged / "unit-file-before-cleanup.txt").read_bytes() == unit_bytes
         assert (staged / "journey-result.json").is_file()
 
 
