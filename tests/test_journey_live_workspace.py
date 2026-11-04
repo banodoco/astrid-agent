@@ -3,6 +3,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -60,7 +61,7 @@ def test_preservation_checks_public_schema_digest():
         jumps.assert_preserved(before, {**after, "schema_digest": "sha256:other"})
 
 
-def test_snapshot_checks_user_data_and_public_schema_without_doctor():
+def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch):
     from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
 
     payload = b"C1 object release0\n"
@@ -87,7 +88,16 @@ def test_snapshot_checks_user_data_and_public_schema_without_doctor():
                 return {"protocol": PROTOCOL, "schema_digest": SCHEMA_DIGEST}
             raise AssertionError(f"unexpected request: {path}")
 
+    # The hosted driver invokes this helper by file path without PYTHONPATH;
+    # simulate that isolated script path and force a fresh package import.
+    repository_root = Path(live.__file__).resolve().parents[1]
+    monkeypatch.setattr(sys, "path", [entry for entry in sys.path
+                                      if Path(entry or ".").resolve() != repository_root])
+    for name in tuple(sys.modules):
+        if name == "astrid_runtime_client" or name.startswith("astrid_runtime_client."):
+            monkeypatch.delitem(sys.modules, name)
     result = live.snapshot(Client(), keys)
+    assert str(repository_root) in sys.path
     assert result["preferences"]["content"] == "Keep user changes release0"
     assert result["task"]["state"] == "succeeded"
     assert result["cas_sha256"] == keys["object_digest"]

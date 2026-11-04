@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import traceback
 from pathlib import Path
 from urllib.error import HTTPError
@@ -111,6 +112,11 @@ def seed(client, project, generation, task_id=None, create_project=False):
 
 
 def snapshot(client, keys):
+    # This helper is launched as a script, so sys.path[0] is ``scripts/``.
+    # The generated contract package lives one directory above it.
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
     from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
 
     project = client.request("GET", path("projects", keys["project"]))
