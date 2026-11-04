@@ -579,6 +579,42 @@ def prepare_uninstall(c, monkeypatch):
 
 
 @pytest.mark.parametrize('delete_data', [False, True])
+@pytest.mark.parametrize('malformed', [False, True])
+@pytest.mark.parametrize('existing_state', [False, True])
+def test_cli_uninstall_checks_selected_custom_marker_before_installer_state(
+    case, monkeypatch, capsys, delete_data, malformed, existing_state,
+):
+    c = case
+    mark_completed_handoff(c)
+    c.tx.journal.unlink()
+    c.tx.registration.r1_path.unlink()
+    selected = read_json(c.service.selection)
+    selected.pop('r1_data_root')
+    write_json(c.service.selection, selected)
+    if malformed:
+        (c.root / 'install.json').write_text('{ malformed marker')
+    lock = installer_lock_path(Path.home(), 'linux')
+    log = platform.log_dir() / 'install.log'
+    if existing_state:
+        lock.write_text('existing lock')
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text('existing installer log')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('uninstall reached an operational or process action')
+
+    for method in ('run', 'stop', 'preflight_stop', 'preflight_remove', 'remove', 'unregister'):
+        monkeypatch.setattr(Backend, method, forbidden)
+    monkeypatch.setattr(os, 'kill', forbidden)
+    monkeypatch.setattr(os, 'killpg', forbidden)
+    before = snapshot(c.root.parent)
+    args = ['--uninstall'] + (['--delete-data'] if delete_data else [])
+    assert cli.main(args) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == handoff.UPGRADE_UNINSTALL_REFUSAL
+    assert snapshot(c.root.parent) == before
+
+
+@pytest.mark.parametrize('delete_data', [False, True])
 @pytest.mark.parametrize('evidence', ['complete', 'malformed', 'missing-journal'])
 def test_cli_uninstall_completed_handoff_refuses_without_mutation(
     case, monkeypatch, capsys, delete_data, evidence,

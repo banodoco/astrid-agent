@@ -193,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
             from .boundary_handoff import refuse_handoff_uninstall
 
             refuse_handoff_uninstall(backend.service, root)
+            if args.root is None:
+                # This is only a candidate read. Selection is resolved again
+                # under the lock before it can authorize any operation.
+                candidate = backend.service.recorded().get("program_root")
+                if candidate:
+                    refuse_handoff_uninstall(backend.service, absolute(candidate))
         marker = read_json(root / "install.json")
         if args.update_job and marker.get("managed_by") is not None:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
@@ -334,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
+                if mode == "uninstall" and managed_by != "pinokio":
+                    # Recheck the authoritative selection while holding the lock.
+                    refuse_handoff_uninstall(backend.service, root)
                 # No installer diagnostic writes are allowed until selection is
                 # resolved. Include the retained source of an interrupted stop:
                 # recovery can precede validating the current data selection.
@@ -341,13 +350,6 @@ def main(argv: list[str] | None = None) -> int:
                 backend.console_diagnostics = log is None
                 if log is not None:
                     backend.log = log
-                if mode == "uninstall" and managed_by != "pinokio":
-                    from .boundary_handoff import refuse_handoff_uninstall
-
-                    # Recheck under the installer lock before any operational
-                    # preflight. The early gate above avoids all file changes
-                    # for an already-published completed handoff.
-                    refuse_handoff_uninstall(backend.service, root)
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
                     from .boundary_handoff import handle
 
