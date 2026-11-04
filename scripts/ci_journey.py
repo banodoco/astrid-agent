@@ -65,6 +65,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
+    "runtime-owner-workspace.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
@@ -598,6 +599,27 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         except Exception as exc:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    # Keep each R0 workspace census and exact native identities separately
+    # from initial selection and from subsequent restart observations.
+    workspace_owners = {}
+    for action in ("seed", "snapshot"):
+        for phase_name in ("before", "after"):
+            stage = f"{action}-{phase_name}"
+            directory = evidence / "release0-api-seed" / "runtime-owner-workspace" / stage
+            observations = {}
+            for kind, name in (("census", "runtime-owner-selection.json"),
+                               ("context", "runtime-owner-selection-context.json")):
+                source = directory / name
+                if source.is_file() and not source.is_symlink():
+                    try:
+                        observations[kind] = json.loads(source.read_text(encoding="utf-8"))
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        observations[kind] = {"error": f"{type(exc).__name__}: {exc}"}
+            if observations:
+                workspace_owners[stage] = observations
+    if workspace_owners:
+        write_json(destination / "runtime-owner-workspace.json", workspace_owners)
 
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
