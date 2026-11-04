@@ -140,5 +140,6 @@ def test_adopt_diagnostic_binds_sources_and_guards_before_mutation():
     assert 'fcntl.LOCK_EX|fcntl.LOCK_NB' in inner
     assert 'loaded_path.group(1)!=str(plist)' in inner
     assert "'workspace','adopt','--data-root'" in inner
-    assert capture.REFS['agent'][1] == 'ce78f3586b02ca2d5526760a062c6240d28da7db'
-    assert capture.REFS['runtime'][1] == 'f27ff70126958d1736a83b606df5126acf268bf5'
+    assert "'--expected-realm-id',realm_id,'--json'" in inner
+    assert capture.REFS['agent'][1] == 'd14a5cb73557e406cbd36f52b36c4f7ee89c9649'
+    assert capture.REFS['runtime'][1] == 'f2b21d361dc03b76bdbaaeb504e5b304f7e7ab0b'

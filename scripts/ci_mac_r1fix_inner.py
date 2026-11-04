@@ -93,7 +93,7 @@ try:
   if adopt.returncode==0: done('adopt-complete')
   target=r1/'runtime/realms'/realm_id
   if target.is_dir() and not target.is_symlink():
-   inspect=command('inspect',['workspace','inspect','--data-root',str(r1),'--realm-root',str(target),'--json'])
+   inspect=command('inspect',['workspace','inspect','--data-root',str(r1),'--expected-realm-id',realm_id,'--json'])
    def cas_map(path):
     result={}; rootcas=path/'cas/sha256'
     for item in rootcas.rglob('*') if rootcas.exists() else ():
