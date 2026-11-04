@@ -709,7 +709,8 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'project-create-capture-status.json', 'sdk-capture-status.json', 'live-seed-failure.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'project-create-capture-status.json', 'sdk-capture-status.json',
+            'live-seed-failure.json', 'live-snapshot-failure.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
@@ -761,6 +762,45 @@ jobs:
                     $capture.task_refs -isnot [string] -or
                     @('zero', 'one', 'multiple', 'unknown') -cnotcontains $capture.task_refs) {
                   throw "Invalid SDK capture values: $relative"
+                }
+              }
+              if ($name -in @('live-seed-failure.json', 'live-snapshot-failure.json')) {
+                if ($file.Length -gt 4096) { throw "Oversized live workspace failure diagnostic: $relative" }
+                try { $diagnostic = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
+                catch { throw "Malformed live workspace failure diagnostic: $relative" }
+                $keys = @($diagnostic.PSObject.Properties.Name)
+                $expectedKeys = @('schema', 'error_type', 'frames', 'http_status', 'runtime_code')
+                if ($diagnostic -isnot [PSCustomObject] -or $keys.Count -ne $expectedKeys.Count) {
+                  throw "Invalid live workspace failure diagnostic: $relative"
+                }
+                foreach ($key in $expectedKeys) {
+                  if ($keys -cnotcontains $key) { throw "Invalid live workspace failure fields: $relative" }
+                }
+                $allowedErrorTypes = @('HTTPError', 'URLError', 'TimeoutError', 'JSONDecodeError', 'KeyError',
+                  'ValueError', 'TypeError', 'RuntimeError', 'OSError', 'FileNotFoundError', 'PermissionError', 'other')
+                $allowedFunctions = @('main', 'execute', 'selection_for', 'check_selection', 'request', 'seed', 'snapshot')
+                $allowedRuntimeCodes = @('runtime_error', 'unauthorized', 'conflict', 'validation_error', 'forbidden',
+                  'unavailable', 'not_found', 'retired_route', 'owner_busy', 'realm_admission_failed',
+                  'lease_fenced', 'protocol_error', 'invalid_request')
+                if ($diagnostic.schema -isnot [string] -or
+                    $diagnostic.schema -cne 'astrid.live-workspace-failure.v1' -or
+                    $diagnostic.error_type -isnot [string] -or
+                    $allowedErrorTypes -cnotcontains $diagnostic.error_type -or
+                    $diagnostic.frames -isnot [array] -or $diagnostic.frames.Count -gt 10 -or
+                    ($null -ne $diagnostic.http_status -and
+                      ($diagnostic.http_status -isnot [int] -or $diagnostic.http_status -lt 100 -or $diagnostic.http_status -gt 599)) -or
+                    ($null -ne $diagnostic.runtime_code -and
+                      ($diagnostic.runtime_code -isnot [string] -or $allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code))) {
+                  throw "Invalid live workspace failure values: $relative"
+                }
+                foreach ($frame in $diagnostic.frames) {
+                  $frameKeys = @($frame.PSObject.Properties.Name)
+                  if ($frame -isnot [PSCustomObject] -or $frameKeys.Count -ne 2 -or
+                      $frameKeys -cnotcontains 'function' -or $frameKeys -cnotcontains 'line' -or
+                      $frame.function -isnot [string] -or $allowedFunctions -cnotcontains $frame.function -or
+                      $frame.line -isnot [int] -or $frame.line -le 0 -or $frame.line -ge 10000) {
+                    throw "Invalid live workspace failure frame: $relative"
+                  }
                 }
               }
               if ($name -eq 'journey-result.json') { $receiptCount++ }
