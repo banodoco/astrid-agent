@@ -146,7 +146,7 @@ on:
           - direct
 
 concurrency:
-  group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
+  group: reusable-journey-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 permissions:

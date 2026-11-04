@@ -8,6 +8,15 @@ WORKFLOW = REPO / ".github" / "workflows" / "journey.yml"
 COLLECTOR = REPO / "scripts" / "ci_journey.py"
 
 
+def test_journey_concurrency_isolates_manual_dispatches_and_preserves_other_grouping():
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    group = (
+        "group: reusable-journey-${{ github.event_name == 'workflow_dispatch' "
+        "&& github.run_id || github.event.pull_request.number || github.ref }}"
+    )
+    assert group in workflow_text
+
+
 def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
     guard_start = workflow_text.index("      - name: Validate the named lifecycle evidence artifact boundary")
