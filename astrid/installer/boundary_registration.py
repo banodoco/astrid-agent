@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from .core import version_id
 from .service import systemd_quote
 
 R0_LINUX = "astrid.service"
@@ -40,14 +41,15 @@ def _wrapper(system: str) -> str:
     if system == "win32":
         return ("$ErrorActionPreference = 'Stop'\n"
                 "$root = Split-Path -Parent $PSScriptRoot\n"
-                "$version = [IO.File]::ReadAllText((Join-Path $root 'current')).Trim()\n"
-                "if ($version -cnotmatch '^[A-Za-z0-9._-]+$' -or $version -in @('.', '..')) { exit 2 }\n"
+                "$version = [IO.File]::ReadAllText((Join-Path $root 'current')).TrimEnd([char[]]@([char]10,[char]13))\n"
+                "if ($version -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { exit 2 }\n"
                 "$target = Join-Path $root ('versions/' + $version + '/bin/runtime.exe')\n"
                 "& $target @args\nexit $LASTEXITCODE\n")
     return ('#!/bin/sh\nset -eu\n'
             'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
             'version=$(cat "$root/current")\n'
-            'case "$version" in ""|.|..|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+            'case "$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2;; esac\n'
+            '[ ${#version} -le 64 ] || exit 2\n'
             'exec "$root/versions/$version/bin/runtime" "$@"\n')
 
 
@@ -55,7 +57,8 @@ class BoundaryRegistration:
     """Fresh R1 entry and rollback; manager operations raise on any failure.
 
     ``run`` accepts argv and returns stdout. ``wait_r1_unlocked`` must raise
-    unless the R1 owner lock is free after the service has been stopped.
+    unless the R1 owner lock is free after the service has been stopped. The
+    rollback validator must bind the manager entry to the retained R0 intent.
     """
 
     def __init__(self, root: Path, home: Path, system: str, run, *, uid: str = "",
@@ -91,9 +94,9 @@ class BoundaryRegistration:
             resolved = target.resolve()
             if resolved == r0_data or r0_data in resolved.parents:
                 raise ValueError("R1 service files and logs must be outside R0 data")
-        name = (self.root / "current").read_text(encoding="utf-8").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name in {".", ".."}:
-            raise ValueError("Invalid current version")
+        # Match the installer pointer format and shell command substitution:
+        # trailing newlines are ignored, but spaces are never normalized.
+        name = version_id((self.root / "current").read_text(encoding="utf-8").rstrip("\n"))
         selected = self.root / "versions" / name / "bin" / ("runtime.exe" if self.system == "win32" else "runtime")
         if not selected.is_file():
             raise ValueError("Selected version has no Runtime launcher")
@@ -121,6 +124,10 @@ class BoundaryRegistration:
                 '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'
                 '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>'
                 '<Actions Context="Owner"><Exec><Command>' + escape(cmd) + '</Command><Arguments>' + escape(arguments) + '</Arguments></Exec></Actions></Task>')
+        # Do not leave a new launcher behind when an existing service definition
+        # already makes registration impossible. O_EXCL remains authoritative.
+        if os.path.lexists(self.r1_path):
+            raise FileExistsError(self.r1_path)
         _create(self.launcher, _wrapper(self.system), 0o755)
         _create(self.r1_path, definition)
         if self.system == "linux":
@@ -134,10 +141,11 @@ class BoundaryRegistration:
                             f"Register-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' -Xml ([IO.File]::ReadAllText({_ps(str(self.r1_path))})) | Out-Null; "
                             f"Start-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
 
-    def rollback(self, wait_r1_unlocked) -> None:
+    def rollback(self, wait_r1_unlocked, validate_r0) -> None:
         """Disable R1, confirm its lock free, then re-enable the intact R0 entry."""
-        if not callable(wait_r1_unlocked):
-            raise ValueError("An R1 owner-lock wait is required")
+        if not callable(wait_r1_unlocked) or not callable(validate_r0):
+            raise ValueError("R1 owner-lock wait and R0 service validation are required")
+        validate_r0()
         if self.system == "linux":
             self.run(["systemctl", "--user", "disable", "--now", R1_LINUX])
         elif self.system == "darwin":
@@ -146,6 +154,8 @@ class BoundaryRegistration:
         else:
             self.powershell(f"Disable-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' | Out-Null; Stop-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
         wait_r1_unlocked()
+        # Revalidate the bound R0 entry immediately before enabling it.
+        validate_r0()
         if self.system == "linux":
             self.run(["systemctl", "--user", "enable", "--now", R0_LINUX])
         elif self.system == "darwin":

@@ -96,7 +96,7 @@ def test_registration_and_rollback_keep_r0_and_both_data_roots(scenario, tmp_pat
     def wait():
         assert len(manager.calls) == (2 if service.system == "darwin" else 1)
         manager.calls.append("lock free")
-    service.rollback(wait)
+    service.rollback(wait, lambda: None)
     assert manager.enabled == {"r0": True, "r1": False}
     assert manager.running == {"r0": True, "r1": False}
     calls = "\n".join(manager.calls)
@@ -111,14 +111,14 @@ def test_rollback_does_not_enable_r0_if_stop_or_lock_wait_fails(scenario):
     service, manager, *_ = scenario
     manager.fail = {"linux": "disable --now", "darwin": "bootout", "win32": "Stop-ScheduledTask"}[service.system]
     with pytest.raises(subprocess.CalledProcessError):
-        service.rollback(lambda: None)
+        service.rollback(lambda: None, lambda: None)
     assert not any((R0_LINUX in s or R0_MAC in s and R1_MAC not in s or
                     "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in s) for s in manager.calls)
     manager.calls.clear(); manager.fail = None
     def busy():
         raise TimeoutError("R1 still owns its lock")
     with pytest.raises(TimeoutError):
-        service.rollback(busy)
+        service.rollback(busy, lambda: None)
     assert not any((R0_LINUX in s or R0_MAC in s and R1_MAC not in s or
                     "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in s) for s in manager.calls)
 
@@ -173,3 +173,39 @@ def test_rejects_missing_version_launcher_before_service_changes(scenario, tmp_p
         service.register(old, new, tmp_path / "log", user="sid")
     assert not manager.calls
     assert not service.r1_path.exists()
+
+
+def test_rollback_refuses_changed_r0_before_reenable(scenario):
+    service, manager, *_ = scenario
+    checks = []
+    def validate():
+        checks.append(True)
+        if len(checks) == 2:
+            raise ValueError("R0 entry changed")
+    with pytest.raises(ValueError, match="changed"):
+        service.rollback(lambda: None, validate)
+    assert len(checks) == 2
+    assert not any("enable --now astrid.service" in c or
+                   "enable gui/501/haus.astrid.runtime" in c or
+                   "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in c
+                   for c in manager.calls)
+
+
+@pytest.mark.parametrize("pointer", [" leading", "v1 ", "-v1", "v" * 65])
+def test_pointer_must_match_installer_format(scenario, tmp_path, pointer):
+    service, manager, old, new, _ = scenario
+    (service.root / "current").write_text(pointer + "\n")
+    with pytest.raises(ValueError):
+        service.register(old, new, tmp_path / "log", user="sid")
+    assert not manager.calls
+    assert not service.launcher.exists()
+
+
+def test_existing_definition_does_not_create_launcher(scenario, tmp_path):
+    service, manager, old, new, _ = scenario
+    service.r1_path.parent.mkdir(parents=True, exist_ok=True)
+    service.r1_path.write_text("existing")
+    with pytest.raises(FileExistsError):
+        service.register(old, new, tmp_path / "log", user="sid")
+    assert not service.launcher.exists()
+    assert not manager.calls
