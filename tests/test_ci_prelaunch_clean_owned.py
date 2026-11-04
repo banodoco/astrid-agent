@@ -141,6 +141,6 @@ def test_workflow_embeds_tested_guard_and_uses_manual_runner():
     root = Path(__file__).parents[1]
     workflow = (root / '.github/workflows/journey.yml').read_text()
     match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)", validate=True\)', workflow)
-    assert match and base64.b64decode(match.group(1)) == (root / 'scripts/ci_prelaunch_clean_owned.py').read_bytes()
+    assert match and base64.b64decode(match.group(1)) == (root / 'scripts/ci_ws06_stop_owned.py').read_bytes()
     assert 'workflow_dispatch:' in workflow and 'actions/checkout' not in workflow
     assert 'prelaunch-runner-maintenance' in workflow
