@@ -48,7 +48,7 @@ def test_planted_tool_catalog_drift_names_regenerate_command(tmp_path: Path, cap
 
 def test_cli_surface_covers_the_timelines_verbs_consumers_prompt() -> None:
     timelines = json.loads((ROOT / "cli-surface.json").read_text(encoding="utf-8"))["families"]["timelines"]["verbs"]
-    assert {"show", "checkout", "edit", "publish"} <= set(timelines)
+    assert {"show", "checkout", "edit", "commit"} <= set(timelines)
     assert "--at" in timelines["show"]["flags"]
 
 

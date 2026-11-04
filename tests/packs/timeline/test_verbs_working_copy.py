@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shlex
 
 import pytest
 
@@ -11,6 +12,9 @@ from astrid.packs.timeline import cli
 from astrid.sdk import timeline_checkout as tc
 from astrid.sdk.timeline_checkout import Checkout, TimelineEditError
 from astrid.sdk.timeline_duplicate import copy_content, id_map
+from tests.sdk.test_timeline_normal_publish import (
+    restructure_runtime as _restructure_runtime_fixture,  # noqa: F401
+)
 
 FPS = 30
 
@@ -109,7 +113,7 @@ def test_each_verb_parses_to_its_handler(argv, name):
 def test_the_freeze_command_list_is_all_registered():
     names = {spec.name for spec in cli.COMMANDS}
     freeze = ("create list show replace-parent-media archive recover history log diff visualize lint inspect render "
-              "checkout edit apply lines find undo redo words status check publish discard duplicate").split()
+              "checkout edit apply lines find undo redo words status check discard duplicate").split()
     assert set(freeze) <= names
 
 
@@ -179,10 +183,20 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     assert _run("checkout", "t", "--project", "P") == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith('working copy "main" of t · from published rev-0 · ')
-    assert "next:" in out and any(line.strip().startswith("publish  timelines status t --project P") for line in out)
+    draft_path = tc.draft_path('p', 't', 'main')
+    commit_command = (
+        'python3 -m astrid timelines commit t --project P '
+        f'--file {shlex.quote(str(draft_path))} -m \'Timeline edit\' --idempotency-key timeline-edit-1'
+    )
+    assert "next:" in out and f"  commit   {commit_command}" in out
 
     assert _run("status", "t", "--project", "P", "--text") == 0
-    assert capsys.readouterr().out.startswith('WORKING COPY "main" · 0 clips changed')
+    status = capsys.readouterr().out
+    assert status.startswith('WORKING COPY "main" · 0 clips changed')
+    assert status.splitlines()[-1] == (
+        'next: timelines show t --project P --as sheet   ·   '
+        'timelines edit t --project P --clip c22.rocket --on viral'
+    )
 
     assert _run("edit", "t", "--project", "P", "--clip", "R", "--at-word", "viral") == 0
     out = capsys.readouterr().out
@@ -192,6 +206,7 @@ def test_draft_flow_checkout_edit_status_discard(tmp_path, monkeypatch, capsys):
     status = capsys.readouterr().out
     assert status.startswith('WORKING COPY "main" · 1 clip changed vs published rev-0')
     assert "a-rocket" in status
+    assert status.splitlines()[-1] == f'next: {commit_command}'
 
     assert _run("discard", "t", "--project", "P") == 0
     assert "1 clip changed, dropped" in capsys.readouterr().out
@@ -288,7 +303,7 @@ def test_duplicate_is_all_or_nothing(monkeypatch):
         td._duplicate(client, "p", "t", slug=None, name=None, revision_id=None)
     assert calls == []
     good = Checkout(bundle())
-    good.check = lambda: SimpleNamespace(valid=True, blocking=[], problems=[])
+    good._check_core = lambda: SimpleNamespace(valid=True, blocking=[], problems=[])
     monkeypatch.setattr(td.Checkout, "open", classmethod(lambda cls, p, t, revision_id=None, client=None: good))
     monkeypatch.setattr(td, "copy_content", lambda *a, **k: (_ for _ in ()).throw(TimelineEditError("the copy failed")))
     with pytest.raises(TimelineEditError, match="archived again"):
@@ -337,7 +352,7 @@ def drafted(tmp_path, monkeypatch):
     assert _run("checkout", "t", "--project", "P") == 0
 
 
-def test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner(tmp_path, monkeypatch, capsys):
+def test_show_as_sheet_reads_an_explicit_working_copy_with_a_banner(tmp_path, monkeypatch, capsys):
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
@@ -347,9 +362,9 @@ def test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner(tmp_path, mon
     monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
     assert _run("checkout", "t", "--project", "P") == 0
     capsys.readouterr()
-    assert _run_with_client("show", "t", "--project", "P", "--as", "sheet") == 0
+    assert _run_with_client("show", "t", "--project", "P", "--as", "sheet", "--draft", "main") == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].startswith("film P") and lines[1].startswith("WORKING COPY · 0 clips changed vs published")
+    assert lines[0].startswith("film P") and lines[1].startswith("WORKING COPY main · 0 clips changed · base revision")
     assert any(line.startswith("lines") for line in lines)
 
 
@@ -365,6 +380,7 @@ def test_show_summary_is_one_line_per_chapter(drafted, capsys):
     assert _run_with_client("show", "t", "--project", "P", "--summary") == 0
     out = capsys.readouterr().out
     assert "chapters" in out and "full table:" in out
+    assert "WORKING COPY" not in out
 
 
 def test_show_at_takes_m_ss(drafted, capsys):
@@ -488,9 +504,29 @@ def test_fresh_checkout_after_discard_is_not_stale(tmp_path, monkeypatch, capsys
 @pytest.mark.parametrize("argv", [
     ["checkout", "t", "--project", "P"],
     ["status", "t", "--project", "P"],
-    ["publish", "t", "--project", "P", "-m", "x"],
+    ["edit", "t", "--project", "P", "--clip", "R", "--nudge-frames", "3"],
 ])
 def test_a_refusal_from_the_head_lookup_is_one_plain_line(tmp_path, monkeypatch, capsys, argv):
+    from astrid.sdk.timeline import store
+
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
+
+    def refuse(project, timeline, client=None):
+        raise TimelineEditError("could not open timeline 't' in project 'P': no such timeline")
+
+    monkeypatch.setattr(store, "resolve_ids", refuse)
+    monkeypatch.setattr(tc, "resolve_ids", refuse)
+    assert _run(*argv) == 2  # the guarded exit code, not a bug report
+    err = capsys.readouterr().err
+    assert err.strip() == "could not open timeline 't' in project 'P': no such timeline"
+    assert "unstructured" not in err
+
+
+@pytest.mark.parametrize("argv", [
+    ["checkout", "t", "--project", "P"],
+    ["status", "t", "--project", "P"],
+])
+def test_a_refusal_from_the_head_lookup_is_one_plain_line_upstream_publish(tmp_path, monkeypatch, capsys, argv):
     from astrid.sdk.timeline import store
 
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
@@ -518,30 +554,265 @@ def test_short_revision_strips_every_known_prefix():
     assert short_revision(None) == ""
 
 
+def test_normal_commit_conflict_keeps_head_and_has_no_force_overwrite(
+        _restructure_runtime_fixture, tmp_path, capsys):  # noqa: F811
+    """The normal CLI refuses a stale sheet without a force-overwrite route."""
+    from astrid.packs.timeline import cli
+    from tests.sdk.test_timeline_sheet_native import edit_cell
+
+    env = _restructure_runtime_fixture
+    parser = cli.build_parser(env.client)
+
+    def run(*args):
+        parsed = parser.parse_args([*args, "--project", env.project])
+        return parsed.handler(parsed)
+
+    assert run("show", "t", "--as", "sheet", "--native") == 0
+    sheet = capsys.readouterr().out
+    edited = edit_cell(sheet, "occurrence:occ-film/clip:p1", "1")
+    peer = parser.parse_args(["edit", "t", "--project", env.project,
+                              "--clip", "occurrence:occ-film/clip:p1", "--on", "1"])
+    assert peer.handler(peer) == 0
+    capsys.readouterr()
+    before_document = copy.deepcopy(env.document())
+    before_history = copy.deepcopy(env.client.timelines.history(env.project, "t", limit=200).data)
+
+    # The normal CLI's apply route reads the retained export, then refuses its
+    # stale base; it never offers a force overwrite or writes a new history row.
+    edited_path = tmp_path / "stale.sheet"
+    edited_path.write_text(edited)
+    apply_args = parser.parse_args(["apply", "t", str(edited_path), "--project", env.project, "--json"])
+    assert apply_args.handler(apply_args) == 1
+    assert "conflict" in capsys.readouterr().out.lower()
+
+    assert env.document() == before_document
+    assert env.client.timelines.history(env.project, "t", limit=200).data == before_history
+
+    with pytest.raises(SystemExit) as force:
+        parser.parse_args(["apply", "t", str(edited_path), "--project", env.project, "--force"])
+    assert force.value.code == 2
+
+
+def _conflicting_commit(tmp_path, head):
+    """Retained namespace fixtures; the provider and generated error path stay real."""
+    from types import SimpleNamespace
+
+    from astrid.sdk.contracts import DomainResult
+    from astrid.sdk.remote import RemoteTimelines
+    from astrid.sdk.timeline.commit import (
+        _digest,
+        bundle_from_document,
+        create_runtime_commit_service,
+    )
+    from astrid.sdk.workspace_client import WorkspaceClient
+    from astrid_runtime_client import WorkspaceClient as GeneratedWorkspaceClient
+    from tests.helpers.runtime import use_runtime
+    from tests.sdk.test_timeline_commit_provider import DetachedPort, DetachedRealm
+    from tests.sdk.test_timeline_commit_provider_document import document_fixture
+
+    use_runtime()
+    from runtime_protocol.timeline_commit import CommitRejected
+    from runtime_protocol.timeline_commit_port import public_failure
+
+    document = document_fixture(shared=False)
+    document["parent_revision"]["revision_id"] = "rev-0"
+    realm = DetachedRealm(document)
+    base = copy.deepcopy(realm.head)
+    realm.call([{
+        "schema_version": 1, "op": "doc.patch", "version": "1", "select": None,
+        "args": {"changes": [{"op": "set", "ref": "parent", "path": ["name"],
+                              "before": {"state": "present", "value": "Renamed Film"},
+                              "value": "Peer Film"}]},
+    }])
+    # Retained publications can predate the current provider's revision naming.
+    # Seed that immutable identity before the caller runs, never in its reply.
+    revision = realm.head["revision_id"]
+    peer = realm.documents.pop(revision)
+    peer["parent_revision"]["revision_id"] = head
+    realm.documents[head] = peer
+    realm.head["revision_id"] = head
+    realm.entries[-1]["revision_id"] = head
+    for result in (realm.entries[-1]["receipt"]["result"], realm.accepted[-1]["data"]):
+        result["accepted_revision_id"] = head
+        result["canonical_document"]["parent_revision"]["revision_id"] = head
+        result["document_digest"] = _digest(result["canonical_document"])
+
+    calls, failures = [], []
+
+    def transport(method, path, headers, body):
+        assert method == "POST" and path == "/v1/projects/project-1/timelines/film/commit"
+        assert headers["Idempotency-Key"] == "conflict-key"
+        request = json.loads(body)
+        calls.append(request)
+        invocation = {"operation": "commitTimeline", "path": path,
+                      "publisher": "actor-1", "request": request}
+        context = {"request": request, "realm_id": "realm-1", "publisher": "actor-1",
+                   "idempotency_key": headers["Idempotency-Key"],
+                   "request_hash": _digest(invocation).removeprefix("sha256:")}
+        try:
+            create_runtime_commit_service().commit(context, DetachedPort(realm, context))
+        except CommitRejected as exc:
+            error = public_failure(exc.failure)
+            failures.append(error)
+            return error.status, {}, json.dumps(error.as_dict()).encode()
+        pytest.fail("stale atomic document must conflict")
+
+    generated = GeneratedWorkspaceClient("http://runtime", transport=transport)
+    reader = SimpleNamespace(
+        commit_timeline=generated.commit_timeline,
+        list_timeline_commits=lambda *_args, **_kwargs: {
+            "head": copy.deepcopy(realm.head), "items": copy.deepcopy(realm.entries),
+            "next_cursor": None,
+        },
+    )
+
+    def image(operation, project, *args, **kwargs):
+        if operation in {"commit_timeline", "list_timeline_commits"}:
+            return typed(operation, project, *args, **kwargs)
+        rows = {"get_project_parent_composition_revision": "parent_revision",
+                "get_project_shot_revision": "shot_revisions",
+                "get_project_timeline_revision": "internal_timeline_revisions"}
+        for retained in realm.documents.values():
+            images = retained[rows[operation]]
+            for row in ([images] if isinstance(images, dict) else images):
+                if row["revision_id"] == args[-1]:
+                    return DomainResult.success({**copy.deepcopy(row), "project_id": project,
+                        **({"timeline_id": "film", "dependency_manifest": retained["dependency_manifest"]}
+                           if operation == "get_project_parent_composition_revision" else {})})
+        pytest.fail("revision outside retained fixture closure")
+
+    workspace = WorkspaceClient.__new__(WorkspaceClient)
+    workspace._generated = reader
+    workspace._last_handshake = {"realm_id": "realm-1", "actor_id": "actor-1"}
+    timelines = RemoteTimelines(workspace)
+    typed = timelines._typed
+    timelines._typed = image
+    timelines._resolve_timeline = lambda *_args: DomainResult.success({
+        "project_id": "project-1", "timeline_id": "film"})
+    timelines.open_composition = lambda *_args, **_kwargs: DomainResult.success({
+        "native_inspection": {"project_id": "project-1", "timeline_id": "film"},
+        "summary": {"head_revision_id": head, "revision_id": head},
+    })
+    client = SimpleNamespace(timelines=timelines, _remote=SimpleNamespace(_transport=workspace))
+    candidate = bundle_from_document(document)
+    candidate["source_mapping"].pop("_runtime_document", None)
+    candidate["base_parent"]["publication_id"] = base["publication_id"]
+    candidate["parent"]["name"] = "Local Film"
+    path = tmp_path / "timeline.json"
+    path.write_text(json.dumps(candidate), encoding="utf-8")
+    return client, path, realm, calls, failures
+
+
 @pytest.mark.parametrize("head, who", [
     (EDITOR_HEAD, "the editor published 5fb2249e after your checkout (rev-0)"),
     ("authoring-parent-revision-38cecaa5" + "f" * 24, "someone published 38cecaa5 after your checkout (rev-0)"),
 ])
-def test_publish_conflict_names_the_writer_and_offers_discard_first(monkeypatch, head, who):
-    from astrid.sdk.timeline import store
-
-    class _Timelines:
-        def open_composition(self, *_args, **_kwargs):
-            return type("Shown", (), {"ok": True, "error": None,
-                                      "data": {"summary": {"head_revision_id": head}}})()
-
-    class _Client:
-        timelines = _Timelines()
-
-    monkeypatch.setattr(store, "fetch_bundle", lambda *_args, **_kwargs: copy.deepcopy(bundle()))
-    monkeypatch.setattr(store, "three_way", lambda _base, _head, candidate, force: (candidate, ["p/a-rocket (clip) moved 1.8s"]))
-
-    with pytest.raises(TimelineEditError) as refused:
-        store.publish_bundle(copy.deepcopy(bundle()), "key", client=_Client())
-    message = str(refused.value)
+def test_commit_conflict_names_the_writer_and_offers_discard_first(tmp_path, capsys, head, who):
+    client, path, realm, calls, failures = _conflicting_commit(tmp_path, head)
+    before_file = path.read_bytes()
+    before = copy.deepcopy((realm.documents, realm.entries, realm.accepted, realm.prepared))
+    parsed = cli.build_parser(client).parse_args([
+        "commit", "film", "--project", "project-1", "--file", str(path),
+        "-m", "Local Film", "--idempotency-key", "conflict-key", "--json",
+    ])
+    assert parsed.handler(parsed) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = json.loads(captured.out)
+    assert result["ok"] is False and result["receipt"] is None
+    assert result["error"]["code"] == "conflict"
+    assert result["error"]["details"]["status"] == "conflict"
+    assert result["error"]["details"]["base"] == {
+        "revision_id": "rev-0", "publication_id": "bootstrap",
+    }
+    assert result["error"]["details"]["current"] == realm.head
+    assert result["error"]["details"]["conflicts"]
+    assert len(calls) == len(failures) == 1
+    assert (failures[0].status, failures[0].code) == (409, "conflict")
+    details = result["error"]["details"]
+    assert {key: details[key] for key in failures[0].details} == failures[0].details
+    pending_id = details["pending_id"]
+    assert details["clash"]["pending_id"] == pending_id
+    assert calls[0]["base_revision_id"] == "rev-0"
+    assert calls[0]["base_publication_id"] == "bootstrap"
+    assert calls[0]["label"] == "Local Film" and calls[0]["merge"] == "atomic"
+    assert calls[0]["commands"][0]["args"]["changes"] == [{
+        "op": "set", "ref": "parent", "path": ["name"],
+        "before": {"state": "present", "value": "Renamed Film"}, "value": "Local Film",
+    }]
+    assert path.read_bytes() == before_file
+    assert (realm.documents, realm.entries, realm.accepted, realm.prepared) == before
+    message = result["error"]["message"]
 
     assert message.splitlines()[0].startswith(f"not published: {who}, and you both changed:")
-    assert "next: timelines discard t --project p, then timelines checkout t --project p --fresh, and re-apply your edit." in message
-    assert "  publish --force overwrites the newer published version." in message
+    assert "parent" in message
+    assert f"your edit is saved as {pending_id}" in message
+    assert f"astrid timelines retry film {pending_id} --project project-1" in message
+    assert "force overwrite is refused" in message
+    assert "to overwrite theirs" not in message
+    assert "astrid.e\n" not in message and "astrid.e " not in message
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
+    tiny = json.loads((root / "tiny.json").read_text(encoding="utf-8"))
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
+    assert _run("checkout", "t", "--project", "P") == 0
+    capsys.readouterr()
+    assert _run_with_client(
+        "show", "t", "--project", "P", "--as", "sheet", "--draft", "main",
+    ) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("film P")
+    assert lines[1].startswith("WORKING COPY main · 0 clips changed · base revision")
+    assert any(line.startswith("lines") for line in lines)
+
+@pytest.mark.parametrize("head, who", [
+    (EDITOR_HEAD, "the editor published 5fb2249e after your checkout (rev-0)"),
+    ("authoring-parent-revision-38cecaa5" + "f" * 24, "someone published 38cecaa5 after your checkout (rev-0)"),
+])
+def test_publish_conflict_names_the_writer_and_offers_discard_first(
+    tmp_path, capsys, head, who,
+):
+    client, path, realm, calls, failures = _conflicting_commit(tmp_path, head)
+    before_file = path.read_bytes()
+    before = copy.deepcopy((realm.documents, realm.entries, realm.accepted, realm.prepared))
+    parsed = cli.build_parser(client).parse_args([
+        "commit", "film", "--project", "project-1", "--file", str(path),
+        "-m", "Local Film", "--idempotency-key", "conflict-key", "--json",
+    ])
+    assert parsed.handler(parsed) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = json.loads(captured.out)
+    assert result["ok"] is False and result["receipt"] is None
+    assert result["error"]["code"] == "conflict"
+    details = result["error"]["details"]
+    assert details["status"] == "conflict"
+    assert details["base"] == {"revision_id": "rev-0", "publication_id": "bootstrap"}
+    assert details["current"] == realm.head
+    assert details["conflicts"]
+    assert len(calls) == len(failures) == 1
+    assert (failures[0].status, failures[0].code) == (409, "conflict")
+    assert {key: details[key] for key in failures[0].details} == failures[0].details
+    pending_id = details["pending_id"]
+    assert details["clash"]["pending_id"] == pending_id
+    assert calls[0]["base_revision_id"] == "rev-0"
+    assert calls[0]["base_publication_id"] == "bootstrap"
+    assert calls[0]["label"] == "Local Film" and calls[0]["merge"] == "atomic"
+    assert path.read_bytes() == before_file
+    assert (realm.documents, realm.entries, realm.accepted, realm.prepared) == before
+    message = result["error"]["message"]
+
+    assert message.splitlines()[0].startswith(f"not published: {who}, and you both changed:")
+    assert "parent" in message
+    assert f"your edit is saved as {pending_id}" in message
+    assert f"astrid timelines retry film {pending_id} --project project-1" in message
+    assert "force overwrite is refused" in message
     assert "to overwrite theirs" not in message
     assert "astrid.e\n" not in message and "astrid.e " not in message

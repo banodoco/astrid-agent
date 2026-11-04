@@ -22,6 +22,14 @@ from astrid.packs.runpod.worker_preparation import (
 from tests.helpers.runtime import use_runtime
 
 
+@pytest.fixture(autouse=True)
+def fake_release_exact_get(monkeypatch):
+    # Legacy release fixtures now provide the independent GET404 observation.
+    # The R04 matrix exercises present/error/null/stale combinations explicitly.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "read_exact_pod", lambda key, pod_id: (404, None))
+
+
 def _contract(**overrides: Any) -> RunPodTargetContract:
     values: dict[str, Any] = {
         "pod_id": "pod-exact",
@@ -571,6 +579,8 @@ def test_release_deletes_exact_pod_only_after_quiescence_and_proves_volume_prese
         "backup_volume_id": "vol-persist",
         "backup_volume_preserved": True,
         "confirmed_at": result["cleanup"]["confirmed_at"],
+        "absence": {"provider_account_ref": handle["provider_account_ref"], "pod_id": "pod-exact",
+                    "exact_get_status": 404, "account_list_succeeded": True, "account_list_absent": True},
     }
     assert json.loads(handle_path.read_text(encoding="utf-8"))["cleanup_status"] == "complete"
 
@@ -715,7 +725,7 @@ def test_release_does_not_delete_if_volume_identity_cannot_be_reconfirmed(
         )
 
     assert deletes == []
-    assert json.loads(handle_path.read_text(encoding="utf-8"))["state"] == "release_pending"
+    assert json.loads(handle_path.read_text(encoding="utf-8"))["state"] == "cleanup_pending"
 
 
 def test_release_does_not_claim_volume_preservation_after_identity_changes(
@@ -905,3 +915,41 @@ def test_acquisition_owner_rejects_pending_journal_before_any_create(
         )
 
     assert launches == []
+
+
+@pytest.mark.parametrize('override', [
+    {'schema_version': 'astrid.runpod.claim.v1'},
+    {'state': 'claimed'},
+    {'acquisition_mode': 'attach'},
+    {'worker_activation': None},
+    {'request_name': None},
+    {'name': 'another-pod'},
+    {'managed_worker': {}},
+    {'managed_session': {}},
+    {'task_id': 'task'},
+    {'activation_id': 'activation'},
+])
+def test_unactivated_evidence_cannot_replace_worker_drain_gate(override):
+    from astrid.packs.runpod.worker_preparation import unactivated_target_quiescence
+    record = _claim_handle(
+        schema_version='astrid.runpod.allocation-attempt.v1',
+        state='allocated_unverified', worker_activation='not_started',
+    )
+    record.update(override)
+    with pytest.raises(TargetObservationError, match='unactivated allocation custody'):
+        unactivated_target_quiescence(record)
+
+
+def test_unactivated_evidence_must_bind_exact_claim_identity():
+    from astrid.packs.runpod.worker_preparation import (
+        _validate_release_quiescence, unactivated_target_quiescence,
+    )
+    record = _claim_handle(
+        schema_version='astrid.runpod.allocation-attempt.v1',
+        state='allocated_unverified', worker_activation='not_started',
+    )
+    evidence = unactivated_target_quiescence(record)
+    assert 'task_id' not in evidence
+    for field in ('operation_id', 'pod_id', 'provider_account_ref'):
+        with pytest.raises(TargetObservationError):
+            _validate_release_quiescence({**evidence, field: 'another'}, record)

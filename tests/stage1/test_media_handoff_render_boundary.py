@@ -14,6 +14,7 @@ import pytest
 from astrid.core.execution.executor.registry import load_default_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, run_executor
 from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.rendering.assets import REMOTION_BROWSER_ORIGIN
 from astrid.core.rendering.contracts import SCHEMA_VERSION, RenderRequest
 from astrid.core.theme import builtin_theme
 from astrid.core.timeline.resolution import AssetIntegrity, classify_asset
@@ -288,6 +289,22 @@ def test_host_derived_registry_reaches_canonical_remotion_executor_process(tmp_p
         },
         attempt,
     )
+    timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    assert isinstance(timeline, dict)
+    assert isinstance(timeline.get("tracks"), list) and isinstance(timeline.get("clips"), list)
+    assert timeline["theme"] == "banodoco-default"
+    assert timeline["theme_overrides"]["visual"]["canvas"]["fps"] == 24
+    registry_payload = json.loads(Path(values["assets_registry"]).read_text(encoding="utf-8"))
+    assets = registry_payload.get("assets")
+    assert isinstance(assets, dict)
+    clips = [clip for clip in timeline["clips"] if isinstance(clip, dict) and clip.get("clipType") == "media"]
+    assert len(clips) == 1 and clips[0]["asset"] == "source"
+    entry = assets["source"]
+    assert isinstance(entry, dict) and entry["media_id"] == "media-remotion"
+    staged = Path(entry["file"])
+    assert staged.is_relative_to(Path(values["materialized_root"]))
+    assert staged.read_bytes() and hashlib.sha256(staged.read_bytes()).hexdigest() == digest
+    assert REMOTION_BROWSER_ORIGIN == "http://localhost:3000"
     assets_path = project_root / "assets.json"
     shutil.copy2(values["assets_registry"], assets_path)
     result = run_executor(
@@ -323,9 +340,8 @@ def test_host_derived_registry_reaches_canonical_remotion_executor_process(tmp_p
         capture_output=True,
     ).stdout
     assert source_frame and output_frame
+    assert source_frame == output_frame
     assert len(source_frame) == len(output_frame)
-    # Remotion's own encode and colour conversion shift each level slightly (pure red 254,0,0 comes back as
-    # 254,24,0), so compare the mean level of each channel, not bytes. An unrelated video is far outside this.
     for channel in range(3):
         source_mean = sum(source_frame[channel::3]) / len(source_frame[channel::3])
         output_mean = sum(output_frame[channel::3]) / len(output_frame[channel::3])

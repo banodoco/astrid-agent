@@ -7,17 +7,35 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+from astrid.core.contracts.errors import AstridValueError
+
+if TYPE_CHECKING:
+    from .spec import H3Spec
 
 
-class H3RequestError(ValueError):
+class H3RequestError(AstridValueError):
     """A fail-closed request error with a user-facing path."""
+
+    def __init__(
+        self, message: str, *, code: str = "h3.request.invalid",
+        field: str = "request", fix: str = "Correct the request using its v1/v2 schema",
+    ) -> None:
+        super().__init__(message, code=code, field=field, fix=fix)
 
 
 @dataclass(frozen=True)
 class H3Request:
     value: dict[str, Any]
     digest: str
+
+    @property
+    def canonical(self) -> H3Spec:
+        """Return the Phase B view without changing legacy value or identity."""
+        from .spec import canonical_spec
+
+        return canonical_spec(self)
 
 
 _OPERATIONS = {"edit", "continue", "generate"}
@@ -196,7 +214,10 @@ def _normalize_v1(raw: Mapping[str, Any]) -> H3Request:
 
     content_raw = _object(raw.get("content"), "content") or {}
     _unknown(content_raw, {"prompt"}, "content")
-    content = {"prompt": _nonblank(content_raw.get("prompt"), "content.prompt")}
+    prompt = content_raw.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise H3RequestError("content.prompt must be a non-empty string")
+    content = {"prompt": prompt}
 
     changes_raw = _object(raw.get("changes"), "changes") or {}
     _unknown(changes_raw, {"video", "audio"}, "changes")
@@ -277,8 +298,8 @@ def normalize_request(
 ) -> H3Request:
     """Normalize either the retained parent-v1 or native-v2 contract.
 
-    The v1 branch intentionally remains unchanged, including source-free
-    generation. Native-v2 is a separate media-list contract and is imported
+    The v1 branch includes source-free generation. Native-v2 is a separate
+    media-list contract and is imported
     lazily so the parent-v1 path has no new dependency surface.
     """
     if not isinstance(raw, Mapping):

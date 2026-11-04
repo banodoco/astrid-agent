@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from astrid.core.contracts.errors import AstridError
+from astrid.core.generation.availability import require_action_available
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.thumbnail_maker')
@@ -299,9 +300,9 @@ def _exec_build_reference_pack(args: argparse.Namespace) -> int:
 
 
 def _exec_generate_thumbnails(args: argparse.Namespace) -> int:
-    raise NotImplementedError(
-        "thumbnail_maker.generate_thumbnails: not implemented; see SPRINT_1 milestone D"
-    )
+    del args
+    require_action_available("video_editing.thumbnail_maker")
+    raise AssertionError("unreachable: unavailable thumbnail action was accepted")
 
 def run_orchestrator(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
@@ -445,6 +446,12 @@ def _run_step_subcommand(
 
 def main(argv: Sequence[str] | None = None) -> int:
     effective_argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        require_action_available("video_editing.thumbnail_maker")
+    except AstridError as exc:
+        from astrid.core.contracts.errors import render_astrid_error
+
+        return render_astrid_error(exc)
     step_commands = {
         "resolve-video",
         "plan-evidence",

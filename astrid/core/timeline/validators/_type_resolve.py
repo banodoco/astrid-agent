@@ -33,12 +33,38 @@ def resolve_clip_to_artifact_type(
     or when the matched element has no annotated outputs (SD3 opaque
     fallthrough).
     """
+    return _resolve_clip_to_artifact_type(
+        clip_type,
+        theme,
+        element_registry,
+        artifact_type_registry,
+    )
+
+
+def _resolve_clip_to_artifact_type(
+    clip_type: str,
+    theme: str | None,
+    element_registry: "ElementRegistry",
+    artifact_type_registry: "ArtifactTypeRegistry",
+    *,
+    membership_registry: "ElementRegistry | None" = None,
+) -> str | None:
+    """Resolve a clip using an optional already-admitted membership registry.
+
+    Direct callers retain the catalog membership guard.  The default
+    ``is_visual_clip_element`` path passes the default registry it has already
+    loaded as both the type source and membership snapshot; that registry is
+    the same authoritative source the catalog would assemble again.
+    """
     from astrid.core.element import catalog as _catalog
     from astrid.core.element.schema import to_capability_handle
 
     for kind in _ELEMENT_KIND_SCAN_ORDER:
         try:
-            ids = _catalog.list_element_ids(kind)
+            if membership_registry is None:
+                ids = _catalog.list_element_ids(kind)
+            else:
+                ids = [definition.id for definition in membership_registry.list(kind=kind)]
         except Exception:  # noqa: BLE001 - an optional pack must not break opaque fallthrough
             continue
         if clip_type not in ids:
@@ -71,6 +97,7 @@ def is_visual_clip_element(
     not provide explicit registries; this keeps registry setup in the one
     type-resolution implementation rather than a compatibility shim.
     """
+    use_loaded_registry_for_membership = element_registry is None
     if element_registry is None:
         from astrid.core.element.registry import load_default_registry
 
@@ -79,9 +106,16 @@ def is_visual_clip_element(
         from astrid.core.contracts.artifact_types import ARTIFACT_TYPE_REGISTRY
 
         artifact_type_registry = ARTIFACT_TYPE_REGISTRY
-    return (
-        resolve_clip_to_artifact_type(
+    if use_loaded_registry_for_membership:
+        resolved = _resolve_clip_to_artifact_type(
+            clip_type,
+            theme,
+            element_registry,
+            artifact_type_registry,
+            membership_registry=element_registry,
+        )
+    else:
+        resolved = resolve_clip_to_artifact_type(
             clip_type, theme, element_registry, artifact_type_registry
         )
-        == "clip/visual"
-    )
+    return resolved == "clip/visual"

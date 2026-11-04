@@ -297,6 +297,52 @@ class WorkerPreparationTransport(Protocol):
     async def child_check(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
 
+_ENDPOINT_FILE_PROGRAM = r'''import base64,hashlib,json,os,stat,sys,time
+operation,path,budget,temporary,expected,previous=sys.argv[1:]
+deadline=time.monotonic()+float(budget)
+limit=8*1024*1024
+parts=path.split('/')[1:]
+if not path.startswith('/') or any(p in ('','.','..') for p in parts) or '\\' in path: raise ValueError()
+directory=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+try:
+ for part in parts[:-1]:
+  child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory)
+  os.close(directory); directory=child
+ def read(name):
+  fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=directory)
+  try:
+   before=os.fstat(fd)
+   if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or before.st_nlink!=1 or before.st_mode&0o022 or before.st_size>limit: raise ValueError()
+   data=bytearray()
+   while True:
+    if time.monotonic()>=deadline: raise TimeoutError()
+    block=os.read(fd,min(65536,limit+1-len(data)))
+    if not block: break
+    data.extend(block)
+    if len(data)>limit: raise ValueError()
+   after=os.fstat(fd)
+   if len(data)!=before.st_size or (before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_size,after.st_mtime_ns,after.st_ctime_ns): raise ValueError()
+   return bytes(data)
+  finally: os.close(fd)
+ if operation=='read':
+  data=read(parts[-1])
+  result={'data':base64.b64encode(data).decode(),'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+ else:
+  info=os.fstat(directory)
+  if info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700 or not __import__('re').fullmatch(r'\.engine-readiness-[0-9a-f]{32}',temporary): raise ValueError()
+  if operation=='reserve':
+   fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=directory)
+   os.close(fd); result={'reserved':True}
+  elif operation=='commit':
+   if hashlib.sha256(read(parts[-1])).hexdigest()!=previous or hashlib.sha256(read(temporary)).hexdigest()!=expected: raise ValueError()
+   os.replace(temporary,parts[-1],src_dir_fd=directory,dst_dir_fd=directory)
+   os.fsync(directory); result={'committed':True}
+  else: raise ValueError()
+ print(json.dumps(result,separators=(',',':')))
+finally: os.close(directory)
+'''
+
+
 class RunPodPreparationTransport:
     """Adapter over ``Pod.exec_ssh`` and the existing ``Pod.upload_path``."""
 
@@ -305,7 +351,8 @@ class RunPodPreparationTransport:
         self.timeout_seconds = timeout_seconds
 
     async def _run_json_program(
-        self, program: str, args: list[str], *, python: str = "python3"
+        self, program: str, args: list[str], *, python: str = "python3",
+        timeout_seconds: float | None = None
     ) -> dict[str, Any]:
         payload = base64.b64encode(
             json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode()
@@ -321,7 +368,7 @@ class RunPodPreparationTransport:
             f"{shlex.quote(python)} -X utf8 -c {shlex.quote(wrapper)} "
             f"{shlex.quote(encoded_program)} {shlex.quote(payload)}"
         )
-        code, stdout, stderr = await self.pod.exec_ssh(command, timeout=self.timeout_seconds)
+        code, stdout, stderr = await self.pod.exec_ssh(command, timeout=timeout_seconds or self.timeout_seconds)
         if code != 0:
             raise WorkerPreparationError(
                 f"remote preparation command failed (exit {code}): {(stderr or stdout).strip()}"
@@ -334,6 +381,99 @@ class RunPodPreparationTransport:
         if not isinstance(value, dict):
             raise WorkerPreparationError("remote preparation command returned malformed evidence")
         return value
+
+    def select_endpoint_files(self, *, profile_path: str, runtime_root: str, profile_hash: str) -> None:
+        """Select only this original deployment's profile and installed evidence."""
+        profile = _remote_absolute(profile_path, label="endpoint readiness")
+        runtime = _remote_absolute(runtime_root, label="installed runtime")
+        if (not runtime.endswith("/runtime")
+                or PurePosixPath(profile).name in {"engine-bearer.token", "executor.token"}):
+            raise WorkerPreparationError("trusted startup endpoint readiness selection is unavailable")
+        root = str(PurePosixPath(runtime).parent)
+        registry = runtime + "/out/sessions/vibecomfy-h3/"
+        selected = frozenset({profile, root + "/.astrid-engine/install.json", *(
+            registry + name for name in (
+                "config.json", "launch.json", "pid", "comfy_pid", "comfy_process_start_identity",
+                "url", "source_revision", "source_content_digest", "daemon.log",
+            )
+        )})
+        previous = getattr(self, "_endpoint_files", selected)
+        if previous != selected:
+            raise WorkerPreparationError("endpoint file selection changed")
+        self._endpoint_files = selected
+        self._endpoint_profile = profile
+        self._endpoint_profile_hash = profile_hash
+
+    async def _endpoint_file_operation(self, action: str, path: str, *, deadline: float,
+                                       staging: str = "", sha256: str = "", previous: str = ""):
+        import time
+        from astrid.core.generation.engine_contracts import DeadlineExceeded
+
+        if path not in getattr(self, "_endpoint_files", ()):
+            raise WorkerPreparationError("endpoint evidence file was not selected by the original owner")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DeadlineExceeded("endpoint file deadline exceeded")
+        try:
+            result = await self._run_json_program(
+                _ENDPOINT_FILE_PROGRAM, [action, path, str(min(20, remaining)), staging, sha256, previous],
+                timeout_seconds=min(20, remaining),
+            )
+        except Exception:
+            raise WorkerPreparationError(
+                "trusted endpoint file handoff unavailable; observation-only commands/uploads remain denied"
+            ) from None
+        if time.monotonic() >= deadline:
+            raise DeadlineExceeded("endpoint file deadline exceeded")
+        return result
+
+    async def read_endpoint_file(self, path: str, *, deadline: float) -> bytes:
+        result = await self._endpoint_file_operation("read", path, deadline=deadline)
+        try:
+            raw = base64.b64decode(result["data"], validate=True)
+            if (len(raw) > 8 * 1024 * 1024 or type(result["size"]) is not int
+                    or len(raw) != result["size"] or hashlib.sha256(raw).hexdigest() != result["sha256"]):
+                raise ValueError()
+            return raw
+        except (KeyError, TypeError, ValueError):
+            raise WorkerPreparationError("endpoint file readback is invalid") from None
+
+    async def write_endpoint_profile(self, path: str, profile: Mapping[str, Any], *, deadline: float) -> None:
+        import secrets
+        import time
+
+        if path != getattr(self, "_endpoint_profile", None):
+            raise WorkerPreparationError("endpoint profile was not selected by the original owner")
+        raw = json.dumps(profile, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                         allow_nan=False).encode()
+        if len(raw) > 8 * 1024 * 1024:
+            raise WorkerPreparationError("endpoint profile exceeds file limit")
+        # Reserve/commit use target fd-relative opens. Contents travel only in
+        # the existing upload body, never in a remote command's argv.
+        before = await self.read_endpoint_file(path, deadline=deadline)
+        if "sha256:" + hashlib.sha256(before).hexdigest() != self._endpoint_profile_hash:
+            raise WorkerPreparationError("endpoint profile changed before finalization")
+        temporary = ".engine-readiness-" + secrets.token_hex(16)
+        await self._endpoint_file_operation("reserve", path, deadline=deadline, staging=temporary)
+        with tempfile.TemporaryDirectory(prefix="astrid-endpoint-") as directory:
+            local = Path(directory) / "profile"
+            fd = os.open(local, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+            import asyncio
+            try:
+                await asyncio.wait_for(self.pod.put_file(
+                    local, str(PurePosixPath(path).parent / temporary), reserved=True,
+                ), timeout=max(0.001, deadline - time.monotonic()))
+            except Exception:
+                raise WorkerPreparationError("trusted endpoint profile body transfer is unavailable") from None
+        await self._endpoint_file_operation(
+            "commit", path, deadline=deadline, staging=temporary,
+            sha256=hashlib.sha256(raw).hexdigest(), previous=hashlib.sha256(before).hexdigest(),
+        )
+        if await self.read_endpoint_file(path, deadline=deadline) != raw:
+            raise WorkerPreparationError("endpoint profile readback differs")
+
 
     async def probe_tree(self, remote_path: str) -> Mapping[str, Any]:
         return await self._run_json_program(

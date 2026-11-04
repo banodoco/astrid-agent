@@ -9,18 +9,17 @@ from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_mai
 guard_canonical_entrypoint("media.speech_repair_lavasr")
 
 import argparse
-import json
 import re
 import subprocess
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-import fal_client
-
 from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.core.generation.backends.fal import FalBackend
+from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.core.experiments.capture import sanitize_portable
+from astrid.core.util.generation_helpers import write_journal_atomic
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -211,44 +210,39 @@ def _volumedetect(path: Path, *, runner: Runner) -> dict[str, float | None]:
     }
 
 
-def _run_lavasr(input_wav: Path, out_wav: Path, response_json: Path, env_file: Path | None) -> None:
-    api_key = CredentialsScope.get_local("fal", env_file=env_file)
-    audio_url = fal_client.upload_file(input_wav)
-    result = fal_client.subscribe(
-        "fal-ai/lava-sr",
-        arguments={"audio_url": audio_url, "audio_format": "wav", "bitrate": "192k"},
-        with_logs=True,
-    )
-    response_json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    audio_obj = result.get("audio") or result.get("audio_file") or {}
+def _run_catalog_audio(
+    model: str,
+    input_audio: Path,
+    out_audio: Path,
+    response_json: Path,
+    env_file: Path | None,
+) -> None:
+    backend = FalBackend(env_file=env_file)
+    params = {"audio_ref": str(input_audio)}
+    if model == "lava-sr":
+        params.update(audio_format="wav", bitrate="192k")
+    result = backend.submit(ModelRegistry.load_default().get(model), "sfx", params)
+    # Keep the diagnostic response shape while withholding provider URLs/secrets.
+    sanitized = sanitize_portable(result)
+    write_journal_atomic(response_json, sanitized)
+    keys = ("audio", "audio_file") if model == "lava-sr" else ("audio_file", "audio")
+    audio_obj = result.get(keys[0]) or result.get(keys[1]) or {}
     out_url = audio_obj.get("url") if isinstance(audio_obj, dict) else None
     if not out_url:
         raise AstridError(
-            "fal-ai/lava-sr response did not include an audio URL",
+            f"fal-ai/{model} response did not include an audio URL",
             recovery_command="inspect the FAL response JSON and rerun",
-            state_snapshot={"response": result},
+            state_snapshot={"response": sanitized},
         )
-    urllib.request.urlretrieve(out_url, out_wav)
+    backend.download(backend._client, out_url, out_audio, 120, fallback_suffix=out_audio.suffix)
+
+
+def _run_lavasr(input_wav: Path, out_wav: Path, response_json: Path, env_file: Path | None) -> None:
+    _run_catalog_audio("lava-sr", input_wav, out_wav, response_json, env_file)
 
 
 def _run_deepfilternet3(input_audio: Path, out_audio: Path, response_json: Path, env_file: Path | None) -> None:
-    api_key = CredentialsScope.get_local("fal", env_file=env_file)
-    audio_url = fal_client.upload_file(input_audio)
-    result = fal_client.subscribe(
-        "fal-ai/deepfilternet3",
-        arguments={"audio_url": audio_url},
-        with_logs=True,
-    )
-    response_json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    audio_obj = result.get("audio_file") or result.get("audio") or {}
-    out_url = audio_obj.get("url") if isinstance(audio_obj, dict) else None
-    if not out_url:
-        raise AstridError(
-            "fal-ai/deepfilternet3 response did not include an audio URL",
-            recovery_command="inspect the FAL response JSON and rerun",
-            state_snapshot={"response": result},
-        )
-    urllib.request.urlretrieve(out_url, out_audio)
+    _run_catalog_audio("deepfilternet3", input_audio, out_audio, response_json, env_file)
 
 
 def main(argv: list[str] | None = None, *, runner: Runner = subprocess.run) -> int:

@@ -23,5 +23,11 @@ def test_no_other_tracked_file_copies_the_pin() -> None:
     # git grep exits 1 for "no matches"; anything else (e.g. 128 outside a repo) is a failure.
     assert result.returncode in (0, 1), result.stderr
     tracked = result.stdout.split()
-    allowed = {"astrid/core/generation/vibecomfy_dependency.py"}
+    # Historical release metadata must retain the reviewed default used to
+    # reconstruct its installer-written manifest. It is the sole intentional
+    # second inventory entry; all other tracked copies remain forbidden.
+    allowed = {
+        "astrid/core/generation/vibecomfy_dependency.py",
+        "tests/upgrade/releases.json",
+    }
     assert set(tracked) <= allowed, f"derive these from vibecomfy_dependency.py instead: {sorted(set(tracked) - allowed)}"

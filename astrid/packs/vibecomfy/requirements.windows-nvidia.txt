@@ -5,8 +5,8 @@
 torch @ https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-win_amd64.whl
 torchvision @ https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-win_amd64.whl
 torchaudio @ https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-win_amd64.whl
-comfy-kitchen==0.2.34
-comfy-aimdo==0.5.3
+comfy-kitchen==0.2.40
+comfy-aimdo==0.6.0
 opencv-python-headless==5.0.0.93
 # Build tools for the exact admitted VibeComfy source (--no-build-isolation).
 setuptools==80.9.0

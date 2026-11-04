@@ -153,6 +153,39 @@ def test_generation_extensions_preserve_normalized_shorthand(tmp_path: Path) -> 
     }
 
 
+def test_v3_generation_extensions_pass_pack_schema_and_load(tmp_path: Path) -> None:
+    manifest = {
+        "schema_version": 3,
+        "id": "demo",
+        "name": "Demo",
+        "version": "1.0.0",
+        "documents": {},
+        "extensions": {
+            "generation": {
+                "verbs": [
+                    {"name": "enhance", "module": "example.generation", "handler": "enhance"}
+                ]
+            }
+        },
+    }
+    schema = json.loads(PACK_SCHEMA_V3.read_text(encoding="utf-8"))
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    assert list(validator_cls(schema).iter_errors(manifest)) == []
+
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    pack = load_pack_manifest(root / "pack.yaml")
+    assert pack.to_dict()["extensions"] == {
+        "generation": {
+            "verbs": [
+                {"name": "enhance", "module": "example.generation", "handler": "enhance"}
+            ]
+        }
+    }
+
+
 def test_rendering_extensions_round_trip(tmp_path: Path) -> None:
     body = _body(
         "extensions:\n"

@@ -18,7 +18,8 @@ from typing import Any, Callable
 
 from astrid.core._shared.result_manifest import write_json_atomic, write_manifest
 from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.atomic_io import write_bytes_atomic
+from astrid.core.generation.backends.fal import FalBackend
+from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.core.foundation.hash import sha256_file
 from astrid.core.pack.entrypoint import run_pack_main
 from astrid.core.util.credentials_scope import CredentialsScope
@@ -140,10 +141,7 @@ def _download_video(
     destination: Path,
     timeout_seconds: int,
 ) -> None:
-    if not url.startswith("https://"):
-        raise ValueError("fal.ai returned a non-HTTPS output URL")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    write_bytes_atomic(destination, client.get_bytes(url, timeout=timeout_seconds))
+    FalBackend.download(client, url, destination, timeout_seconds)
 
 
 def _video_url(result: dict[str, Any]) -> str:
@@ -305,32 +303,27 @@ def execute(
         api_key = CredentialsScope.get("fal", env_file=args.env_file)
     if client is None:
         client = default_client()
-    client.register_secret(api_key)
-
-    payload: dict[str, Any] = {
+    params: dict[str, Any] = {
         "prompt": prompt,
         "resolution": args.resolution,
-        "duration": str(args.duration),
+        "duration": args.duration,
         "aspect_ratio": args.aspect_ratio,
         "generate_audio": args.generate_audio,
     }
-    if staged_images:
-        payload["image_urls"] = [
-            uploader(client, staged_image, api_key)
-            for staged_image in staged_images
-        ]
-    if staged_video is not None:
-        payload["video_urls"] = [uploader(client, staged_video, api_key)]
-    if args.seed is not None:
-        payload["seed"] = args.seed
-
+    params.update(
+        image_refs=staged_images,
+        video_refs=[staged_video] if staged_video is not None else [],
+        seed=args.seed,
+        timeout_seconds=args.timeout_seconds,
+    )
     try:
-        result = submitter(
-            client,
-            ENDPOINT,
-            payload,
-            api_key,
-            max_wait_sec=args.timeout_seconds,
+        result = FalBackend(client=client).submit(
+            ModelRegistry.load_default().get("seedance-2.0"),
+            "v2v",
+            params,
+            api_key=api_key,
+            uploader=uploader,
+            submitter=submitter,
         )
         if not isinstance(result, dict):
             raise ValueError("fal.ai returned a non-object result")

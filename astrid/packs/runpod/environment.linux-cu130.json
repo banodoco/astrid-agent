@@ -1,0 +1,41 @@
+{
+  "python": "3.12.10",
+  "exclude_newer": "2026-10-19T00:00:00Z",
+  "cuda_index": "cu130",
+  "torch": {
+    "torch": "2.10.0+cu130",
+    "torchvision": "0.25.0+cu130",
+    "torchaudio": "2.10.0+cu130"
+  },
+  "source": {
+    "pin": "comfyui"
+  },
+  "vibecomfy_source": {
+    "pin": "vibecomfy"
+  },
+  "custom_nodes": [
+    {
+      "name": "ComfyUI-H3-Motion-Context-MultiRef",
+      "pin": "h3-motion-context"
+    },
+    {
+      "name": "ComfyUI-VideoHelperSuite",
+      "pin": "videohelpersuite"
+    }
+  ],
+  "platform": "linux-x86_64",
+  "uv": "0.11.32",
+  "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404",
+  "custom_nodes_lock_sha256": "7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42",
+  "support": {
+    "comfy-kitchen": "0.2.34",
+    "comfy-aimdo": "0.5.3",
+    "opencv-python-headless": "5.0.0.93",
+    "pip": "25.2"
+  },
+  "torch_wheels": {
+    "torch": "https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=858f0cbcc78d726fea9499eb3464faa98392fa093845a3262209bd226b7844d6",
+    "torchvision": "https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=c2f5e38f0cd57a2796e4503c0f13365deba01dbc167ef820f0beec7ca96f5f2e",
+    "torchaudio": "https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=ed573e7319ba9a6e137b4895eddf4c9fcd424bb4e10a629267d64b55acc57fbb"
+  }
+}

@@ -1,0 +1,221 @@
+3133: __ test_captured_config_root_rejects_tampering_without_mutation[native-order] __
+3134: [gw2] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+3135: 
+3136: captured = {'context': {'idempotency_key': 'inverse-redo', 'invocation': {'body': {'api_version': 1, 'base_publication_id': 'txn-...thoring-bundle-1', 'intent': 'recorded', 'label': 'Undo timeline edit', 'merge': 'fields', ...}], 'next_cursor': None}}
+3137: damage = 'native-order'
+3138: 
+3139:     @pytest.mark.parametrize('damage', [
+3140:         'config-before', 'config-after', 'config-site', 'native-before', 'native-after',
+3141:         'native-order', 'effect-before-config', 'effect-after-config', 'effect-before-clips',
+3142:         'effect-after-clips', 'extra-mirror', 'native-range', 'effect-range', 'source',
+3143:         'step', 'ordinal', 'owner', 'digest', 'scope',
+3144:     ])
+3145:     def test_captured_config_root_rejects_tampering_without_mutation(captured, damage):
+3146:         entry = captured['history']['items'][-1]
+3147:         record = entry['records']['commands'][0]
+3148:         config = record['writes'][0]
+3149:         clips = record['writes'][2]
+3150:         effect = entry['records']['steps'][0]['patch'][2]
+3151:         boundary = next(binding['boundary'] for binding in record['bindings'] if binding['key'] == 'inverse.stage')
+3152:         if damage == 'config-before':
+3153:             config['before']['value']['clips'] = []
+3154:         elif damage == 'config-after':
+3155:             config['after']['value']['clips'] = copy.deepcopy(clips['before']['value'])
+3156:         elif damage == 'config-site':
+3157:             config['path'] = ['unrelated']
+3158:         elif damage == 'native-before':
+3159:             clips['before']['value'].reverse()
+3160:         elif damage == 'native-after':
+3161:             clips['after']['value'] = copy.deepcopy(clips['before']['value'])
+3162:         elif damage == 'native-order':
+3163:             record['writes'][0], record['writes'][2] = record['writes'][2], record['writes'][0]
+3164:         elif damage.startswith('effect-') and damage not in ('effect-range',):
+3165:             side = 'before' if '-before-' in damage else 'value'
+3166:             image = effect[side]['value'] if side == 'before' else effect[side]
+3167:             if damage.endswith('config'):
+3168:                 image['config']['app'] = {'foreign': True}
+3169:             else:
+3170:                 image['clips'] = [] if side == 'before' else copy.deepcopy(clips['before']['value'])
+3171:         elif damage == 'extra-mirror':
+3172:             record['derived_writes'].append({'ref': 'parent', 'path': ['config', 'clips'],
+3173:                                              'cause': 0, 'before': copy.deepcopy(clips['before']),
+3174:                                              'after': copy.deepcopy(clips['after'])})
+3175:         elif damage == 'native-range':
+3176:             boundary['native_write_range'][0] = True
+3177:         elif damage == 'effect-range':
+3178:             boundary['effect_range'][1] -= 1
+3179:         elif damage == 'source':
+3180:             boundary['publication_id'] = 'foreign-publication'
+3181:         elif damage == 'step':
+3182:             boundary['step_id'] = 'foreign-step'
+3183:         elif damage == 'ordinal':
+3184:             boundary['command_ordinals'] = [True]
+3185:         elif damage in ('digest', 'scope'):
+3186:             document = captured['documents'][entry['previous']['revision_id']]
+3187:             if damage == 'digest':
+3188:                 document['parent_revision']['content_digest'] = 'sha256:' + '0' * 64
+3189:             else:
+3190:                 document['project_id'] = 'foreign-project'
+3191:         original = copy.deepcopy(captured)
+3192:         bundle = None
+3193:         original_bundle = None
+3194: >       with pytest.raises((CommandError, ValueError)) as error:
+3195:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+3196: E       Failed: DID NOT RAISE any of (<class 'astrid.sdk.timeline._command_state.CommandError'>, <class 'ValueError'>)
+3197: 
+3198: tests/editing_conformance/test_captured_config_root_mirror.py:275: Failed
+3199: __ test_captured_nested_redo_compiles_and_partitions_without_rewriting_source __
+3200: [gw2] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+14601: __ test_root_config_history_rejects_tampering_without_mutation[native-order] ___
+14602: [gw0] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+14603: 
+14604: captured = {'context': {'idempotency_key': 'inverse-refuse', 'invocation': {'body': {'api_version': 1, 'base_publication_id': 'tx...: 'authoring-bundle-1', 'intent': 'recorded', 'label': 'source-Q', 'merge': 'fields', ...}, ...], 'next_cursor': None}}
+14605: damage = 'native-order'
+14606: 
+14607:     @pytest.mark.parametrize('damage', [
+14608:         'config-before', 'config-after', 'config-shape', 'root-before-config', 'root-after-config',
+14609:         'root-before-clips', 'root-after-clips', 'root-shape', 'root-op', 'native-before',
+14610:         'native-after', 'config-direction', 'effect-order', 'native-range', 'effect-range',
+14611:         'source', 'step', 'ordinal', 'cause', 'extra-mirror', 'source-history', 'native-order',
+14612:     ])
+14613:     def test_root_config_history_rejects_tampering_without_mutation(captured, damage):
+14614:         entry = source(captured)
+14615:         record = entry['records']['commands'][0]
+14616:         config = record['writes'][-1]
+14617:         clips = record['writes'][-3]
+14618:         patch = entry['records']['steps'][0]['patch']
+14619:         root = next(effect for effect in patch if effect['ref'] == 'parent' and effect['path'] == [])
+14620:         boundary = next(binding['boundary'] for binding in record['bindings'] if binding['key'] == 'inverse.stage')
+14621:         if damage == 'config-before':
+14622:             config['before']['value']['app'] = {'foreign': True}
+14623:         elif damage == 'config-after':
+14624:             config['after']['value']['app'] = {'foreign': True}
+14625:         elif damage == 'config-shape':
+14626:             config['before']['value'] = []
+14627:         elif damage.startswith('root-') and damage not in ('root-op', 'root-shape'):
+14628:             side = root['before']['value'] if '-before-' in damage else root['value']
+14629:             side['config' if damage.endswith('config') else 'clips'] = {'foreign': True}
+14630:         elif damage == 'root-shape':
+14631:             root['before']['value'] = []
+14632:         elif damage == 'root-op':
+14633:             root['op'] = 'remove'
+14634:         elif damage == 'native-before':
+14635:             clips['before']['value'] = [{'id': 'foreign'}]
+14636:         elif damage == 'native-after':
+14637:             clips['after']['value'] = []
+14638:         elif damage == 'config-direction':
+14639:             config['before'], config['after'] = config['after'], config['before']
+14640:         elif damage == 'native-order':
+14641:             native = captured['history']['items'][-3]['records']['commands'][0]['writes']
+14642:             native[0], native[2] = native[2], native[0]
+14643:         elif damage == 'effect-order':
+14644:             patch.insert(0, copy.deepcopy(root))
+14645:             boundary['effect_range'][1] += 1
+14646:         elif damage == 'native-range':
+14647:             boundary['native_write_range'][0] = True
+14648:         elif damage == 'effect-range':
+14649:             boundary['effect_range'][1] -= 1
+14650:         elif damage == 'source':
+14651:             boundary['publication_id'] = 'foreign-publication'
+14652:         elif damage == 'step':
+14653:             boundary['step_id'] = 'foreign-step'
+14654:         elif damage == 'ordinal':
+14655:             boundary['command_ordinals'] = [True]
+14656:         elif damage in ('cause', 'extra-mirror'):
+14657:             record['derived_writes'].append({'ref': 'parent', 'path': ['config', 'clips'],
+14658:                 'before': copy.deepcopy(clips['before']), 'after': copy.deepcopy(clips['after']),
+14659:                 'cause': True if damage == 'cause' else 0})
+14660:         else:
+14661:             captured['history']['items'][-3]['records']['commands'][0]['ordinal'] = True
+14662:         before = copy.deepcopy(captured)
+14663:         entries = {item['publication_id']: item for item in captured['history']['items']}
+14664: >       with pytest.raises(CommandError) as error:
+14665:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+14666: E       Failed: DID NOT RAISE <class 'astrid.sdk.timeline._command_state.CommandError'>
+14667: 
+14668: tests/editing_conformance/test_nested_config_root_history.py:719: Failed
+14669: ______________ test_exact_capture_replay_inverse_and_redo[create] ______________
+14670: [gw1] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+14671: 
+14672: operation = 'create'
+14673: 
+14674:     @pytest.mark.parametrize('operation', ['create', 'unplace'])
+14675:     def test_exact_capture_replay_inverse_and_redo(operation):
+30630: ___________ test_public_command_keeps_source_and_patch_guards[pair] ____________
+30631: [gw1] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+30632: 
+30633: public_session = (<astrid.sdk.timeline.commit_session.Timeline object at 0x7f36b6275e50>, <tests.sdk.test_timeline_commit_provider.Deta...or_id': 'actor-1'}))), PosixPath('/tmp/pytest-of-root/pytest-5/popen-gw1/test_public_command_keeps_sour0/outbox.json'))
+30634: failure = 'pair'
+30635: 
+30636:     @pytest.mark.parametrize("failure", ["pair", "foreign", "digest", "outside", "previous"])
+30637:     def test_public_command_keeps_source_and_patch_guards(public_session, failure):
+30638:         opened, realm, sent, _, _ = public_session
+30639:         command = rename()
+30640:         if failure == "pair":
+30641:             realm.entries[0]["revision_id"] = "another-revision"
+30642:         elif failure == "foreign":
+30643:             realm.documents[realm.head["revision_id"]]["project_id"] = "foreign"
+30644:             realm.entries[0]["receipt"]["result"]["canonical_document"] = realm.documents[realm.head["revision_id"]]
+30645:         elif failure == "digest":
+30646:             realm.documents[realm.head["revision_id"]]["parent_revision"]["content_digest"] = "sha256:" + "0" * 64
+30647:         elif failure == "outside":
+30648:             command = rename("shot-revision:outside", "Chapter One")
+30649:         else:
+30650:             command = rename(before="wrong previous value")
+30651: >       with pytest.raises((TimelineEditError, CommandError)) as error:
+30652:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+30653: E       Failed: DID NOT RAISE any of (<class 'astrid.sdk.timeline._common.TimelineEditError'>, <class 'astrid.sdk.timeline._command_state.CommandError'>)
+30654: 
+30655: tests/sdk/test_timeline_public_command.py:190: Failed
+30656: __________ test_public_command_keeps_source_and_patch_guards[foreign] __________
+30657: [gw1] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+30658: 
+30659: public_session = (<astrid.sdk.timeline.commit_session.Timeline object at 0x7f36ba1d3750>, <tests.sdk.test_timeline_commit_provider.Deta...or_id': 'actor-1'}))), PosixPath('/tmp/pytest-of-root/pytest-5/popen-gw1/test_public_command_keeps_sour1/outbox.json'))
+30660: failure = 'foreign'
+30661: 
+30662:     @pytest.mark.parametrize("failure", ["pair", "foreign", "digest", "outside", "previous"])
+30663:     def test_public_command_keeps_source_and_patch_guards(public_session, failure):
+30664:         opened, realm, sent, _, _ = public_session
+30665:         command = rename()
+30666:         if failure == "pair":
+30667:             realm.entries[0]["revision_id"] = "another-revision"
+30668:         elif failure == "foreign":
+30669:             realm.documents[realm.head["revision_id"]]["project_id"] = "foreign"
+30670:             realm.entries[0]["receipt"]["result"]["canonical_document"] = realm.documents[realm.head["revision_id"]]
+30671:         elif failure == "digest":
+30672:             realm.documents[realm.head["revision_id"]]["parent_revision"]["content_digest"] = "sha256:" + "0" * 64
+30673:         elif failure == "outside":
+30674:             command = rename("shot-revision:outside", "Chapter One")
+30675:         else:
+30676:             command = rename(before="wrong previous value")
+30677: >       with pytest.raises((TimelineEditError, CommandError)) as error:
+30678:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+30679: E       Failed: DID NOT RAISE any of (<class 'astrid.sdk.timeline._common.TimelineEditError'>, <class 'astrid.sdk.timeline._command_state.CommandError'>)
+30680: 
+30681: tests/sdk/test_timeline_public_command.py:190: Failed
+30682: __________ test_public_command_keeps_source_and_patch_guards[digest] ___________
+30683: [gw1] linux -- Python 3.13.16 /home/user/work/venv-agent/bin/python
+30684: 
+30685: public_session = (<astrid.sdk.timeline.commit_session.Timeline object at 0x7f36ba1d39d0>, <tests.sdk.test_timeline_commit_provider.Deta...or_id': 'actor-1'}))), PosixPath('/tmp/pytest-of-root/pytest-5/popen-gw1/test_public_command_keeps_sour2/outbox.json'))
+30686: failure = 'digest'
+30687: 
+30688:     @pytest.mark.parametrize("failure", ["pair", "foreign", "digest", "outside", "previous"])
+30689:     def test_public_command_keeps_source_and_patch_guards(public_session, failure):
+30690:         opened, realm, sent, _, _ = public_session
+30691:         command = rename()
+30692:         if failure == "pair":
+30693:             realm.entries[0]["revision_id"] = "another-revision"
+30694:         elif failure == "foreign":
+30695:             realm.documents[realm.head["revision_id"]]["project_id"] = "foreign"
+30696:             realm.entries[0]["receipt"]["result"]["canonical_document"] = realm.documents[realm.head["revision_id"]]
+30697:         elif failure == "digest":
+30698:             realm.documents[realm.head["revision_id"]]["parent_revision"]["content_digest"] = "sha256:" + "0" * 64
+30699:         elif failure == "outside":
+30700:             command = rename("shot-revision:outside", "Chapter One")
+30701:         else:
+30702:             command = rename(before="wrong previous value")
+30703: >       with pytest.raises((TimelineEditError, CommandError)) as error:
+30704:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+30705: E       Failed: DID NOT RAISE any of (<class 'astrid.sdk.timeline._common.TimelineEditError'>, <class 'astrid.sdk.timeline._command_state.CommandError'>)
+30706: 
+30707: tests/sdk/test_timeline_public_command.py:190: Failed

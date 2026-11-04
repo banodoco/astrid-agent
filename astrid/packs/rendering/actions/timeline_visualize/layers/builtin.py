@@ -9,7 +9,7 @@ motion and contact tiles.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
@@ -282,7 +282,19 @@ def render_curves(ctx: LayerContext) -> LayerResult:
     start, end = ctx.window
     frames = range(int(math.floor(start * ctx.fps)), int(math.ceil(end * ctx.fps)))
     for element in elements:
-        samples = [(f / ctx.fps, model.props_at(element, f / ctx.fps + 1e-6, ctx.fps)) for f in frames]
+        public_states = {}
+        if element.type == "am-presenter":
+            public_scene = ctx.shared.get("public_scene")
+            public_frames = sorted(public_scene) if isinstance(public_scene, Mapping) else ()
+            if public_frames:
+                public = _public_mouth_facts(ctx, element, public_frames)
+                public_states = public["states"] if public else {}
+        samples = []
+        for frame in frames:
+            kwargs = ({"presenter_mouth_state": public_states[frame]}
+                      if frame in public_states else {})
+            samples.append((frame / ctx.fps,
+                            model.props_at(element, frame / ctx.fps + 1e-6, ctx.fps, **kwargs)))
         keys = sorted({k for _t, props in samples for k in props})
         moving = [k for k in keys if len({round(props.get(k, math.nan), 3) for _t, props in samples if k in props}) > 1]
         moving.sort(key=lambda k: (CURVE_ORDER.index(k) if k in CURVE_ORDER else len(CURVE_ORDER), k))
@@ -366,6 +378,87 @@ def render_curves(ctx: LayerContext) -> LayerResult:
 
 # ---------------------------------------------------------------- lipsync (data + pixels)
 
+def _public_mouth_facts(ctx: LayerContext, presenter: Any, frames: Sequence[int]) -> dict[str, Any] | None:
+    """Adapt retained public presenter rows for this private layer only."""
+    if len(frames) < 3:
+        return None
+    # Partial or absent raw anchors are not equivalent to the private model's
+    # crop. Keep those inputs on the established fallback path.
+    params = presenter.params if isinstance(presenter.params, Mapping) else {}
+    raw_mouth = params.get("mouth")
+    if (not isinstance(raw_mouth, Mapping)
+            or any(type(raw_mouth.get(key)) is not int for key in ("x", "y", "w"))
+            or not 0 <= raw_mouth["x"] < 320
+            or not 0 <= raw_mouth["y"] < 180
+            or not 1 <= raw_mouth["w"] <= 40):
+        return None
+    public_scene = ctx.shared.get("public_scene")
+    if (ctx.shared.get("public_scene_evidence_mode") not in {"fresh_capture", "cache"}
+            or not isinstance(public_scene, Mapping) or any(frame not in public_scene for frame in frames)):
+        return None
+    facts = [public_scene[frame] for frame in frames]
+    if any(not isinstance(fact, Mapping) for fact in facts):
+        return None
+    basis = facts[0].get("basis")
+    addresses = facts[0].get("addresses")
+    if (not isinstance(basis, Mapping) or not isinstance(addresses, Mapping)
+            or type(basis.get("width")) is not int or type(basis.get("height")) is not int
+            or basis["width"] <= 0 or basis["height"] <= 0
+            or not isinstance(basis.get("fps"), (int, float)) or isinstance(basis["fps"], bool)
+            or not math.isclose(float(basis["fps"]), ctx.fps, rel_tol=0.0, abs_tol=1e-9)):
+        return None
+    from astrid.core.timeline.astrid_ns import read_app
+
+    app = read_app(presenter.clip) if isinstance(presenter.clip, Mapping) else {}
+    source = app.get("astrid_shot_composition")
+    source = source if isinstance(source, Mapping) else {}
+    expected_address = (f"{app['cut']}.{app['layer']}" if app.get("cut") and app.get("layer")
+                        else source.get("source_clip_id") or presenter.id)
+    rows = []
+    states: dict[int, str] = {}
+    for frame, fact in zip(frames, facts):
+        answer = fact.get("answer")
+        if (not isinstance(answer, Mapping) or answer.get("frame") != frame
+                or answer.get("width") != basis["width"] or answer.get("height") != basis["height"]
+                or fact.get("addresses") != addresses):
+            return None
+        layers = [layer for layer in answer.get("layers", ())
+                  if isinstance(layer, Mapping) and layer.get("clipId") == presenter.id]
+        if (len(layers) != 1 or presenter.id not in addresses
+                or addresses[presenter.id] != expected_address
+                or not isinstance(addresses[presenter.id], str)):
+            return None
+        layer = layers[0]
+        diagnostics = layer.get("diagnostics")
+        motion = diagnostics.get("motion") if isinstance(diagnostics, Mapping) else None
+        level = motion.get("mouth") if isinstance(motion, Mapping) else None
+        state = {0.0: "closed", 0.5: "half", 1.0: "open"}.get(level)
+        if state is None or isinstance(level, bool):
+            return None
+        states[frame] = state
+        rows.append(layer)
+    zero_rows = [layer for layer in rows if layer.get("contentFrame") == 0]
+    if len(zero_rows) != 1:
+        return None
+    mouth = ((zero_rows[0].get("diagnostics") or {}).get("mouth")
+             if isinstance(zero_rows[0].get("diagnostics"), Mapping) else None)
+    rect = mouth.get("rect") if isinstance(mouth, Mapping) and mouth.get("status") == "known" else None
+    if (not isinstance(rect, Mapping)
+            or any(type(rect.get(key)) not in (int, float) or isinstance(rect.get(key), bool)
+                   or not math.isfinite(rect[key]) for key in ("x", "y", "width", "height"))
+            or rect["width"] <= 0 or rect["height"] <= 0):
+        return None
+    return {"rect": tuple(float(rect[key]) for key in ("x", "y", "width", "height")),
+            "basis": {"width": basis["width"], "height": basis["height"]},
+            "states": states}
+
+
+def _public_crop(rect: Sequence[float], basis: Mapping[str, int], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Scale a public canvas footprint into the existing PNG crop convention."""
+    sx, sy = size[0] / basis["width"], size[1] / basis["height"]
+    x, y, width, height = rect
+    return max(0, int(x * sx)), max(0, int(y * sy)), int((x + width) * sx) + 1, int((y + height) * sy) + 1
+
 def render_lipsync(ctx: LayerContext) -> LayerResult:
     """Presenter mouth state per frame vs VO word intervals (and the presenter's own word list)."""
     presenters = [e for e in ctx.elements if e.type == "am-presenter"]
@@ -375,6 +468,8 @@ def render_lipsync(ctx: LayerContext) -> LayerResult:
     draw = ImageDraw.Draw(image)
     findings = []
     start, end = float(ctx.cut["start"]), float(ctx.cut["end"])
+    series = [f for f in _sorted_frames(ctx) if start <= f / ctx.fps < end]
+    public = _public_mouth_facts(ctx, presenters[0], series)
     for index, presenter in enumerate(presenters):
         top = 30 + index * 70
         draw_text(draw, (10, top + 4), "mouth", 12, PALETTE["muted"])
@@ -386,7 +481,8 @@ def render_lipsync(ctx: LayerContext) -> LayerResult:
         vo = [w for w in ctx.words if w.end > start and w.start < end]
         for frame in range(first, last):
             t = frame / ctx.fps
-            state = model.mouth_state(presenter, frame - int(round(presenter.start * ctx.fps)), ctx.fps)
+            state = ((public or {}).get("states", {}).get(frame)
+                     or model.mouth_state(presenter, frame - int(round(presenter.start * ctx.fps)), ctx.fps))
             colour = {"closed": "#334155", "half": "#f59e0b", "open": "#ef4444"}[state]
             x0, x1 = ctx.x_of(t), ctx.x_of(t + 1 / ctx.fps)
             draw.rectangle((x0, top + 2, max(x0 + 1, x1 - 1), top + 20), fill=colour)
@@ -424,12 +520,13 @@ def render_lipsync(ctx: LayerContext) -> LayerResult:
         elif own or vo:
             findings.append(f"LIPSYNC {name}: presenter has {len(own)} words, VO has {len(vo)} under the cut; no pairs within 0.3 s")
     # pixel check: does the mouth region actually change in the captured frames?
-    series = [f for f in _sorted_frames(ctx) if start <= f / ctx.fps < end]
     presenter = presenters[0]
-    box = model.mouth_box(presenter, 0)
-    if box and len(series) >= 3:
+    box = None if public else model.mouth_box(presenter, 0)
+    crop = _public_crop(public["rect"], public["basis"], ctx.frame_size) if public else None
+    if crop is None and box and len(series) >= 3:
         sx, sy = ctx.frame_size[0] / model.CANVAS[0], ctx.frame_size[1] / model.CANVAS[1]
         crop = (max(0, int(box[0] * sx)), max(0, int(box[1] * sy)), int(box[2] * sx) + 1, int(box[3] * sy) + 1)
+    if crop and len(series) >= 3:
         changes = 0
         previous = None
         for frame in series:

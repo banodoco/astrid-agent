@@ -1,0 +1,84 @@
+{
+  "schema": "astrid.engine-recipe.v1",
+  "engine": "wan2gp",
+  "platform": "windows-x86_64-cu128",
+  "pins": {
+    "path": "packs/wan2gp/pins.json",
+    "sha256": "3ab6d1b2fdcea48b3a84df1cd9a2ee4dc82b08384d6bf0810dd9629c80ac2c9a"
+  },
+  "source_bindings": [
+    {
+      "name": "wan2gp",
+      "pin": "wan2gp",
+      "relative_path": "runtime/Wan2GP"
+    }
+  ],
+  "environments": [
+    {
+      "name": "wan2gp",
+      "relative_path": "runtime/venv",
+      "python_version": "3.12.10",
+      "uv_version": "0.11.32",
+      "requirements": {
+        "mode": "resolve-once",
+        "packaged_lock": null,
+        "input_paths": [
+          {
+            "source": "wan2gp",
+            "path": "requirements.txt"
+          }
+        ],
+        "constraints": [],
+        "exclude_newer": "2026-10-19T00:00:00Z"
+      },
+      "final_wheels": [
+        {
+          "name": "torch",
+          "version": "2.8.0+cu128",
+          "url": "https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl",
+          "sha256": "0ad925202387f4e7314302a1b4f8860fa824357f9b1466d7992bf276370ebcff"
+        },
+        {
+          "name": "torchvision",
+          "version": "0.23.0+cu128",
+          "url": "https://download.pytorch.org/whl/cu128/torchvision-0.23.0%2Bcu128-cp312-cp312-win_amd64.whl",
+          "sha256": "20fa9c7362a006776630b00b8a01919fedcf504a202b81358d32c5aef39956fe"
+        },
+        {
+          "name": "torchaudio",
+          "version": "2.8.0+cu128",
+          "url": "https://download.pytorch.org/whl/cu128/torchaudio-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl",
+          "sha256": "cce3a60cd9a97f7360c8f95504ac349311fb7d6b9b826135936764f4de5f782d"
+        }
+      ],
+      "node_lock": null,
+      "source_installs": []
+    }
+  ],
+  "primary_environment": "wan2gp",
+  "models_lock": {
+    "path": "packs/wan2gp/models.lock.json",
+    "sha256": "ebb3379140c96ea72af8fa21c5255a3298b8cbf205aef091861f471127bb5cbe"
+  },
+  "start": {
+    "argv": [
+      "{python}",
+      "wgp.py",
+      "--server_name",
+      "127.0.0.1",
+      "--server_port",
+      "{port}"
+    ],
+    "cwd": "{install_root}/runtime/Wan2GP",
+    "env": {},
+    "bind_host": "127.0.0.1",
+    "port": 7860
+  },
+  "health": {
+    "path": "/",
+    "object_info_path": "/",
+    "required_nodes": [],
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

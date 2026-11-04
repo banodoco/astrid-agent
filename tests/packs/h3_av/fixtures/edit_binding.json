@@ -1,0 +1,358 @@
+[
+  {
+    "name": "full-frame",
+    "v1": {
+      "version": 1,
+      "operation": "edit",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          2,
+          6
+        ]
+      },
+      "output": {
+        "duration": 4
+      },
+      "content": {
+        "prompt": "Change only the selected region."
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              0,
+              4
+            ],
+            "area": {
+              "full_frame": true
+            },
+            "action": "generate"
+          }
+        ],
+        "audio": []
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "steps": 8,
+        "seed": 123456789
+      }
+    },
+    "v2": {
+      "version": 2,
+      "duration": 4,
+      "prompt": "Change only the selected region.",
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            2,
+            6
+          ],
+          "edit": [
+            {
+              "stream": "video",
+              "during": [
+                0,
+                4
+              ],
+              "mask": {
+                "full_frame": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "settings": {}
+    }
+  },
+  {
+    "name": "box-partial",
+    "v1": {
+      "version": 1,
+      "operation": "edit",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          2,
+          6
+        ]
+      },
+      "output": {
+        "duration": 4
+      },
+      "content": {
+        "prompt": "Change only the selected region."
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              1,
+              3
+            ],
+            "area": {
+              "rectangle": [
+                8,
+                12,
+                32,
+                24
+              ]
+            },
+            "action": "generate"
+          }
+        ],
+        "audio": []
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "steps": 8,
+        "seed": 123456789
+      }
+    },
+    "v2": {
+      "version": 2,
+      "duration": 4,
+      "prompt": "Change only the selected region.",
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            2,
+            6
+          ],
+          "edit": [
+            {
+              "stream": "video",
+              "during": [
+                1,
+                3
+              ],
+              "mask": {
+                "rectangle": [
+                  8,
+                  12,
+                  32,
+                  24
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "settings": {}
+    }
+  },
+  {
+    "name": "image-static",
+    "v1": {
+      "version": 1,
+      "operation": "edit",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          2,
+          6
+        ]
+      },
+      "output": {
+        "duration": 4
+      },
+      "content": {
+        "prompt": "Change only the selected region."
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              0,
+              4
+            ],
+            "area": {
+              "mask_asset": "mask.png"
+            },
+            "action": "generate"
+          }
+        ],
+        "audio": []
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "steps": 8,
+        "seed": 123456789
+      }
+    },
+    "v2": {
+      "version": 2,
+      "duration": 4,
+      "prompt": "Change only the selected region.",
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            2,
+            6
+          ],
+          "edit": [
+            {
+              "stream": "video",
+              "during": [
+                0,
+                4
+              ],
+              "mask": {
+                "asset": "mask.png"
+              }
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "settings": {}
+    }
+  },
+  {
+    "name": "legacy-mask-override",
+    "v1": {
+      "version": 1,
+      "operation": "edit",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          2,
+          6
+        ]
+      },
+      "output": {
+        "duration": 4
+      },
+      "content": {
+        "prompt": "Change only the selected region."
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              1,
+              3
+            ],
+            "area": {
+              "rectangle": [
+                0,
+                0,
+                100,
+                100
+              ]
+            },
+            "action": "generate",
+            "mask_asset": "mask.png"
+          }
+        ],
+        "audio": []
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "steps": 8,
+        "seed": 123456789
+      }
+    },
+    "v2": {
+      "version": 2,
+      "duration": 4,
+      "prompt": "Change only the selected region.",
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            2,
+            6
+          ],
+          "edit": [
+            {
+              "stream": "video",
+              "during": [
+                1,
+                3
+              ],
+              "mask": {
+                "asset": "mask.png"
+              }
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "settings": {}
+    }
+  }
+]

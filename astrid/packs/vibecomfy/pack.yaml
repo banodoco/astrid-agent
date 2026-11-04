@@ -17,7 +17,9 @@ permissions:
 - id: accelerator
   reason: May use GPU for ComfyUI model inference.
 description: Import, inspect, edit, validate, and run ComfyUI / VibeComfy workflows
-  using canonical editable bundles.
+  using canonical editable bundles. Generate discovery exposes only registered
+  catalog, workflow, or declared action entries; related workflow authoring
+  operations do not become Generate entries by themselves.
 keywords:
 - comfyui
 - vibecomfy
@@ -37,10 +39,15 @@ capabilities:
 - character_animation
 agent:
   purpose: Choose this pack to import, inspect, typed-edit or capture, validate, or
-    execute a ComfyUI/VibeComfy workflow.
+    execute a ComfyUI/VibeComfy workflow. Import, inspect, edit, and validate are
+    related workflow-authoring actions; Generate entries come only from registered
+    catalog or workflow modes and declared generation actions such as video_enhance
+    and character_animation.
   do_not_use_for: Do not use to understand existing media (use understanding) or to
     cut/render timelines (use video_editing); it runs workflow graphs, not editorial
     pipelines.
+  required_context:
+  - docs/SKILL.md
   normal_entrypoints:
   - vibecomfy.import
   - vibecomfy.inspect
@@ -455,14 +462,12 @@ actions:
       - vibecomfy_run
       - result_manifest
     inputs:
-    - default: ''
-      description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
+    - description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
         members.
       name: workflow
       required: false
       type: file
-    - default: ''
-      description: Optional managed source video staged into the Comfy input directory.
+    - description: Optional managed source video staged into the Comfy input directory.
       name: source_video
       required: false
       type: file
@@ -476,8 +481,7 @@ actions:
       name: source_video_widget
       required: false
       type: string
-    - default: ''
-      description: Optional deterministic ZIP containing manifest.json and runtime-managed
+    - description: Optional deterministic ZIP containing manifest.json and runtime-managed
         workflow media inputs.
       name: managed_assets
       required: false
@@ -498,18 +502,15 @@ actions:
       name: comfy_output_dir
       required: false
       type: string
-    - default: ''
-      description: Optional canonical workflow.py member.
+    - description: Optional canonical workflow.py member.
       name: python
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.vibe.json companion member.
+    - description: Optional canonical workflow.vibe.json companion member.
       name: companion
       required: false
       type: file
-    - default: ''
-      description: Optional byte-identical source.json member.
+    - description: Optional byte-identical source.json member.
       name: source
       required: false
       type: file
@@ -606,7 +607,6 @@ actions:
         - -m
         - astrid.packs.vibecomfy.actions.run.run
         - run
-        - '{workflow}'
         - --python
         - '{python}'
         - --companion
@@ -639,6 +639,10 @@ actions:
         - '{comfy_url}'
         - --comfy-output-dir
         - '{comfy_output_dir}'
+        input_args:
+        - input: workflow
+          optional: true
+          before: --out
         env:
           VIBECOMFY_HEADLESS: '1'
     resources:
@@ -666,24 +670,20 @@ actions:
       provides:
       - vibecomfy_validation
     inputs:
-    - default: ''
-      description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
+    - description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
         members.
       name: workflow
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.py member.
+    - description: Optional canonical workflow.py member.
       name: python
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.vibe.json companion member.
+    - description: Optional canonical workflow.vibe.json companion member.
       name: companion
       required: false
       type: file
-    - default: ''
-      description: Optional byte-identical source.json member.
+    - description: Optional byte-identical source.json member.
       name: source
       required: false
       type: file
@@ -756,7 +756,6 @@ actions:
         - -m
         - astrid.packs.vibecomfy.actions.validate.run
         - validate
-        - '{workflow}'
         - --python
         - '{python}'
         - --companion
@@ -766,6 +765,9 @@ actions:
         - --out
         - '{out}'
         input_args:
+        - input: workflow
+          optional: true
+          before: --out
         - input: python_execution_consent
           flag: --python-execution-consent
           optional: true
@@ -830,6 +832,10 @@ actions:
       requirements:
       - vibecomfy
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: enhanced_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:
@@ -948,6 +954,10 @@ actions:
       requirements:
       - vibecomfy
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: animated_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:

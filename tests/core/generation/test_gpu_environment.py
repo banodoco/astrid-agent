@@ -26,6 +26,14 @@ def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, p
     if platform != "win32":
         assert plan["managed"] is False
         assert plan["commands"] == []
+        if pack == "vibecomfy":
+            platform_name = {"linux": "Linux", "darwin": "macOS"}[platform]
+            assert plan["reason"] == (
+                f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
+                "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+            )
+        else:
+            assert "admitted Wan2GP checkout and interpreter" in plan["reason"]
         return
     assert plan["managed"] is True
     assert Path(plan["python"]).parts[-2:] == ("Scripts", "python.exe")
@@ -67,6 +75,35 @@ def test_environment_source_pins_match_existing_admission():
 def test_comfy_plan_requires_admitted_vibecomfy_source(tmp_path):
     with pytest.raises(gpu.GPUEnvironmentError, match="VibeComfy checkout"):
         gpu.environment_plan("vibecomfy", tmp_path, platform="win32")
+
+
+@pytest.mark.parametrize("platform,platform_name", [("linux", "Linux"), ("darwin", "macOS")])
+def test_unmanaged_comfy_provision_rejection_gives_bring_your_own_path(platform, platform_name, monkeypatch):
+    monkeypatch.setattr(gpu.sys, "platform", "win32")
+    plan = {"managed": False, "pack": "vibecomfy", "platform": platform}
+    with pytest.raises(gpu.GPUEnvironmentError) as exc:
+        gpu.provision_environment(plan)
+    assert str(exc.value) == (
+        f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
+        "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+    )
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_cli_plan_and_install_surface_the_same_unmanaged_guidance(tmp_path, monkeypatch, capsys, platform):
+    monkeypatch.setattr(gpu.sys, "platform", platform)
+    args = ["vibecomfy", "--checkout", str(tmp_path / "comfy")]
+    assert gpu.main([*args, "--plan"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["managed"] is False
+    assert gpu.main(args) == 1
+    assert capsys.readouterr().err.strip() == plan["reason"]
+
+
+def test_provisioning_a_windows_plan_on_linux_names_the_current_host(monkeypatch):
+    monkeypatch.setattr(gpu.sys, "platform", "linux")
+    with pytest.raises(gpu.GPUEnvironmentError, match="doesn't install ComfyUI on Linux yet"):
+        gpu.provision_environment({"managed": True, "pack": "vibecomfy", "platform": "win32"})
 
 
 @pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])

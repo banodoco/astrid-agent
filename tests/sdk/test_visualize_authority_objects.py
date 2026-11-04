@@ -102,6 +102,36 @@ def test_visualize_spec_carries_digests_not_the_snapshot():
     assert stored["metadata"]["element_resources"] == {}
 
 
+def _working_copy_authority(monkeypatch, *, preview):
+    authority = _authority()
+    authority["capture_snapshot"]["metadata"] = {
+        "capture_authority": {"parent_revision_id": "candidate-parent", "parent_content_digest": "sha256:" + "a" * 64},
+        "working_copy": {"candidate_parent_revision_id": "candidate-parent", "candidate_digest": "sha256:" + "b" * 64,
+                         "publication_digest": "sha256:" + "c" * 64, "base_parent": {"revision_id": "base", "content_digest": "sha256:" + "e" * 64}},
+    }
+    monkeypatch.setattr("astrid.sdk.timeline_filmstrip.prepare_filmstrip", lambda inputs, *, project, client: authority)
+    runtime = Runtime()
+    inputs = {"composed_capture": True, "timeline_ref": "tl"}
+    if preview:
+        inputs["authoring_preview"] = {"kind": "authoring_candidate_preview", "candidate": {}}
+    _invoke_internal_result("rendering.timeline_visualize", kind="executor", project="p", client=runtime, inputs=inputs)
+    assert runtime.created
+    return runtime.created[-1]["spec"]
+
+
+def test_working_copy_without_candidate_is_sent_as_uncertified_cas(monkeypatch):
+    context = _working_copy_authority(monkeypatch, preview=False)["authority_context"]
+    ref = context["capture_snapshot_ref"]
+    # No claimed revision, working-copy certificate or canonical source.
+    assert ref["source_kind"] == "cas" and set(ref) == {"digest", "project_id", "timeline_id", "source_kind"}
+
+
+def test_working_copy_with_candidate_stays_inline_for_runtime_certification(monkeypatch):
+    spec = _working_copy_authority(monkeypatch, preview=True)
+    assert "capture_snapshot_ref" not in spec["authority_context"]
+    assert spec["inputs"]["authoring_preview"]["kind"] == "authoring_candidate_preview"
+
+
 def test_snapshot_admission_without_object_ingestion_is_refused():
     runtime = Runtime(can_import=False)
     result = _invoke_internal_result("rendering.timeline_visualize", kind="executor", project="p",

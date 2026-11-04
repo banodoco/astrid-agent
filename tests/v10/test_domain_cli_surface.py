@@ -583,9 +583,10 @@ def test_top_level_commands_include_product_and_operator_families() -> None:
             "backup",
             "dev",
             "skills",
+            "generate",
         }
     )
-    assert len(dispatch._top_level_commands()) == 11
+    assert len(dispatch._top_level_commands()) == 12
 
 
 def test_all_five_product_families_route_through_product_dispatch(
@@ -815,6 +816,95 @@ def test_product_help_lists_current_timeline_visualize_and_render_verbs() -> Non
     assert "projects    [kernel] project create/list/show/update/select/current" in text
     assert "runs        [kernel] run list/show/cancel/retry/events/open" in text
     assert "[pack: timeline] timelines list/show/replace-parent-media/archive/recover/history/diff/visualize/render" in text
+
+
+def test_status_human_output_includes_selected_project_and_recent_timelines(monkeypatch, capsys) -> None:
+    from contextlib import nullcontext
+
+    from astrid.core.gateway import dispatch
+    from astrid.sdk.contracts import DomainResult
+
+    class Projects:
+        def current(self):
+            return DomainResult.success({"project": {"project_id": "P", "slug": "demo"}})
+
+        def list(self, *, cursor=None, limit=50):
+            assert limit == 50
+            if cursor is None:
+                return DomainResult.success([[{"project_id": "P", "slug": "demo"}], "next-project"])
+            assert cursor == "next-project"
+            return DomainResult.success([[{"project_id": "P-2", "slug": "later"}], None])
+
+    class Timelines:
+        def list(self, project, **_kwargs):
+            if project == "P":
+                rows = [{"timeline_id": "promo", "name": "Promo"}]
+            else:
+                rows = [{"timeline_id": "later-promo", "name": "Later Promo"}]
+            return DomainResult.success([rows, None])
+
+    client = types.SimpleNamespace(projects=Projects(), timelines=Timelines())
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: "/tmp/support")
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", lambda: object())
+    monkeypatch.setattr("astrid.core.gateway.diagnostics.collect_diagnostic", lambda *_, **__: (
+        {}, types.SimpleNamespace(ok=True, data={}), types.SimpleNamespace(ok=True, data={}),
+    ))
+    monkeypatch.setattr("astrid.core.auth.contributor_key_present", lambda: False)
+    monkeypatch.setattr("astrid.sdk.client.AstridClient.open_existing_from_launcher", lambda: nullcontext(client))
+    monkeypatch.setattr(
+        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
+        lambda *_args, **_kwargs: [types.SimpleNamespace(created_at="2026-10-30T12:00:00Z")],
+    )
+
+    assert dispatch._dispatch_status([]) == 0
+    output = capsys.readouterr().out
+    assert "project: demo (selected)" in output
+    assert "recent: 2026-10-30T12:00:00Z  demo  promo  Promo" in output
+    assert "recent: 2026-10-30T12:00:00Z  later  later-promo  Later Promo" in output
+    assert "next: astrid timelines show promo --project P" in output
+    assert "next: astrid timelines show later-promo --project P-2" in output
+
+
+def test_status_labels_recency_unavailable_when_project_pagination_fails(monkeypatch, capsys) -> None:
+    from contextlib import nullcontext
+
+    from astrid.core.gateway import dispatch
+    from astrid.sdk.contracts import DomainResult, ErrorObject
+
+    class Projects:
+        def current(self):
+            return DomainResult.success({"project": {"project_id": "P", "slug": "demo"}})
+
+        def list(self, *, cursor=None, limit=50):
+            assert limit == 50
+            if cursor is None:
+                return DomainResult.success([[{"project_id": "P", "slug": "demo"}], "next-project"])
+            assert cursor == "next-project"
+            return DomainResult.failure(ErrorObject("unavailable", "page failed", {}))
+
+    class Timelines:
+        def list(self, project, **_kwargs):
+            assert project == "P"
+            return DomainResult.success([[{"timeline_id": "promo", "name": "Promo"}], None])
+
+    client = types.SimpleNamespace(projects=Projects(), timelines=Timelines())
+    monkeypatch.setattr("astrid.sdk.storage_root.resolve_runtime_data_root", lambda: "/tmp/support")
+    monkeypatch.setattr("astrid.runtime_cli.RuntimeCLI", lambda: object())
+    monkeypatch.setattr("astrid.core.gateway.diagnostics.collect_diagnostic", lambda *_, **__: (
+        {}, types.SimpleNamespace(ok=True, data={}), types.SimpleNamespace(ok=True, data={}),
+    ))
+    monkeypatch.setattr("astrid.core.auth.contributor_key_present", lambda: False)
+    monkeypatch.setattr("astrid.sdk.client.AstridClient.open_existing_from_launcher", lambda: nullcontext(client))
+    monkeypatch.setattr(
+        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
+        lambda *_args, **_kwargs: [types.SimpleNamespace(created_at="2026-10-30T12:00:00Z")],
+    )
+
+    assert dispatch._dispatch_status([]) == 0
+    output = capsys.readouterr().out
+    assert "project: demo (selected)" in output
+    assert "recent: unavailable (project pagination incomplete)" in output
+    assert "recent: 2026-10-30T12:00:00Z  demo  promo  Promo" not in output
 
 
 def test_print_product_help_prints_to_stdout(capsys) -> None:

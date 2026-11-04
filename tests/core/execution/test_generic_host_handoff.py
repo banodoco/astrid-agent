@@ -45,7 +45,7 @@ def _host(client):
     def health(**changes):
         values = {"status": "ok", "protocol": PROTOCOL, "schema_digest": "sha256:" + "c" * 64,
                   "runtime_epoch": 7, "runtime_session_id": "runtime-session",
-                  "runtime_instance_id": "runtime-A"}
+                  "runtime_instance_id": "runtime-A", "identity": {"release": 0, "managed_by": None}}
         values.update(changes)
         return Health(**values)
 
@@ -653,7 +653,7 @@ def _resumed_fixture(tmp_path, *, resume=True):
     host.client.health = lambda: Health(status=live.status, protocol=live.protocol,
                                         schema_digest=live.schema_digest, runtime_epoch=8,
                                         runtime_session_id="runtime-session-B",
-                                        runtime_instance_id="runtime-B")
+                                        runtime_instance_id="runtime-B", identity=live.identity)
     runtime = generic_host._handoff_live_runtime_binding(host)
     assert runtime is not None
     relay_reference = prep._handoff_current_roles["relay"]
@@ -786,7 +786,7 @@ def test_rebind_registers_once_while_claim_gate_remains_closed(tmp_path, monkeyp
     host.client.health = lambda: Health(status=live.status, protocol=live.protocol,
                                         schema_digest=live.schema_digest, runtime_epoch=8,
                                         runtime_session_id="runtime-session-B",
-                                        runtime_instance_id="runtime-B")
+                                        runtime_instance_id="runtime-B", identity=live.identity)
     new_runtime = generic_host._handoff_live_runtime_binding(host)
     request = _request("handoff_commit", binding=binding, payload={
         "new_runtime": new_runtime, "task_fence_digest": task_fence_digest,
@@ -904,7 +904,7 @@ def test_committed_handoff_replay_does_not_repeat_registration(tmp_path, monkeyp
     host.client.health = lambda: Health(status=live.status, protocol=live.protocol,
                                         schema_digest=live.schema_digest, runtime_epoch=8,
                                         runtime_session_id="runtime-session-B",
-                                        runtime_instance_id="runtime-B")
+                                        runtime_instance_id="runtime-B", identity=live.identity)
     new_runtime = generic_host._handoff_live_runtime_binding(host)
     calls = []
     def register(*, deliberate=False):
@@ -1106,7 +1106,8 @@ def _successor_health_before_adoption(host):
     previous = host.client.health()
     successor = Health(status=previous.status, protocol=previous.protocol,
                        schema_digest=previous.schema_digest, runtime_epoch=8,
-                       runtime_session_id="runtime-session-B", runtime_instance_id="runtime-B")
+                       runtime_session_id="runtime-session-B", runtime_instance_id="runtime-B",
+                       identity=previous.identity)
     health_calls = []
     def health():
         health_calls.append(successor.runtime_instance_id)

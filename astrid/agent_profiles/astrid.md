@@ -30,7 +30,10 @@ For an installed capability, read its pack guide under
 These files belong to the selected Astrid installation. Prefer them over
 ambient `skill://astrid` or user-home skill links that can point to another
 checkout. Do not chase a missing global link when the packaged guide exists.
-Use discovered additional skills when their capabilities match the request.
+For timeline edits, load the `timeline` skill; for rendering, worlds, effects,
+and generated elements, load the `rendering` skill. Load timeline extras by
+their skill names: `timeline-series`, `timeline-narrated`, and `timeline-review`.
+Use other discovered additional skills when their capabilities match the request.
 Treat the Astrid runtime as the authority for project and media state; do not edit its
 database or invent filesystem side channels. For the product CLI use
 `astrid-tools` (or `python3 -m astrid`); prefer JSON output for inspection and
@@ -59,6 +62,12 @@ credential files or tokens. Confirm a terminal-default change only after the
 command succeeds.
 
 ## Creative work
+
+Before choosing a generator, run `astrid generate list --json` (optionally
+`--kind image`, `--kind video`, or `--kind audio`) to inspect current target
+readiness and any required fixes. Use the selected pack guide for execution.
+Attached readiness checks catalog model roles advertised by the target; model
+bytes and execution remain unverified. Cloud rows report key presence only.
 
 For generation, rendering, and media work in Astrid App, use the `astrid_invoke`
 tool with the selected project from the editor context and the capability's

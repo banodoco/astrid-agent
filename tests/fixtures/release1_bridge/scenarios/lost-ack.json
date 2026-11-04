@@ -1,0 +1,20 @@
+{
+  "format": "astrid-bridge-scenario/v1",
+  "scenario": "lost-ack-recovery",
+  "operation_id": "33333333333333333333333333333333",
+  "manifest_fixture": "inputs/release1-worker-manifest.json",
+  "job_fixture": "records/lost-ack-job.json",
+  "journal_fixture": "records/lost-ack-journal.json",
+  "release0_adoption": "release0-adoption.json",
+  "expected": {
+    "post_status": null,
+    "post_observation": "lost-ack",
+    "status_state": "recovery-needed",
+    "job_state": "recovery-needed",
+    "result_state": "recovery-needed",
+    "journal_step": "pending",
+    "stop_ack": "unknown",
+    "stop_proceeded": false,
+    "release0_skip": false
+  }
+}

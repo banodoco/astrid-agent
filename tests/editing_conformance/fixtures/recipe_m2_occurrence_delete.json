@@ -1,0 +1,4236 @@
+{
+  "bundle": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "base_parent": {
+      "revision_id": "parent-1",
+      "content_digest": "sha256:97e5d45c4d2f98e97785d87dc9403414f0d74a395658a62bee77ad3ffdafe17f"
+    },
+    "base_parent_payload": {
+      "config": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual"
+          }
+        ],
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [
+        {
+          "id": "clip-a",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 1,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        },
+        {
+          "id": "clip-b",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 5,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        }
+      ],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "base_placements": {
+      "occ-0": {
+        "occurrence_id": "occ-0",
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      "occ-1": {
+        "occurrence_id": "occ-1",
+        "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      "occ-2": {
+        "occurrence_id": "occ-2",
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "parent": {
+      "config": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual"
+          }
+        ],
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [
+        {
+          "id": "clip-a",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 1,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        },
+        {
+          "id": "clip-b",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 5,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        }
+      ],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "placements": [
+      {
+        "occurrence_id": "occ-0",
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "occurrence_id": "occ-1",
+        "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "occurrence_id": "occ-2",
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "shots": {
+      "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846": {
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      },
+      "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9": {
+        "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      },
+      "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075": {
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      }
+    },
+    "source_mapping": {
+      "placements": {
+        "occ-0": {
+          "occurrence_id": "occ-0",
+          "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        },
+        "occ-1": {
+          "occurrence_id": "occ-1",
+          "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        },
+        "occ-2": {
+          "occurrence_id": "occ-2",
+          "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "shots": {
+        "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0"
+          }
+        },
+        "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819"
+          }
+        },
+        "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236"
+          }
+        }
+      },
+      "_runtime_document": {
+        "schema_version": 1,
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "parent_revision": {
+          "revision_id": "parent-1",
+          "payload": {
+            "config": {
+              "tracks": [
+                {
+                  "id": "picture",
+                  "kind": "visual"
+                }
+              ],
+              "clips": [
+                {
+                  "id": "clip-a",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 1,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                },
+                {
+                  "id": "clip-b",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 5,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                }
+              ],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              }
+            },
+            "clips": [
+              {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              },
+              {
+                "id": "clip-b",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 5,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              }
+            ],
+            "registry": {
+              "assets": {
+                "picture": {
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "type": "image"
+                }
+              }
+            },
+            "occurrences": [
+              {
+                "occurrence_id": "occ-0",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "occurrence_id": "occ-1",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "occurrence_id": "occ-2",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              }
+            ],
+            "name": "Renamed Film",
+            "unknown": {
+              "opaque": [
+                "parent-1",
+                null
+              ]
+            }
+          },
+          "content_digest": "sha256:97e5d45c4d2f98e97785d87dc9403414f0d74a395658a62bee77ad3ffdafe17f"
+        },
+        "shot_revisions": [
+          {
+            "shot_id": "chapter-shot",
+            "revision_id": "shot-1",
+            "internal_timeline_revision_id": "internal-1",
+            "payload": {
+              "name": "Chapter One",
+              "internal_timeline_revision_id": "internal-1",
+              "items": [
+                {
+                  "item_id": "item-1",
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "metadata": {
+                    "opaque_literal": "item-1"
+                  }
+                }
+              ],
+              "text_bindings": [
+                {
+                  "slot": "narration",
+                  "text": "A chapter"
+                }
+              ],
+              "metadata": {
+                "chapter": true
+              },
+              "unknown": {
+                "keep": null
+              }
+            },
+            "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+          }
+        ],
+        "internal_timeline_revisions": [
+          {
+            "revision_id": "internal-1",
+            "timeline_id": "chapter-1",
+            "payload": {
+              "tracks": [
+                {
+                  "id": "picture",
+                  "kind": "visual"
+                }
+              ],
+              "clips": [
+                {
+                  "id": "clip-a",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 1,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                },
+                {
+                  "id": "clip-b",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 5,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                }
+              ],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "registry": {
+                "assets": {
+                  "picture": {
+                    "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                    "type": "image"
+                  }
+                }
+              },
+              "source_window": {
+                "start": 4,
+                "end": 9
+              },
+              "unknown": [
+                1,
+                2
+              ]
+            },
+            "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+          }
+        ],
+        "dependency_manifest": {
+          "shots": [
+            {
+              "shot_id": "chapter-shot",
+              "revision_id": "shot-1",
+              "internal_timeline_revision_id": "internal-1",
+              "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+            }
+          ],
+          "internal_timelines": [
+            {
+              "timeline_id": "chapter-1",
+              "revision_id": "internal-1",
+              "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+            }
+          ],
+          "media": [
+            {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "documents": []
+        }
+      }
+    }
+  },
+  "select": "occurrence:occ-1",
+  "command": {
+    "schema_version": 1,
+    "op": "occurrence.delete",
+    "version": "1",
+    "select": "occurrence:occ-1",
+    "args": {},
+    "intent": {
+      "ownership": "occurrence"
+    },
+    "resolved": [
+      "occurrence:occ-1"
+    ],
+    "reads": [
+      {
+        "ref": "parent",
+        "path": [
+          "config",
+          "pinnedShotGroups"
+        ],
+        "state": {
+          "state": "absent"
+        }
+      },
+      {
+        "ref": "occurrence:occ-1",
+        "path": [],
+        "state": {
+          "state": "present",
+          "value": {
+            "occurrence_id": "occ-1",
+            "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+            "placement": {
+              "start_ms": 0,
+              "track": "picture"
+            },
+            "duration_ms": 10000,
+            "source_offset": 0,
+            "speed": 1,
+            "track": "picture",
+            "unknown": {
+              "literal": "chapter-shot"
+            },
+            "metadata": null,
+            "provenance": {
+              "group_migration": {
+                "legacy_group": {
+                  "shotId": "chapter-shot",
+                  "trackId": "picture",
+                  "clipIds": [
+                    "clip-a",
+                    "clip-b"
+                  ],
+                  "mode": "images",
+                  "name": null,
+                  "opaque": [
+                    null,
+                    false,
+                    0
+                  ]
+                },
+                "members": [
+                  {
+                    "legacy_clip_id": "clip-a",
+                    "clip_id": "clip-a"
+                  },
+                  {
+                    "legacy_clip_id": "clip-b",
+                    "clip_id": "clip-b"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "ref": "occurrence:occ-1/shot",
+        "path": [
+          "shot_id"
+        ],
+        "state": {
+          "state": "present",
+          "value": "chapter-shot"
+        }
+      },
+      {
+        "ref": "occurrence:occ-1/collection:clip",
+        "path": [],
+        "state": {
+          "state": "present",
+          "value": {
+            "members": {
+              "state": "present",
+              "value": []
+            }
+          }
+        }
+      },
+      {
+        "ref": "occurrence:occ-1",
+        "path": [
+          "occurrence_id"
+        ],
+        "state": {
+          "state": "present",
+          "value": "occ-1"
+        }
+      },
+      {
+        "ref": "occurrence:occ-1/collection:track",
+        "path": [],
+        "state": {
+          "state": "present",
+          "value": {
+            "members": {
+              "state": "present",
+              "value": []
+            }
+          }
+        }
+      },
+      {
+        "ref": "occurrence:occ-1/source",
+        "path": [],
+        "state": {
+          "state": "present",
+          "value": {
+            "tracks": [
+              {
+                "id": "picture",
+                "kind": "visual"
+              }
+            ],
+            "clips": [
+              {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              },
+              {
+                "id": "clip-b",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 5,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              }
+            ],
+            "output": {
+              "fps": {
+                "numerator": 30000,
+                "denominator": 1001
+              }
+            },
+            "opaque": {
+              "timestamp": "authored timestamp",
+              "v": [
+                null,
+                false,
+                0
+              ]
+            },
+            "registry": {
+              "assets": {
+                "picture": {
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "type": "image"
+                }
+              }
+            },
+            "source_window": {
+              "start": 4,
+              "end": 9
+            },
+            "unknown": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "ref": "occurrence:occ-1/shot",
+        "path": [
+          "payload"
+        ],
+        "state": {
+          "state": "present",
+          "value": {
+            "name": "Chapter One",
+            "internal_timeline_revision_id": "internal-1",
+            "items": [
+              {
+                "item_id": "item-1",
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "metadata": {
+                  "opaque_literal": "item-1"
+                }
+              }
+            ],
+            "text_bindings": [
+              {
+                "slot": "narration",
+                "text": "A chapter"
+              }
+            ],
+            "metadata": {
+              "chapter": true
+            },
+            "unknown": {
+              "keep": null
+            }
+          }
+        }
+      }
+    ],
+    "selections": [
+      {
+        "key": "collection.clips",
+        "query_version": 1,
+        "owner": "occurrence:occ-1",
+        "members": [
+          "occurrence:occ-1/clip:clip-a",
+          "occurrence:occ-1/clip:clip-b"
+        ],
+        "order": [
+          "occurrence:occ-1/clip:clip-a",
+          "occurrence:occ-1/clip:clip-b"
+        ],
+        "boundaries": [
+          "occurrence:occ-1/clip:clip-a",
+          "occurrence:occ-1/clip:clip-b"
+        ],
+        "policy": "guard-membership"
+      },
+      {
+        "key": "collection.tracks",
+        "query_version": 1,
+        "owner": "occurrence:occ-1",
+        "members": [
+          "occurrence:occ-1/track:picture"
+        ],
+        "order": [
+          "occurrence:occ-1/track:picture"
+        ],
+        "boundaries": [
+          "occurrence:occ-1/track:picture"
+        ],
+        "policy": "guard-membership"
+      }
+    ],
+    "bindings": {
+      "collection.owner:collection.clips": "occurrence:occ-1",
+      "collection.owner:collection.tracks": "occurrence:occ-1",
+      "delete.owner": "occurrence:occ-1"
+    },
+    "created": [],
+    "expect": {
+      "occurrence:occ-1::": {
+        "state": "present",
+        "value": {
+          "occurrence_id": "occ-1",
+          "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "authorship": {
+      "occurrence:occ-1::": "direct"
+    }
+  },
+  "after_bundle": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "base_parent": {
+      "revision_id": "parent-1",
+      "content_digest": "sha256:97e5d45c4d2f98e97785d87dc9403414f0d74a395658a62bee77ad3ffdafe17f"
+    },
+    "base_parent_payload": {
+      "config": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual"
+          }
+        ],
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [
+        {
+          "id": "clip-a",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 1,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        },
+        {
+          "id": "clip-b",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 5,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        }
+      ],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "base_placements": {
+      "occ-0": {
+        "occurrence_id": "occ-0",
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      "occ-1": {
+        "occurrence_id": "occ-1",
+        "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      "occ-2": {
+        "occurrence_id": "occ-2",
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "parent": {
+      "config": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual"
+          }
+        ],
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [
+        {
+          "id": "clip-a",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 1,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        },
+        {
+          "id": "clip-b",
+          "track": "picture",
+          "asset": "picture",
+          "clipType": "media",
+          "at": 5,
+          "hold": 2,
+          "app": {
+            "org.example": {
+              "literal": "clip-a",
+              "clear": null
+            }
+          }
+        }
+      ],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "placements": [
+      {
+        "occurrence_id": "occ-0",
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "occurrence_id": "occ-2",
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "placement": {
+          "start_ms": 0,
+          "track": "picture"
+        },
+        "duration_ms": 10000,
+        "source_offset": 0,
+        "speed": 1,
+        "track": "picture",
+        "unknown": {
+          "literal": "chapter-shot"
+        },
+        "metadata": null,
+        "provenance": {
+          "group_migration": {
+            "legacy_group": {
+              "shotId": "chapter-shot",
+              "trackId": "picture",
+              "clipIds": [
+                "clip-a",
+                "clip-b"
+              ],
+              "mode": "images",
+              "name": null,
+              "opaque": [
+                null,
+                false,
+                0
+              ]
+            },
+            "members": [
+              {
+                "legacy_clip_id": "clip-a",
+                "clip_id": "clip-a"
+              },
+              {
+                "legacy_clip_id": "clip-b",
+                "clip_id": "clip-b"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "shots": {
+      "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846": {
+        "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      },
+      "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9": {
+        "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      },
+      "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075": {
+        "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+        "base_payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "base_internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "internal_timeline": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        }
+      }
+    },
+    "source_mapping": {
+      "placements": {
+        "occ-0": {
+          "occurrence_id": "occ-0",
+          "shot_id": "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        },
+        "occ-1": {
+          "occurrence_id": "occ-1",
+          "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        },
+        "occ-2": {
+          "occurrence_id": "occ-2",
+          "shot_id": "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 10000,
+          "source_offset": 0,
+          "speed": 1,
+          "track": "picture",
+          "unknown": {
+            "literal": "chapter-shot"
+          },
+          "metadata": null,
+          "provenance": {
+            "group_migration": {
+              "legacy_group": {
+                "shotId": "chapter-shot",
+                "trackId": "picture",
+                "clipIds": [
+                  "clip-a",
+                  "clip-b"
+                ],
+                "mode": "images",
+                "name": null,
+                "opaque": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "members": [
+                {
+                  "legacy_clip_id": "clip-a",
+                  "clip_id": "clip-a"
+                },
+                {
+                  "legacy_clip_id": "clip-b",
+                  "clip_id": "clip-b"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "shots": {
+        "shot-placement-8e8a0a3d15e47729e4aa7690672f080b84efe0919c8c72e687e87b5caba73846": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-f9cfa6bcfe48dfb2f257da7e0bda3344e75aa99899006fe8c84532904dcf23a0"
+          }
+        },
+        "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-93a7cecf22a8b01a75752b447540f456f133a4c236af593c35c34793b2592819"
+          }
+        },
+        "shot-placement-f4d8e91b19a1ec8fd672cbc980eef1464ec44422fce988a4edfb410ee73ea075": {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775",
+          "internal_timeline_id": "chapter-1",
+          "internal_timeline_revision_id": "internal-1",
+          "internal_timeline_content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0",
+          "item_id_map": {
+            "item-1": "shot-item-placement-d1275ca4964ec33f78c43ee0540ec2c58ee19226dbc762a978ade32eedd56236"
+          }
+        }
+      },
+      "_runtime_document": {
+        "schema_version": 1,
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "parent_revision": {
+          "revision_id": "parent-1",
+          "payload": {
+            "config": {
+              "tracks": [
+                {
+                  "id": "picture",
+                  "kind": "visual"
+                }
+              ],
+              "clips": [
+                {
+                  "id": "clip-a",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 1,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                },
+                {
+                  "id": "clip-b",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 5,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                }
+              ],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              }
+            },
+            "clips": [
+              {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              },
+              {
+                "id": "clip-b",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 5,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              }
+            ],
+            "registry": {
+              "assets": {
+                "picture": {
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "type": "image"
+                }
+              }
+            },
+            "occurrences": [
+              {
+                "occurrence_id": "occ-0",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "occurrence_id": "occ-1",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "occurrence_id": "occ-2",
+                "shot_id": "chapter-shot",
+                "shot_revision_id": "shot-1",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              }
+            ],
+            "name": "Renamed Film",
+            "unknown": {
+              "opaque": [
+                "parent-1",
+                null
+              ]
+            }
+          },
+          "content_digest": "sha256:97e5d45c4d2f98e97785d87dc9403414f0d74a395658a62bee77ad3ffdafe17f"
+        },
+        "shot_revisions": [
+          {
+            "shot_id": "chapter-shot",
+            "revision_id": "shot-1",
+            "internal_timeline_revision_id": "internal-1",
+            "payload": {
+              "name": "Chapter One",
+              "internal_timeline_revision_id": "internal-1",
+              "items": [
+                {
+                  "item_id": "item-1",
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "metadata": {
+                    "opaque_literal": "item-1"
+                  }
+                }
+              ],
+              "text_bindings": [
+                {
+                  "slot": "narration",
+                  "text": "A chapter"
+                }
+              ],
+              "metadata": {
+                "chapter": true
+              },
+              "unknown": {
+                "keep": null
+              }
+            },
+            "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+          }
+        ],
+        "internal_timeline_revisions": [
+          {
+            "revision_id": "internal-1",
+            "timeline_id": "chapter-1",
+            "payload": {
+              "tracks": [
+                {
+                  "id": "picture",
+                  "kind": "visual"
+                }
+              ],
+              "clips": [
+                {
+                  "id": "clip-a",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 1,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                },
+                {
+                  "id": "clip-b",
+                  "track": "picture",
+                  "asset": "picture",
+                  "clipType": "media",
+                  "at": 5,
+                  "hold": 2,
+                  "app": {
+                    "org.example": {
+                      "literal": "clip-a",
+                      "clear": null
+                    }
+                  }
+                }
+              ],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              },
+              "registry": {
+                "assets": {
+                  "picture": {
+                    "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                    "type": "image"
+                  }
+                }
+              },
+              "source_window": {
+                "start": 4,
+                "end": 9
+              },
+              "unknown": [
+                1,
+                2
+              ]
+            },
+            "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+          }
+        ],
+        "dependency_manifest": {
+          "shots": [
+            {
+              "shot_id": "chapter-shot",
+              "revision_id": "shot-1",
+              "internal_timeline_revision_id": "internal-1",
+              "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+            }
+          ],
+          "internal_timelines": [
+            {
+              "timeline_id": "chapter-1",
+              "revision_id": "internal-1",
+              "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+            }
+          ],
+          "media": [
+            {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "documents": []
+        }
+      }
+    }
+  },
+  "records": [
+    {
+      "ordinal": 0,
+      "command": {
+        "schema_version": 1,
+        "op": "occurrence.delete",
+        "version": "1",
+        "select": "occurrence:occ-1",
+        "args": {},
+        "intent": {
+          "ownership": "occurrence"
+        },
+        "resolved": [
+          "occurrence:occ-1"
+        ],
+        "reads": [
+          {
+            "ref": "parent",
+            "path": [
+              "config",
+              "pinnedShotGroups"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "occurrence:occ-1",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "occurrence_id": "occ-1",
+                "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+                "placement": {
+                  "start_ms": 0,
+                  "track": "picture"
+                },
+                "duration_ms": 10000,
+                "source_offset": 0,
+                "speed": 1,
+                "track": "picture",
+                "unknown": {
+                  "literal": "chapter-shot"
+                },
+                "metadata": null,
+                "provenance": {
+                  "group_migration": {
+                    "legacy_group": {
+                      "shotId": "chapter-shot",
+                      "trackId": "picture",
+                      "clipIds": [
+                        "clip-a",
+                        "clip-b"
+                      ],
+                      "mode": "images",
+                      "name": null,
+                      "opaque": [
+                        null,
+                        false,
+                        0
+                      ]
+                    },
+                    "members": [
+                      {
+                        "legacy_clip_id": "clip-a",
+                        "clip_id": "clip-a"
+                      },
+                      {
+                        "legacy_clip_id": "clip-b",
+                        "clip_id": "clip-b"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "ref": "occurrence:occ-1/shot",
+            "path": [
+              "shot_id"
+            ],
+            "state": {
+              "state": "present",
+              "value": "chapter-shot"
+            }
+          },
+          {
+            "ref": "occurrence:occ-1/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "occurrence:occ-1",
+            "path": [
+              "occurrence_id"
+            ],
+            "state": {
+              "state": "present",
+              "value": "occ-1"
+            }
+          },
+          {
+            "ref": "occurrence:occ-1/collection:track",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "occurrence:occ-1/source",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "tracks": [
+                  {
+                    "id": "picture",
+                    "kind": "visual"
+                  }
+                ],
+                "clips": [
+                  {
+                    "id": "clip-a",
+                    "track": "picture",
+                    "asset": "picture",
+                    "clipType": "media",
+                    "at": 1,
+                    "hold": 2,
+                    "app": {
+                      "org.example": {
+                        "literal": "clip-a",
+                        "clear": null
+                      }
+                    }
+                  },
+                  {
+                    "id": "clip-b",
+                    "track": "picture",
+                    "asset": "picture",
+                    "clipType": "media",
+                    "at": 5,
+                    "hold": 2,
+                    "app": {
+                      "org.example": {
+                        "literal": "clip-a",
+                        "clear": null
+                      }
+                    }
+                  }
+                ],
+                "output": {
+                  "fps": {
+                    "numerator": 30000,
+                    "denominator": 1001
+                  }
+                },
+                "opaque": {
+                  "timestamp": "authored timestamp",
+                  "v": [
+                    null,
+                    false,
+                    0
+                  ]
+                },
+                "registry": {
+                  "assets": {
+                    "picture": {
+                      "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                      "type": "image"
+                    }
+                  }
+                },
+                "source_window": {
+                  "start": 4,
+                  "end": 9
+                },
+                "unknown": [
+                  1,
+                  2
+                ]
+              }
+            }
+          },
+          {
+            "ref": "occurrence:occ-1/shot",
+            "path": [
+              "payload"
+            ],
+            "state": {
+              "state": "present",
+              "value": {
+                "name": "Chapter One",
+                "internal_timeline_revision_id": "internal-1",
+                "items": [
+                  {
+                    "item_id": "item-1",
+                    "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                    "metadata": {
+                      "opaque_literal": "item-1"
+                    }
+                  }
+                ],
+                "text_bindings": [
+                  {
+                    "slot": "narration",
+                    "text": "A chapter"
+                  }
+                ],
+                "metadata": {
+                  "chapter": true
+                },
+                "unknown": {
+                  "keep": null
+                }
+              }
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "occurrence:occ-1",
+            "members": [
+              "occurrence:occ-1/clip:clip-a",
+              "occurrence:occ-1/clip:clip-b"
+            ],
+            "order": [
+              "occurrence:occ-1/clip:clip-a",
+              "occurrence:occ-1/clip:clip-b"
+            ],
+            "boundaries": [
+              "occurrence:occ-1/clip:clip-a",
+              "occurrence:occ-1/clip:clip-b"
+            ],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.tracks",
+            "query_version": 1,
+            "owner": "occurrence:occ-1",
+            "members": [
+              "occurrence:occ-1/track:picture"
+            ],
+            "order": [
+              "occurrence:occ-1/track:picture"
+            ],
+            "boundaries": [
+              "occurrence:occ-1/track:picture"
+            ],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {
+          "collection.owner:collection.clips": "occurrence:occ-1",
+          "collection.owner:collection.tracks": "occurrence:occ-1",
+          "delete.owner": "occurrence:occ-1"
+        },
+        "created": [],
+        "expect": {
+          "occurrence:occ-1::": {
+            "state": "present",
+            "value": {
+              "occurrence_id": "occ-1",
+              "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+              "placement": {
+                "start_ms": 0,
+                "track": "picture"
+              },
+              "duration_ms": 10000,
+              "source_offset": 0,
+              "speed": 1,
+              "track": "picture",
+              "unknown": {
+                "literal": "chapter-shot"
+              },
+              "metadata": null,
+              "provenance": {
+                "group_migration": {
+                  "legacy_group": {
+                    "shotId": "chapter-shot",
+                    "trackId": "picture",
+                    "clipIds": [
+                      "clip-a",
+                      "clip-b"
+                    ],
+                    "mode": "images",
+                    "name": null,
+                    "opaque": [
+                      null,
+                      false,
+                      0
+                    ]
+                  },
+                  "members": [
+                    {
+                      "legacy_clip_id": "clip-a",
+                      "clip_id": "clip-a"
+                    },
+                    {
+                      "legacy_clip_id": "clip-b",
+                      "clip_id": "clip-b"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "authorship": {
+          "occurrence:occ-1::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "occurrence:occ-1",
+          "path": [],
+          "before": {
+            "state": "present",
+            "value": {
+              "occurrence_id": "occ-1",
+              "shot_id": "shot-placement-8004a3cb6beac03533064ef00ae5e1155ed493fb08be839c3732c53c34aec0d9",
+              "placement": {
+                "start_ms": 0,
+                "track": "picture"
+              },
+              "duration_ms": 10000,
+              "source_offset": 0,
+              "speed": 1,
+              "track": "picture",
+              "unknown": {
+                "literal": "chapter-shot"
+              },
+              "metadata": null,
+              "provenance": {
+                "group_migration": {
+                  "legacy_group": {
+                    "shotId": "chapter-shot",
+                    "trackId": "picture",
+                    "clipIds": [
+                      "clip-a",
+                      "clip-b"
+                    ],
+                    "mode": "images",
+                    "name": null,
+                    "opaque": [
+                      null,
+                      false,
+                      0
+                    ]
+                  },
+                  "members": [
+                    {
+                      "legacy_clip_id": "clip-a",
+                      "clip_id": "clip-a"
+                    },
+                    {
+                      "legacy_clip_id": "clip-b",
+                      "clip_id": "clip-b"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "after": {
+            "state": "absent"
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "key": "collection.owner:collection.clips",
+          "ref": "occurrence:occ-1",
+          "policy": "fixed",
+          "dependencies": []
+        },
+        {
+          "key": "collection.owner:collection.tracks",
+          "ref": "occurrence:occ-1",
+          "policy": "fixed",
+          "dependencies": []
+        },
+        {
+          "key": "delete.owner",
+          "ref": "occurrence:occ-1",
+          "policy": "fixed",
+          "dependencies": []
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": []
+    }
+  ],
+  "after_document": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "parent_revision": {
+      "revision_id": "authoring-parent-revision-376cae0c2ce2a16b32f3f0dace822786a2f3d487f6960438633e0c90e46cd048",
+      "content_digest": "sha256:4dafd7ba5fa76c6cc9495dd0f5aab6a389b798a21e077194d59b4542ec589fd4",
+      "payload": {
+        "config": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "registry": {
+          "assets": {
+            "picture": {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "type": "image"
+            }
+          }
+        },
+        "name": "Renamed Film",
+        "unknown": {
+          "opaque": [
+            "parent-1",
+            null
+          ]
+        },
+        "occurrences": [
+          {
+            "occurrence_id": "occ-0",
+            "shot_id": "chapter-shot",
+            "placement": {
+              "start_ms": 0,
+              "track": "picture"
+            },
+            "duration_ms": 10000,
+            "source_offset": 0,
+            "speed": 1,
+            "track": "picture",
+            "unknown": {
+              "literal": "chapter-shot"
+            },
+            "metadata": null,
+            "provenance": {
+              "group_migration": {
+                "legacy_group": {
+                  "shotId": "chapter-shot",
+                  "trackId": "picture",
+                  "clipIds": [
+                    "clip-a",
+                    "clip-b"
+                  ],
+                  "mode": "images",
+                  "name": null,
+                  "opaque": [
+                    null,
+                    false,
+                    0
+                  ]
+                },
+                "members": [
+                  {
+                    "legacy_clip_id": "clip-a",
+                    "clip_id": "clip-a"
+                  },
+                  {
+                    "legacy_clip_id": "clip-b",
+                    "clip_id": "clip-b"
+                  }
+                ]
+              }
+            },
+            "shot_revision_id": "shot-1"
+          },
+          {
+            "occurrence_id": "occ-2",
+            "shot_id": "chapter-shot",
+            "placement": {
+              "start_ms": 0,
+              "track": "picture"
+            },
+            "duration_ms": 10000,
+            "source_offset": 0,
+            "speed": 1,
+            "track": "picture",
+            "unknown": {
+              "literal": "chapter-shot"
+            },
+            "metadata": null,
+            "provenance": {
+              "group_migration": {
+                "legacy_group": {
+                  "shotId": "chapter-shot",
+                  "trackId": "picture",
+                  "clipIds": [
+                    "clip-a",
+                    "clip-b"
+                  ],
+                  "mode": "images",
+                  "name": null,
+                  "opaque": [
+                    null,
+                    false,
+                    0
+                  ]
+                },
+                "members": [
+                  {
+                    "legacy_clip_id": "clip-a",
+                    "clip_id": "clip-a"
+                  },
+                  {
+                    "legacy_clip_id": "clip-b",
+                    "clip_id": "clip-b"
+                  }
+                ]
+              }
+            },
+            "shot_revision_id": "shot-1"
+          }
+        ]
+      }
+    },
+    "shot_revisions": [
+      {
+        "shot_id": "chapter-shot",
+        "revision_id": "shot-1",
+        "internal_timeline_revision_id": "internal-1",
+        "payload": {
+          "name": "Chapter One",
+          "internal_timeline_revision_id": "internal-1",
+          "items": [
+            {
+              "item_id": "item-1",
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "metadata": {
+                "opaque_literal": "item-1"
+              }
+            }
+          ],
+          "text_bindings": [
+            {
+              "slot": "narration",
+              "text": "A chapter"
+            }
+          ],
+          "metadata": {
+            "chapter": true
+          },
+          "unknown": {
+            "keep": null
+          }
+        },
+        "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+      }
+    ],
+    "internal_timeline_revisions": [
+      {
+        "revision_id": "internal-1",
+        "timeline_id": "chapter-1",
+        "payload": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          },
+          "registry": {
+            "assets": {
+              "picture": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "image"
+              }
+            }
+          },
+          "source_window": {
+            "start": 4,
+            "end": 9
+          },
+          "unknown": [
+            1,
+            2
+          ]
+        },
+        "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+      }
+    ],
+    "dependency_manifest": {
+      "shots": [
+        {
+          "shot_id": "chapter-shot",
+          "revision_id": "shot-1",
+          "internal_timeline_revision_id": "internal-1",
+          "content_digest": "sha256:f700f1f65d6111e008f10de355a74ab6b41b766f4ff4070bd62f97206a3f0775"
+        }
+      ],
+      "internal_timelines": [
+        {
+          "timeline_id": "chapter-1",
+          "revision_id": "internal-1",
+          "content_digest": "sha256:40c17ebc38241cfc57e7104070b70d2d858c7cf3c731fbbe410459c99bf5aaa0"
+        }
+      ],
+      "media": [
+        {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "documents": []
+    }
+  }
+}

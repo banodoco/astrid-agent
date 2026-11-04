@@ -91,6 +91,9 @@
         "$ref": "#/$defs/permission"
       }
     },
+    "extensions": {
+      "type": "object"
+    },
     "aliases": {
       "type": "array",
       "items": {

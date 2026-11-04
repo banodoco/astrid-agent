@@ -90,3 +90,44 @@ def test_shots_product_cli_imports_without_canonical_entrypoint_guard(
     with pytest.raises(SystemExit) as excinfo:
         _import_module(module_path, "guarded_module_retained")
     assert excinfo.value.code == 2
+
+@pytest.mark.parametrize('capability,required', [
+    ('h3_av.transform', ['request', 'asset_map']),
+    ('runpod.exec', ['pod_handle']),
+    ('uninstalled.action', []),
+])
+def test_guard_names_exact_public_sdk_action(capability, required, monkeypatch, capsys):
+    import ast
+    from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+
+    monkeypatch.delenv('ASTRID_INTERNAL_INVOCATION', raising=False)
+    with pytest.raises(SystemExit) as caught:
+        guard_canonical_entrypoint(capability)
+    assert caught.value.code == 2
+    message = capsys.readouterr().err
+    assert f"sdk.invoke('{capability}', kind='executor'" in message
+    assert 'import astrid.sdk as sdk' in message
+    assert 'dry_run=True' in message
+    for name in required:
+        assert f"'{name}': '<{name}>'" in message
+    example = next(line for line in message.splitlines() if line.startswith('sdk.invoke('))
+    ast.parse(example)
+
+
+def test_guard_bad_metadata_keeps_action_hint_and_refusal(monkeypatch, capsys):
+    from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+    from astrid.core.pack.manifest import ManifestParseError
+
+    def broken(*args, **kwargs):
+        raise ManifestParseError('fixture invalid metadata')
+    monkeypatch.setattr('astrid.core.pack.manifest.load_manifest_mapping', broken)
+    monkeypatch.delenv('ASTRID_INTERNAL_INVOCATION', raising=False)
+    with pytest.raises(SystemExit, match='2'):
+        guard_canonical_entrypoint('h3_av.transform')
+    assert "sdk.invoke('h3_av.transform'" in capsys.readouterr().err
+
+
+def test_internal_environment_still_allows_guard(monkeypatch):
+    from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+    monkeypatch.setenv('ASTRID_INTERNAL_INVOCATION', '1')
+    guard_canonical_entrypoint('h3_av.transform')

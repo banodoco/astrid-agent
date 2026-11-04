@@ -13,7 +13,6 @@ import pytest
 
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_duplicate import _duplicate, copy_content, id_map
-from astrid.sdk.timeline_checkout import Checkout
 from astrid.sdk.timeline_import_prepare import _document_id, check_import_manifest, prepare_import
 from astrid.sdk.timeline_restructure import is_split
 
@@ -88,21 +87,23 @@ def test_duplicate_accepts_a_file_source_through_shared_copy_path(tmp_path, monk
     path = tmp_path / "timeline.json"
     path.write_text(json.dumps(source), encoding="utf-8")
 
+    calls = []
+
     class Timelines:
-        def create_empty(self, **_kwargs):
-            return SimpleNamespace(ok=True, data={"timeline_id": "file-duplicate"}, error=None)
+        def import_timeline(self, project, body, **kwargs):
+            calls.append((project, body, kwargs))
+            return SimpleNamespace(ok=True, data={"timeline_id": body["timeline_id"], "new_head": "new-head"})
 
     class Client:
         timelines = Timelines()
+        projects = SimpleNamespace(show=lambda ref: SimpleNamespace(ok=True, data={"project_id": ref}))
 
-    monkeypatch.setattr(Checkout, "open", classmethod(
-        lambda cls, project, timeline, **_kwargs: cls({**copy.deepcopy(source), "project_id": project, "timeline_id": timeline})
-    ))
-    monkeypatch.setattr(Checkout, "check", lambda self: SimpleNamespace(valid=True, blocking=[], problems=[]))
-    monkeypatch.setattr(Checkout, "publish", lambda self, *_args, **_kwargs: {"old_head": None, "new_head": "new-head"})
-    result = _duplicate(Client(), "p", path, slug=None, name=None, revision_id=None)
+    monkeypatch.setattr("astrid.sdk.timeline_export._list_transcript_documents", lambda *_args: [])
+    result = _duplicate(Client(), "p", path, slug="file-duplicate", name=None, revision_id=None)
     assert result["timeline_id"] == "file-duplicate"
     assert result["shots"] == 1
+    assert calls[0][1]["source"] == {"via": "python"}
+    assert calls[0][1]["publication"]["expected_head"] is None
 
 
 def test_check_import_manifest_reports_unpinned_missing_and_different():
@@ -252,7 +253,10 @@ def test_manifest_inventory_allows_target_revision_difference_for_unpinned_eleme
 def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypatch):
     source = _chapter_bundle()
     source_project = source["project_id"]
-    first_shot_id = source["placements"][0]["shot_id"]
+    # Use the chapter whose selected internal media is singular, so the new
+    # shot-item mirror names the same selected media rather than competing
+    # with a cross-chapter piece.
+    first_shot_id = source["placements"][-1]["shot_id"]
     first_shot = source["shots"][first_shot_id]
     media_id = next(iter(first_shot["internal_timeline"]["registry"]["assets"].values()))["media_id"]
     source_document_id = _document_id(source_project, media_id, "default")
@@ -272,7 +276,6 @@ def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypa
     first_shot["payload"]["items"] = [{
         "item_id": "source-item",
         "media_id": media_id,
-        "selected_item_id": "source-item",
         "metadata": {"role": "primary_visual"},
     }]
     _inventory(monkeypatch, [])
@@ -309,7 +312,8 @@ def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypa
     copied_item = next(row["payload"]["items"][0] for row in result["publication"]["shot_revisions"]
                        if row["payload"].get("items"))
     assert copied_item["item_id"] != "source-item"
-    assert copied_item["selected_item_id"] == copied_item["item_id"]
+    assert copied_item["media_id"] == media_id
+    assert "selected_item_id" not in copied_item
     assert source_project != "target-project"
 
 

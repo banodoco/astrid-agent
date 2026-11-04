@@ -16,6 +16,7 @@ from typing import Any, Mapping
 from astrid.core._shared.jsonio import write_json_atomic
 from astrid.core._shared.result_manifest import build_manifest
 from astrid.core.contracts.errors import AstridError, render_astrid_error
+from astrid.core.generation.availability import require_action_available
 from astrid.core.contracts.run_status import RunStatus
 from astrid.packs.training.shared.interfaces import ComputeHandle, RunPodHandle
 
@@ -76,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(raw_argv)
     try:
         return int(args.handler(args))
+    except AstridError as exc:
+        return render_astrid_error(exc)
     except (
         TrainingRunBudgetError,
         TrainingRunConfigError,
@@ -103,6 +106,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    require_action_available("training.checkpoint_review_sampler")
     parsed = load_training_run_config(args.config)
     config = parsed.data
     run_dir = _resolve_run_dir(args.out, parsed)

@@ -1,0 +1,108 @@
+{
+  "parent_revision": {
+    "project_id": "project-demo",
+    "timeline_id": "timeline-1",
+    "revision_id": "image-cap-parent",
+    "payload": {
+      "config": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual",
+            "label": "Picture",
+            "fit": "cover"
+          }
+        ],
+        "clips": [],
+        "output": {
+          "fps": 30,
+          "resolution": "1920x1080",
+          "file": "output.mp4"
+        },
+        "theme_overrides": {
+          "visual": {
+            "canvas": {
+              "width": 1920,
+              "height": 1080,
+              "fps": 30
+            }
+          }
+        }
+      },
+      "registry": {
+        "assets": {}
+      },
+      "occurrences": [
+        {
+          "occurrence_id": "image-occurrence",
+          "shot_id": "image-shot",
+          "shot_revision_id": "image-shot-revision",
+          "placement": {
+            "start_ms": 0,
+            "track": "picture"
+          },
+          "duration_ms": 4000,
+          "source_offset": 0,
+          "speed": 1,
+          "gain": 1,
+          "mute": false
+        }
+      ]
+    },
+    "content_digest": "sha256:76135166d9ba031260652b35e28e0acc81aec504c353c47db4e12fcbc57e7e9c"
+  },
+  "shot_revisions": [
+    {
+      "project_id": "project-demo",
+      "shot_id": "image-shot",
+      "revision_id": "image-shot-revision",
+      "internal_timeline_revision_id": "image-internal",
+      "payload": {
+        "name": "Image cap analog",
+        "text_bindings": []
+      },
+      "content_digest": "sha256:f6778c2f114dbcbe5e8fa33fd93ece7719016a8c3fc8c17185fc9b4272e4e446"
+    }
+  ],
+  "internal_timeline_revisions": [
+    {
+      "project_id": "project-demo",
+      "timeline_id": "timeline-1",
+      "revision_id": "image-internal",
+      "payload": {
+        "tracks": [
+          {
+            "id": "picture",
+            "kind": "visual",
+            "label": "Picture",
+            "fit": "cover"
+          }
+        ],
+        "clips": [
+          {
+            "id": "image",
+            "clipType": "image",
+            "asset": "image",
+            "track": "picture",
+            "at": 0,
+            "hold": 5,
+            "effects": {
+              "fade_out": 1
+            }
+          }
+        ],
+        "registry": {
+          "assets": {
+            "image": {
+              "media_id": "sha256:ec19e1c7d1d247d56db54f73e6514c92a82147a1b6ab59eaa30edeebca2e82b6",
+              "content_sha256": "ec19e1c7d1d247d56db54f73e6514c92a82147a1b6ab59eaa30edeebca2e82b6",
+              "type": "image",
+              "resolution": "16x16"
+            }
+          }
+        }
+      },
+      "content_digest": "sha256:6446eee8de4a9f204a3957ed1f9c21c0629ae4ed1b00564dd1b6994a3dda3a2e"
+    }
+  ]
+}

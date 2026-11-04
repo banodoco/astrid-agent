@@ -531,11 +531,9 @@
   {
    "id": "h3_av.transform",
    "disposition": "optional",
-   "evidence_reason": "Local public SDK orchestration; not a host-executable registration. Its seven child actions retain their own managed-worker admission and readiness.",
-   "adapter_family": "provider",
-   "resource_keys": [
-    "provider"
-   ],
+   "evidence_reason": "Tracked local orchestration parent waits on seven delegated children without an exclusive execution resource. Each child retains its own resource reservation, admission and readiness.",
+   "adapter_family": "orchestration",
+   "resource_keys": [],
    "required_env": [],
    "required_binaries": [],
    "required_packages": [

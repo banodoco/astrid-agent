@@ -7,7 +7,7 @@ import { ASTRID_ACP_CONTEXT_SYSTEM_PROMPT } from './astridAcpLauncher.ts';
  * Timeline verbs this prompt is allowed to use. The vendored cli-surface.json proves each verb exists;
  * this list is the prompt's own policy (a subset of what Astrid provides) and is not redundant with it.
  */
-const ASTRID_TIMELINE_VERBS_IN_PROMPT = ['show', 'checkout', 'edit', 'publish'] as const;
+const ASTRID_TIMELINE_VERBS_IN_PROMPT = ['show'] as const;
 
 /**
  * Flags the removed `retime-clip` route accepted. Some now exist on other verbs (`--hold` on
@@ -78,6 +78,12 @@ const PROMPT_INVOCATIONS = promptInvocations(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).m
 describe('ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands', () => {
   it('does not reference the removed retime-clip command', () => {
     expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).not.toContain('retime-clip');
+  });
+
+  it('routes timeline editing through the rendering skill and omits the retired publish command', () => {
+    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).toContain('rendering skill');
+    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).toContain('Timeline editing');
+    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).not.toContain('astrid-tools timelines publish');
   });
 
   it('only uses timeline verbs that the current Astrid CLI provides', () => {

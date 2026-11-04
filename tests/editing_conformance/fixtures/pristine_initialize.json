@@ -1,0 +1,695 @@
+{
+  "app_parent": {
+    "slug": "main",
+    "name": "Main",
+    "config": {
+      "output": {
+        "resolution": "1280x720",
+        "fps": 30,
+        "file": "output.mp4",
+        "background": null,
+        "background_scale": null
+      },
+      "clips": [],
+      "tracks": [
+        {
+          "id": "V1",
+          "kind": "visual",
+          "label": "V1",
+          "scale": 1,
+          "fit": "contain",
+          "opacity": 1,
+          "blendMode": "normal"
+        },
+        {
+          "id": "A1",
+          "kind": "audio",
+          "label": "A1",
+          "scale": 1,
+          "fit": "contain",
+          "opacity": 1,
+          "blendMode": "normal"
+        }
+      ]
+    },
+    "registry": {
+      "assets": {}
+    },
+    "clips": [],
+    "occurrences": []
+  },
+  "commands": [
+    {
+      "schema_version": 1,
+      "op": "timeline.init",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "name": "Main",
+        "slug": "main",
+        "output": {
+          "resolution": "1280x720",
+          "fps": 30,
+          "file": "output.mp4",
+          "background": null,
+          "background_scale": null
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "config": {
+                "clips": [],
+                "tracks": []
+              },
+              "registry": {},
+              "clips": []
+            }
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "name"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "slug"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "registry",
+            "assets"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [],
+      "bindings": {},
+      "created": [],
+      "expect": {
+        "parent::config.output": {
+          "state": "absent"
+        },
+        "parent::name": {
+          "state": "absent"
+        },
+        "parent::slug": {
+          "state": "absent"
+        },
+        "parent::registry.assets": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent::config.output": "direct",
+        "parent::name": "direct",
+        "parent::slug": "direct",
+        "parent::registry.assets": "direct"
+      }
+    },
+    {
+      "schema_version": 1,
+      "op": "track.create",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "id": "V1",
+          "kind": "visual",
+          "label": "V1",
+          "scale": 1,
+          "fit": "contain",
+          "opacity": 1,
+          "blendMode": "normal"
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent/track:V1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "track.create",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {},
+      "created": [
+        "parent/track:V1"
+      ],
+      "expect": {
+        "parent/track:V1::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/track:V1::": "direct"
+      }
+    },
+    {
+      "schema_version": 1,
+      "op": "track.create",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "id": "A1",
+          "kind": "audio",
+          "label": "A1",
+          "scale": 1,
+          "fit": "contain",
+          "opacity": 1,
+          "blendMode": "normal"
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent/track:A1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "track.create",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:V1"
+          ],
+          "order": [
+            "parent/track:V1"
+          ],
+          "boundaries": [
+            "parent/track:V1"
+          ],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {},
+      "created": [
+        "parent/track:A1"
+      ],
+      "expect": {
+        "parent/track:A1::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/track:A1::": "direct"
+      }
+    }
+  ],
+  "records": [
+    {
+      "ordinal": 0,
+      "command": {
+        "schema_version": 1,
+        "op": "timeline.init",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "name": "Main",
+          "slug": "main",
+          "output": {
+            "resolution": "1280x720",
+            "fps": 30,
+            "file": "output.mp4",
+            "background": null,
+            "background_scale": null
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "config": {
+                  "clips": [],
+                  "tracks": []
+                },
+                "registry": {},
+                "clips": []
+              }
+            }
+          },
+          {
+            "ref": "parent",
+            "path": [
+              "config",
+              "output"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent",
+            "path": [
+              "name"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent",
+            "path": [
+              "slug"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent",
+            "path": [
+              "registry",
+              "assets"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [],
+        "bindings": {},
+        "created": [],
+        "expect": {
+          "parent::config.output": {
+            "state": "absent"
+          },
+          "parent::name": {
+            "state": "absent"
+          },
+          "parent::slug": {
+            "state": "absent"
+          },
+          "parent::registry.assets": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent::config.output": "direct",
+          "parent::name": "direct",
+          "parent::slug": "direct",
+          "parent::registry.assets": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output"
+          ],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "resolution": "1280x720",
+              "fps": 30,
+              "file": "output.mp4",
+              "background": null,
+              "background_scale": null
+            }
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "name"
+          ],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": "Main"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "slug"
+          ],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": "main"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "registry",
+            "assets"
+          ],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {}
+          }
+        }
+      ],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "config": {
+                "clips": [],
+                "tracks": []
+              },
+              "registry": {},
+              "clips": []
+            }
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "name"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "slug"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "registry",
+            "assets"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [],
+      "bindings": [],
+      "created": [],
+      "dependencies": [],
+      "derived_writes": []
+    },
+    {
+      "ordinal": 1,
+      "command": {
+        "schema_version": 1,
+        "op": "track.create",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "id": "V1",
+            "kind": "visual",
+            "label": "V1",
+            "scale": 1,
+            "fit": "contain",
+            "opacity": 1,
+            "blendMode": "normal"
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent/track:V1",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "track.create",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {},
+        "created": [
+          "parent/track:V1"
+        ],
+        "expect": {
+          "parent/track:V1::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/track:V1::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/track:V1",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "id": "V1",
+              "kind": "visual",
+              "label": "V1",
+              "scale": 1,
+              "fit": "contain",
+              "opacity": 1,
+              "blendMode": "normal"
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "ref": "parent/track:V1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "track.create",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": [],
+      "created": [
+        {
+          "ref": "parent/track:V1",
+          "kind": "track",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": []
+    },
+    {
+      "ordinal": 2,
+      "command": {
+        "schema_version": 1,
+        "op": "track.create",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "id": "A1",
+            "kind": "audio",
+            "label": "A1",
+            "scale": 1,
+            "fit": "contain",
+            "opacity": 1,
+            "blendMode": "normal"
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent/track:A1",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "track.create",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/track:V1"
+            ],
+            "order": [
+              "parent/track:V1"
+            ],
+            "boundaries": [
+              "parent/track:V1"
+            ],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {},
+        "created": [
+          "parent/track:A1"
+        ],
+        "expect": {
+          "parent/track:A1::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/track:A1::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/track:A1",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "id": "A1",
+              "kind": "audio",
+              "label": "A1",
+              "scale": 1,
+              "fit": "contain",
+              "opacity": 1,
+              "blendMode": "normal"
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "ref": "parent/track:A1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "track.create",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:V1"
+          ],
+          "order": [
+            "parent/track:V1"
+          ],
+          "boundaries": [
+            "parent/track:V1"
+          ],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": [],
+      "created": [
+        {
+          "ref": "parent/track:A1",
+          "kind": "track",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": []
+    }
+  ],
+  "s2_semantic_sha256": "344be9aa869ec5d2ce24ba3f0fc7adf60ec185e00f6495801873d9a9f4c6c19b"
+}

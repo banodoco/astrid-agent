@@ -317,6 +317,29 @@ def occurrences_from_bundle(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
             "shot": shot,
             "registry": _map(_map(internal.get("registry")).get("assets")),
         })
+    if not placements:
+        # A genuine flat composition has no child placement to bound it. Project
+        # its real parent clips without authoring a shot, occurrence or cut tag.
+        # Canonical frame arithmetic validates timing and matches the Player.
+        from .duration import clip_end_frame, clip_start_frame, timeline_duration_seconds
+
+        parent = _map(bundle.get("parent"))
+        if not parent.get("clips"):
+            return []
+        fps = bundle_fps(bundle)
+        extent = timeline_duration_seconds(parent, fps)
+        flat = occurrences_from_snapshot(parent)
+        # Sound contributes to render extent, never manufactures picture cuts.
+        if not any(not span["audio"] for occurrence in flat for span in occurrence["spans"]):
+            return []
+        for occurrence in flat:
+            for span in occurrence["spans"]:
+                span["start"] = clip_start_frame(span["clip"], fps) / fps
+                span["end"] = clip_end_frame(span["clip"], fps) / fps
+            occurrence["start"] = 0.0
+            occurrence["end"] = extent
+            occurrence["registry"] = _map(_map(parent.get("registry")).get("assets"))
+        return flat
     return occurrences
 
 

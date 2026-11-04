@@ -13,6 +13,10 @@ from astrid.core.env_vars import (
     ASTRID_ENV_FILE,
     ASTRID_INTERNAL_INVOCATION,
     ASTRID_NODE_EXECUTABLE,
+    ASTRID_REMOTION_VALIDATION_PATH,
+    ASTRID_REMOTION_VALIDATION_SHA256,
+    ASTRID_REMOTION_VALIDATION_LAUNCH,
+    ASTRID_REMOTION_VALIDATION_ROLE,
     ASTRID_REMOTION_PROJECT_DIR,
     ASTRID_VIBECOMFY_CHECKOUT,
 )
@@ -88,6 +92,7 @@ _ASTRID_PROPAGATED_ENV = frozenset(
         ASTRID_HOME_ENV,
         ASTRID_ENV_FILE,
         "ASTRID_INSTALL_PROGRAM_ROOT",
+        "ASTRID_HOST_EXECUTION_PROFILE",
         TIMELINE_SCHEMA_PYTHONPATH_ENV,
         ASTRID_VIBECOMFY_CHECKOUT,
         PROJECTS_ROOT_ENV,
@@ -102,8 +107,14 @@ _ASTRID_PROPAGATED_ENV = frozenset(
         TASK_ITERATION_ENV,
         PACKS_PATH_ENV,
         ASTRID_NODE_EXECUTABLE,
+        ASTRID_REMOTION_VALIDATION_PATH,
+        ASTRID_REMOTION_VALIDATION_SHA256,
+        ASTRID_REMOTION_VALIDATION_LAUNCH,
+        ASTRID_REMOTION_VALIDATION_ROLE,
+
 
         ASTRID_REMOTION_PROJECT_DIR,
+        "ASTRID_REMOTION_BROWSER_EXECUTABLE",
         "ASTRID_RENDER_INHERIT_PROCESS_GROUP",
         # RunPod executor manifests explicitly declare this host-owned path.
         # It must survive the supervised host -> executor -> SSH child
@@ -162,6 +173,8 @@ def build_child_subprocess_env(
                 env[key] = str(value)
 
     for key, value in (explicit_env or {}).items():
+        if key in {"ASTRID_HOST_EXECUTION_PROFILE", ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256, ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE}:
+            raise SubprocessEnvPolicyError("launch validation references are parent-owned")
         if _is_secret_name(str(key)) and str(key) not in secret_names:
             raise SubprocessEnvPolicyError(f"secret env {key!r} must be supplied through secret_values")
         env[str(key)] = str(value)

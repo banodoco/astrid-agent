@@ -192,9 +192,9 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
     """Read the selected Runtime's canonical workspace schema without mutation."""
     script = (
         "import json,sys; from pathlib import Path; "
-        "from runtime_protocol.upgrade import inspect_canonical_schema, USER_APP_STATE_TARGET_SCHEMA_VERSION; "
+        "from runtime_protocol.upgrade import inspect_canonical_schema; from runtime_protocol.store import SCHEMA_VERSION; "
         "value=inspect_canonical_schema(Path(sys.argv[1]), expected_realm_id=sys.argv[2]); "
-        "print(json.dumps({'identity':value,'target':USER_APP_STATE_TARGET_SCHEMA_VERSION}))"
+        "print(json.dumps({'identity':value,'target':SCHEMA_VERSION}))"
     )
     value = json.loads(backend.run(
         [version.python, "-X", "utf8", "-I", "-c", script, realm["realm_root"], realm["realm_id"]],
@@ -308,16 +308,17 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
-    if save is None:
+    persist_callback = save
+    if persist_callback is None:
         installer = Installer(root, data, backend)
 
-        def save(step, **details):
+        def persist_default(step, **details):
             installer._save_update(transaction, step, **details)
-    persist = save
+        persist_callback = persist_default
 
-    def save(step, **details):
+    def write_step(step, **details):
         transaction.update(step=step, **details)
-        persist(step, **details)
+        persist_callback(step, **details)
 
     # New journals publish staged before any stop or workspace backup. The old
     # v1 migration writer published staged only after stop and backup, so it
@@ -325,7 +326,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     if (transaction.get("step") == "staged"
             and transaction.get("transaction_kind") in {"migration", "app"}
             and transaction.get("backup") is None):
-        save("complete", outcome="recovered_before_stop")
+        write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
     absolute(realm["realm_root"])
@@ -342,7 +343,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
-        save=save,
+        save=write_step,
     )
     install_launcher(root)
 
@@ -374,6 +375,13 @@ class Installer:
             self.backend.open()
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
+        custody = getattr(self.backend, "_pinokio_custody", None)
+        if custody is not None:
+            custody.check()
+            context = transaction.setdefault("transaction_context", {})
+            if not isinstance(context, dict):
+                raise ValueError("Invalid stopped-update activation context.")
+            context["pinokio_lifetime_custody"] = True
         transaction.update(step=step, **details)
         write_json(absolute(self.root / "update-transaction.json"), transaction)
         binding = transaction.get("update_job")
@@ -608,10 +616,20 @@ class Installer:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
             self.say("Installing Astrid.")
+            same_schema = False
+            prepared_candidate: Version | None = None
 
             def prepare() -> Version:
+                nonlocal prepared_candidate, same_schema
+                if prepared_candidate is not None:
+                    return prepared_candidate
                 candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
+                old_schema = inspect_schema(self.backend, old, realm, require_current=False)
+                candidate_schema = inspect_schema(self.backend, candidate, realm, require_current=False)
+                same_schema = (old_schema == candidate_schema
+                               and candidate_schema["identity"]["version"] == candidate_schema["target"])
+                prepared_candidate = candidate
                 return candidate
 
             def migrate(candidate: Version, data: Path, _realm: dict) -> None:
@@ -645,13 +663,19 @@ class Installer:
                 else:
                     (self.root / "current").unlink(missing_ok=True)
 
-            candidate = self._run_update_transaction(
+            if realm is None:
+                raise ValueError("The selected workspace identity is unavailable.")
+            # Choose the workspace policy before constructing the transaction;
+            # the shared runner receives its callbacks as concrete values.
+            prepare()
+            self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self.backend.stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=self.backend.backup, migrate=migrate, kind="migration",
+                backup=None if same_schema else self.backend.backup,
+                migrate=None if same_schema else migrate, kind="migration",
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:
@@ -659,39 +683,39 @@ class Installer:
             self._ready()
             return
 
-        candidate = None
+        candidate_version: Version | None = None
         backup = None
         try:
             self.say("Installing Astrid.")
-            candidate = self.backend.stage(manifest, self.root, self.data)
+            candidate_version = self.backend.stage(manifest, self.root, self.data)
             if reinstall:
-                realm = self.backend.attach_existing(candidate, self.data)
+                realm = self.backend.attach_existing(candidate_version, self.data)
             else:
-                realm = self.backend.create(candidate, self.data)
-            switch(self.root, candidate)
+                realm = self.backend.create(candidate_version, self.data)
+            switch(self.root, candidate_version)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
-            self.backend.register(candidate, self.data)
+            self.backend.register(candidate_version, self.data)
             install_launcher(self.root)
             if self.managed_by != "pinokio":
-                self.backend.start(candidate, self.data)
+                self.backend.start(candidate_version, self.data)
             if self.managed_by != "pinokio":
-                self.backend.verify(candidate, self.data, realm["realm_id"])
+                self.backend.verify(candidate_version, self.data, realm["realm_id"])
             else:
                 # Creation/adoption/migration is verified through Runtime's
                 # workspace API; Pinokio starts and checks the browser door.
-                if self.backend.workspace(candidate, self.data)["realm_id"] != realm["realm_id"]:
+                if self.backend.workspace(candidate_version, self.data)["realm_id"] != realm["realm_id"]:
                     raise VerificationError("The installed workspace identity changed.")
             try:
-                self.backend.sync_skills(candidate)
+                self.backend.sync_skills(candidate_version)
             except Exception:  # noqa: BLE001 - skill setup must never fail installation
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
-            self.backend.finish(old, candidate, backup)
+            self.backend.finish(old, candidate_version, backup)
         except (Exception, KeyboardInterrupt) as failure:
             if is_lifecycle_refusal(failure):
                 raise
-            if candidate is not None:
+            if candidate_version is not None:
                 try:
-                    self.backend.stop(candidate, self.data)
+                    self.backend.stop(candidate_version, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
                     if is_lifecycle_refusal(cleanup):
                         raise cleanup

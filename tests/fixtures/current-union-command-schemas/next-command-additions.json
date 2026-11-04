@@ -1,0 +1,525 @@
+{
+  "905cdcfa": {
+    "definitions": {
+      "AssembledTargetArgs": {
+        "type": "object",
+        "required": [
+          "replace_clips"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "replace_clips": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^parent/clip:(?!.*::)[^/]+$"
+            }
+          }
+        }
+      },
+      "ClipAddMediaArgs": {
+        "type": "object",
+        "required": [
+          "row",
+          "media"
+        ],
+        "properties": {
+          "row": {
+            "$ref": "#/$defs/ClipAddArgs/properties/row"
+          },
+          "media": {
+            "$ref": "#/$defs/MediaSelection"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "operations": {
+      "timeline.assembled-target": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "timeline.assembled-target"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "type": "string",
+              "pattern": "^(parent|parent/clip:(?!.*::)[^/]+)$",
+              "description": "parent asserts a flat assembly target; a parent clip reference asserts that populated replacement target. Both require the complete ordered parent clip inventory."
+            },
+            "args": {
+              "$ref": "#/$defs/AssembledTargetArgs"
+            },
+            "intent": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "clip.add-media": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "clip.add-media"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "type": "string",
+              "pattern": "^(parent|parent/clip:(?!.*::)[^/]+)$",
+              "description": "parent appends; a stable parent clip reference inserts immediately after that clip. Birth never deletes the selected boundary."
+            },
+            "args": {
+              "$ref": "#/$defs/ClipAddMediaArgs"
+            },
+            "intent": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "487ca1e0": {
+    "definitions": {
+      "TimelineInitArgs": {
+        "type": "object",
+        "description": "App empty-timeline defaults only. Requires authenticated original bootstrap publication; never a root replacement or repair.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "output": {
+            "type": "object",
+            "properties": {
+              "resolution": {
+                "type": "string",
+                "const": "1280x720"
+              },
+              "fps": {
+                "type": "integer",
+                "const": 30
+              },
+              "file": {
+                "type": "string",
+                "const": "output.mp4"
+              },
+              "background": {
+                "type": "null"
+              },
+              "background_scale": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "resolution",
+              "fps",
+              "file",
+              "background",
+              "background_scale"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "name",
+          "slug",
+          "output"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "operations": {
+      "timeline.init": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "timeline.init"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "const": "parent"
+            },
+            "args": {
+              "$ref": "#/$defs/TimelineInitArgs"
+            },
+            "intent": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "9f474fec": {
+    "definitions": {
+      "WordAnchor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "document",
+          "word_ids"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "pattern": "^occurrence:(?!.*::)[^/]+/clip:(?!.*::)[^/]+$"
+          },
+          "document": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "document_id",
+              "version",
+              "content_digest"
+            ],
+            "properties": {
+              "document_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^transcript:[0-9a-f]{64}$"
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "content_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          "word_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^word:[0-9a-f]{64}(?::[1-9][0-9]*)?$"
+            }
+          },
+          "edge": {
+            "enum": [
+              "start",
+              "end"
+            ]
+          },
+          "offset_s": {
+            "type": "number"
+          },
+          "offset_frames": {
+            "type": "integer"
+          }
+        }
+      },
+      "ClipAnchorArgs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "declaration",
+          "choice"
+        ],
+        "properties": {
+          "field": {
+            "enum": [
+              "on",
+              "until"
+            ]
+          },
+          "declaration": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choice": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/WordAnchor"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "operations": {
+      "clip.anchor": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "clip.anchor"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "type": "string",
+              "pattern": "^parent/clip:(?!.*::)[^/]+$"
+            },
+            "args": {
+              "$ref": "#/$defs/ClipAnchorArgs"
+            },
+            "intent": {
+              "type": "object",
+              "properties": {
+                "anchor": {
+                  "const": "follow"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "206f40fe": {
+    "definitions": {
+      "OccurrenceCreateArgs": {
+        "type": "object",
+        "required": [
+          "occurrence_id",
+          "shot_id",
+          "name",
+          "track",
+          "on",
+          "duration"
+        ],
+        "properties": {
+          "occurrence_id": {
+            "type": "string",
+            "pattern": "^(?!.*::)(?=.*\\S)[^/]+$"
+          },
+          "shot_id": {
+            "type": "string",
+            "pattern": "^(?!.*::)(?=.*\\S)[^/]+$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "track": {
+            "type": "string",
+            "pattern": "^(?!.*::)(?=.*\\S)[^/]+$"
+          },
+          "on": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Absolute start in seconds; quantized to parent frames."
+          },
+          "duration": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Occurrence duration in seconds."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "operations": {
+      "occurrence.create": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "occurrence.create"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "const": "parent"
+            },
+            "args": {
+              "$ref": "#/$defs/OccurrenceCreateArgs"
+            },
+            "intent": {
+              "type": "object",
+              "properties": {
+                "ownership": {
+                  "const": "occurrence"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "7afcd2da": {
+    "definitions": {},
+    "operations": {
+      "clip.swap-media": {
+        "if": {
+          "properties": {
+            "op": {
+              "const": "clip.swap-media"
+            }
+          },
+          "required": [
+            "op"
+          ]
+        },
+        "then": {
+          "properties": {
+            "version": {
+              "const": "1"
+            },
+            "select": {
+              "type": "string",
+              "pattern": "^parent/clip:(?!.*::)[^/]+$"
+            },
+            "args": {
+              "$ref": "#/$defs/OccurrenceSwapMediaArgs"
+            },
+            "intent": {
+              "type": "object",
+              "properties": {
+                "ownership": {
+                  "const": "parent"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    "updates": {
+      "Intent": {
+        "type": "object",
+        "properties": {
+          "ripple": {
+            "enum": [
+              "none",
+              "selected",
+              "include-concurrent"
+            ]
+          },
+          "anchor": {
+            "enum": [
+              "follow",
+              "fixed"
+            ]
+          },
+          "ownership": {
+            "enum": [
+              "shared",
+              "occurrence",
+              "parent"
+            ]
+          },
+          "position": {
+            "enum": [
+              "absolute",
+              "relative"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "ClipSetArgs": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "object",
+            "properties": {
+              "hold": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Positive finite source seconds; timeline duration is hold/speed."
+              }
+            },
+            "additionalProperties": false
+          },
+          "clear": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "hold",
+                "asset",
+                "transition"
+              ]
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "values",
+          "clear"
+        ],
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "properties": {
+              "values": {
+                "minProperties": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "clear": {
+                "minItems": 1
+              }
+            }
+          }
+        ],
+        "description": "Bounded raw clip fields. Set hold in source seconds; explicitly remove hold, asset or incoming transition. Clear removes presence, never sets null/empty. Asset assignment requires the scoped clip.swap-media or occurrence.swap-media; transition authoring is outside v1."
+      }
+    }
+  }
+}

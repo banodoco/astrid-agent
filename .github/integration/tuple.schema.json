@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astrid-merge/tuple.schema.json",
+  "title": "Astrid integration tuple",
+  "description": "Immutable identity of one integrated build. Every CI run, receipt and ledger row is bound to a tuple digest (sha256 of the canonical JSON of this object without 'digest').",
+  "type": "object",
+  "required": ["version", "name", "repos", "generated", "toolchain", "created_at"],
+  "properties": {
+    "version": {"const": 1},
+    "name": {"type": "string", "description": "e.g. int/r1@<n> or rc/1"},
+    "repos": {
+      "type": "object",
+      "required": ["runtime", "agent", "app", "pinokio"],
+      "additionalProperties": {"$ref": "#/$defs/repo"},
+      "properties": {
+        "runtime": {"$ref": "#/$defs/repo"}, "agent": {"$ref": "#/$defs/repo"},
+        "app": {"$ref": "#/$defs/repo"}, "pinokio": {"$ref": "#/$defs/repo"},
+        "vibecomfy": {"$ref": "#/$defs/repo"}, "timeline_composition": {"$ref": "#/$defs/repo"}
+      }
+    },
+    "generated": {
+      "type": "object",
+      "description": "Hashes of generated/pinned artifacts that must agree with the repos",
+      "properties": {
+        "runtime_contract_digest": {"type": "string"},
+        "runtime_schema_count": {"type": "integer"},
+        "runtime_operation_count": {"type": "integer"},
+        "agent_runtime_lock_source_commit": {"$ref": "#/$defs/sha"},
+        "app_runtime_lock_source_commit": {"$ref": "#/$defs/sha"},
+        "app_install_manifest_sha256": {"type": "string"},
+        "composition_tarball_sha256": {"type": "string"},
+        "composition_version": {"type": "string"}
+      }
+    },
+    "installed": {"type": "object", "description": "Effective installed identities observed by C-07 (package -> version/hash)"},
+    "toolchain": {"type": "object", "properties": {"python": {"type": "string"}, "node": {"type": "string"}, "npm": {"type": "string"}, "uv": {"type": "string"}}},
+    "workflow_revisions": {"type": "object", "description": "repo -> sha of the workflow files used"},
+    "parent": {"type": "string", "description": "digest of the previous tuple"},
+    "invalidates": {"type": "array", "items": {"type": "string"}, "description": "receipt ids invalidated by this tuple (I-12)"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "digest": {"type": "string"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repo": {"type": "object", "required": ["url", "sha"], "properties": {"url": {"type": "string"}, "ref": {"type": "string"}, "sha": {"$ref": "#/$defs/sha"}}}
+  }
+}

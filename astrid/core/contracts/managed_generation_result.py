@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from astrid.core._shared.result_manifest import (
     ResultManifestError,
@@ -264,11 +266,13 @@ def _validate_outcomes(
         raise ManagedGenerationResultError(
             "successful execution requires at least one output"
         )
-    if execution != "succeeded" and output_count:
+    if execution != "succeeded" and output_count and (
+        retrieval != "succeeded" or verification != "succeeded" or publication != "not_started"
+    ):
         raise ManagedGenerationResultError(
-            "outputs are only allowed when execution outcome succeeded"
+            "partial outputs require successful retrieval/verification and no publication"
         )
-    if execution != "succeeded" and any(
+    if execution != "succeeded" and not output_count and any(
         status != "not_started"
         for status in (retrieval, verification, publication)
     ):
@@ -288,6 +292,66 @@ def _validate_outcomes(
             "publication succeeded without successful verification"
         )
     return normalized
+
+
+def validate_evidence_reference(
+    value: Any, *, field: str, staging_root: str | Path,
+) -> dict[str, Any]:
+    """Validate a portable CAS ref and, when supplied, its attempt-local bytes.
+
+    A local ``path`` is staging context only; publishers remove it after copying
+    the verified bytes. An object ref without a path is checked by Runtime in
+    the task's project during the fenced publication transaction.
+    """
+    reference = dict(_require_mapping(value, field))
+    digest = reference.get("sha256")
+    if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+        raise ManagedGenerationResultError(f"{field}.sha256 must be 64 lowercase hexadecimal characters")
+    size = reference.get("bytes")
+    if type(size) is not int or size < 0:
+        raise ManagedGenerationResultError(f"{field}.bytes must be a non-negative integer")
+    filename = _require_text(reference.get("filename"), f"{field}.filename")
+    if Path(filename).name != filename or filename in {".", ".."} or "\\" in filename:
+        raise ManagedGenerationResultError(f"{field}.filename must be a basename")
+    for key in ("object_id", "digest"):
+        if key in reference and reference[key] not in (digest, f"sha256:{digest}"):
+            raise ManagedGenerationResultError(f"{field}.{key} disagrees with sha256")
+    if "size" in reference and (type(reference["size"]) is not int or reference["size"] != size):
+        raise ManagedGenerationResultError(f"{field}.size disagrees with bytes")
+    if "path" in reference:
+        path = reference["path"]
+        if (not isinstance(path, str) or not path or Path(path).is_absolute()
+                or ".." in Path(path).parts):
+            raise ManagedGenerationResultError(f"{field}.path must be a contained relative path")
+        try:
+            validate_result_manifest({
+                "schema_version": 1, "kind": "managed-evidence", "created": "staged",
+                "inputs": {}, "warnings": [], "outputs": [{
+                    "path": path, "ordinal": 0, "content_hash": f"sha256:{digest}",
+                    "bytes": size,
+                }],
+            }, staging_root=staging_root)
+        except ResultManifestError as exc:
+            raise ManagedGenerationResultError(f"{field}: {exc}") from exc
+    return reference
+
+
+def redact_evidence(value: Any) -> Any:
+    """Remove secrets from observations while retaining public correlation."""
+    if isinstance(value, Mapping):
+        return {key: redact_evidence(item) for key, item in value.items()
+                if key in {"credential_actor", "token_id"} or not re.search(
+                    r"password|secret|token|authorization|api[_-]?key|credential",
+                    key, re.I,
+                )}
+    if isinstance(value, list):
+        return [redact_evidence(item) for item in value]
+    if isinstance(value, str):
+        def endpoint(match: re.Match[str]) -> str:
+            parsed = urlsplit(match.group())
+            return urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
+        return re.sub(r"https?://[^\s\"<>]+", endpoint, value)
+    return value
 
 
 def _validate_profile_fields(payload: Mapping[str, Any]) -> None:
@@ -340,6 +404,15 @@ def validate_managed_generation_result(
 
     inputs = _require_mapping(payload["inputs"], "inputs")
     created = _require_text(payload["created"], "created")
+    try:
+        timestamp = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if timestamp.utcoffset() != timedelta(0):
+            raise ValueError("UTC required")
+    except ValueError as exc:
+        raise ManagedGenerationResultError("created must be a UTC timestamp") from exc
+    for key in ("source", "effective_settings"):
+        if key in inputs:
+            validate_evidence_reference(inputs[key], field=f"inputs.{key}", staging_root=staging_root)
     warnings = payload["warnings"]
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ManagedGenerationResultError("warnings must be a list of strings")
@@ -513,4 +586,6 @@ __all__ = [
     "PHASE_STATUSES",
     "read_managed_generation_result",
     "validate_managed_generation_result",
+    "validate_evidence_reference",
+    "redact_evidence",
 ]

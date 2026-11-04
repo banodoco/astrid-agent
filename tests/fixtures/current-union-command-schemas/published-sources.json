@@ -1,0 +1,32 @@
+{
+  "0.2.1": {
+    "commit": "4bb1d0f7efd2972d7b027fd9f458dbe8dabd0136",
+    "file": "runtime-0.2.1-4bb1d0f7.json",
+    "sha256": "2a4058f883c59457052e4b42f74cc2fa411cf004f98f1c7ef953ecbe894ff427"
+  },
+  "0.2.2": {
+    "commit": "6be970633cc82ab412428151e6bf42f3e7fc3081",
+    "file": "runtime-0.2.2-6be97063.json",
+    "sha256": "460e61c70702f1f6bfa5cd033c8da859c913c3c8839f2a5b928df7691e08a388"
+  },
+  "0.2.3": {
+    "commit": "4c145dc62192f0e942e3ee3922a11488aefe9b41",
+    "file": "runtime-0.2.10-6023cfb.json",
+    "sha256": "472622c45fa6b5c7a425c949516a64a52d83192d3749e78a0f000decd088aee9"
+  },
+  "0.2.8": {
+    "commit": "9f59dd4577e063749056f8c76f73dd156feb54a7",
+    "file": "runtime-0.2.10-6023cfb.json",
+    "sha256": "472622c45fa6b5c7a425c949516a64a52d83192d3749e78a0f000decd088aee9"
+  },
+  "0.2.9": {
+    "commit": "94114269d1ce23ab3224d7eca5a85138ce2b5fed",
+    "file": "runtime-0.2.9-94114269.json",
+    "sha256": "472622c45fa6b5c7a425c949516a64a52d83192d3749e78a0f000decd088aee9"
+  },
+  "0.2.10": {
+    "commit": "6023cfb10307b4c0004642b5fa1995d72ba4f6d1",
+    "file": "runtime-0.2.10-6023cfb.json",
+    "sha256": "472622c45fa6b5c7a425c949516a64a52d83192d3749e78a0f000decd088aee9"
+  }
+}

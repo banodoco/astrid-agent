@@ -16,9 +16,11 @@ import re  # noqa: E402 - imports follow the canonical entrypoint guard
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
+from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, ContextManager
 from types import ModuleType
 
 from astrid.core._shared.result_manifest import (  # noqa: E402
@@ -30,6 +32,8 @@ from astrid.core.cli_choices import add_choice_arg  # noqa: E402
 from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     read_managed_generation_result,
+    validate_evidence_reference,
+    redact_evidence,
 )
 from astrid.packs.vibecomfy.shared.bundle_inputs import (  # noqa: E402
     staged_workflow_path,
@@ -191,6 +195,22 @@ def _stage_managed_asset_manifest(
             raise AstridValueError(f"managed asset destination collision: {destination.name}")
         if not destination.exists():
             destination.write_bytes(data)
+    if not (isinstance(readiness_profile, dict)
+            and isinstance(readiness_profile.get("vibecomfy_session"), dict)):
+        # Local placements upload from engine-input later; record the digests
+        # verified above so video/audio uploads can be checked against them.
+        ledger = input_directory / ".managed-asset-digests.json"
+        if ledger.is_symlink():
+            raise AstridValueError("managed asset digest ledger must not be a symlink")
+        try:
+            digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            digests = {}
+        digests.update({
+            Path(str(record["member"])).name: str(record["sha256"])
+            for record in resolved.manifest["assets"]
+        })
+        ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
     return resolved
 
 
@@ -242,6 +262,18 @@ def _friendly_output_name(source_name: str, fallback: str, taken: set[str]) -> s
     return name
 
 
+def _evidence_snapshot(path: Path, output_root: Path) -> dict[str, Any]:
+    """Retain submitted bytes before conversion or producer execution."""
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    destination = output_root / "outputs" / f"source-{digest}-{path.name}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return {"path": destination.relative_to(output_root).as_posix(),
+            "object_id": f"sha256:{digest}", "sha256": digest,
+            "bytes": len(data), "filename": path.name}
+
+
 def _materialize_managed_generation_result(
     output_root: Path,
     production_result: Any,
@@ -249,6 +281,8 @@ def _materialize_managed_generation_result(
     task_identity: str,
     attempt_identity: str | None = None,
     workflow_path: Path,
+    source_snapshot: dict[str, Any] | None = None,
+    producer_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rebase one producer envelope into the host-owned output spool."""
     output_root = output_root.expanduser().resolve()
@@ -265,7 +299,8 @@ def _materialize_managed_generation_result(
         )
     except ManagedGenerationResultError as exc:
         raise AstridValueError(f"managed-generation result failed validation: {exc}") from exc
-    if any(
+    execution_status = result.outcomes["execution"].status
+    if execution_status == "succeeded" and any(
         result.outcomes[phase].status != expected
         for phase, expected in (
             ("execution", "succeeded"),
@@ -282,6 +317,8 @@ def _materialize_managed_generation_result(
     managed_root = output_root
     managed_storage_root = output_root / "managed-generation"
     outputs_root = output_root / "outputs"
+    if outputs_root.is_symlink() or managed_storage_root.is_symlink():
+        raise AstridValueError("managed output namespaces cannot be symlinks")
     outputs_root.mkdir(parents=True, exist_ok=True)
     rebased_payload = result.to_dict()
     rebased_outputs: list[dict[str, Any]] = []
@@ -295,13 +332,152 @@ def _materialize_managed_generation_result(
         if not source.is_file() or source.is_symlink():
             raise AstridValueError(f"managed output is not a regular file: {output.path}")
         destination = outputs_root / _friendly_output_name(source.name, output.output_port, taken)
-        if destination.exists():
+        if destination.exists() and destination.resolve() != source:
             raise AstridValueError(f"managed output destination collides: {destination.name}")
-        shutil.copy2(source, destination)
+        if destination.resolve() != source:
+            shutil.copy2(source, destination)
         rebased = output.to_dict()
         rebased["path"] = destination.relative_to(managed_root).as_posix()
+        rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
     rebased_payload["outputs"] = rebased_outputs
+    if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
+        original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
+        if original.is_file():
+            source_snapshot = _evidence_snapshot(original, output_root)
+    # The snapshot has been taken before conversion/execution. A producer may
+    # also supply project CAS refs, or declared local evidence with exact bytes.
+    evidence_outputs: list[dict[str, Any]] = []
+    staged_digests = {output.sha256 for output in result.outputs}
+    for key in ("source", "effective_settings"):
+        if key == "source" and source_snapshot and key in result.inputs:
+            declared = result.inputs[key]
+            if (declared["sha256"], declared["bytes"]) != (source_snapshot["sha256"], source_snapshot["bytes"]):
+                raise AstridValueError("producer source identity differs from submitted bytes")
+        reference = source_snapshot if key == "source" and source_snapshot else result.inputs.get(key)
+        if reference is None:
+            rebased_payload["warnings"].append(f"{key} bytes were not reported by the producer")
+            continue
+        reference = validate_evidence_reference(
+            reference, field=f"inputs.{key}",
+            staging_root=output_root if reference is source_snapshot else producer_root,
+        )
+        local_path = reference.pop("path", None)
+        if local_path is not None:
+            source_root = output_root if key == "source" and source_snapshot else producer_root
+            source = source_root / local_path
+            destination = outputs_root / _friendly_output_name(
+                f"evidence-{key}-{reference['filename']}", key, taken,
+            )
+            shutil.copyfile(source, destination)
+            validate_evidence_reference(
+                {**reference, "path": destination.relative_to(output_root).as_posix()},
+                field=f"inputs.{key}", staging_root=output_root,
+            )
+            if reference["sha256"] not in staged_digests:
+                evidence_outputs.append({
+                    "path": destination.relative_to(output_root).as_posix(),
+                    "name": "vibecomfy_run", "output_port": "vibecomfy_run",
+                    "role": "auxiliary", "is_primary": False,
+                    "media_type": mimetypes.guess_type(reference["filename"])[0] or "application/octet-stream",
+                    "content_hash": f"sha256:{reference['sha256']}", "bytes": reference["bytes"],
+                })
+                staged_digests.add(reference["sha256"])
+        reference["object_id"] = f"sha256:{reference['sha256']}"
+        rebased_payload["inputs"][key] = reference
+    context = producer_context or {}
+    rebased_payload["inputs"].setdefault("values", {
+        **context.get("values", {}),
+        **{key: value for key, value in result.inputs.items()
+           if key not in {"source", "effective_settings", "values"}},
+    })
+    producer = rebased_payload["evidence"]["producer"]
+    provenance = context.get("comfy_provenance")
+    if provenance is not None:
+        captured = provenance.evidence()
+        def evidence_mapping(parent, key):
+            # Native producer evidence permits explicit unknown (null) maps.
+            # Fill those with A04 observations just as for an absent map.
+            if parent.get(key) is None:
+                parent[key] = {}
+            return parent[key]
+
+        # Preserve every native producer field. A04's observations fill the
+        # existing evidence profile; source/settings refs are untouched.
+        versions = evidence_mapping(producer, "versions")
+        for side, values in captured["versions"].items():
+            existing = evidence_mapping(versions, side)
+            for key, value in values.items():
+                if isinstance(value, dict) and isinstance(existing.get(key, {}), dict):
+                    nested = existing.setdefault(key, {})
+                    for name, version in value.items():
+                        if version is not None:
+                            nested[name] = version
+                        else:
+                            nested.setdefault(name, None)
+                elif value is not None:
+                    existing[key] = value
+                else:
+                    existing.setdefault(key, None)
+        build = evidence_mapping(producer, "build")
+        for key, value in captured["build"].items():
+            if value is not None:
+                build[key] = value
+            else:
+                build.setdefault(key, None)
+        native_models = producer.setdefault("models", [])
+        for model in captured["models"]:
+            if not any(row.get("name") == model["name"] and row.get("subdir", "") == model["subdir"]
+                       for row in native_models if isinstance(row, dict)):
+                native_models.append(model)
+        producer["comfy_provenance"] = captured["comfy_provenance"]
+        for issue in captured["comfy_provenance"]["readiness"]["issues"]:
+            if issue["message"] not in rebased_payload["warnings"]:
+                rebased_payload["warnings"].append(issue["message"])
+    producer.setdefault("engine", {"id": "comfyui"})
+    producer.setdefault("entry", {"id": None, "mode": None, "source": rebased_payload["inputs"].get("source")})
+    producer.setdefault("models", [])
+    producer.setdefault("versions", {
+        "recorded": {"engine": None, "pack": None, "runtime": None},
+        "observed": {"engine": None, "pack": None, "runtime": None},
+    })
+    producer.setdefault("provider", None)
+    build = producer.setdefault("build", {"manifest": None, "sha256": None, "engine": None,
+                                          "recipe": None, "source": None})
+    if isinstance(build, dict):
+        for key in ("manifest", "sha256", "engine", "recipe", "source"):
+            build.setdefault(key, None)
+    for model in producer["models"]:
+        if not isinstance(model, dict):
+            raise AstridValueError("producer models must contain identity objects")
+        for key in ("name", "source", "recorded_sha256", "observed_sha256"):
+            model.setdefault(key, None)
+        recorded, observed = model["recorded_sha256"], model["observed_sha256"]
+        if any(value is not None and (not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None)
+               for value in (recorded, observed)):
+            raise AstridValueError("model identity hashes must be lowercase sha256")
+        model["identity_status"] = ("verified" if recorded and recorded == observed
+                                    else "observed" if observed else "unknown")
+        if recorded and observed and recorded != observed:
+            rebased_payload["warnings"].append(f"model identity differs from recorded hash: {model['name']}")
+    transport = rebased_payload["evidence"]["transport"]
+    transport.setdefault("target", context.get("target"))
+    transport.setdefault("execution_binding", context.get("execution_binding"))
+    transport.setdefault("failure", None)
+    transport.setdefault("cancel", None)
+    if execution_status in {"failed", "interrupted"} and transport["failure"] is None:
+        transport["failure"] = {"code": result.outcomes["execution"].code,
+                                "message": result.outcomes["execution"].message, "native": None}
+    if execution_status == "cancelled" and transport["cancel"] is None:
+        transport["cancel"] = {"requested": None, "stop_observed": None, "native": None}
+    transport.setdefault("target_observed_at", datetime.now(timezone.utc).isoformat())
+    transport["output_ports"] = [
+        {"producer_output_id": output.producer_output_id, "producer_port": output.output_port,
+         "published_port": "vibecomfy_run"} for output in result.outputs
+    ]
+    # Exact source/settings bytes are opaque artifacts; only observations are
+    # redacted. Do not rewrite source bytes to hide facts or claim a new hash.
+    rebased_payload["evidence"] = redact_evidence(rebased_payload["evidence"])
     staged_envelope = managed_storage_root / "managed-generation-result.json"
     staged_envelope.parent.mkdir(parents=True, exist_ok=True)
     staged_envelope.write_text(
@@ -326,19 +502,20 @@ def _materialize_managed_generation_result(
         outputs.append(
             {
                 # The host capability has one declared result port. The
-                # producer port remains authoritative in the preserved neutral
-                # envelope and the per-output producer metadata.
+                # original producer port is retained in transport.output_ports
+                # and the per-output producer metadata.
                 "path": (managed_root / output.path).relative_to(output_root).as_posix(),
                 "name": "vibecomfy_run",
                 "output_port": "vibecomfy_run",
                 "ordinal": output.ordinal,
                 "role": "result",
-                "is_primary": output.ordinal == 0,
+                "is_primary": execution_status == "succeeded" and output.ordinal == 0,
                 "content_hash": f"sha256:{output.sha256}",
                 "bytes": output.bytes,
                 "media_type": output.media_type,
                 "producer": {
-                    "output_port": output.output_port,
+                    "output_port": next(original.output_port for original in result.outputs
+                                        if original.producer_output_id == output.producer_output_id),
                     "producer_output_id": output.producer_output_id,
                     "media_type": output.media_type,
                     "producer_run_id": staged.producer_run_id,
@@ -351,13 +528,16 @@ def _materialize_managed_generation_result(
         )
     envelope_digest = hashlib.sha256(durable_envelope.read_bytes()).hexdigest()
     envelope_ordinal = max((output.ordinal for output in staged.outputs), default=-1) + 1
+    for index, evidence_output in enumerate(evidence_outputs, start=envelope_ordinal + 1):
+        evidence_output["ordinal"] = index
+    outputs.extend(evidence_outputs)
     outputs.append(
         {
             "path": durable_envelope.relative_to(output_root).as_posix(),
             "name": "result_manifest",
             "output_port": "result_manifest",
             "ordinal": envelope_ordinal,
-            "role": "auxiliary",
+            "role": "manifest",
             "is_primary": False,
             "media_type": "application/json",
             "content_hash": f"sha256:{envelope_digest}",
@@ -501,11 +681,49 @@ def _run_and_settle(
     workflow_inputs: str = "{}",
     comfy_url: str = "",
     comfy_output_dir: str = "",
+    placement: str | None = None,
+    execution_request: Any = None,
+    registry: Any = None,
+    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt."""
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
-    from astrid.packs.vibecomfy import production_engine
+    output_root = output_root.expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    # Canonical sibling source.json is the submitted source, not a re-emitted
+    # UI graph. Save it before the backend can convert or delete its scratch.
+    source_path = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
+    source_snapshot = _evidence_snapshot(source_path, output_root) if source_path.is_file() else None
+    from astrid.core.generation.backends.registry import (
+        load_default_generation_backend_registry, resolve_workflow_descriptor,
+    )
+    from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
+
+    # The host injects admitted scheduling intent and its original endpoint
+    # attachment. Neither value is part of the workflow's creative inputs.
+    registry = registry if registry is not None else load_default_generation_backend_registry()
+    if placement is None:
+        # An unplaced call carrying a RunPod target is the legacy prepared route.
+        target = execution_request.get("target") if isinstance(execution_request, dict) else None
+        if isinstance(target, dict) and target.get("kind") == "runpod":
+            placement = "runpod"
+    selected = resolve_workflow_descriptor(
+        registry, placement=placement, execution_request=execution_request,
+    )
+    runpod_route = selected.placement.resolve(placement) == "runpod"
+    if runpod_route:
+        if endpoint_checkout is None:
+            raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
+        if comfy_url or comfy_output_dir:
+            raise AstridValueError("RunPod workflow cannot use local_server overrides")
+    elif endpoint_checkout is not None:
+        raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
+    adapter = selected.create(init_overrides=(
+        {"endpoint_checkout": endpoint_checkout} if runpod_route else None
+    ))
+    if not isinstance(adapter, WorkflowBackendAdapter):
+        raise AstridValueError("selected generation backend does not support workflows")
 
     if comfy_url:
         from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -523,16 +741,12 @@ def _run_and_settle(
     if (readiness_profile_path == "-") != (readiness_profile_hash == "-"):
         raise AstridValueError("readiness profile path and hash must be supplied together")
     if readiness_profile_path != "-":
+        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        from astrid.core.generation.engine_contracts import EngineError
         try:
-            profile_bytes = Path(readiness_profile_path).read_bytes()
-            actual_hash = "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
-            if readiness_profile_hash != actual_hash:
-                raise AstridValueError("Worker readiness profile hash does not match")
-            readiness_profile = json.loads(profile_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AstridValueError("Worker readiness profile could not be read") from exc
-        if not isinstance(readiness_profile, dict):
-            raise AstridValueError("Worker readiness profile must be an object")
+            readiness_profile = read_workflow_profile(readiness_profile_path, readiness_profile_hash)
+        except (EngineError, OSError):
+            raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
     if comfy_url:
         profile_id = "local_server"
     elif isinstance(readiness_profile, dict) and isinstance(readiness_profile.get("vibecomfy_session"), dict):
@@ -567,8 +781,8 @@ def _run_and_settle(
             raise AstridValueError("source_video was supplied by more than one input path")
         workflow_input_bindings["source_video"] = source_video_name
     if "source_video" in workflow_input_bindings:
-        if comfy_url:
-            raise AstridValueError("local_server cannot use source_video")
+        # Under local_server this is a managed asset (``--source-video`` itself
+        # is still rejected above); it is uploaded after the same preflight.
         from astrid.packs.vibecomfy.invocation_preflight import preflight_invocation
 
         staged_input = _source_video_input_directory(
@@ -604,38 +818,97 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
+    if runpod_route and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
+        raise AstridValueError("RunPod workflow endpoint route cannot use the T9 substitute")
     synthetic = _t9_child_dispatch(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,
         task_identity=task_identity, attempt_identity=attempt_identity, execution_identity=execution_identity,
     )
-    if synthetic is None:
-        production_result = production_engine.run_workflow_result_path(
-            workflow_path, output_root, **production_kwargs,
-        )
-    else:
-        run, marker = synthetic
-        production_kwargs["profile_id"] = "t9_cpu_stub"
-        keys = ("ASTRID_T9_MODEL_SUBSTITUTE_MARKER", "ASTRID_T9_MODEL_SUBSTITUTE_CALLS")
-        previous = {key: os.environ.get(key) for key in keys}
-        try:
-            os.environ[keys[0]] = marker["activation_marker_path"]
-            os.environ[keys[1]] = marker["calls_path"]
-            production_result = run(workflow_path, output_root, **production_kwargs)
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+    from astrid.core.generation.engine_readiness import ComfyProvenance
+
+    provenance = ComfyProvenance()
+    provenance.source(workflow_path)
+    producer_context = {
+        "comfy_provenance": provenance,
+        "values": dict(workflow_input_bindings),
+        "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
+                  or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
+        "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
+    }
+    producer_run_id = f"astrid-{uuid4().hex}"
+    try:
+        with provenance.capture():
+            if synthetic is None:
+                production_result = adapter.workflow(
+                    workflow_path, output_root, **production_kwargs,
+                )
+            else:
+                run, marker = synthetic
+                production_kwargs["profile_id"] = "t9_cpu_stub"
+                keys = ("ASTRID_T9_MODEL_SUBSTITUTE_MARKER", "ASTRID_T9_MODEL_SUBSTITUTE_CALLS")
+                previous = {key: os.environ.get(key) for key in keys}
+                try:
+                    os.environ[keys[0]] = marker["activation_marker_path"]
+                    os.environ[keys[1]] = marker["calls_path"]
+                    production_result = run(workflow_path, output_root, **production_kwargs)
+                finally:
+                    for key, value in previous.items():
+                        if value is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+    except BaseException as error:
+        if attempt_identity != "-":
+            # Prefer the producer's explicit receipt, including its verified
+            # partial inventory. Never infer media identities from loose files.
+            envelope = getattr(error, "managed_generation_result_path", None)
+            envelope = Path(envelope) if envelope else output_root / "managed-generation-result.json"
+            if not envelope.exists():
+                cancelled = isinstance(error, (KeyboardInterrupt, SystemExit)) or type(error).__name__ == "HostCancelled"
+                status = "cancelled" if cancelled else "failed"
+                receipt = {
+                    "schema_version": 1, "kind": "managed-generation-result.v1",
+                    "task_id": task_identity, "attempt_id": attempt_identity,
+                    "producer_run_id": producer_run_id, "created": datetime.now(timezone.utc).isoformat(),
+                    "inputs": {"values": workflow_input_bindings}, "outputs": [], "warnings": [],
+                    "outcomes": {"execution": {"status": status, "code": type(error).__name__},
+                                 **{phase: {"status": "not_started"} for phase in ("retrieval", "verification", "publication")}},
+                    "evidence": {"producer": {}, "transport": {
+                        "failure": None if cancelled else {"code": type(error).__name__, "native": None},
+                        "cancel": {"requested": True, "stop_observed": None, "native": None} if cancelled else None,
+                    }},
+                }
+                envelope.write_text(json.dumps(receipt), encoding="utf-8")
+            try:
+                _materialize_managed_generation_result(
+                    output_root, SimpleNamespace(managed_generation_result_path=envelope),
+                    task_identity=task_identity, attempt_identity=attempt_identity,
+                    workflow_path=workflow_path, source_snapshot=source_snapshot,
+                    producer_context=producer_context,
+                )
+            except Exception as evidence_error:
+                # Preserve the original execution failure for the host. The
+                # rejected producer receipt remains in the attempt for recovery.
+                error.add_note(f"producer evidence could not be materialized: {type(evidence_error).__name__}")
+        raise
 
     if production_result.managed_generation_result_path is not None:
-        return _materialize_managed_generation_result(
+        manifest = _materialize_managed_generation_result(
             output_root,
             production_result,
             task_identity=task_identity,
             attempt_identity=(None if attempt_identity == "-" else attempt_identity),
             workflow_path=workflow_path,
+            source_snapshot=source_snapshot,
+            producer_context=producer_context,
         )
+        execution = manifest["managed_generation_result"]["outcomes"]["execution"]
+        if execution["status"] != "succeeded":
+            raise AstridError(
+                execution.get("message") or f"producer execution {execution['status']}",
+                code=execution.get("code") or f"producer_{execution['status']}",
+            )
+        return manifest
 
     inventory = production_result.outputs
     if comfy_url:
@@ -687,6 +960,32 @@ def _run_and_settle(
             }
         )
 
+    if attempt_identity != "-":
+        # Older producers may expose only a verified inventory. Keep it in
+        # the same run-result profile and state unavailable facts explicitly.
+        payload = {
+            "schema_version": 1, "kind": "managed-generation-result.v1",
+            "task_id": task_identity, "attempt_id": attempt_identity,
+            "producer_run_id": producer_run_id, "created": datetime.now(timezone.utc).isoformat(),
+            "inputs": {"values": workflow_input_bindings}, "warnings": [],
+            "outputs": [{
+                "producer_output_id": f"{producer_run_id}:{row['ordinal']}",
+                "output_port": row["name"], "ordinal": row["ordinal"], "path": row["path"],
+                "media_type": row["media_type"], "bytes": (output_root / row["path"]).stat().st_size,
+                "sha256": hashlib.sha256((output_root / row["path"]).read_bytes()).hexdigest(),
+            } for row in outputs],
+            "outcomes": {phase: {"status": "not_started" if phase == "publication" else "succeeded"}
+                         for phase in ("execution", "retrieval", "verification", "publication")},
+            "evidence": {"producer": {}, "transport": {}},
+        }
+        envelope = output_root / "managed-generation-result.json"
+        envelope.write_text(json.dumps(payload), encoding="utf-8")
+        return _materialize_managed_generation_result(
+            output_root, SimpleNamespace(managed_generation_result_path=envelope),
+            task_identity=task_identity, attempt_identity=attempt_identity,
+            workflow_path=workflow_path, source_snapshot=source_snapshot, producer_context=producer_context,
+        )
+
     manifest = build_manifest(
         kind="vibecomfy.run",
         inputs={
@@ -708,6 +1007,28 @@ def _run_and_settle(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        from astrid.packs.vibecomfy.endpoint_checkout import (
+            checkout_from_profile, read_host_workflow_execution_request, read_workflow_profile,
+        )
+        request = read_host_workflow_execution_request(os.environ)
+        profile = None
+        if args.readiness_profile_path != "-":
+            profile = read_workflow_profile(args.readiness_profile_path, args.readiness_profile_hash)
+        endpoint_bearing = isinstance(profile, dict) and (
+            "workflow_endpoint" in profile or "endpoint_evidence" in profile
+        )
+        runpod = isinstance(request, dict) and request.get("target", {}).get("kind") == "runpod"
+        if endpoint_bearing and not runpod:
+            raise AstridValueError("workflow endpoint requires its host-admitted execution request")
+        endpoint_checkout = None
+        if runpod:
+            if args.comfy_url or args.comfy_output_dir:
+                raise AstridValueError("RunPod workflow cannot use local_server overrides")
+            endpoint_checkout = checkout_from_profile(
+                profile_path=Path(args.readiness_profile_path), profile_hash=args.readiness_profile_hash,
+                execution_request=request, task_identity=args.task_identity,
+                attempt_identity=args.attempt_identity, execution_identity=args.execution_identity,
+            )
         scratch = (
             args.out.expanduser().resolve().parent
             if args.out is not None
@@ -754,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
+                execution_request=request, placement="runpod" if runpod else None,
+                endpoint_checkout=endpoint_checkout,
             )
     except Exception as exc:
         error = exc if isinstance(exc, AstridError) else AstridError(

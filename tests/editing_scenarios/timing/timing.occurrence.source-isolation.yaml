@@ -1,0 +1,29 @@
+id: timing.occurrence.source-isolation
+source: new
+intent: Nudge only the c1 rocket by one frame and trim/slip the independent music source, retaining its source identity and half-open window.
+fixture: audio-media
+expect: change
+cli:
+  - edit --clip c1.rocket --nudge-frames 1
+  - edit --clip a-music --trim-in 1 --trim-out 3 --slip 2
+sheet:
+  replace:
+    - ['on "viral"', 'on "viral" +1f']
+    - ['for 8s  trim=0..8', 'for 2s  trim=3..5']
+python: |
+  tl.clip("c1.rocket").nudge(frames=1)
+  tl.clip("a-music").trim(in_s=1, out_s=3).slip(2)
+check:
+  - abs(tl.clip("c1.rocket").start - 1.333333) < 1e-6
+  - tl.clip("c1.rocket").asset == "R"
+  - tl.clip("c1.rocket").data["app"]["astrid"]["layer"] == "rocket"
+  - tl.clip("c1.rocket").data["app"]["astrid"]["cut"] == "c1"
+  - tl.clip("c1.rocket").data["app"]["astrid"]["on"] == '"viral" +1f'
+  - >-
+    tl.clip("c2.card").data["app"]["astrid"] == {"layer": "card", "cut": "c2", "for": 1.0}
+  - tl.clip("a-music").asset == "Q"
+  - tl.clip("a-music").data["from"] == 3
+  - tl.clip("a-music").data["to"] == 5
+  - tl.clip("a-music").data["hold"] == 2
+  - abs(tl.clip("a-music").duration - 2) < 1e-6
+  - abs(tl.clip("a-music").start) < 1e-6

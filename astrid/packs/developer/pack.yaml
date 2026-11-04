@@ -1,0 +1,12 @@
+schema_version: 3
+id: developer
+name: Astrid Developer
+version: 1.0.0
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+resources:
+  - kind: skill
+    path: docs/fast-iteration/SKILL.md
+  - kind: skill
+    path: docs/releasing/SKILL.md

@@ -2,23 +2,31 @@
   "files": {
     "astrid/core/timeline/schema/timeline-config.schema.json": {
       "from": "contract/schemas/timeline-config.schema.json",
-      "sha256": "sha256:f52b82024ecd44a5e6c9c68d5cb326d50d70efe9aaad6f8ac6352ea1c87b97b1"
+      "sha256": "sha256:f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
     },
     "astrid_runtime_client/__init__.py": {
       "from": "packages/python/astrid_runtime_client/__init__.py",
-      "sha256": "sha256:fdcb09cadc13d218a4182272589e14ce02c889638305cae4593ca6f3d5e38842"
+      "sha256": "sha256:3892dbf37a38b4fb8222056a41bfed477c35345aa7f85e21c25ec65248247787"
     },
     "astrid_runtime_client/contract_metadata.py": {
       "from": "packages/python/astrid_runtime_client/contract_metadata.py",
-      "sha256": "sha256:29aed272e741e526d080b11f3a785c2adc95f2a4bdde4b188345f05fc0f1affc"
+      "sha256": "sha256:794471df339a1bf0d2823f88816162039f1930e48e8df3c9815d0a316244c1f8"
     },
     "astrid_runtime_client/generated.py": {
       "from": "packages/python/astrid_runtime_client/generated.py",
-      "sha256": "sha256:1f2b168abf3a27f70136b9049738a1ae5f39b9c06f11539a12567a8740ef00c1"
+      "sha256": "sha256:a37270d78067610509b25f64f45ac55a57d9e43506fc172a0747277069845c79"
+    },
+    "astrid_runtime_client/timeline_commit_types.py": {
+      "from": "packages/python/astrid_runtime_client/timeline_commit_types.py",
+      "sha256": "sha256:6c0d21d3eb87cff2977f9e33a5b4d0da13676c4ebad0df4c935f39106a45b417"
+    },
+    "tests/fixtures/runtime-responses/commit_conflict_409.json": {
+      "from": "conformance/responses/commit_conflict_409.json",
+      "sha256": "sha256:e06c5818e9c37a1e1118d3e2df2447808277d148553bb3c418e48b1a3c6e4c08"
     },
     "tests/fixtures/runtime-responses/events_page_1_200.json": {
       "from": "conformance/responses/events_page_1_200.json",
-      "sha256": "sha256:6aaaabe512589beddddd5ef64f2307c39d365a99565c5a3291a15933a114be0d"
+      "sha256": "sha256:235b4de800c6a234d537c2607682f0ba9a03331af76c664e4bbf890acba285fb"
     },
     "tests/fixtures/runtime-responses/events_page_2_200.json": {
       "from": "conformance/responses/events_page_2_200.json",
@@ -36,9 +44,9 @@
       "from": "conformance/responses/not_found_404.json",
       "sha256": "sha256:4a40fedbeccd345f24944e4af368c50430593d976a923c12af93ba21faa21af6"
     },
-    "tests/fixtures/runtime-responses/publish_conflict_409.json": {
-      "from": "conformance/responses/publish_conflict_409.json",
-      "sha256": "sha256:19d664d035691202da03b22b858456c49983e253c7485a6347baa1cf350eea57"
+    "tests/fixtures/runtime-responses/retired_route_410.json": {
+      "from": "conformance/responses/retired_route_410.json",
+      "sha256": "sha256:e3b43083786aae88fe3aabaaf8de631803c6a11610607eb7c3527f999aa80292"
     },
     "tests/fixtures/runtime-responses/task_admission_201.json": {
       "from": "conformance/responses/task_admission_201.json",
@@ -59,6 +67,6 @@
   },
   "manifest": "contract/artifacts.json",
   "producer": "astrid-runtime",
-  "producer_version": "sha256:360800da9f4cd08cacf15afbb3b49386df295501473de7c024e1a2636559c083",
-  "source_commit": "ebd412199a9c1e53c3a984d27d335de8b40654a1"
+  "producer_version": "sha256:37a460109f3644e71010dd7626ea15cfbffe8e6e5705470d5ea56baa2b2a3576",
+  "source_commit": "1e6d899efa77a2d6ec247c38250f9748330bb587"
 }

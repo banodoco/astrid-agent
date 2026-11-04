@@ -9,7 +9,8 @@ The regression gate for the `Timeline` domain class. Three assertions:
 3. Astrid's Python allowlists (`_TIMELINE_TOP_ALLOWED`, `_CLIP_ALLOWED`,
    `_TRACK_ALLOWED`) match the canonical Runtime-vendored TimelineConfig JSON
    Schema, with Astrid's documented top-level `app` and clip-level
-   render-provenance extension metadata retained around the renderable shape.
+   render-provenance and opaque `meta` extension metadata retained around the
+   renderable shape.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_PATH = REPO_ROOT / "examples" / "hype.timeline.full.json"
 
-_ASTRID_TOP_LEVEL_OVERLAY = frozenset({"app"})
-_ASTRID_CLIP_OVERLAY = frozenset({"shot_id", "shot_occurrence_id", "shot_name", "elementRef"})
+_ASTRID_TOP_LEVEL_OVERLAY = frozenset({"app", "meta"})
+_ASTRID_CLIP_OVERLAY = frozenset({"shot_id", "shot_occurrence_id", "shot_name", "elementRef", "meta"})
+_ASTRID_TRACK_OVERLAY = frozenset({"meta"})
 
 
 # Make the in-tree astrid package importable when running pytest from
@@ -116,6 +118,31 @@ class TimelineRoundTripFixtureTest(unittest.TestCase):
                 self.assertEqual(after, injected)
                 self.assertEqual(after["tracks"][0]["role"], role)
 
+    def test_opaque_meta_survives_round_trip_at_known_locations(self) -> None:
+        injected = json.loads(self.original_text)
+        meta = {
+            "org.example.notes": {
+                "foreign_id": "asset-that-is-not-a-reference",
+                "ordered": [2, 1],
+                "nullable": None,
+            }
+        }
+        injected["meta"] = meta
+        injected["tracks"][0]["meta"] = meta
+        injected["clips"][0]["meta"] = meta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            in_path = Path(tmp) / "with_meta.json"
+            in_path.write_text(json.dumps(injected, indent=2) + "\n", encoding="utf-8")
+            config = load_timeline(in_path)
+            out_path = Path(tmp) / "after_roundtrip.json"
+            save_timeline(config, out_path)
+            after = json.loads(out_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(after["meta"], meta)
+        self.assertEqual(after["tracks"][0]["meta"], meta)
+        self.assertEqual(after["clips"][0]["meta"], meta)
+
     # ------------------------------------------------------------------
     # 2. Unknown top-level field preservation
     # ------------------------------------------------------------------
@@ -173,7 +200,7 @@ class TimelineRoundTripFixtureTest(unittest.TestCase):
         shared_track = set((track_items.get("properties") or {}).keys())
 
         # The Runtime-vendored schema is the source of truth. Astrid retains the
-        # documented top-level editor metadata overlay and the clip-level
+        # documented top-level/row opaque metadata overlays and the clip-level
         # render-admission provenance overlay around the shape.
         expected_top = shared_top | _ASTRID_TOP_LEVEL_OVERLAY
         self.assertEqual(
@@ -201,7 +228,7 @@ class TimelineRoundTripFixtureTest(unittest.TestCase):
         )
         self.assertEqual(
             set(_TRACK_ALLOWED),
-            shared_track,
+            shared_track | _ASTRID_TRACK_OVERLAY,
             "Track allowlist drift between Astrid (_TRACK_ALLOWED) and "
             "Runtime-vendored schema (TimelineConfig.tracks[]); "
             f"schema-origin={schema_origin}; "

@@ -29,6 +29,16 @@ Lock refresh requires `uv`; lock consumption requires only pip. Review every
 version and hash diff like source code. Never hand-edit one pin without
 regenerating the complete transitive lock.
 
+`make lock-validate` also proves the runtime lock is binary-installable at
+CPython **3.11.13**. It provisions a disposable interpreter and uses `uv pip
+install --dry-run --require-hashes --only-binary :all:` against an empty target
+for each supported release target: macOS arm64 (`aarch64-apple-darwin`), macOS
+x86_64 (`x86_64-apple-darwin`), Windows x86_64
+(`x86_64-pc-windows-msvc`), Linux x86_64 (`x86_64-unknown-linux-gnu`), and
+Linux arm64 (`aarch64-unknown-linux-gnu`). Any source-only pin, missing wheel,
+or hash mismatch fails the lock check. This is lock-resolution evidence, not a
+hosted macOS or Windows installation receipt.
+
 ## Installer source pins and VibeComfy readiness
 
 The installer installs VibeComfy with `--no-deps` beside the Runtime and agent.

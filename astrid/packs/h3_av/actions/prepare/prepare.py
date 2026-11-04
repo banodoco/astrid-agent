@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -16,9 +18,19 @@ from astrid.packs.h3_av.actions.prepare.masks import (
     merge_intervals,
 )
 from astrid.packs.h3_av.shared.errors import PreparationError
-from astrid.packs.h3_av.shared.request import H3Request, _asset_ids
+from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, _asset_ids
 from astrid.packs.h3_av.shared.request_v2 import branch_for
 
+
+class _SourceAVError(H3RequestError, PreparationError):
+    """A G21-shaped source error that remains catchable as PreparationError."""
+
+
+def _missing_ffprobe(message: str) -> _SourceAVError:
+    return _SourceAVError(
+        message, code="H3_SOURCE_AV_FFPROBE", field="source.asset",
+        fix="Install ffprobe and ensure it is available on PATH",
+    )
 
 
 def _file_digest(path: Path) -> str:
@@ -34,7 +46,7 @@ def _video_stream_types(path: Path) -> set[str]:
     """Inspect timeline streams before composition permissions are sealed."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
-        raise PreparationError("Character Swap source inspection requires ffprobe")
+        raise _missing_ffprobe("Character Swap source inspection requires ffprobe")
     try:
         result = subprocess.run(
             [ffprobe, "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(path)],
@@ -78,6 +90,214 @@ def _resolve_assets(request: H3Request, asset_map: Mapping[str, str] | None) -> 
             )
         records.append(record)
     return records
+
+
+def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> None:
+    """Fail before scheduling when a resolved video mask breaks the contract."""
+
+    from astrid.packs.h3_av.shared.compose import CompositionError, iter_mask_frames, probe_mask
+
+    resolved = {
+        str(record["asset"]): Path(str(record["path"]))
+        for record in assets
+        if record.get("status") == "resolved" and isinstance(record.get("path"), str)
+    }
+    duration = request.value["duration"]
+    total = round(float(duration) * 24)
+    for item in request.value["media"]:
+        for edit in item.get("edit", []):
+            mask = edit.get("mask")
+            if edit.get("stream") != "video" or not isinstance(mask, Mapping) or "asset" not in mask:
+                continue
+            mask_id = str(mask["asset"])
+            path = resolved.get(mask_id)
+            if path is None:
+                continue
+            source = resolved.get(str(item["asset"])) if item.get("modality") == "video" else None
+            threshold = mask.get("threshold")
+            start = round(float(edit["during"][0]) * 24)
+            end = round(float(edit["during"][1]) * 24)
+            try:
+                info = probe_mask(path, mask_id=mask_id, source=source, duration=duration)
+                if info["kind"] != "video":
+                    continue
+                width, height = _mask_dimensions(path, mask_id)
+                for index, frame in enumerate(
+                    iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
+                ):
+                    values = set(frame)
+                    if threshold is not None:
+                        values = {255 if value >= threshold else 0 for value in values}
+                    if not values <= {0, 255}:
+                        raise PreparationError(
+                            f"mask video {mask_id!r} frame {index} has values other than 0 and 255"
+                        )
+                    if not start <= index < end and values - {0}:
+                        raise PreparationError(
+                            f"mask video {mask_id!r} frame {index} is non-zero outside the edit's during"
+                        )
+            except CompositionError as exc:
+                raise PreparationError(f"mask video {mask_id!r}: {exc}") from exc
+
+
+def _mask_dimensions(path: Path, mask_id: str) -> tuple[int, int]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise PreparationError(f"mask video {mask_id!r} inspection requires ffprobe")
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    try:
+        width, height = (int(part) for part in result.stdout.strip().split(","))
+    except ValueError as exc:
+        raise PreparationError(f"mask video {mask_id!r} has no readable dimensions") from exc
+    return width, height
+
+
+SOURCE_AV_RATE_CODE = "H3_SOURCE_AV_RATE"
+SOURCE_AV_CONFORM_COMMAND = 'ffmpeg -i IN -vf "fps=24,scale=1024:576,setsar=1" -c:v libx264 -crf 12 -c:a aac OUT'
+SOURCE_AV_CONFORM_HINT = f"conform with: {SOURCE_AV_CONFORM_COMMAND}"
+_SOURCE_AV_RATE = Fraction(24, 1)
+# One output frame at 24 fps, the same bound compose.py applies to continuation audio coverage.
+_SOURCE_AV_TOLERANCE_SECONDS = 1.0 / 24.0
+_SOURCE_AV_BRANCHES = frozenset({"source_backed_v2v", "extension_context"})
+
+
+def _rate_fraction(text: Any) -> Fraction | None:
+    try:
+        rate = Fraction(str(text))
+    except (ValueError, ZeroDivisionError):
+        return None
+    return rate if rate > 0 else None
+
+
+def _seconds(text: Any) -> float | None:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _fps_text(rate: Fraction | None) -> str:
+    return f"{float(rate):.3f} fps" if rate is not None else "unknown fps"
+
+
+def _check_source_av_rate(asset_id: str, path: Path) -> None:
+    """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise _missing_ffprobe(f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rate check requires ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-show_entries",
+                "stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:format=duration",
+                "-of", "json", str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        payload = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _SourceAVError(
+            f"{SOURCE_AV_RATE_CODE}: cannot probe source {asset_id!r}: {exc}",
+            code="H3_SOURCE_AV_PROBE", field="source.asset",
+            fix="Check that ffprobe can read the source and retry",
+        ) from exc
+    except json.JSONDecodeError:
+        payload = None
+    streams = payload.get("streams") if isinstance(payload, Mapping) else None
+    if not isinstance(streams, list):
+        # Not a readable media container, such as a non-media fixture. There is no
+        # measurable frame rate to certify; composition still requires real media.
+        return
+    video = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "video"), None)
+    audio = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "audio"), None)
+    if video is None:
+        raise _SourceAVError(
+            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
+            code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
+        )
+    container = payload.get("format")
+    container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
+    r_rate = _rate_fraction(video.get("r_frame_rate"))
+    avg_rate = _rate_fraction(video.get("avg_frame_rate"))
+    video_duration = _seconds(video.get("duration"))
+    if video_duration is None:
+        video_duration = container_duration
+    audio_duration: float | None = None
+    if audio is not None:
+        audio_duration = _seconds(audio.get("duration"))
+        if audio_duration is None:
+            audio_duration = container_duration
+
+    problems: list[str] = []
+    if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE:
+        problems.append("video is not exactly 24/1 CFR")
+    if (video.get("width"), video.get("height")) != (1024, 576):
+        problems.append("video dimensions are not 1024x576")
+    if video_duration is None or (audio is not None and audio_duration is None):
+        problems.append("durations could not be measured")
+    elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
+        problems.append(
+            f"audio and video durations differ by more than {_SOURCE_AV_TOLERANCE_SECONDS:.6f}s"
+        )
+    if not problems:
+        return
+
+    audio_text = f"{audio_duration:.6f}s" if audio_duration is not None else "none"
+    video_text = f"{video_duration:.6f}s" if video_duration is not None else "unknown"
+    measured = (
+        f"video r_frame_rate={video.get('r_frame_rate')} ({_fps_text(r_rate)}), "
+        f"avg_frame_rate={video.get('avg_frame_rate')} ({_fps_text(avg_rate)}); "
+        f"dimensions {video.get('width')}x{video.get('height')}; "
+        f"video duration {video_text}, audio duration {audio_text}"
+    )
+    hint = SOURCE_AV_CONFORM_HINT
+    codec = audio.get("codec_name") if audio is not None else None
+    if audio is not None and codec != "aac":
+        hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
+    code = SOURCE_AV_RATE_CODE if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE else (
+        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != (1024, 576)
+        else SOURCE_AV_RATE_CODE
+    )
+    raise _SourceAVError(
+        f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
+        f"{'; '.join(problems)}. Measured {measured}. {hint}",
+        code=code, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
+    )
+
+
+def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> None:
+    """Probe each resolved source-backed video input; source-free and audio-only requests are not probed."""
+    value = request.value
+    if value.get("version") == 2:
+        if branch_for(request) not in _SOURCE_AV_BRANCHES:
+            return
+        targets = [
+            str(item["asset"])
+            for item in value["media"]
+            if item.get("role") == "timeline" and item.get("modality") == "video"
+        ]
+    else:
+        source = value.get("source")
+        if value.get("operation") not in {"edit", "continue"} or not isinstance(source, Mapping):
+            return
+        targets = [str(source["asset"])]
+    resolved = {
+        str(record["asset"]): Path(str(record["path"]))
+        for record in assets
+        if record.get("status") == "resolved" and isinstance(record.get("path"), str)
+    }
+    for asset_id in dict.fromkeys(targets):
+        path = resolved.get(asset_id)
+        # An unresolved source is blocked_until_resolution, so no pod can be held for it.
+        if path is not None:
+            _check_source_av_rate(asset_id, path)
 
 
 def _v2_mask_schedule(
@@ -237,6 +457,9 @@ def prepare_request(
                     if "video" not in streams:
                         raise PreparationError("Character Swap timeline source contains no video stream")
                     timeline_audio_presence[str(item["asset"])] = "audio" in streams
+        _validate_mask_assets(request, assets)
+        # Runs after the Character Swap stream inspection so its more specific errors win.
+        _check_source_av_rates(request, assets)
         try:
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
@@ -258,6 +481,7 @@ def prepare_request(
     except MaskScheduleError as exc:
         raise PreparationError(str(exc)) from exc
     assets = _resolve_assets(request, asset_map)
+    _check_source_av_rates(request, assets)
     unresolved = [record["asset"] for record in assets if record["status"] != "resolved"]
     # Managed identifiers are intentionally retained for the runtime, but a
     # local asset map must never silently contain a missing path.

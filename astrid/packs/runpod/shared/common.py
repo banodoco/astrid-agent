@@ -30,6 +30,10 @@ from astrid.core.cli_choices import add_choice_arg
 from astrid.core.contracts.errors import AstridError
 from astrid.core.util.log_and_swallow import log_and_swallow
 from astrid.core.util.time import utc_now_milliseconds
+from astrid.packs.runpod.cuda_versions import (
+    DEFAULT_ALLOWED_CUDA_VERSIONS,
+    RECIPE_MINIMUM_CUDA_VERSION,
+)
 
 # ---------------------------------------------------------------------------
 # __all__ — declare every name this module exports via ``import *``.
@@ -322,6 +326,14 @@ def _is_cuda_13_route(gpu_type: str | list[str] | tuple[str, ...]) -> bool:
     return any(_CUDA_13_GPU_MARKER in candidate for candidate in candidates)
 
 
+def _cuda_version_key(version: str) -> tuple[int, int] | None:
+    """Return (major, minor) as integers, or None for anything that is not MAJOR.MINOR."""
+    major, sep, minor = version.partition(".")
+    if not sep or not major.isdigit() or not minor.isdigit():
+        return None
+    return int(major), int(minor)
+
+
 def _launch_contract(
     *,
     gpu_type: str | list[str] | tuple[str, ...],
@@ -338,10 +350,15 @@ def _launch_contract(
             "RTX 5090 provisioning requires an explicit CUDA-13-compatible worker image",
             recovery_command="supply the validated CUDA 13 image together with --allowed-cuda-versions 13.0",
         )
-    if versions != ("13.0",):
+    minimum = _cuda_version_key(RECIPE_MINIMUM_CUDA_VERSION)
+    keys = [_cuda_version_key(version) for version in versions]
+    if not keys or any(key is None or key < minimum for key in keys):
         raise AstridError(
-            "RTX 5090 provisioning requires the explicit allowed CUDA version 13.0",
-            recovery_command="set --allowed-cuda-versions 13.0 for the validated 5090 route",
+            f"RTX 5090 provisioning requires allowed CUDA versions of {RECIPE_MINIMUM_CUDA_VERSION} or newer",
+            recovery_command=(
+                "set --allowed-cuda-versions to "
+                f"{','.join(DEFAULT_ALLOWED_CUDA_VERSIONS)} for the validated 5090 route"
+            ),
         )
     # An empty template ID is intentional: runpod-lifecycle forwards only
     # truthy template IDs, so the explicit image cannot inherit its legacy

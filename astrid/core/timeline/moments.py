@@ -115,8 +115,9 @@ def _parse_core(tokens: list[str], raw: str) -> tuple[Moment, list[str]]:
         if len(tokens) >= 3 and tokens[1].lower() == "of" and CUT_ID_RE.match(tokens[2].lower()):
             return Moment("cut_end", cut=tokens[2].lower()), tokens[3:]
         return Moment("end"), tokens[1:]
-    if _CUT_END_RE.match(head):
-        return Moment("cut_end", cut=_CUT_END_RE.match(head).group(1)), tokens[1:]
+    cut_end_match = _CUT_END_RE.match(head)
+    if cut_end_match is not None:
+        return Moment("cut_end", cut=cut_end_match.group(1)), tokens[1:]
     if CUT_ID_RE.match(head):
         return Moment("cut", cut=head), tokens[1:]
     if tokens[0][0] in "\"“":
@@ -174,7 +175,8 @@ def format_offset(seconds: float, frames: int = 0) -> str:
     if frames:
         out.append(f"{frames:+d}f")
     if abs(seconds) > 1e-9:
-        out.append(f"{'+' if seconds > 0 else '-'}{abs(seconds):g}s")
+        value = f"{abs(seconds):.6f}".rstrip("0").rstrip(".")
+        out.append(f"{'+' if seconds > 0 else '-'}{value}s")
     return " ".join(out)
 
 

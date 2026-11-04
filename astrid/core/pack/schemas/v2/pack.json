@@ -20,7 +20,41 @@
     "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}},
     "permissions": {"type": "array", "items": {"$ref": "#/$defs/permission"}},
     "content": {"type": "object", "additionalProperties": {"$ref": "#/$defs/relative_path"}},
-    "extensions": {"type": "object"},
+    "extensions": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "object",
+          "properties": {
+            "backends": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "placement": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["schema", "supported", "default", "engine", "requires_endpoint"],
+                    "properties": {
+                      "schema": {"const": "astrid.generation-placement.v1"},
+                      "supported": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["local", "runpod"]}},
+                      "default": {"enum": ["local", "runpod"]},
+                      "engine": {"anyOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])"}]},
+                      "requires_endpoint": {"type": "boolean"}
+                    },
+                    "allOf": [
+                      {"if": {"properties": {"default": {"const": "local"}}}, "then": {"properties": {"supported": {"contains": {"const": "local"}}}}},
+                      {"if": {"properties": {"default": {"const": "runpod"}}}, "then": {"properties": {"supported": {"contains": {"const": "runpod"}}}}},
+                      {"if": {"properties": {"requires_endpoint": {"const": true}}}, "then": {"properties": {"engine": {"type": "string"}}}}
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "aliases": {"type": "array", "items": {"$ref": "#/$defs/alias"}},
     "agent": {"type": "object"},
     "documentation": {"oneOf": [

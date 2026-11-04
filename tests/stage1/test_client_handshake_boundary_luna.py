@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,11 +25,13 @@ class _Workspace:
     def __init__(self, health: object, handshake: object) -> None:
         self._health = health
         self._handshake = handshake
+        self.handshake_args: tuple[object, ...] | None = None
 
     def health(self) -> object:
         return self._health
 
-    def handshake(self, *_args: object) -> object:
+    def handshake(self, *args: object) -> object:
+        self.handshake_args = args
         return self._handshake
 
 
@@ -89,6 +92,7 @@ def _handshake_without(field: str) -> dict[str, object]:
         _health(runtime_session_id=42),
         _health_without("runtime_instance_id"),
         _health_without("runtime_session_id"),
+        _health_without("identity"),
         _health(extra="tampered"),
     ],
 )
@@ -126,6 +130,93 @@ def _open_with_health(monkeypatch: pytest.MonkeyPatch, response: object) -> Astr
     )
 
 
+def _source_identity(**overrides: object) -> dict[str, object]:
+    return {
+        "release": 0,
+        "managed_by": "source",
+        "runtime_head": "a" * 40,
+        "agent_head": "b" * 40,
+        "dirty": False,
+        "dirty_hash": "c" * 64,
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize("identity", [
+    None,
+    {"release": 0, "managed_by": None},
+    {"release": 1, "managed_by": None},
+    {"release": 0, "managed_by": "pinokio"},
+    {"release": 17, "managed_by": "pinokio"},
+    _source_identity(),
+    _source_identity(runtime_head="a" * 64, agent_head="b" * 64, dirty=True),
+])
+def test_open_accepts_declared_health_identity(monkeypatch: pytest.MonkeyPatch, identity: object) -> None:
+    assert isinstance(_open_with_health(monkeypatch, _health(identity=identity)), AstridClient)
+
+
+@pytest.mark.parametrize("identity,field", [
+    ([], "health.identity"),
+    ("source", "health.identity"),
+    (False, "health.identity"),
+    (0, "health.identity"),
+    ({}, "health.identity"),
+    ({"release": 1}, "health.identity"),
+    ({"managed_by": "pinokio"}, "health.identity"),
+    ({"release": 1, "managed_by": "pinokio", "extra": "tampered"}, "health.identity"),
+    ({"release": 0, "managed_by": "source"}, "health.identity"),
+    ({"release": True, "managed_by": "pinokio"}, "health.identity.release"),
+    ({"release": -1, "managed_by": "pinokio"}, "health.identity.release"),
+    ({"release": 1.0, "managed_by": "pinokio"}, "health.identity.release"),
+    ({"release": "1", "managed_by": "pinokio"}, "health.identity.release"),
+    ({"release": None, "managed_by": "pinokio"}, "health.identity.release"),
+    ({"release": 1, "managed_by": "other"}, "health.identity.managed_by"),
+    ({"release": 1, "managed_by": False}, "health.identity.managed_by"),
+    ({"release": 1, "managed_by": []}, "health.identity.managed_by"),
+    (_source_identity(extra="tampered"), "health.identity"),
+    (_source_identity(managed_by=None), "health.identity"),
+    (_source_identity(managed_by="pinokio"), "health.identity"),
+    (_source_identity(release=1), "health.identity.release"),
+    (_source_identity(release=False), "health.identity.release"),
+    (_source_identity(release=0.0), "health.identity.release"),
+    (_source_identity(dirty=0), "health.identity.dirty"),
+    (_source_identity(dirty="false"), "health.identity.dirty"),
+    (_source_identity(dirty=None), "health.identity.dirty"),
+])
+def test_open_rejects_malformed_health_identity(monkeypatch: pytest.MonkeyPatch, identity: object, field: str) -> None:
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=identity))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == field
+
+
+@pytest.mark.parametrize("field", ["release", "managed_by", "runtime_head", "agent_head", "dirty", "dirty_hash"])
+def test_source_health_identity_requires_each_declared_field(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    identity = _source_identity()
+    del identity[field]
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=identity))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == "health.identity"
+
+
+@pytest.mark.parametrize("field", ["runtime_head", "agent_head"])
+@pytest.mark.parametrize("head", [None, 0, "a" * 39, "a" * 41, "a" * 63, "a" * 65, "A" * 40, "g" * 64])
+def test_source_health_identity_rejects_malformed_heads(monkeypatch: pytest.MonkeyPatch, field: str, head: object) -> None:
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=_source_identity(**{field: head})))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == f"health.identity.{field}"
+
+
+@pytest.mark.parametrize("dirty_hash", [None, 0, "c" * 40, "c" * 63, "c" * 65, "C" * 64, "g" * 64])
+def test_source_health_identity_rejects_malformed_dirty_hash(monkeypatch: pytest.MonkeyPatch, dirty_hash: object) -> None:
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=_source_identity(dirty_hash=dirty_hash)))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == "health.identity.dirty_hash"
+
+
 @pytest.mark.parametrize("services", [
     [],
     [_service(state=state) for state in ("starting", "running", "restarting", "failed")],
@@ -147,6 +238,62 @@ def test_open_accepts_source_startup_identity(monkeypatch: pytest.MonkeyPatch) -
         "dirty_hash": "c" * 64,
     }
     assert isinstance(_open_with_health(monkeypatch, _health(identity=identity)), AstridClient)
+
+
+def test_open_requests_declared_scopes_and_binds_explicit_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _Workspace(_health(), _handshake())
+    monkeypatch.setattr(
+        "astrid.sdk.workspace_client.WorkspaceClient",
+        lambda *_args: workspace,
+    )
+
+    AstridClient.open(
+        endpoint="http://127.0.0.1:1",
+        credential="token",
+        realm_id="realm-1",
+        actor_id="actor-1",
+        client_name="test-client",
+        client_version="2",
+        protocol_version=PROTOCOL,
+    )
+
+    assert workspace.handshake_args == (
+        "test-client",
+        "2",
+        [
+            "projects:read",
+            "projects:write",
+            "objects:read",
+            "objects:write",
+            "tasks:read",
+            "tasks:write",
+        ],
+    )
+    assert workspace.actor_id == "actor-1"
+
+
+@pytest.mark.parametrize("field", ["realm_id", "actor_id", "client_name", "client_version"])
+@pytest.mark.parametrize("invalid_value", [None, " "])
+def test_open_rejects_missing_identity_inputs_before_handshake(
+    monkeypatch: pytest.MonkeyPatch, field: str, invalid_value: object
+) -> None:
+    workspace = _Workspace(_health(), _handshake())
+    monkeypatch.setattr("astrid.sdk.workspace_client.WorkspaceClient", lambda *_args: workspace)
+    arguments: dict[str, Any] = {
+        "endpoint": "http://127.0.0.1:1",
+        "credential": "token",
+        "realm_id": "realm-1",
+        "actor_id": "actor-1",
+        "client_name": "test-client",
+        "client_version": "2",
+        "protocol_version": PROTOCOL,
+    }
+    arguments[field] = invalid_value
+
+    with pytest.raises(ServiceUnavailableError):
+        AstridClient.open(**arguments)
+
+    assert workspace.handshake_args is None
 
 
 @pytest.mark.parametrize(
@@ -216,7 +363,7 @@ def test_service_health_requires_each_declared_row_field(monkeypatch: pytest.Mon
 
 
 @pytest.mark.parametrize("field", ["status", "protocol", "schema_digest", "runtime_epoch",
-                                 "runtime_instance_id", "runtime_session_id"])
+                                 "runtime_instance_id", "runtime_session_id", "identity"])
 def test_service_health_keeps_all_top_level_fields_required(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     health = _health(services=[])
     del health[field]

@@ -268,6 +268,28 @@ def test_invocation_preflight_rejects_unresolved_prompt_and_wrong_source_binding
         )
 
 
+def test_invocation_preflight_rejects_wrong_source_field_and_compiled_basename(
+    monkeypatch, tmp_path
+):
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("workflow = 'fixture'", encoding="utf-8")
+    monkeypatch.setattr(
+        "astrid.packs.vibecomfy.production_engine.load_workflow_path",
+        lambda *_args, **_kwargs: _fake_loaded_workflow(),
+    )
+
+    with pytest.raises(preflight.InvocationPreflightError, match="declared source field"):
+        preflight.preflight_invocation(
+            workflow, run_inputs={"source_video": "clip.mp4"},
+            expected_source_node="7", expected_source_field="image",
+        )
+    with pytest.raises(preflight.InvocationPreflightError, match="staged basename"):
+        preflight.preflight_invocation(
+            workflow, run_inputs={"source_video": "different.mp4"},
+            expected_source_node="7", expected_source_field="video",
+        )
+
+
 def test_invocation_preflight_rejects_blank_clips_text_prompt(monkeypatch, tmp_path):
     workflow = tmp_path / "workflow.py"
     workflow.write_text("workflow = 'fixture'", encoding="utf-8")

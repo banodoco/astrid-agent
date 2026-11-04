@@ -1,0 +1,20 @@
+{
+  "format": "astrid-bridge-scenario/v1",
+  "scenario": "missing-record",
+  "operation_id": "55555555555555555555555555555555",
+  "manifest_fixture": "inputs/release1-worker-manifest.json",
+  "job_fixture": "records/missing-job.json",
+  "journal_fixture": "records/does-not-exist.json",
+  "release0_adoption": "release0-adoption.json",
+  "expected": {
+    "post_status": 202,
+    "post_state": "accepted",
+    "status_state": "terminal",
+    "job_state": "updated",
+    "result_state": "success",
+    "journal_step": "complete",
+    "stop_ack": "stopped",
+    "stop_proceeded": true,
+    "release0_skip": false
+  }
+}

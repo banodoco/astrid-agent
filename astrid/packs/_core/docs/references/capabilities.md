@@ -39,7 +39,7 @@
 | `generation.generate_image_cloud_i2i` | One bounded z-image cloud i2i task with CAS source custody and enforced storage limits. |
 | `generation.generate_image_codex` | Generate or edit up to four images using Codex ChatGPT authentication with ordered source, style and brand references. |
 | `generation.generate_image_edit` | One bounded typed cloud edit task with source/mask CAS custody. |
-| `generation.generate_image_openai` | Generate image files with OpenAI GPT Image models from a prompt file. |
+| `generation.generate_image_openai` | Generate or edit up to 32 GPT Image outputs through authenticated expanded jobs and ordered managed references. |
 | `generation.generate_image_upscale` | One bounded SeedVR2 image upscale task. |
 | `generation.generate_speech` | Generate WAV speech from exact text with configurable Edge TTS voice settings. |
 | `generation.generate_video` | Generate videos from text prompts via local or cloud backends. v2: model→mode→backend with t2v/i2v/flf/v2v modes. |
@@ -47,6 +47,7 @@
 | `h3_av.compose` | Settle an H3 candidate with explicit changed and protected permissions. |
 | `h3_av.prepare` | Normalize an H3 audiovisual request into masks and asset evidence. |
 | `h3_av.publication_finalizer` | Copy one verified H3 candidate into the Runtime publication spool. |
+| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
 | `h3_av.verify` | Verify H3 artifact custody and protected-source evidence. |
 | `iteration.assemble` | Adapt runtime-materialized iteration data into result-only timeline and render artifacts. |
 | `iteration.experiment_import` | Import an unmanaged run root into an experiment without rewriting history or guessing ambiguous associations. |
@@ -84,7 +85,7 @@
 | `stream_content.segment_map` | Fuse OCR, transcript density, and scene cuts into a complete stream timeline. |
 | `training.dataset_build` | Build a generic reviewed video training dataset from configured sources. |
 | `training.pool_build` | Build the candidate clip pool from triaged source-video scenes. |
-| `training.pool_merge` | Merge multiple candidate clip pools into a unified pool for arrangement. |
+| `training.pool_merge` | Update a candidate clip pool with available generative effect entries. |
 | `training.search_loras` | Search Hugging Face Hub for LoRAs associated with a base model. |
 | `training.training_run` | Run a generic LoRA training job from a prepared dataset manifest. |
 | `typed_timeline.map` | Map typed rows to a validated timeline JSON. |
@@ -93,23 +94,23 @@
 | `understanding.understand` | Dispatch to the audio, visual, or video understanding action based on --mode. |
 | `understanding.video_understand` | Inspect synchronized audio/video windows with a video-understanding model. |
 | `understanding.visual_understand` | Inspect images or sampled video frames with a vision LLM — free-text or JSON-schema-constrained. |
-| `vibecomfy.character_animation` | Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
+| `vibecomfy.character_animation` | Unavailable: vibecomfy.character_animation is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
 | `vibecomfy.edit` | Create an immutable canonical successor through a typed edit or explicit capture. |
 | `vibecomfy.import` | Import a ComfyUI workflow into VibeComfy's canonical editable bundle. |
 | `vibecomfy.inspect` | Render a ComfyUI workflow as readable Python-like VibeComfy IR. |
 | `vibecomfy.run` | Run a VibeComfy / ComfyUI workflow and settle its artifact inventory. |
 | `vibecomfy.validate` | Validate workflow structure offline; runtime checks belong to vibecomfy.run. |
 | `vibecomfy.video_enhance` | Bounded VibeComfy video upscale with source-FPS/audio preservation. |
-| `video_editing.animate_image` | Restyle a video opening frame and animate it using the reference video's motion. |
+| `video_editing.animate_image` | Unavailable: video_editing.animate_image is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Restyle a video opening frame and animate it using the reference video's motion. |
 | `video_editing.cut` | Assemble an editorial arrangement into a timeline, asset registry, and metadata files. |
 | `video_editing.event_talks` | Plan event-talk work and run local template, transcript, and holding-screen steps. |
 | `video_editing.hype` | Run the cache-aware hype pipeline from source video and creative brief to a rendered edit. |
 | `video_editing.iteration_video` | Assemble one admitted historical iteration selection and render it through the public Rendering action. |
 | `video_editing.logo_ideas` | Draft distinct logo concepts and render them as a contact sheet or individual images. |
 | `video_editing.sync_draft_voiceover` | Reconcile temporary narration with pinned timeline scripts. |
-| `video_editing.thumbnail_maker` | Plan source evidence and prepare references for a thumbnail request. |
+| `video_editing.thumbnail_maker` | Unavailable: video_editing.thumbnail_maker generation is not implemented. Fix: retry after the generation availability declaration marks this route available. Plan source evidence and prepare references for a thumbnail request. |
 | `video_editing.vary_grid` | Select cells from an image grid and generate a new grid of variations. |
-| `wan2gp.generate_video` | Host-mediated native Wan2GP video generation. |
+| `wan2gp.generate_video` | Unavailable: wan2gp.generate_video is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Host-mediated native Wan2GP video generation. |
 | `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
 | `youtube.upload` | Upload a finished video to YouTube via the shared banodoco-social Zapier integration. |
 | `youtube.youtube_audio` | Download a YouTube video's audio (MP3) or video (MP4) — by search query or direct URL. |
@@ -118,7 +119,7 @@
 
 | id | short_description |
 | --- | --- |
-| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
+| _(none)_ | |
 
 ### Elements
 

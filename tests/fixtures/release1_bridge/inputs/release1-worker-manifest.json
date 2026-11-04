@@ -1,0 +1,13 @@
+{
+  "format": "astrid-release1-worker-fixture/v1",
+  "release": 1,
+  "worker": "agent-bridge-fixture-worker",
+  "node": {
+    "version": "20.19.4"
+  },
+  "provenance": {
+    "kind": "fixture-input",
+    "synthetic": false,
+    "source_only": false
+  }
+}

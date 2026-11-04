@@ -18,18 +18,24 @@ from runtime_protocol.platform import durable_replace
 
 from astrid.core._shared.result_manifest import build_manifest, write_manifest
 
+from ._audio_cache import _cached_audio, _store_audio_cache
 from .audio_analysis import AudioAnalysisError, analyze_audio, audio_analysis_identity
 from .filmstrip_cards import (
     _attach_input_navigation,
     _navigation_usage,
-    attach_input_audio_waveforms,
     attach_frame_addresses,
+    attach_input_audio_waveforms,
     build_filmstrip_pack,
 )
 from .filmstrip_options import filmstrip_options
-from .inspection_contract import canonical_clip_identity, compact_render_receipt, project_input_window
+from .inspection_contract import (
+    canonical_clip_identity,
+    compact_render_receipt,
+    project_input_window,
+)
+from .provenance import snapshot_label
+from .scene_only import execute_scene_only
 from .shot_selector import resolve_shot_selector
-
 
 _FILMSTRIP_CAPABILITY_ID = "rendering.timeline_visualize"
 _MANAGED_COVERAGE_REASONS = frozenset(
@@ -148,6 +154,7 @@ def execute_input_only(args, authority):
     snapshot = authority.get("input_snapshot")
     if not isinstance(snapshot, Mapping):
         raise ValueError("Input-only inspection requires an immutable timeline snapshot.")
+    revision_label = snapshot_label(snapshot)
     values = vars(args).copy()
     values["range"] = args.range_value
     # The input-only authority is already the explicit no-render projection;
@@ -211,7 +218,10 @@ def execute_input_only(args, authority):
         index_target = None
     index = {
         "schema": "astrid.timeline-input-inspection.v1",
-        "provenance": {key: snapshot.get(key) for key in ("project_slug", "timeline_id", "timeline_name", "render_run_id", "fps_rational", "duration_frames", "metadata")},
+        "provenance": {
+            **{key: snapshot.get(key) for key in ("project_slug", "timeline_id", "timeline_name", "render_run_id", "fps_rational", "duration_frames", "metadata")},
+            "revision": revision_label,
+        },
         "sampling": {"mode": "input_only", "window": projection["window"], "shared_window": [float(Fraction(start_frame, 1) / fps), float(Fraction(end_frame, 1) / fps)], "range": [float(Fraction(start_frame, 1) / fps), float(Fraction(end_frame, 1) / fps)], "step_frames_rational": [1, 1], "include_cuts": False, "explicit_interval": False, "options": options},
         "input_projection": projection, "cards": [], "navigation": {"frames": [], "tracks": [], "clips": [], "shots": [], "phrases": [], "gaps": [], "waveforms": [], "targets": {}},
         "components": options.get("components"), "render": {"status": "not_requested", "auto_render": False},
@@ -239,6 +249,7 @@ def execute_input_only(args, authority):
     # same ``filmstrip-###.png`` entrypoint naming as rendered/paired output.
     png_pages = _render_input_projection_png(
         projection, snapshot, pack_root, filename_prefix="filmstrip",
+        revision_label=revision_label,
     )
     (pack_root / "render-snapshot.json").write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
     # Input-only deliveries use the same compact v2 receipt as output and
@@ -248,6 +259,16 @@ def execute_input_only(args, authority):
     persisted_index = compact_render_receipt(index, snapshot, pack_root)
     (pack_root / "frame-index.json").write_text(
         json.dumps(persisted_index, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    revision_text = revision_label.get("label", "revision unavailable")
+    (pack_root / "filmstrip.md").write_text(
+        "\n".join([
+            f"# Input filmstrip · {revision_text}", "",
+            f"Revision: `{revision_text}`", "",
+            "Input-only inspection; no rendered output was requested.", "",
+            f"Timeline: `{snapshot.get('timeline_name') or snapshot.get('timeline_id')}`", "",
+        ]),
         encoding="utf-8",
     )
     files = sorted(path for path in pack_root.rglob("*") if path.is_file())
@@ -266,7 +287,7 @@ def execute_input_only(args, authority):
         }
         for path in files
     ]
-    entrypoints = {"frames": "frame-index.json"}
+    entrypoints = {"frames": "frame-index.json", "markdown": "filmstrip.md"}
     if primary_png:
         entrypoints["png"] = primary_png
     manifest = build_manifest(kind="timeline_filmstrip", created="1970-01-01T00:00:00Z", inputs={"timeline_id": snapshot.get("timeline_id"), "components": options.get("components"), "window": projection["window"], "render_requested": False}, outputs=outputs, entrypoints=entrypoints, timeline_ids=[snapshot.get("timeline_id")], request=options.get("request"))
@@ -277,7 +298,11 @@ def execute_input_only(args, authority):
     # manifest whose attempt-local PNGs disappear during cleanup.
     bundle = out_root / "filmstrip-bundle.zip"
     _write_zip_atomic(bundle, pack_root)
-    outer_entrypoints = {"manifest": "filmstrip-view/manifest.json", "frame_index": "filmstrip-view/frame-index.json"}
+    outer_entrypoints = {
+        "manifest": "filmstrip-view/manifest.json",
+        "frame_index": "filmstrip-view/frame-index.json",
+        "markdown": "filmstrip-view/filmstrip.md",
+    }
     if primary_png:
         outer_entrypoints["png"] = f"filmstrip-view/{primary_png}"
     write_manifest(
@@ -305,7 +330,9 @@ def execute_input_only(args, authority):
             entrypoints=outer_entrypoints,
         ),
     )
-    return {"returncode": 0, "run_root": str(out_root), "manifest_path": str(pack_root / "manifest.json"), "timeline_ids": [snapshot.get("timeline_id")], "outputs": {"pack_root": str(pack_root), "manifest_path": str(pack_root / "manifest.json"), "frame_index": str(pack_root / "frame-index.json"), "pages": [str(path) for path in png_pages], "filmstrip_bundle": str(bundle), "render_requested": False}}
+    return {"returncode": 0, "run_root": str(out_root), "manifest_path": str(pack_root / "manifest.json"), "timeline_ids": [snapshot.get("timeline_id")],
+            "snapshot_label": revision_label,
+            "outputs": {"pack_root": str(pack_root), "manifest_path": str(pack_root / "manifest.json"), "frame_index": str(pack_root / "frame-index.json"), "markdown": str(pack_root / "filmstrip.md"), "pages": [str(path) for path in png_pages], "filmstrip_bundle": str(bundle), "render_requested": False}}
 
 
 def _materialize_input_previews(projection: Mapping, pack_root: Path) -> None:
@@ -360,7 +387,7 @@ def _materialize_input_previews(projection: Mapping, pack_root: Path) -> None:
 
 def _render_input_projection_png(
     projection, snapshot, pack_root: Path, *, width: int = 1500,
-    filename_prefix: str = "input-band",
+    filename_prefix: str = "input-band", revision_label: Mapping[str, object] | None = None,
 ) -> list[Path]:
     """Render readable, paginated input lanes without creating media frames."""
     from PIL import Image, ImageDraw
@@ -400,9 +427,16 @@ def _render_input_projection_png(
             row_heights.append(max(112 if audio_track else row_height, 64 + (58 if audio_track else 48) * max_subrow))
         image = Image.new("RGB", (width, header + sum(row_heights or [row_height]) + 28), "#10161d")
         draw = ImageDraw.Draw(image)
-        _png_draw_text(draw, (24, 16), f"{snapshot.get('timeline_name') or snapshot.get('timeline_id')} · input lanes", font, fill="#ebf2f5")
+        revision_text = revision_label.get("label") if isinstance(revision_label, Mapping) else None
+        title = f"{snapshot.get('timeline_name') or snapshot.get('timeline_id')} · input lanes"
+        if revision_text:
+            title += f" · {revision_text}"
+        _png_draw_text(draw, (24, 16), title, font, fill="#ebf2f5")
         _png_draw_text(draw, (24, 42), f"{band.get('label', f'tracks {page}')} · [{start / float(fps):.3f}s, {end / float(fps):.3f}s) · frozen source placements", small_font, fill="#9fb0bf")
-        _png_draw_text(draw, (24, 66), "Source previews are shown only when digest-verified; placeholders never substitute rendered output.", small_font, fill="#9fb0bf")
+        provenance = "Source previews are shown only when digest-verified; placeholders never substitute rendered output."
+        if revision_text:
+            provenance += f" Revision: {revision_text}"
+        _png_draw_text(draw, (24, 66), provenance, small_font, fill="#9fb0bf")
         _png_draw_text(draw, (24, 90), "Teal = verified source / measured waveform · amber = timing fallback or unavailable · vertical guides = shared time samples.", small_font, fill="#9fb0bf")
         lane_left, lane_right = 24, width - 24
         ruler_y = 128
@@ -902,36 +936,9 @@ def _align_snapshot_to_render(snapshot: dict, video: Path) -> None:
     snapshot["metadata"]["rendered_tail"] = tail
 
 
-def _audio_cache_path(parent: Path, render_digest: str, settings: object) -> Path:
-    key = hashlib.sha256(json.dumps(
-        {"render_digest": render_digest, "settings": settings},
-        sort_keys=True, separators=(",", ":"), default=str,
-    ).encode("utf-8")).hexdigest()
-    return parent / ".audio-analysis-cache" / f"{key}.json"
-
-
-def _cached_audio(parent: Path, render_digest: str, settings: object) -> dict | None:
-    path = _audio_cache_path(parent, render_digest, settings)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(value, dict) or value.get("render_digest") != render_digest:
-        return None
-    return value
-
-
-def _store_audio_cache(parent: Path, render_digest: str, settings: object, value: dict) -> None:
-    path = _audio_cache_path(parent, render_digest, settings)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    entries = sorted(path.parent.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
-    for stale in entries[256:]:
-        stale.unlink(missing_ok=True)
-
-
 def _render_time_anchored_output(
     frame_index: Mapping[str, object], pack_root: Path, *, options: Mapping[str, object],
+    revision_label: Mapping[str, object] | None = None,
 ) -> list[Path]:
     """Render sampled output cards whose left edges are exact timeline times."""
     from PIL import Image, ImageDraw
@@ -971,7 +978,7 @@ def _render_time_anchored_output(
     cards = sorted(cards, key=lambda card: (float(card.get("time_seconds") or 0.0), str(card.get("id") or "")))
     page_size = max(1, int(options.get("page_size") or 50))
     width, lane_left, lane_right = 1500, 24, 1476
-    header, ruler_y = 144, 128
+    header, ruler_y = 170, 154
     title_font, font, small_font = _png_font(20), _png_font(16), _png_font(13)
     caption_font = _png_font(14)
     image_height = 202
@@ -982,10 +989,14 @@ def _render_time_anchored_output(
         draw = ImageDraw.Draw(image)
         timeline_name = str(provenance.get("timeline_name") or provenance.get("timeline_id") or "timeline")
         render_id = str(provenance.get("render_run_id") or "managed render")
-        _png_draw_text(draw, (16, 10), f"{timeline_name} · page {page} · time-anchored rendered samples", title_font, fill="white")
+        revision_text = revision_label.get("label") if isinstance(revision_label, Mapping) else None
+        title = f"{timeline_name} · page {page} · time-anchored rendered samples"
+        _png_draw_text(draw, (16, 10), title, title_font, fill="white")
         _png_draw_text(draw, (16, 36), f"Render {render_id} · each card begins at its exact sample time", small_font, fill="#acbbcb")
-        _png_draw_text(draw, (16, 58), "Shared ruler: sampled output above; continuous canonical input lanes below. Cards are point samples, not clip durations.", small_font, fill="#acbbcb")
-        _png_draw_text(draw, (16, 82), "Teal = exact sample guide · card boundaries line up with the same time coordinates as the input lanes.", small_font, fill="#8ce0d0")
+        if revision_text:
+            _png_draw_text(draw, (16, 58), f"Source: {revision_text}", small_font, fill="#acbbcb")
+        _png_draw_text(draw, (16, 80), "Shared ruler: sampled output above; continuous canonical input lanes below. Cards are point samples, not clip durations.", small_font, fill="#acbbcb")
+        _png_draw_text(draw, (16, 102), "Teal = exact sample guide · card boundaries line up with the same time coordinates as the input lanes.", small_font, fill="#8ce0d0")
         draw.line((lane_left, ruler_y, lane_right, ruler_y), fill="#6edac7", width=1)
         tick_count = 4
         for tick in range(tick_count + 1):
@@ -994,7 +1005,7 @@ def _render_time_anchored_output(
             draw.line((x, ruler_y - 6, x, ruler_y + 6), fill="#6edac7", width=1)
             seconds = start_seconds + fraction * (end_seconds - start_seconds)
             label = f"{seconds:.1f}s"
-            _png_draw_text(draw, (x - _png_text_width(draw, label, small_font) / 2, 106), label, small_font, fill="#8ce0d0")
+            _png_draw_text(draw, (x - _png_text_width(draw, label, small_font) / 2, 132), label, small_font, fill="#8ce0d0")
             draw.line((x, ruler_y + 7, x, image.height - 12), fill="#23343f", width=1)
 
         audio = frame_index.get("audio") if isinstance(frame_index.get("audio"), Mapping) else None
@@ -1188,6 +1199,7 @@ def _active_paired_projection(projection: Mapping[str, object]) -> dict:
 def _render_paired_rows(
     frame_index: Mapping[str, object], pack_root: Path, *, options: Mapping[str, object],
     snapshot: Mapping[str, object], input_projection: Mapping[str, object],
+    revision_label: Mapping[str, object] | None = None,
 ) -> tuple[list[str], list[dict], list[str]]:
     """Render five-card rows with the relevant input lanes directly below.
 
@@ -1439,8 +1451,15 @@ def _render_paired_rows(
         page_height = sum(row.height for row in rendered_rows) + 28 * max(0, len(rendered_rows) - 1) + 86
         sheet = Image.new("RGB", (width, page_height), "#0b1118")
         draw = ImageDraw.Draw(sheet)
-        _png_draw_text(draw, (16, 12), f"{timeline_name} · page {page} · paired timeline", title_font, fill="white")
-        _png_draw_text(draw, (16, 40), f"Render {render_id} · {columns} columns · output samples with synchronized input lanes", small_font, fill="#acbbcb")
+        revision_text = revision_label.get("label") if isinstance(revision_label, Mapping) else None
+        title = f"{timeline_name} · page {page} · paired timeline"
+        if revision_text:
+            title += f" · {revision_text}"
+        _png_draw_text(draw, (16, 12), title, title_font, fill="white")
+        provenance = f"Render {render_id} · {columns} columns · output samples with synchronized input lanes"
+        if revision_text:
+            provenance += f" · revision: {revision_text}"
+        _png_draw_text(draw, (16, 40), provenance, small_font, fill="#acbbcb")
         y = 78
         for row_index, row in enumerate(rendered_rows):
             sheet.paste(row, (0, y))
@@ -1458,6 +1477,7 @@ def _compose_synchronized_surface(
     output_pages: list[str], input_pages: list[Path], *, pack_root: Path,
     frame_index: Mapping[str, object] | None = None,
     options: Mapping[str, object] | None = None,
+    revision_label: Mapping[str, object] | None = None,
 ) -> list[str]:
     """Put rendered samples and canonical input lanes on one static surface.
 
@@ -1475,6 +1495,7 @@ def _compose_synchronized_surface(
             frame_index, pack_root, options=options or {},
             snapshot=frame_index.get("provenance") or {},
             input_projection=frame_index["input_projection"],
+            revision_label=revision_label,
         )
         if isinstance(frame_index, dict):
             visible_components = ["output"]
@@ -1545,7 +1566,7 @@ def _compose_synchronized_surface(
             raw_output_paths.append(raw_path)
 
         anchored = _render_time_anchored_output(
-            frame_index, pack_root, options=options or {},
+            frame_index, pack_root, options=options or {}, revision_label=revision_label,
         ) if frame_index is not None else []
         surface_paths = anchored or raw_output_paths
         composed_paths: list[str] = []
@@ -1635,6 +1656,10 @@ def _materialized_asset_files(registry_path) -> dict[str, str]:
     }
 
 
+def _execute_scene_only(args, authority):
+    return execute_scene_only(args, authority, label_snapshot=snapshot_label)
+
+
 def execute_filmstrip(args, *, authority=None):
     started_at = time.time()
     if getattr(args, "view", None) == "diff":
@@ -1661,8 +1686,10 @@ def execute_filmstrip(args, *, authority=None):
             except (OSError, json.JSONDecodeError) as exc:
                 raise ValueError("filmstrip authority handoff is not valid JSON") from exc
         authority = parsed_authority
-    if not isinstance(authority, dict) or authority.get('mode') not in {'filmstrip', 'input_only', 'composed_capture'}:
+    if not isinstance(authority, dict) or authority.get('mode') not in {'filmstrip', 'input_only', 'composed_capture', 'scene_only'}:
         raise ValueError('Rendered filmstrips require managed SDK admission.')
+    if authority.get("mode") == "scene_only":
+        return _execute_scene_only(args, authority)
     if authority.get('mode') == 'input_only':
         return execute_input_only(args, authority)
     capture_mode = (
@@ -1726,6 +1753,7 @@ def execute_filmstrip(args, *, authority=None):
             snapshot,
             timeline_path=timeline_path,
             assets_path=assets_path,
+            theme_path=getattr(args, 'theme_path', None),
             project_dir=Path(os.environ.get('ASTRID_REMOTION_PROJECT_DIR') or (REPO_ROOT / 'remotion')),
             materialized_root=getattr(args, 'materialized_root', None),
             materialized_objects=getattr(args, 'materialized_objects', None),
@@ -1745,6 +1773,7 @@ def execute_filmstrip(args, *, authority=None):
             materialized_objects=getattr(args, "materialized_objects", None),
             materialized_root=getattr(args, "materialized_root", None),
         )
+    revision_label = snapshot_label(snapshot)
     out_root = args.out.expanduser().resolve()
     if capture_mode:
         analysis = {
@@ -1788,7 +1817,8 @@ def execute_filmstrip(args, *, authority=None):
         result = build_filmstrip_pack(out_root=pack_root, video_path=video,
                                       snapshot=snapshot, options=options,
                                       frame_provider=frame_provider,
-                                      asset_files=_materialized_asset_files(getattr(args, 'assets_registry', None)))
+                                      asset_files=_materialized_asset_files(getattr(args, 'assets_registry', None)),
+                                      revision_label=revision_label)
     except BaseException as operation_error:
         if frame_provider is not None:
             try:
@@ -1814,11 +1844,14 @@ def execute_filmstrip(args, *, authority=None):
     if 'inputs' in (options.get('components') or ()) and result.get('frame_index', {}).get('input_projection'):
         output_pages = list(result['paths'].get('png') or [])
         input_pages = _render_input_projection_png(
-            result['frame_index']['input_projection'], snapshot, pack_root)
+            result['frame_index']['input_projection'], snapshot, pack_root,
+            revision_label=revision_label,
+        )
         if 'output' in (options.get('components') or ()):
             output_pages = _compose_synchronized_surface(
                 output_pages, input_pages, pack_root=pack_root,
                 frame_index=result.get('frame_index'), options=options,
+                revision_label=revision_label,
             )
         result['paths']['png'] = output_pages + [str(path) for path in input_pages]
         if 'output' in (options.get('components') or ()):
@@ -1831,7 +1864,7 @@ def execute_filmstrip(args, *, authority=None):
                 surface['standalone_input_pages'] = [path.name for path in input_pages]
                 try:
                     persisted_index = compact_render_receipt(frame_index, snapshot, pack_root)
-                    attach_frame_addresses(persisted_index, snapshot, frame_index['cards'])
+                    attach_frame_addresses(persisted_index, snapshot, frame_index['cards'], frame_provider=frame_provider)
                 except (KeyError, TypeError, ValueError):
                     # Keep admission-focused/unit-test builders and historical
                     # minimal fixtures readable; real packs always satisfy the
@@ -1845,7 +1878,7 @@ def execute_filmstrip(args, *, authority=None):
         # they use the same bounded receipt contract.
         try:
             persisted_index = compact_render_receipt(result['frame_index'], snapshot, pack_root)
-            attach_frame_addresses(persisted_index, snapshot, result['frame_index']['cards'])
+            attach_frame_addresses(persisted_index, snapshot, result['frame_index']['cards'], frame_provider=frame_provider)
         except (KeyError, TypeError, ValueError):
             persisted_index = result['frame_index']
         (pack_root / 'frame-index.json').write_text(
@@ -1997,10 +2030,12 @@ def execute_filmstrip(args, *, authority=None):
     timing['total_s'] = round(finished_at - started_at, 3)
     return {'returncode': 0, 'run_root': str(out_root),
             'manifest_path': str(manifest_path), 'timeline_ids': [snapshot['timeline_id']],
+            'snapshot_label': result.get('snapshot_label') or snapshot_label(snapshot),
             'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
             'request': options.get('request'), 'timing': timing,
             'outputs': {'pack_root': str(pack_root), 'manifest_path': str(manifest_path),
                         'identity': identity, 'cas': cas, 'entrypoints': entrypoints,
+                        'snapshot_label': result.get('snapshot_label') or snapshot_label(snapshot),
                         'request': options.get('request'), 'timing': timing,
                         **result['paths'], 'pages': result['paths']['png'],
                         'primary_page': (result['paths']['png'] or [None])[0],

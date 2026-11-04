@@ -50,7 +50,7 @@ class HermesAdapter(HarnessAdapter):
     def target_for(self, descriptor: SkillDescriptor) -> Path:
         if descriptor.pack_id == "_core":
             return self.skills_dir / "astrid"
-        return self.skills_dir / f"astrid-{descriptor.pack_id}"
+        return self.skills_dir / f"astrid-{descriptor.skill_id}"
 
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         mechanism = opts.get("mechanism") or "symlink"

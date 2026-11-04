@@ -10,6 +10,17 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 CHAT_RESOURCES = ("chat/service.mjs", "chat/astrid-acp-local-only.yml", "chat/THIRD_PARTY_LICENSES.txt")
 OMP_RESOURCES = ("installer/omp/recipe.json",)
+INSTALLER_IMPORT_RESOURCES = (
+    "core/__init__.py",
+    "core/generation/__init__.py",
+    "core/generation/engine_contracts.py",
+    "core/generation/engine_recipe.py",
+    "core/generation/vibecomfy_dependency.py",
+    "packs/engine-index.json",
+    "packs/runpod/pins.json",
+    "packs/vibecomfy/pins.json",
+    "packs/vibecomfy/recipe.windows-cu130.json",
+)
 GENERATION_GUIDE_RESOURCES = (
     "packs/generation/pack.yaml",
     "packs/generation/docs/SKILL.md",
@@ -24,7 +35,8 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     source.mkdir()
     shutil.copy2(ROOT / "pyproject.toml", source / "pyproject.toml")
     files = ("__init__.py", "version.py", "services.py", "chat/__init__.py", *CHAT_RESOURCES,
-             "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES,
+             "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES, *INSTALLER_IMPORT_RESOURCES,
+             *GENERATION_GUIDE_RESOURCES,
              "chat/service.ts", "chat/service.test.ts")
     for name in files:
         destination = source / "astrid" / name
@@ -45,6 +57,10 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     installed = tmp_path / "unpacked-wheel"
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = set(wheel.namelist())
+        entry_points = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
+        assert len(entry_points) == 1
+        entry_point_lines = wheel.read(entry_points[0]).decode("utf-8").splitlines()
+        assert "astrid = astrid.console:main" in entry_point_lines
         assert {f"astrid/{name}" for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES)} <= names
         assert not {f"astrid/{name}" for name in (*excluded, "chat/service.ts", "chat/service.test.ts")} & names
         for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES):

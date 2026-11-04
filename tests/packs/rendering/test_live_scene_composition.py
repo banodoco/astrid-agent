@@ -62,10 +62,20 @@ def test_service_layered_plan_native_renderer_isolates_and_adjusts_once(tmp_path
     assert [track['id'] for track in materialized['tracks']] == ['scene']
     assert len(materialized['clips']) == 1
     clip = materialized['clips'][0]
-    assert (clip['at'], clip['from'], clip['to'], clip['speed'], clip['hold']) == (0, 63, 65, 2, 2)
+    assert clip == config['clips'][0]
     assert clip['app']['liveScene'] == package
     assert materialized['metadata']['astrid_layer'] == {'z': z, 'alpha': z > 0}
-    assert request['window'] is None
+    assert request['window'] == window.to_dict()
+    native = threejs._window_timeline(materialized, RenderRequest.from_dict(request))
+    scene = native['clips'][0]
+    assert (scene['at'], scene['from'], scene['to'], scene['speed'], scene['hold']) == (0, 63, 65, 2, 2)
+    assert scene['id'] == 'scene_60_70'
+    assert scene['app'] == clip['app']
+    assert native['metadata'] == {
+        'astrid_layer': {'z': z, 'alpha': z > 0},
+        'source_window_start_seconds': 6, 'source_window_end_seconds': 7, 'duration_seconds': 1,
+    }
+    assert json.loads(path.read_text()) == config
 
 
 def test_scene_canvas_uses_existing_shared_default():
@@ -166,29 +176,79 @@ def test_missing_audio_and_corrupt_revision_fail_before_capture(tmp_path, monkey
 
 
 @pytest.mark.parametrize('z', [0, 1])
-def test_native_window_layer_is_materialized_once_with_pin_hold_and_alpha(tmp_path, z):
+def test_native_window_layer_is_materialized_once_with_pin_hold_and_alpha(tmp_path, monkeypatch, z):
     package = _package()
     config = _composition(package)
     config['clips'][0]['hold'] = 20
+    config['clips'][0]['app']['opaque'] = {'keep': [None, False, {'raw': 'unchanged'}]}
     path = tmp_path / 'timeline.json'
     path.write_text(json.dumps(config))
+    original_bytes = path.read_bytes()
     candidate = _candidate(tmp_path, 'fixture.native', 'renderer', capabilities={'supports_windows': True, 'supports_full_timeline': True})
     request = _request(path)
     segment = RenderSegment(window=request.window, renderer=_renderer_resolution(candidate.id), input_hashes={}, layer=LayerRef(z=z, tracks=('scene',)))
     service = RenderService()
     adapted, hashes = service._segment_request(request, candidate=candidate, segment=segment, index=0, workspace=tmp_path)
-    assert adapted.window is None
+    assert adapted.window is request.window
     materialized = json.loads(Path(adapted.timeline_path).read_text())
     assert [track['id'] for track in materialized['tracks']] == ['scene']
     assert len(materialized['clips']) == 1  # Audio/overlay belong to other tracks.
     scene = materialized['clips'][0]
+    assert scene == config['clips'][0]
     assert scene['app']['liveScene'] == package
-    assert (scene['at'], scene['from'], scene['to'], scene['speed'], scene['hold']) == (0, 63, 65, 2, 2)
     assert materialized['metadata']['astrid_layer'] == {'z': z, 'alpha': z > 0}
     assert hashes['materialized_timeline'] == hashlib.sha256(Path(adapted.timeline_path).read_bytes()).hexdigest()
-    assert threejs._window_timeline(materialized, adapted) is materialized
     assert threejs._support_reasons(materialized) == []
-    assert json.loads(path.read_text())['clips'][0]['from'] == 55
+
+    legacy_candidate = _candidate(tmp_path, 'fixture.legacy', 'renderer', capabilities={'supports_windows': False, 'supports_full_timeline': True})
+    legacy, _ = service._segment_request(request, candidate=legacy_candidate, segment=segment, index=1, workspace=tmp_path)
+    assert legacy.window is None
+    expected = json.loads(Path(legacy.timeline_path).read_text())
+    assert threejs._window_timeline(expected, legacy) is expected
+    assert threejs._window_timeline(materialized, adapted) == expected
+    sliced = expected['clips'][0]
+    assert sliced == {**scene, 'id': 'scene_180_210', 'at': 0, 'from': 63, 'to': 65, 'hold': 2}
+    assert expected['metadata'] == {
+        'astrid_layer': {'z': z, 'alpha': z > 0},
+        'source_window_start_seconds': 6, 'source_window_end_seconds': 7, 'duration_seconds': 1,
+    }
+
+    # Exercise real serialization and window adaptation, stopping before capture.
+    monkeypatch.setattr(threejs, '_default_settings', lambda: threejs._ThreeSettings(tmp_path, None, None))
+    monkeypatch.setattr(threejs, '_threejs_project_reasons', lambda *a: [])
+    monkeypatch.setattr(threejs, '_binaries_reasons', lambda: [])
+    captured = []
+
+    class CaptureObserved(Exception):
+        pass
+
+    def capture(timeline_path, assets_path, output_path, **kwargs):
+        payload = json.loads(timeline_path.read_text())
+        assert payload['clips'] == expected['clips']
+        assert payload['metadata'] == expected['metadata']
+        assert kwargs['composition_id'] == 'ThreeTimelineComposition'
+        assert 'window' not in kwargs  # The local payload is already sliced once.
+        assert output_path.suffix == ('.mov' if z else '.mp4')
+        profile = threejs._canonical_profile(timeline_path, {}, None)
+        assert profile.fps_rational == (30, 1)
+        assert threejs._timeline_alpha(payload) is (z > 0)
+        clip = payload['clips'][0]
+        for frame in range(30):
+            source_time = clip['from'] + (frame / 30 - clip['at']) * clip['speed']
+            assert source_time == pytest.approx(55 + (6 + frame / 30 - 2) * 2)
+            assert frame / 30 < clip['at'] + clip['hold'] / clip['speed']
+            assert 63 <= source_time < clip['to'] == 65
+        assert clip['at'] + clip['hold'] / clip['speed'] == 1
+        captured.append(payload)
+        raise CaptureObserved()
+
+    monkeypatch.setattr(threejs, '_execute_remotion', capture)
+    for backend_request in (adapted, legacy):
+        with pytest.raises(CaptureObserved):
+            threejs._protocol_render(backend_request, workspace=tmp_path)
+    assert len(captured) == 2 and captured[0] == captured[1]
+    assert path.read_bytes() == original_bytes
+    assert json.loads(Path(adapted.timeline_path).read_text()) == materialized
 
 
 def test_unlayered_native_window_passes_through_unchanged(tmp_path):
@@ -202,15 +262,30 @@ def test_unlayered_native_window_passes_through_unchanged(tmp_path):
 def test_layer_materialization_retains_null_window_support_rejection(tmp_path):
     path = tmp_path / 'timeline.json'
     path.write_text(json.dumps(_composition(_package())))
-    candidate = _candidate(tmp_path, 'fixture.native_only', 'renderer', operations=('render',), capabilities={'supports_windows': True, 'supports_full_timeline': False})
+    candidate = _candidate(tmp_path, 'fixture.native_only', 'renderer', operations=('render',), capabilities={'supports_windows': True, 'supports_full_timeline': False, 'clip_types': ['haus.astrid.liveScene'], 'track_types': ['visual']})
     request = _request(path)
     segment = RenderSegment(window=request.window, renderer=_renderer_resolution(candidate.id), input_hashes={}, layer=LayerRef(z=1, tracks=('scene',)))
     service = RenderService()
     adapted, _ = service._segment_request(request, candidate=candidate, segment=segment, index=0, workspace=tmp_path)
-    report = service._support(candidate, request=adapted, workspace=tmp_path, registry=service.renderers)
-    assert adapted.window is None
+    direct = replace(adapted, window=None)
+    report = service._support(candidate, request=direct, workspace=tmp_path, registry=service.renderers)
+    assert direct.window is None
     assert report.supported is False
     assert any('full timelines' in reason for reason in report.reasons)
+
+
+@pytest.mark.parametrize('z', [0, 1])
+def test_native_layer_window_supports_windows_only_backend(tmp_path, z):
+    path = tmp_path / 'timeline.json'
+    path.write_text(json.dumps(_composition(_package())))
+    candidate = _candidate(tmp_path, 'fixture.native_only', 'renderer', operations=('render',), capabilities={'supports_windows': True, 'supports_full_timeline': False, 'clip_types': ['haus.astrid.liveScene'], 'track_types': ['visual']})
+    request = _request(path)
+    segment = RenderSegment(window=request.window, renderer=_renderer_resolution(candidate.id), input_hashes={}, layer=LayerRef(z=z, tracks=('scene',)))
+    service = RenderService()
+    adapted, _ = service._segment_request(request, candidate=candidate, segment=segment, index=0, workspace=tmp_path)
+    assert adapted.window is request.window
+    report = service._support(candidate, request=adapted, workspace=tmp_path, registry=service.renderers)
+    assert report.supported, report.reasons
 
 
 def _three_html():
@@ -296,3 +371,44 @@ def test_real_render_scene_window_audio_and_overlay(tmp_path, remotion_runtime_e
     assert fragment['live_scenes'][0]['from'] == 63
     assert fragment['source_window']['start_frame'] == 180
     print(json.dumps({'output': str(output), 'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'revision': package['revision'], 'rms': levels}))
+
+
+@pytest.mark.parametrize('z', [0, 1])
+def test_d69_upstream_native_window_layer_is_materialized_once_with_pin_hold_and_alpha(tmp_path, z):
+    package = _package()
+    config = _composition(package)
+    config['clips'][0]['hold'] = 20
+    path = tmp_path / 'timeline.json'
+    path.write_text(json.dumps(config))
+    candidate = _candidate(tmp_path, 'fixture.native', 'renderer', capabilities={'supports_windows': True, 'supports_full_timeline': True})
+    request = _request(path)
+    segment = RenderSegment(window=request.window, renderer=_renderer_resolution(candidate.id), input_hashes={}, layer=LayerRef(z=z, tracks=('scene',)))
+    service = RenderService()
+    adapted, hashes = service._segment_request(request, candidate=candidate, segment=segment, index=0, workspace=tmp_path)
+    # design/agent-review-extent-current.md approves retaining the absolute
+    # native window while materializing only the selected layer.
+    assert adapted.window is request.window
+    materialized = json.loads(Path(adapted.timeline_path).read_text())
+    assert [track['id'] for track in materialized['tracks']] == ['scene']
+    assert len(materialized['clips']) == 1  # Audio/overlay belong to other tracks.
+    scene = materialized['clips'][0]
+    assert scene['app']['liveScene'] == package
+    assert (scene['at'], scene['from'], scene['to'], scene['speed'], scene['hold']) == (2, 55, 75, 2, 20)
+    assert materialized['metadata']['astrid_layer'] == {'z': z, 'alpha': z > 0}
+    assert hashes['materialized_timeline'] == hashlib.sha256(Path(adapted.timeline_path).read_bytes()).hexdigest()
+    projected = threejs._window_timeline(materialized, adapted)
+    assert projected is not materialized
+    projected_scene = projected['clips'][0]
+    assert projected_scene['id'] == 'scene_180_210'
+    assert (projected_scene['at'], projected_scene['from'], projected_scene['to'], projected_scene['speed'], projected_scene['hold']) == (0, 63, 65, 2, 2)
+    assert projected['metadata'] == {
+        'astrid_layer': {'z': z, 'alpha': z > 0},
+        'source_window_start_seconds': 6, 'source_window_end_seconds': 7, 'duration_seconds': 1,
+    }
+    assert projected_scene['at'] + projected_scene['hold'] / projected_scene['speed'] == 1
+    for frame in range(request.window.duration_frames):
+        source_time = projected_scene['from'] + (frame / 30 - projected_scene['at']) * projected_scene['speed']
+        assert source_time == pytest.approx(55 + (6 + frame / 30 - 2) * 2)
+        assert 63 <= source_time < 65
+    assert threejs._support_reasons(materialized) == []
+    assert json.loads(path.read_text()) == config

@@ -127,8 +127,20 @@
             "--json": {
               "required": false
             },
+            "--kind": {
+              "required": false
+            },
+            "--model": {
+              "required": false
+            },
             "--project": {
               "required": true
+            },
+            "--tag": {
+              "required": false
+            },
+            "--target": {
+              "required": false
             }
           },
           "positionals": [],
@@ -1354,6 +1366,9 @@
             "--name": {
               "required": true
             },
+            "--select": {
+              "required": false
+            },
             "--settings": {
               "required": false
             }
@@ -1701,6 +1716,15 @@
             "--draft": {
               "required": false
             },
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
             "--project": {
               "required": false
             }
@@ -1804,6 +1828,35 @@
           ],
           "verbs": {}
         },
+        "commit": {
+          "flags": {
+            "--dry-run": {
+              "required": false
+            },
+            "--file": {
+              "required": true
+            },
+            "--idempotency-key": {
+              "required": true
+            },
+            "--json": {
+              "required": false
+            },
+            "--message": {
+              "required": true
+            },
+            "--project": {
+              "required": false
+            },
+            "-m": {
+              "required": true
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "create": {
           "flags": {
             "--canvas": {
@@ -1822,7 +1875,7 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             },
             "--slug": {
               "required": false
@@ -1971,6 +2024,9 @@
             "--draft": {
               "required": false
             },
+            "--dry-run": {
+              "required": false
+            },
             "--duration": {
               "required": false
             },
@@ -2026,6 +2082,9 @@
             "--id": {
               "required": false
             },
+            "--idempotency-key": {
+              "required": false
+            },
             "--insert": {
               "required": false
             },
@@ -2033,6 +2092,9 @@
               "required": false
             },
             "--insert-line": {
+              "required": false
+            },
+            "--json": {
               "required": false
             },
             "--keep": {
@@ -2188,6 +2250,23 @@
           ],
           "verbs": {}
         },
+        "export": {
+          "flags": {
+            "--json": {
+              "required": false
+            },
+            "--out": {
+              "required": true
+            },
+            "--project": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "ref"
+          ],
+          "verbs": {}
+        },
         "find": {
           "flags": {
             "--asset": {
@@ -2239,11 +2318,28 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             }
           },
           "positionals": [
             "ref"
+          ],
+          "verbs": {}
+        },
+        "import": {
+          "flags": {
+            "--json": {
+              "required": false
+            },
+            "--name": {
+              "required": false
+            },
+            "--project": {
+              "required": false
+            }
+          },
+          "positionals": [
+            "file"
           ],
           "verbs": {}
         },
@@ -2367,6 +2463,9 @@
         },
         "list": {
           "flags": {
+            "--all-projects": {
+              "required": false
+            },
             "--include-archived": {
               "required": false
             },
@@ -2374,6 +2473,9 @@
               "required": false
             },
             "--project": {
+              "required": false
+            },
+            "--recent": {
               "required": false
             }
           },
@@ -2415,13 +2517,72 @@
           ],
           "verbs": {}
         },
-        "publish": {
-          "flags": {
-            "--draft": {
-              "required": false
+        "pending": {
+          "flags": {},
+          "positionals": [],
+          "verbs": {
+            "drop": {
+              "flags": {
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--reason": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "ref",
+                "ref_id"
+              ],
+              "verbs": {}
             },
-            "--force": {
-              "required": false
+            "list": {
+              "flags": {
+                "--all": {
+                  "required": false
+                },
+                "--all-actors": {
+                  "required": false
+                },
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                }
+              },
+              "positionals": [
+                "ref"
+              ],
+              "verbs": {}
+            },
+            "show": {
+              "flags": {
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                }
+              },
+              "positionals": [
+                "ref",
+                "ref_id"
+              ],
+              "verbs": {}
+            }
+          }
+        },
+        "place-element": {
+          "flags": {
+            "--element": {
+              "required": true
+            },
+            "--expected-head": {
+              "required": true
             },
             "--idempotency-key": {
               "required": false
@@ -2429,13 +2590,25 @@
             "--json": {
               "required": false
             },
-            "--message": {
+            "--kind": {
+              "choices": [
+                "effect"
+              ],
+              "required": false
+            },
+            "--pack": {
               "required": true
             },
             "--project": {
-              "required": false
+              "required": true
             },
-            "-m": {
+            "--realm": {
+              "required": true
+            },
+            "--revision": {
+              "required": true
+            },
+            "--target": {
               "required": true
             }
           },
@@ -2463,7 +2636,19 @@
         },
         "redo": {
           "flags": {
+            "--commit": {
+              "required": false
+            },
             "--draft": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
               "required": false
             },
             "--project": {
@@ -2602,6 +2787,24 @@
           },
           "positionals": [
             "ref"
+          ],
+          "verbs": {}
+        },
+        "retry": {
+          "flags": {
+            "--commit": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            }
+          },
+          "positionals": [
+            "ref",
+            "ref_id"
           ],
           "verbs": {}
         },
@@ -2878,6 +3081,9 @@
             "--limit": {
               "required": false
             },
+            "--native": {
+              "required": false
+            },
             "--occurrence": {
               "required": false
             },
@@ -2966,7 +3172,19 @@
         },
         "undo": {
           "flags": {
+            "--commit": {
+              "required": false
+            },
             "--draft": {
+              "required": false
+            },
+            "--dry-run": {
+              "required": false
+            },
+            "--idempotency-key": {
+              "required": false
+            },
+            "--json": {
               "required": false
             },
             "--project": {
@@ -3275,6 +3493,7 @@
     "backup",
     "dev",
     "doctor",
+    "generate",
     "skills"
   ]
 }

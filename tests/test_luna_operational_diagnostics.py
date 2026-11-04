@@ -94,6 +94,7 @@ def test_client_reports_redacted_schema_pairing_facts(monkeypatch) -> None:
             return {
                 "status": "ok",
                 "protocol": "workspace.v1",
+                "identity": None,
                 "schema_digest": old_digest,
                 "runtime_epoch": 1,
                 "runtime_instance_id": "instance-1",

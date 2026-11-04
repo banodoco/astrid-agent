@@ -156,6 +156,13 @@ class GenerationResult:
     #: ``None`` when the output directory is not known or not project-backed.
     run_dir: Path | None = None
 
+    #: Durable Runtime identities, available after separate task readback.
+    task_id: str | None = None
+    manifest_ref: str | None = None
+    result_manifest: dict[str, Any] | None = None
+    source_ref: dict[str, Any] | str | None = None
+    effective_settings_ref: dict[str, Any] | str | None = None
+
     @property
     def ok(self) -> bool:
         """A generation succeeded exactly when it carries no :class:`ExecError`."""
@@ -190,6 +197,11 @@ class GenerationResult:
             "error": _exec_error_to_json_safe(self.error),
             "manifest": self.manifest,
             "run_dir": str(self.run_dir) if self.run_dir is not None else None,
+            "task_id": self.task_id,
+            "manifest_ref": self.manifest_ref,
+            "result_manifest": self.result_manifest,
+            "source_ref": self.source_ref,
+            "effective_settings_ref": self.effective_settings_ref,
         }
         return result
 
@@ -232,6 +244,11 @@ class GenerationResult:
             error=error,
             manifest=data.get("manifest"),
             run_dir=run_dir,
+            task_id=data.get('task_id'),
+            manifest_ref=data.get('manifest_ref'),
+            result_manifest=data.get('result_manifest'),
+            source_ref=data.get('source_ref'),
+            effective_settings_ref=data.get('effective_settings_ref'),
         )
 
 

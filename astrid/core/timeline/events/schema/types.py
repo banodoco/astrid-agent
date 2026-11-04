@@ -8,7 +8,7 @@ from typing import Any, Literal
 # Per-domain payload dataclasses. These were split out of this module into the
 # ``payloads`` subpackage; they are imported and re-exported here so that the
 # ``PayloadModel`` union, ``_PAYLOAD_TYPES`` dispatch, and all existing import
-# paths (projection.py, inverses.py, the schema package __init__, etc.) continue
+# paths (projection.py, the schema package __init__, etc.) continue
 # to resolve them from ``...schema.types`` unchanged.
 from .payloads import (
     ArrangementReplacedPayload,

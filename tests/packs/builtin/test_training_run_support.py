@@ -192,8 +192,9 @@ def test_training_config_requires_storage_name_when_runpod_storage_required(tmp_
         compute={"storage_required": True},
     )
 
-    with pytest.raises(TrainingRunConfigError, match="ensure-storage"):
+    with pytest.raises(TrainingRunConfigError) as raised:
         load_training_run_config(config_path)
+    assert "runpod-lifecycle volumes create <storage-name> <GB> --datacenter <id>" in str(raised.value)
 
     configured_path = _training_config(
         tmp_path / "storage-configured.json",
@@ -251,6 +252,8 @@ def test_training_run_preflight_combines_budget_and_declared_secrets_before_live
 
 
 def test_training_run_main_dry_run_writes_state_and_live_preflight_fails_before_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # This test verifies the missing-secret dry-run path, independent of the host shell.
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     clip, caption = _clip_fixture(tmp_path)
     manifest = _flat_manifest(tmp_path / "manifest.json", clip, caption)
     run_dir = tmp_path / "train-run"

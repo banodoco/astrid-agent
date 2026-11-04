@@ -73,16 +73,15 @@ def _persisted_profile(home: Path, runtime: Path, source: Path) -> Path:
 def test_source_profile_provisions_explicit_render_runtime(monkeypatch, tmp_path):
     source = tmp_path / "source"
     remotion = source / "remotion"
-    schema = (
-        remotion
-        / "node_modules"
-        / "@banodoco"
-        / "timeline-schema"
-        / "python"
-        / "banodoco_timeline_schema"
-    )
-    schema.mkdir(parents=True)
-    (schema / "__init__.py").write_text("", encoding="utf-8")
+    from astrid.core.foundation.paths import REPO_ROOT
+    from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+    for relative in (SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"), *READER_INPUTS):
+        target = source / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPO_ROOT / relative).read_bytes())
+    schema = source / SCHEMA_RELATIVE_PATH
+    (remotion / "node_modules").mkdir(parents=True)
     (remotion / "package.json").write_text("{}", encoding="utf-8")
     # The resolver probes each candidate with ``--version``; an unpinned
     # project (no engines.node) takes the first working Node on PATH.
@@ -97,7 +96,7 @@ def test_source_profile_provisions_explicit_render_runtime(monkeypatch, tmp_path
 
     assert child_env["ASTRID_REMOTION_PROJECT_DIR"] == str(remotion.resolve())
     assert child_env["ASTRID_NODE_EXECUTABLE"] == str(node.resolve())
-    assert child_env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] == str(schema.parent.resolve())
+    assert child_env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] == str(schema.resolve())
 
 
 def test_neutral_launcher_is_invoked_with_ephemeral_profile(monkeypatch, tmp_path):
@@ -348,6 +347,23 @@ def test_launcher_bootstrap_preserves_typed_install_action(monkeypatch):
     assert caught.value.details["next_action"] == autobootstrap.INSTALL_RUNTIME_ACTION
 
 
+def test_no_workspace_bootstrap_points_to_install_line_not_operator_command(monkeypatch):
+    def no_workspace():
+        raise autobootstrap.AutoBootstrapError(
+            "No workspace is configured; run astrid-runtime workspace create or workspace attach.",
+            details={"cause_message": "No workspace is configured; run astrid-runtime workspace create."},
+        )
+
+    monkeypatch.setattr(autobootstrap, "ensure_runtime", no_workspace)
+    with pytest.raises(ServiceUnavailableError) as caught:
+        AstridClient.open_from_launcher()
+
+    assert str(caught.value) == "No workspace is configured; run the Astrid install line again."
+    assert caught.value.details["next_action"] == "run the Astrid install line again"
+    assert "workspace create" not in str(caught.value)
+    assert "cause_message" not in caught.value.details
+
+
 def test_launcher_rejection_preserves_structured_runtime_cause(monkeypatch, tmp_path):
     """A neutral admission failure remains actionable at the Astrid boundary."""
     monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
@@ -530,6 +546,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
             return {
                 "status": "ok",
                 "protocol": "workspace.v1",
+                "identity": None,
                 "schema_digest": SCHEMA_DIGEST,
                 "runtime_epoch": 1,
                 "runtime_instance_id": "runtime-1",

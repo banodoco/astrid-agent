@@ -1,0 +1,24 @@
+{
+  "body": {
+    "code": "retired_route",
+    "details": {
+      "hint": "Submit a timeline commit instead of the retired save route.",
+      "reason": "timeline_commit_required",
+      "replacement": "POST /v1/projects/{project_id}/timelines/{timeline_id}/commit",
+      "status": "refused",
+      "suggested_command": "timeline commit"
+    },
+    "message": "legacy timeline writes are retired; submit EditCommands through commitTimeline",
+    "request_id": "<request_id>"
+  },
+  "case": "retired_route_410",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "request": {
+    "body": {},
+    "method": "POST",
+    "path": "/v1/projects/<project_id>/timelines/main/composition-revisions"
+  },
+  "status": 410
+}

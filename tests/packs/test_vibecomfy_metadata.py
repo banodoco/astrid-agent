@@ -49,7 +49,6 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "-m",
                 "astrid.packs.vibecomfy.actions.run.run",
                 "run",
-                "{workflow}",
                 "--python",
                 "{python}",
                 "--companion",
@@ -83,6 +82,10 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "--comfy-output-dir",
                 "{comfy_output_dir}",
             ],
+        )
+        self.assertEqual(
+            payload["command"]["input_args"],
+            [{"input": "workflow", "repeatable": False, "optional": True, "before": "--out"}],
         )
         inputs = {item["name"]: item for item in payload["inputs"]}
         self.assertEqual(inputs["comfy_url"]["type"], "string")

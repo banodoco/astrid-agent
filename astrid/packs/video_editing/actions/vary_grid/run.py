@@ -17,8 +17,13 @@ from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 
 from astrid.core.cli_choices import add_choice_arg
-from astrid.core.util.credentials_scope import CredentialsScope
-from astrid.core.util.http import FAL_QUEUE_URL, default_client
+from astrid.core.util.http import default_client, fal_submit_and_poll
+from astrid.core.util.generation_helpers import (
+    DEFAULT_OUTPUT_MAX_BYTES,
+    download_output,
+    load_provider_key,
+    write_journal_atomic,
+)
 from astrid.packs.video_editing.actions.logo_ideas.run import (
     DEFAULT_FIREWORKS_MODEL,
     FIREWORKS_CHAT_URL,
@@ -37,13 +42,12 @@ _client = default_client()
 
 def _load_env_var(name: str, *, env_file: Path | None = None) -> str:
     scope = name.lower().removesuffix("_api_key").removesuffix("_key")
-    return CredentialsScope.get_local(scope, env_file=env_file)
+    return load_provider_key(scope, env_file=env_file)
 
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_journal_atomic(path, payload)
 
 
 def parse_cells(spec: str, total: int) -> list[int]:
@@ -289,26 +293,12 @@ def call_fal_edit(
         "num_images": 1,
         "output_format": "jpeg" if output_format == "jpg" else output_format,
     }
-    submission = submit_fal_job_edit(payload, api_key)
-    result = _client.poll_until(
-        submission["status_url"],
-        submission["response_url"],
-        headers={"authorization": f"Key {api_key}"},
-        max_wait_sec=300,
+    result = fal_submit_and_poll(
+        _client, FAL_EDIT_MODEL_ID, payload, api_key,
+        max_wait_sec=300, submit_timeout=120,
     )
+    submission = {"request_id": result.get("request_id")}
     return submission, result
-
-
-def submit_fal_job_edit(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
-    url = f"{FAL_QUEUE_URL}/{FAL_EDIT_MODEL_ID}"
-    headers = {"authorization": f"Key {api_key}"}
-    try:
-        return _client.post_json(url, payload, headers=headers, timeout=120)
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise SystemExit(f"fal submit failed ({exc.code}) for {FAL_EDIT_MODEL_ID}: {detail}") from exc
-    except URLError as exc:
-        raise SystemExit(f"fal submit failed for {FAL_EDIT_MODEL_ID}: {exc}") from exc
 
 
 def save_fal_image(result: dict[str, Any], dest: Path) -> dict[str, Any]:
@@ -319,9 +309,10 @@ def save_fal_image(result: dict[str, Any], dest: Path) -> dict[str, Any]:
     url = first.get("url")
     if not url:
         raise SystemExit(f"fal image entry missing url: {first}")
-    raw = _client.get_bytes(url, timeout=180)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(raw)
+    dest, raw = download_output(
+        _client, url, dest, timeout=180, max_bytes=DEFAULT_OUTPUT_MAX_BYTES,
+        fallback_suffix=".png", infer_suffix=False,
+    )
     return {
         "path": str(dest),
         "source_url": url,
@@ -510,7 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         concepts_payload = {"mode": "dry-run", "concepts": concepts, "raw_response": None}
         grid_prompt = build_grid_prompt(args.ideas, concepts, len(refs))
     else:
-        fireworks_key = CredentialsScope.get_local("fireworks", env_file=args.env_file)
+        fireworks_key = load_provider_key("fireworks", env_file=args.env_file)
         response = call_kimi_variations(
             ideas=args.ideas,
             count=args.count,
@@ -548,7 +539,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         generated = _placeholder_image(grid_path, "vary-grid (dry-run)")
     else:
-        fal_key = CredentialsScope.get_local("fal", env_file=args.env_file)
+        fal_key = load_provider_key("fal", env_file=args.env_file)
         ref_paths = [Path(r["path"]) for r in refs]
         submission, result = call_fal_edit(
             prompt=grid_prompt,

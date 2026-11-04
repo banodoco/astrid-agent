@@ -1061,4 +1061,3 @@ export function startAcpBridge(config: AstridAcpBridgeConfig): ReturnType<typeof
   server.listen(config.port, '127.0.0.1');
   return server;
 }
-

@@ -144,7 +144,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
 
     if dry_run:
         try:
-            report = tl.check() if check else None
+            report = tl._check_core() if check else None
         finally:
             _restore(tl, entry, journal_len, notes_len)
         tx.report = report
@@ -166,7 +166,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
         _restore(tl, entry, journal_len, notes_len)
         _record(tl, label, "rolled-back", reason=reason, error=_journal.one_line(exc))
         raise
-    tx.report = tl.check() if check else None
+    tx.report = tl._check_core() if check else None
     tx.plan = _plan(label, changed=True, changes=changes, diff=diff, clips=clips, cuts=cuts,
                     digests=digests, report=tx.report)
     if not quiet:

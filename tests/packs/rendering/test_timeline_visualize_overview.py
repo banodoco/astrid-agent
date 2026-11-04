@@ -165,6 +165,7 @@ def test_runtime_expansion_names_shots_from_payload_name_before_shot_id(monkeypa
     from astrid.packs.rendering.actions.render import managed_timeline as mt
 
     shot_rev = {'shot_id': 'ch01', 'revision_id': 'rev1', 'internal_timeline_revision_id': 'int1',
+                'content_digest': 'sha256:' + '1' * 64,
                 'payload': {'name': '01 TOMORROW', 'metadata': {}, 'text_bindings': []}}
 
     class Reader:
@@ -172,9 +173,9 @@ def test_runtime_expansion_names_shots_from_payload_name_before_shot_id(monkeypa
             return shot_rev
 
         def get_project_timeline_revision(self, *_):
-            return {'revision_id': 'int1'}
+            return {'revision_id': 'int1', 'content_digest': 'sha256:' + '2' * 64, 'timeline_id': 'internal', 'payload': {}}
 
-    parent = {'payload': {'occurrences': [{'occurrence_id': 'occ-ch01', 'shot_id': 'ch01', 'shot_revision_id': 'rev1'}]}}
+    parent = {'revision_id': 'r', 'content_digest': 'sha256:' + '3' * 64, 'payload': {'occurrences': [{'occurrence_id': 'occ-ch01', 'shot_id': 'ch01', 'shot_revision_id': 'rev1'}]}}
     monkeypatch.setattr(mt, '_read_exact_parent_head', lambda **_: parent)
     monkeypatch.setattr(mt, '_exact_revision_reader', lambda _client: Reader())
     import astrid.core.timeline.shot_composition_projection as scp

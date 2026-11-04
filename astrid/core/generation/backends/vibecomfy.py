@@ -17,26 +17,41 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib import error as urllib_error
-from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from runtime_protocol import platform
 
-from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
 from astrid.core.generation.backends.base import (
     BackendAdapter,
     GenerationResult,
     derive_frames_from_duration,
     parse_dimension_pair,
     split_feature_support,
+)
+from astrid.core.generation.backends.comfy_target import (
+    ComfyTarget,
+    ComfyTargetClient,
+    _capture_model_resolution,
+    open_comfy_http,
+)
+from astrid.core.generation.backends.comfy_target import (
+    extract_output_descriptors as _extract_output_descriptors,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_managed_url as _validate_checkout_server_url,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_output_descriptor as _validate_output_descriptor,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_output_field as _validate_output_field,
 )
 from astrid.core.generation.model_root import (
     MODEL_ROOT_ENV,
@@ -155,29 +170,18 @@ def _assert_process_incarnation_gone(pid: int, expected_identity: str) -> None:
 
 
 def _normalise_comfyui_constraint(value: object | None) -> str:
-    """Return one validated PEP 440 ComfyUI version constraint.
-
-    The historical checkout profile defaults to 0.26.0, but a canonical
-    workflow may carry a stricter runtime declaration (for example
-    ``==0.36.0``). Keeping the constraint on the adapter makes the server
-    probe and the session fingerprint agree without weakening the gate.
-    """
+    """Normalize qualified pins and retain unqualified identities as evidence."""
     constraint = COMFYUI_VERSION if value is None else str(value).strip()
     # The legacy constant was a bare version, while workflow declarations use
     # normal PEP 440 specifiers. Treat a bare version as an exact pin so old
-    # callers retain their fail-closed behaviour.
+    # callers retain the same session fingerprint.
     if re.fullmatch(r"\d+(?:\.\d+)+(?:[._-][0-9A-Za-z]+)?", constraint):
         constraint = f"=={constraint}"
     if not constraint:
         raise ValueError("checkout_server ComfyUI version constraint is empty")
-    try:
-        from packaging.specifiers import SpecifierSet
-
-        SpecifierSet(constraint)
-    except Exception as exc:  # noqa: BLE001 - normalize dependency-boundary errors.
-        raise ValueError(
-            f"checkout_server has an invalid ComfyUI version constraint {constraint!r}"
-        ) from exc
+    # An unqualified declaration (nightly, unknown, a source ref) is silent
+    # version evidence. Installed baselines independently require a positive
+    # match in _comfyui_version_satisfies, including for such declarations.
     return constraint
 
 
@@ -224,148 +228,52 @@ def _observed_source_identity(
         return None, None
 
 
-class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
-        raise ValueError("checkout_server remote request redirected unexpectedly")
-
-
 def _open_checkout_http(request: urllib_request.Request, *, timeout: float) -> Any:
-    """Open one checkout-server request without following redirects."""
-    return urllib_request.build_opener(_NoRedirectHandler).open(
-        request, timeout=timeout
+    """Compatibility seam for the shared checked HTTP opener."""
+    return open_comfy_http(request, timeout=timeout)
+
+
+def _endpoint_session_input_directory(session_config: Mapping[str, Any], recipe: Any) -> str:
+    """Return the Comfy input directory of the bound endpoint session.
+
+    An explicit validated ``input_directory`` is kept. The canonical
+    installed-session registry config has no such field and its exact bytes
+    and digest are frozen. For the pinned recipe, which launches ComfyUI's
+    ``main.py`` from the verified comfy root with neither ``--base-directory``
+    nor ``--input-directory``, ComfyUI's default input directory is
+    ``<base_directory>/input``. Derive only that, after checking that the
+    session's ``cwd``/``base_directory`` equal the recipe's actual launch
+    selection for the same install root. Never infer a path from creative
+    inputs or the caller.
+    """
+    explicit = session_config.get("input_directory")
+    if explicit is not None:
+        if not isinstance(explicit, str) or not explicit.startswith("/"):
+            raise ValueError("checkout_server session input_directory must be absolute")
+        return explicit
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+
+    runtime_root = session_config.get("runtime_root")
+    if not isinstance(runtime_root, str) or not runtime_root.endswith("/runtime"):
+        raise ValueError("checkout_server session has no canonical runtime root")
+    launch = LinuxPlatformAdapter(recipe.platform).start_request(
+        recipe, runtime_root[: -len("/runtime")], deadline=time.monotonic() + 5
     )
-
-
-def _validate_checkout_server_url(server_url: str) -> str:
-    """Return a canonical, origin-only HTTP(S) endpoint."""
-    if not isinstance(server_url, str) or not server_url:
-        raise ValueError("checkout_server requires an explicit server_url")
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in server_url):
-        raise ValueError("checkout_server server_url must not contain whitespace or control characters")
-    if "\\" in server_url:
-        raise ValueError("checkout_server server_url must not contain backslashes")
-    if "?" in server_url or "#" in server_url:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
-    parsed = urllib_parse.urlsplit(server_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("checkout_server server_url must be an HTTP(S) URL")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("checkout_server server_url must not contain credentials")
-    if parsed.netloc.endswith(":"):
-        raise ValueError("checkout_server server_url has an invalid port")
-    if parsed.query or parsed.fragment:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
-    if parsed.path not in {"", "/"}:
-        raise ValueError("checkout_server server_url must contain only an origin")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("checkout_server server_url has an invalid port") from exc
-    if port is not None and not 1 <= port <= 65535:
-        raise ValueError("checkout_server server_url has an invalid port")
-
-    host = parsed.hostname
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in host):
-        raise ValueError("checkout_server server_url has an invalid host")
-    if ":" in host:
-        # IPv6 literals must use the bracketed URL spelling.
-        try:
-            import ipaddress
-
-            ipaddress.IPv6Address(host)
-        except ValueError as exc:
-            raise ValueError("checkout_server server_url has an invalid host") from exc
-        host_part = f"[{host.lower()}]"
-    else:
-        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host):
-            raise ValueError("checkout_server server_url has an invalid host")
-        if ".." in host or any(
-            not label or label.startswith("-") or label.endswith("-")
-            for label in host.split(".")
-        ):
-            raise ValueError("checkout_server server_url has an invalid host")
-        host_part = host.lower()
-    return f"{parsed.scheme}://{host_part}{f':{port}' if port is not None else ''}"
-
-
-def _validate_output_field(
-    value: object,
-    *,
-    field: str,
-    allow_empty: bool = False,
-    reject_slash: bool = False,
-) -> str:
-    if not isinstance(value, str) or (not value and not allow_empty):
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
-    if any(
-        char.isspace() or ord(char) < 32 or ord(char) == 127 or char == "\\"
-        for char in value
+    argv = list(launch.argv)
+    if (
+        len(argv) < 2
+        or argv[1] != "main.py"
+        or any(
+            arg.split("=", 1)[0] in {"--input-directory", "--base-directory"}
+            for arg in argv
+        )
+        or session_config.get("cwd") != launch.cwd
+        or session_config.get("base_directory") != launch.cwd
     ):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if is_native_absolute_path(value) or value.startswith("~") or has_url_scheme(value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if ".." in value or (reject_slash and "/" in value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if not allow_empty and not value:
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
-    return value
-
-
-def _validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
-    if not isinstance(descriptor, dict):
-        raise ValueError("checkout_server output descriptor must be an object")
-    if not {"filename", "subfolder", "type"}.issubset(descriptor):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
-    # Comfy/VHS may attach routing metadata to a descriptor, but accepting an
-    # arbitrary key set would make the custody contract ambiguous.  Keep the
-    # required routing fields plus the documented metadata emitted by Comfy;
-    # reject unknown fields so malformed or attacker-controlled descriptors do
-    # not silently pass through settlement.
-    allowed_metadata = {
-        "filename",
-        "subfolder",
-        "type",
-        "format",
-        "frame_rate",
-        "workflow",
-        "fullpath",
-        "prompt_id",
-        "node_id",
-    }
-    if set(descriptor).difference(allowed_metadata):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
-    filename = _validate_output_field(
-        descriptor.get("filename"), field="filename", reject_slash=True
-    )
-    subfolder = _validate_output_field(
-        descriptor.get("subfolder"), field="subfolder", allow_empty=True
-    )
-    output_type = _validate_output_field(descriptor.get("type"), field="type")
-    if output_type not in {"output", "temp"}:
-        raise ValueError("checkout_server output descriptor has invalid type")
-    return filename, subfolder, output_type
-
-
-def _extract_output_descriptors(value: object) -> list[object]:
-    "Find Comfy output descriptors nested in node/output containers."
-    if isinstance(value, list):
-        descriptors: list[object] = []
-        for item in value:
-            descriptors.extend(_extract_output_descriptors(item))
-        return descriptors
-    if isinstance(value, dict):
-        # Comfy's output descriptors include the required routing fields plus
-        # optional metadata (format, frame rate, workflow, fullpath, ...).
-        # Treat the required subset as a descriptor instead of requiring an
-        # exact three-key shape, otherwise valid VHS video outputs disappear
-        # at settlement time.
-        if {"filename", "subfolder", "type"}.issubset(value):
-            return [value]
-        descriptors = []
-        for item in value.values():
-            descriptors.extend(_extract_output_descriptors(item))
-        return descriptors
-    return []
+        raise ValueError(
+            "checkout_server session launch does not select the pinned default input directory"
+        )
+    return launch.cwd + "/input"
 
 
 def _canonical_sha256(value: object) -> str:
@@ -479,6 +387,115 @@ def _parse_resolution(res: str) -> tuple[int, int] | None:
 # ---------------------------------------------------------------------------
 
 
+if TYPE_CHECKING:
+    from astrid.packs.vibecomfy.production_engine import ProductionRunResult
+
+
+def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[str, str]) -> None:
+    """Bind declared public picker inputs without reusing stale asset provenance."""
+    replacements: dict[str, str] = {}
+    for role, declaration in spec.model_roles.items():
+        public_input = workflow.inputs.get(declaration.binding)
+        node = workflow.nodes.get(public_input.node_id) if public_input is not None else None
+        if (node is None or node.class_type != declaration.node_class
+                or public_input.field != declaration.input):
+            raise ValueError(f"catalog role {role!r} does not match its pinned template input")
+        previous = public_input.value
+        selected = roles[role]
+        workflow.set_input(declaration.binding, selected)
+        if isinstance(previous, str) and previous != selected:
+            replacements[previous] = selected
+    if not replacements:
+        return
+    # Changing a picker does not establish byte/hash/download provenance for
+    # the new target filename. Drop only the superseded picker declarations;
+    # unrelated authored model requirements remain subject to approval.
+    def name(item: Any) -> Any:
+        return item.get("name", item.get("filename")) if isinstance(item, Mapping) else item
+
+    workflow.requirements.models = [
+        replacements[name(item)] if name(item) in replacements else item
+        for item in workflow.requirements.models
+    ]
+    assets = workflow.metadata.get("model_assets")
+    if isinstance(assets, list):
+        workflow.metadata["model_assets"] = [item for item in assets if name(item) not in replacements]
+
+
+def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> Any:
+    """Use the canonical repository template loader and catalog source pin."""
+    from vibecomfy.registry.ready import (
+        repo_ready_template_discovery, resolve_ready_template, workflow_from_ready,
+    )
+
+    template_id = spec.template
+    discovery = repo_ready_template_discovery()
+    record = resolve_ready_template(template_id, discovery)
+
+    # The catalog value and resolved record must both be canonical
+    # ``category/template_id`` identifiers from the repository corpus.
+    requested_id = str(template_id)
+    requested_parts = requested_id.split("/")
+    canonical_id = str(getattr(record, "template_id", ""))
+    id_parts = canonical_id.split("/")
+    if (
+        requested_id != canonical_id
+        or len(requested_parts) != 2
+        or len(id_parts) != 2
+        or any(not part or part in {".", ".."} for part in requested_parts)
+        or any(not part or part in {".", ".."} for part in id_parts)
+        or getattr(record, "source_scope", None) != "repo"
+    ):
+        raise ValueError(
+            f"VibeComfy template {template_id!r} is not a canonical repo template"
+        )
+    template_path = Path(getattr(record, "path", ""))
+    template_root = Path(getattr(record, "root", ""))
+    try:
+        template_path_resolved = template_path.resolve(strict=True)
+        template_root_resolved = template_root.resolve(strict=True)
+        template_path_resolved.relative_to(template_root_resolved)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} is outside its repo root"
+        ) from exc
+    expected_hash = str(spec.template_hash)
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", expected_hash):
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} has no valid sha256 pin"
+        )
+    original = template_path_resolved.read_bytes()
+    actual_hash = hashlib.sha256(original).hexdigest()
+    if actual_hash.lower() != expected_hash[7:].lower():
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} failed its sha256 pin"
+        )
+    if retain_source is not None:
+        retain_source(template_path_resolved.name, original)
+    return workflow_from_ready(canonical_id, _discovery=discovery)
+
+
+def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, str],
+                                       object_info: dict[str, Any], server_url: str) -> bool:
+    """Only advertise a role match whose pinned graph crosses canonical approval."""
+    try:
+        from vibecomfy.schema.provider import TargetSchemaProvider
+        from vibecomfy.workflow_bundle import load_bundle
+
+        workflow = _load_pinned_catalog_workflow(spec)
+        _bind_target_model_roles(workflow, spec, roles)
+        bundle = load_bundle(workflow)
+        bundle.require_canonical_authority("catalog model alternative")
+        bundle.compile(schema_provider=TargetSchemaProvider.from_object_info(
+            object_info, server_url=server_url, model_availability="target",
+        ))
+    except Exception:
+        # Missing template, bad pin/binding, absent nodes and approval failures
+        # cannot be presented as executable model alternatives.
+        return False
+    return True
+
+
 class VibeComfyBackend(BackendAdapter):
     """Local generation backend via pinned VibeComfy ready templates.
 
@@ -486,8 +503,52 @@ class VibeComfyBackend(BackendAdapter):
     the explicit remote-only subclass and owns all remote HTTP behavior.
     """
 
-    def _run_workflow(self, workflow: Any) -> Any:
+    def __init__(self, *, target_client: ComfyTargetClient | None = None) -> None:
+        self._target_client = target_client
+
+    def _model_resolution_client(self) -> ComfyTargetClient | None:
+        return getattr(self, "_target_client", None)
+
+    def workflow(
+        self, workflow_path: Path, out_dir: Path, *, task_identity: str,
+        attempt_identity: str | None = None,
+        expected_execution_identity: str | None = None,
+        workflow_input_bindings: Mapping[str, Any] | None = None,
+        profile_id: str = "pip_embedded",
+        hc03_profile: Mapping[str, Any] | None = None,
+        comfy_url: str = "", comfy_output_dir: str = "",
+    ) -> ProductionRunResult:
+        """Run authored workflows through the existing production path."""
+        from astrid.packs.vibecomfy.production_engine import run_workflow_result_path
+
+        kwargs = dict(
+            task_identity=task_identity, profile_id=profile_id,
+            hc03_profile=hc03_profile,
+            expected_execution_identity=expected_execution_identity,
+        )
+        if attempt_identity is not None:
+            kwargs["attempt_identity"] = attempt_identity
+        if workflow_input_bindings is not None:
+            kwargs["workflow_input_bindings"] = workflow_input_bindings
+        if comfy_url:
+            kwargs["comfy_url"] = comfy_url
+        if comfy_output_dir:
+            kwargs["comfy_output_dir"] = comfy_output_dir
+        from astrid.core.generation.producer_result import (
+            complete_producer_result, preserve_result_on_error, source_input_ref, workflow_transport,
+        )
+        source = source_input_ref(workflow_path, out_dir)
+        transport = workflow_transport(profile_id, comfy_url)
+        with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
+                                      source=source, workflow_path=workflow_path, transport=transport):
+            result = run_workflow_result_path(workflow_path, out_dir, **kwargs)
+            return complete_producer_result(result, out_dir, task_id=task_identity,
+                                            attempt_id=attempt_identity, source=source, transport=transport)
+
+    def _run_workflow(self, workflow: Any, *, schema_provider: Any | None = None) -> Any:
         """Run a workflow through the local embedded VibeComfy runtime."""
+        if schema_provider is not None:
+            raise ValueError("target-backed execution requires the selected checkout adapter and output custody")
         from vibecomfy.runtime.run import run_sync
 
         # Production VibeComfy runtime admission is typed: it accepts the
@@ -506,7 +567,8 @@ class VibeComfyBackend(BackendAdapter):
                 raise RuntimeError("VibeComfy canonical workflow bundle support is unavailable")
             bundle = load_bundle(workflow)
             bundle.require_canonical_authority("runtime execution")
-            return run_sync(bundle.compile(), bundle)
+            kwargs = {"schema_provider": schema_provider} if schema_provider is not None else {}
+            return run_sync(bundle.compile(**kwargs), bundle)
         return run_sync(workflow)
 
     def _collect_outputs(self, result: Any, out_dir: Path) -> list[Path]:
@@ -592,28 +654,43 @@ class VibeComfyBackend(BackendAdapter):
         },
     }
 
-    def generate(
+    def prepare_catalog_workflow(
         self,
         entry: ModelEntry,
         mode: str,
         params: dict[str, Any],
-        out_dir: Path,
-    ) -> GenerationResult:
+        *,
+        resolve_target: bool = False,
+        retain_source: Any = None,
+    ) -> tuple[Any, dict[str, Any] | None, Any | None]:
+        """Resolve and bind a pinned graph for the existing workflow route."""
         # Lazy-import VibeComfy, and snapshot only its repository
         # template corpus.  Dynamic/user template discovery is forbidden.
         import vibecomfy  # noqa: F401
-        from vibecomfy.registry.ready import (
-            repo_ready_template_discovery,
-            resolve_ready_template,
-            workflow_from_ready,
-        )
 
         mode_spec = entry.modes[mode]
         backend_spec: BackendSpec = mode_spec.backends["local"]
         template_id = backend_spec.template
+        plan, target_schema = None, None
+        if resolve_target or (backend_spec.model_roles and self._model_resolution_client() is not None):
+            from astrid.core.model_catalog.registry import ModelRegistry
+            from vibecomfy.schema.provider import TargetSchemaProvider
 
-        # --- resolve seed (or generate one) ----------------------------------
-        seed_used: int = params.get("seed", 0)
+            client = self._model_resolution_client()
+            if client is None:
+                raise ValueError("catalog model role resolution requires a selected Comfy target")
+            registry = ModelRegistry.load_default()
+            # Keep caller-provided typed entries usable, as on the historical
+            # checkout path. Resolution is always captured afresh by the bound
+            # client; no caller-provided plan or resolved filename is trusted.
+            entries = [candidate for candidate in registry.list_all(include_closed=True)
+                       if candidate.id != entry.id]
+            registry = ModelRegistry([entry, *entries])
+            plan, observed = _capture_model_resolution(client, registry, entry.id, mode)
+            target_schema = TargetSchemaProvider.from_object_info(
+                observed, server_url=client.http_origin, model_availability="target",
+                refresh_object_info=client.object_info,
+            )
 
         # --- build param map: canonical → template parameter name ------------
         param_map: dict[str, str] = dict(backend_spec.param_map)
@@ -626,52 +703,8 @@ class VibeComfyBackend(BackendAdapter):
         if computed_frames is not None:
             logger.debug("Computed frames=%d from duration * fps", computed_frames)
 
-        # --- compute applied / dropped feature lists -------------------------
-        applied_features, dropped_features = split_feature_support(
-            params, mode_spec.supports
-        )
-        discovery = repo_ready_template_discovery()
-        record = resolve_ready_template(template_id, discovery)
-
-        # The catalog value and resolved record must both be canonical
-        # ``category/template_id`` identifiers from the repository corpus.
-        requested_id = str(template_id)
-        requested_parts = requested_id.split("/")
-        canonical_id = str(getattr(record, "template_id", ""))
-        id_parts = canonical_id.split("/")
-        if (
-            requested_id != canonical_id
-            or len(requested_parts) != 2
-            or len(id_parts) != 2
-            or any(not part or part in {".", ".."} for part in requested_parts)
-            or any(not part or part in {".", ".."} for part in id_parts)
-            or getattr(record, "source_scope", None) != "repo"
-        ):
-            raise ValueError(
-                f"VibeComfy template {template_id!r} is not a canonical repo template"
-            )
-        template_path = Path(getattr(record, "path", ""))
-        template_root = Path(getattr(record, "root", ""))
-        try:
-            template_path_resolved = template_path.resolve(strict=True)
-            template_root_resolved = template_root.resolve(strict=True)
-            template_path_resolved.relative_to(template_root_resolved)
-        except (OSError, ValueError) as exc:
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} is outside its repo root"
-            ) from exc
-        expected_hash = str(backend_spec.template_hash)
-        if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", expected_hash):
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} has no valid sha256 pin"
-            )
-        actual_hash = hashlib.sha256(template_path_resolved.read_bytes()).hexdigest()
-        if actual_hash.lower() != expected_hash[7:].lower():
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} failed its sha256 pin"
-            )
-        t0 = time.monotonic()
-        wf = workflow_from_ready(canonical_id, _discovery=discovery)
+        wf = (_load_pinned_catalog_workflow(backend_spec, retain_source=retain_source)
+              if retain_source is not None else _load_pinned_catalog_workflow(backend_spec))
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
         for canon, tmpl_param in param_map.items():
@@ -698,6 +731,9 @@ class VibeComfyBackend(BackendAdapter):
                 continue
             wf.set_input(tmpl_param, value)
 
+        if plan is not None:
+            _bind_target_model_roles(wf, backend_spec, plan["roles"])
+
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
         if isinstance(unbound_inputs, dict):
             requested_unbound = sorted(
@@ -714,7 +750,35 @@ class VibeComfyBackend(BackendAdapter):
                     + ", ".join(requested_unbound)
                 )
 
-        result = self._run_workflow(wf)
+        return wf, plan, target_schema
+
+    def generate(
+        self,
+        entry: ModelEntry,
+        mode: str,
+        params: dict[str, Any],
+        out_dir: Path,
+        *,
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
+        t0 = time.monotonic()
+        wf, plan, target_schema = self.prepare_catalog_workflow(
+            entry, mode, params, resolve_target=dry_run,
+        )
+        seed_used: int = params.get("seed", 0)
+        applied_features, dropped_features = split_feature_support(params, entry.modes[mode].supports)
+        if dry_run:
+            from vibecomfy.workflow_bundle import load_bundle
+
+            bundle = load_bundle(wf)
+            bundle.require_canonical_authority("catalog target resolution dry-run")
+            approved = bundle.compile(schema_provider=target_schema)
+            plan["approval"] = {"status": "approved", "api_digest": approved.api_digest}
+            return plan
+        if target_schema is None:
+            result = self._run_workflow(wf)
+        else:
+            result = self._run_workflow(wf, schema_provider=target_schema)
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # --- collect outputs -------------------------------------------------
@@ -725,7 +789,7 @@ class VibeComfyBackend(BackendAdapter):
         return GenerationResult(
             image_paths=image_paths,
             seed_used=seed_used,
-            model_actual=template_id,
+            model_actual=entry.modes[mode].backends["local"].template,
             cost_usd=None,  # local backends have no cost
             duration_ms=duration_ms,
             applied_features=applied_features,
@@ -744,8 +808,10 @@ class VibeComfyEngine:
     succeeds.
     """
 
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, *, endpoint_transport: Any = None) -> None:
         self._origin = _validate_checkout_server_url(server_url)
+        self._endpoint_transport = endpoint_transport
+        self._http_origin = self._origin if endpoint_transport is None else endpoint_transport.server_url
         self._lock = threading.RLock()
         self._operation: str | None = None
         self._running = False
@@ -1185,33 +1251,15 @@ class VibeComfyEngine:
         )
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        request = urllib_request.Request(
-            f"{self._origin}{path}",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        # Lifecycle policy stays with this managed owner; the client owns only
+        # the bounded, checked HTTP exchange.
+        target = ComfyTarget(
+            self._origin if self._endpoint_transport is None else self._endpoint_transport.endpoint.url,
+            "managed" if self._endpoint_transport is None else "pod",
         )
-        try:
-            with _open_checkout_http(request, timeout=10.0) as response:
-                status = getattr(response, "status", 200)
-                if not 200 <= status < 300:
-                    raise ValueError(f"checkout_server {path} returned a non-2xx status")
-                raw = response.read(64 * 1024 + 1)
-                if len(raw) > 64 * 1024:
-                    raise ValueError(f"checkout_server {path} response is too large")
-                if not raw:
-                    # ComfyUI's control endpoints commonly acknowledge a
-                    # successful POST with an empty 2xx body. Preserve that
-                    # transport-level completion evidence so managed release
-                    # can distinguish it from an unknown payload.
-                    return {"acknowledged": True}
-                try:
-                    return json.loads(raw.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    return {"acknowledged": True}
-        except (OSError, urllib_error.URLError) as exc:
-            raise ValueError(f"checkout_server {path} request failed") from exc
+        return ComfyTargetClient(
+            target, endpoint_transport=self._endpoint_transport, opener=_open_checkout_http
+        ).request_json(path, payload)
 
     def run(
         self,
@@ -1219,8 +1267,11 @@ class VibeComfyEngine:
         *,
         runtime_instance_id: str | None = None,
         config: Any | None = None,
+        schema_provider: Any | None = None,
     ) -> Any:
         """Run one workflow without allowing poisoned lifecycle reuse."""
+        if schema_provider is not None and getattr(schema_provider, "server_url", None) != self._http_origin:
+            raise ValueError("checkout_server schema provider differs from the selected Comfy target")
         with self._lock:
             if self._operation is not None:
                 raise RuntimeError(
@@ -1272,9 +1323,18 @@ class VibeComfyEngine:
                     runtime_args = (bundle.compile(), bundle)
                 else:
                     runtime_args = (workflow,)
-            runtime_kwargs: dict[str, Any] = {"server_url": self._origin}
+            runtime_kwargs: dict[str, Any] = {"server_url": self._http_origin}
+            if schema_provider is not None:
+                runtime_kwargs["schema_provider"] = schema_provider
             if config is not None:
                 runtime_kwargs["config"] = config
+            if self._endpoint_transport is not None:
+                if config is None or not isinstance(workflow, tuple) or len(workflow) != 2:
+                    raise ValueError("remote execution requires the approved bundle and session config")
+                runtime_kwargs["runtime_target"] = {
+                    "_runpod_lifecycle_adapter": _EndpointArtifacts(
+                        self._endpoint_transport, config.extra["output_directory"])
+                }
             result = run_sync(*runtime_args, **runtime_kwargs)
             with self._lock:
                 # A containment transition may have superseded this run.  A
@@ -1295,13 +1355,15 @@ class VibeComfyEngine:
                 self._runtime_instance_id = self._prepared_runtime_instance_id
                 self._clear_prepared()
             return result
-        except BaseException:
+        except BaseException as exc:
             with self._lock:
                 self._running = False
                 # A containment/reset transition may have superseded this
                 # run.  Its completion must not alter newer fence state.
                 if self._lifecycle_generation == run_generation:
                     self._poison()
+            if self._endpoint_transport is not None and isinstance(exc, Exception):
+                self._endpoint_transport.raise_if_submission_uncertain(exc)
             raise
         finally:
             with self._lock:
@@ -1347,6 +1409,58 @@ class VibeComfyEngine:
 
 
 
+class _EndpointArtifacts:
+    """Feed JSON-chunk custody into the pinned runtime's existing result seam.
+
+    The runtime writes accepted artifact descriptors to attempt.json before
+    calling download_artifacts(local_root=...). It owns attribution, binding
+    the retrieved files, verification, hashes and managed result production.
+    This attachment neither allocates nor controls a pod/session.
+    """
+
+    def __init__(self, transport, output_directory):
+        from runpod_lifecycle.pod_agent import observation_path
+        observation_path(output_directory)
+        self.transport = transport
+        self.output_directory = Path(output_directory)
+        self.client = ComfyTargetClient(
+            ComfyTarget(transport.endpoint.url, "pod", {"output_directory": str(output_directory)}),
+            endpoint_transport=transport,
+        )
+
+    def describe(self):
+        return {"transport": "https-json-chunks", "endpoint_id": self.transport.endpoint.endpoint_id,
+                "endpoint_url": self.transport.endpoint.url}
+
+    async def attach(self):
+        self.transport.request_budget()
+        return self.describe()
+
+    async def download_artifacts(self, *, local_root):
+        local_root = Path(local_root)
+        attempt = json.loads((local_root.parent / "attempt.json").read_text(encoding="utf-8"))
+        if not isinstance(attempt.get("prompt_id"), str) or not attempt["prompt_id"]:
+            raise ValueError("artifact retrieval requires accepted prompt identity")
+        artifacts = attempt.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError("accepted history has no attributed artifacts")
+        local_root.mkdir(parents=True, exist_ok=False)
+        seen = set()
+        for artifact in artifacts:
+            descriptor = artifact.get("descriptor") if isinstance(artifact, dict) else None
+            filename, subfolder, kind = _validate_output_descriptor(descriptor)
+            if kind != "output":
+                raise ValueError("remote final artifact must belong to the configured output root")
+            relative = Path(subfolder) / filename
+            if relative in seen:
+                raise ValueError("accepted output descriptors are ambiguous")
+            seen.add(relative)
+            destination = local_root / "output" / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            self.client.download_output(descriptor, destination)
+        return {"status": "retrieved", "local_root": str(local_root), **self.describe()}
+
+
 class CheckoutServerAdapter(VibeComfyBackend):
     """Submit pinned workflows to an already-running host-owned server."""
 
@@ -1356,6 +1470,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         *,
         environment_fingerprint: str = "checkout_server",
         expected_comfyui_version: str | None = None,
+        endpoint_transport: Any = None,
     ) -> None:
         # Keep the validated origin private; the base class has no remote path.
         self._origin = _validate_checkout_server_url(server_url)
@@ -1365,7 +1480,11 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._expected_comfyui_version = _normalise_comfyui_constraint(
             expected_comfyui_version
         )
-        self._engine = VibeComfyEngine(self._origin)
+        self._workflow_comfyui_version = expected_comfyui_version
+        self._version_readiness: dict[str, Any] | None = None
+        self._endpoint_transport = endpoint_transport
+        self._http_origin = self._origin if endpoint_transport is None else endpoint_transport.server_url
+        self._engine = VibeComfyEngine(self._origin, endpoint_transport=endpoint_transport)
         self._system_stats_verified = False
         self._runtime_instance_id: str | None = None
         self._startup_probe_digest: str | None = None
@@ -1379,6 +1498,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._bound_warmth_identity: str | None = None
         self._last_run_result: Any | None = None
 
+    def _model_resolution_client(self) -> ComfyTargetClient:
+        target = ComfyTarget(
+            self._origin if self._endpoint_transport is None else self._endpoint_transport.endpoint.url,
+            "managed" if self._endpoint_transport is None else "pod",
+        )
+        return ComfyTargetClient(target, endpoint_transport=self._endpoint_transport, opener=_open_checkout_http)
+
     @classmethod
     def from_host_session(
         cls,
@@ -1388,6 +1514,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         template_id: str,
         invocation_identity: str,
         expected_comfyui_version: str | None = None,
+        endpoint_transport: Any = None,
     ) -> "CheckoutServerAdapter":
         """Bind one manager-owned Vibe session to the verified facts.
 
@@ -1568,6 +1695,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
             or observed_source_content_digest != source_content_digest
         ):
             raise ValueError("checkout_server source revision does not match the live VibeComfy checkout")
+        from astrid.core.generation.engine_readiness import ReadinessError, verify_installed_source
+
+        try:
+            verify_installed_source(source_revision, source_content_digest,
+                                    observed_source_revision, observed_source_content_digest)
+        except ReadinessError:
+            raise ValueError("checkout_server source revision does not match the live VibeComfy checkout") from None
         try:
             if platform.process_identity(pid) is None:
                 raise ProcessLookupError(pid)
@@ -1575,10 +1709,29 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError("checkout_server session process is not alive") from exc
         _verify_owned_vibe_session(session_dir, pid)
 
+        transport_kwargs = {}
+        session_input_directory = session_config.get("input_directory")
+        if endpoint_transport is not None:
+            from astrid.core.generation.engine_endpoint import parse_endpoint_profile_evidence
+            from astrid.core.generation.engine_recipe import load_recipe
+            from astrid.core.generation.engine_transport import EngineEndpointTransport
+
+            if not isinstance(endpoint_transport, EngineEndpointTransport):
+                raise ValueError("checkout_server requires the single-slot endpoint transport")
+            evidence = parse_endpoint_profile_evidence(hc03_profile.get("endpoint_evidence"))
+            endpoint = endpoint_transport.endpoint
+            recipe = load_recipe(evidence.engine, evidence.platform)
+            if (endpoint.engine != evidence.engine or endpoint.platform != evidence.platform
+                    or endpoint.attestation != evidence.claim_attestation
+                    or server_url != f"http://127.0.0.1:{recipe.start.port}"):
+                raise ValueError("checkout_server endpoint differs from its bound readiness session")
+            session_input_directory = _endpoint_session_input_directory(session_config, recipe)
+            transport_kwargs["endpoint_transport"] = endpoint_transport
         adapter = cls(
             server_url,
             environment_fingerprint=str(facts_digest),
             expected_comfyui_version=expected_comfyui_version,
+            **transport_kwargs,
         )
         adapter._host_session = {
             "session_dir": str(session_dir),
@@ -1599,6 +1752,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 if session_output_directory is not None
                 else None
             ),
+            "input_directory": session_input_directory,
         }
         adapter._host_profile = hc03_profile
         adapter._bound_model_id = model_name
@@ -1645,10 +1799,16 @@ class CheckoutServerAdapter(VibeComfyBackend):
 
     def _restart_owned_session(self) -> dict[str, Any]:
         """Restart exactly the owner daemon, then require a fresh binding."""
+        if self._endpoint_transport is not None:
+            # A new incarnation needs a newly frozen readiness document and
+            # original-owner reconciliation; never rewrite a bound profile.
+            raise RuntimeError("endpoint session restart requires original-owner reconciliation")
         binding = self._host_session
         if not isinstance(binding, Mapping):
             raise ValueError("checkout_server restart requires a managed session")
         session_dir = _strict_absolute_directory(binding.get("session_dir"), "session_dir")
+        if session_dir.name in {"vibecomfy-h3", "comfyui"}:
+            raise ValueError("installer-owned session capacity replacement is unsupported")
         old_pid = int(binding["pid"])
         old_child = int(binding["comfy_pid"])
         old_daemon_identity = str(binding["process_birth_id"])
@@ -1760,6 +1920,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                     "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
                 )
         self._origin = fresh["server_url"]
+        self._http_origin = self._origin
         self._engine = VibeComfyEngine(self._origin)
         self._probe_system_stats()
         return {"ok": True, "released": True, "restarted": True, "old_pid": old_pid, "old_comfy_pid": old_child, "pid": fresh["pid"], "comfy_pid": fresh["comfy_pid"]}
@@ -1782,13 +1943,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
         return self._engine.fence_pending
 
     def _probe_system_stats(self) -> None:
-        """Verify the pinned ComfyUI version only.
+        """Observe workflow drift and enforce the independent installed baseline.
 
         Runtime instance identity is supplied by the health/bootstrap
         handshake; a system-stats digest is never an identity fence.
         """
         self._system_stats_verified = False
-        request = urllib_request.Request(f"{self._origin}/system_stats", method="GET")
+        request = urllib_request.Request(f"{self._http_origin}/system_stats", method="GET")
         try:
             with _open_checkout_http(request, timeout=5.0) as response:
                 status = getattr(response, "status", 200)
@@ -1804,12 +1965,24 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError("checkout_server /system_stats response is not an object")
         system = payload.get("system")
         observed_version = system.get("comfyui_version") if isinstance(system, dict) else None
-        if not isinstance(system, dict) or not _comfyui_version_satisfies(
-            observed_version, self._expected_comfyui_version
+        from astrid.core.generation.engine_readiness import current_comfy_provenance
+        from astrid.core.generation.preflight import compare_versions, readiness_envelope
+
+        provenance = current_comfy_provenance()
+        if provenance is not None:
+            provenance.system_stats(payload)
+        self._version_readiness = readiness_envelope(issues=compare_versions(
+            {"comfyui": self._workflow_comfyui_version}, {"comfyui": observed_version},
+        ))
+        profile = self._host_profile
+        runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
+        installed_version = runtime.get("comfyui_version")
+        if installed_version is not None and not _comfyui_version_satisfies(
+            observed_version, _normalise_comfyui_constraint(installed_version)
         ):
             raise ValueError(
-                "checkout_server requires ComfyUI "
-                f"{self._expected_comfyui_version} according to /system_stats; "
+                "checkout_server installed baseline requires ComfyUI "
+                f"{installed_version} according to /system_stats; "
                 f"observed {observed_version!r}"
             )
         self._startup_probe_digest = hashlib.sha256(
@@ -1940,8 +2113,11 @@ class CheckoutServerAdapter(VibeComfyBackend):
         model_digest: str | None = None,
         artifact_sha256: str | None = None,
         runtime_instance_id: str | None = None,
-    ) -> GenerationResult:
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
         """Generate with disposable warm reuse and host-compatible identities."""
+        if dry_run:
+            return super().generate(entry, mode, params, out_dir, dry_run=True)
         backend_spec = entry.modes[mode].backends["local"]
         # Ready-template/workflow identity is per invocation.  Keep the
         # resident-session identity at the model level so compatible workflow
@@ -2054,9 +2230,40 @@ class CheckoutServerAdapter(VibeComfyBackend):
             or observed_source_content_digest != source_content_digest
         ):
             raise ValueError("checkout_server live source revision changed")
+        from astrid.core.generation.engine_readiness import ReadinessError, verify_installed_source
+
+        try:
+            verify_installed_source(source_revision, source_content_digest,
+                                    observed_source_revision, observed_source_content_digest)
+        except ReadinessError:
+            raise ValueError("checkout_server live source revision changed") from None
         _verify_owned_vibe_session(session_dir, pid)
 
     def run_compiled_workflow(
+        self,
+        workflow: Any,
+        out_dir: Path,
+        *,
+        task_identity: str | None = None,
+        attempt_identity: str | None = None,
+        run_inputs: Mapping[str, Any] | None = None,
+    ) -> list[Path]:
+        transport = self._endpoint_transport
+        if transport is None:
+            return self._run_compiled_workflow(
+                workflow, out_dir, task_identity=task_identity,
+                attempt_identity=attempt_identity, run_inputs=run_inputs)
+        metadata = getattr(getattr(workflow, "workflow", workflow), "metadata", {})
+        configuration = metadata.get("comfy_configuration", {}) if isinstance(metadata, Mapping) else {}
+        timeout = configuration.get("prompt_timeout_sec", os.environ.get("VIBECOMFY_PROMPT_TIMEOUT_SEC", 3600))
+        from vibecomfy.runtime.session import _duration_seconds
+        timeout = _duration_seconds(timeout, name="prompt_timeout_sec", default=3600)
+        with transport.bounded(timeout):
+            return self._run_compiled_workflow(
+                workflow, out_dir, task_identity=task_identity,
+                attempt_identity=attempt_identity, run_inputs=run_inputs)
+
+    def _run_compiled_workflow(
         self,
         workflow: Any,
         out_dir: Path,
@@ -2101,6 +2308,15 @@ class CheckoutServerAdapter(VibeComfyBackend):
                     "checkout_server requires a canonical VibeComfy loader result"
                 )
             bundle.require_canonical_authority("checkout_server execution")
+            from astrid.core.generation.engine_readiness import current_comfy_provenance
+
+            provenance = current_comfy_provenance()
+            if provenance is not None:
+                provenance.workflow(bundle)
+            if self._endpoint_transport is not None and any(
+                node.class_type == "SaveImageWebsocket" for node in bundle.workflow.nodes.values()
+            ):
+                raise ValueError("remote workflow requires an HTTP-retrievable output sink")
             metadata = getattr(bundle.workflow, "metadata", {})
             # Template/workflow identity is per invocation.  The stable
             # session binding is the model/runtime identity; a compatible
@@ -2119,10 +2335,12 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # and the bundle's lock/provenance gates remain in force.
             from vibecomfy.schema import get_target_schema_provider
 
-            target_schema = get_target_schema_provider(server_url=self._origin)
+            target_schema = get_target_schema_provider(server_url=self._http_origin)
             refresh = getattr(target_schema, "refresh", None)
             if callable(refresh):
                 refresh()
+            if provenance is not None:
+                provenance.object_info(target_schema.object_info())
             # The VibeComfy release owns the model volume.  The live Comfy session
             # reads it through extra_model_paths.yaml, but bundle approval
             # performs its own local asset preflight and must be given the
@@ -2132,10 +2350,12 @@ class CheckoutServerAdapter(VibeComfyBackend):
             try:
                 bound_model_root = validate_model_root_binding(
                     host_session.get("model_root_binding"),
-                    verify_files=False,
+                    verify_files=True,
                 )
             except ModelRootBindingError as exc:
                 raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
+            if provenance is not None:
+                provenance.installed(self._host_profile)
             environment_model_root = os.environ.get(MODEL_ROOT_ENV)
             if environment_model_root is not None and environment_model_root != str(bound_model_root.path):
                 raise ValueError(
@@ -2151,6 +2371,8 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 compile_kwargs["run_inputs"] = dict(run_inputs)
             with use_attested_vibecomfy_models_root(bundle, bound_model_root.path):
                 approved = bundle.compile(**compile_kwargs)
+            if self._endpoint_transport is not None:
+                self._upload_approved_inputs(approved, bundle)
             model_bytes_digest = self._engine._validate_model_bytes_digest(
                 self._bound_host_model_digest()
             )
@@ -2185,6 +2407,9 @@ class CheckoutServerAdapter(VibeComfyBackend):
                     "the host-owned Comfy session output directory"
                 )
             config_values["output_directory"] = host_output_directory
+            # Keep native attempt evidence in this task's spool, while the
+            # verified host session continues to own the Comfy output root.
+            config_values["runtime_root"] = str(destination / '.vibecomfy-runtime')
             if task_identity is not None:
                 config_values["task_id"] = task_identity
             if attempt_identity is not None:
@@ -2229,16 +2454,33 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 runtime_instance_id=self._runtime_instance_id,
                 model_bytes_digest=model_bytes_digest,
             )
+            from astrid.core.generation.producer_result import (
+                bind_executed_settings, preserve_result_on_error, stage_executed_settings,
+            )
+            settings_ref = stage_executed_settings(approved, destination)
             try:
                 os.environ[environment_key] = json.dumps(
                     environment_values, sort_keys=True, separators=(",", ":")
                 )
-                result = self._run_workflow((approved, bundle), config=runtime_config)
+                try:
+                    with preserve_result_on_error(destination, task_id=task_identity, attempt_id=attempt_identity,
+                                                  workflow_bundle=bundle,
+                                                  artifact_roots=(Path(host_output_directory),)):
+                        result = self._run_workflow((approved, bundle), config=runtime_config)
+                except BaseException as exc:
+                    try:
+                        bind_executed_settings(exc, settings_ref, task_id=task_identity,
+                                               attempt_id=attempt_identity, staging_root=destination)
+                    except Exception as evidence_error:
+                        exc.add_note(f'Could not bind executed-settings evidence: {evidence_error}')
+                    raise
             finally:
                 if previous_environment_configuration is None:
                     os.environ.pop(environment_key, None)
                 else:
                     os.environ[environment_key] = previous_environment_configuration
+            result = bind_executed_settings(result, settings_ref, task_id=task_identity,
+                                           attempt_id=attempt_identity, staging_root=destination)
             outputs = self._collect_outputs(result, destination)
             self._last_run_result = result
             return outputs
@@ -2255,6 +2497,29 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError("checkout_server host-session model digest is missing")
         return digest
 
+    def _upload_approved_inputs(self, approved, bundle):
+        """Transfer only canonical media inputs from existing action staging.
+
+        The action may itself run on the pod; its existing local staging is
+        distinct from this authenticated controller/agent transfer boundary.
+        Startup still has to authorize each exact destination, or put fails.
+        """
+        media_values = []
+        for item in bundle.workflow.inputs.values():
+            if item.media_semantics in {"image", "video", "audio"}:
+                node = approved.api_projection.get(item.node_id)
+                if node is not None and item.field in node.get("inputs", {}):
+                    media_values.append(node["inputs"][item.field])
+        if not media_values:
+            return
+        root = _strict_absolute_directory(self._host_session.get("input_directory"), "input_directory")
+        for value in media_values:
+            name = _validate_output_field(value, field="input filename", reject_slash=True)
+            source = root / name
+            if source.is_symlink() or not source.is_file():
+                raise ValueError("canonical media input is not a staged regular file")
+            self._endpoint_transport.put(source, str(source))
+
     def cancel(self, frame: object | None = None) -> dict[str, Any]:
         """Fence native work before probing or settling host cancellation."""
         return self._engine.cancel(frame, preflight=self._control_preflight)
@@ -2263,6 +2528,9 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self, frame: object | None = None, *, reason: str = "requested"
     ) -> dict[str, Any]:
         """Fence native state before probing and mark the adapter cold."""
+        if (reason == "capacity_replacement" and self._host_session is not None
+                and Path(str(self._host_session.get("session_dir", ""))).name in {"vibecomfy-h3", "comfyui"}):
+            raise ValueError("installer-owned session capacity replacement is unsupported")
         if (
             self._host_session is not None
             and reason == "capacity_replacement"
@@ -2288,7 +2556,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._probe_system_stats()
 
     def _run_workflow(
-        self, workflow: Any, *, config: Any | None = None
+        self, workflow: Any, *, config: Any | None = None, schema_provider: Any | None = None
     ) -> Any:
         """Probe version and submit with the canonical runtime identity."""
         self._origin = _validate_checkout_server_url(self._origin)
@@ -2300,12 +2568,19 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError(
                 "checkout_server runtime_instance_id is required from canonical health/bootstrap"
             )
-        return self._engine.run(
-            workflow, runtime_instance_id=instance_id, config=config
-        )
+        if schema_provider is not None:
+            from vibecomfy.workflow_bundle import load_bundle
+
+            bundle = load_bundle(workflow)
+            bundle.require_canonical_authority("catalog target execution")
+            workflow = (bundle.compile(schema_provider=schema_provider), bundle)
+        runtime_kwargs = {"schema_provider": schema_provider} if schema_provider is not None else {}
+        return self._engine.run(workflow, runtime_instance_id=instance_id, config=config, **runtime_kwargs)
 
     def _collect_outputs(self, result: Any, out_dir: Path) -> list[Path]:
         """Custody remote outputs through validated Comfy ``/view`` downloads."""
+        if self._endpoint_transport is not None:
+            return self._collect_chunk_outputs(result, out_dir)
         metadata_path = getattr(result, "metadata_path", None)
         if not isinstance(metadata_path, (str, Path)) or not str(metadata_path):
             raise ValueError("checkout_server result has no metadata_path")
@@ -2318,15 +2593,10 @@ class CheckoutServerAdapter(VibeComfyBackend):
         if not descriptors:
             raise ValueError("checkout_server result metadata has no comfy_outputs")
 
+        client = ComfyTargetClient(ComfyTarget(self._origin, "managed"), opener=_open_checkout_http)
         image_paths: list[Path] = []
         for descriptor in descriptors:
             filename, subfolder, output_type = _validate_output_descriptor(descriptor)
-            query = urllib_parse.urlencode(
-                {"filename": filename, "subfolder": subfolder, "type": output_type}
-            )
-            request = urllib_request.Request(
-                f"{self._origin}/view?{query}", method="GET"
-            )
             destination = out_dir / filename
             if destination.exists():
                 stem = destination.stem
@@ -2348,41 +2618,42 @@ class CheckoutServerAdapter(VibeComfyBackend):
                             "checkout_server output descriptor escaped the host-owned output directory"
                         ) from exc
                     expected_shared_digest = _file_sha256(shared_path)
-            temporary_path: Path | None = None
-            try:
-                with _open_checkout_http(request, timeout=30.0) as response:
-                    status = getattr(response, "status", 200)
-                    if status != 200:
-                        raise ValueError("checkout_server /view returned a non-200 status")
-                    with tempfile.NamedTemporaryFile(
-                        mode="wb",
-                        dir=out_dir,
-                        prefix=".checkout-download-",
-                        delete=False,
-                    ) as temporary:
-                        temporary_path = Path(temporary.name)
-                        shutil.copyfileobj(response, temporary)
-                        temporary.flush()
-                        os.fsync(temporary.fileno())
-                os.replace(temporary_path, destination)
-                temporary_path = None
-                if (
-                    expected_shared_digest is not None
-                    and _file_sha256(destination) != expected_shared_digest
-                ):
-                    destination.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"checkout_server downloaded output {filename!r} changed during custody"
-                    )
-            except (OSError, urllib_error.URLError) as exc:
-                raise ValueError(
-                    f"checkout_server could not download output {filename!r}"
-                ) from exc
-            finally:
-                if temporary_path is not None:
-                    try:
-                        temporary_path.unlink()
-                    except FileNotFoundError:
-                        pass
+            client.download_output(descriptor, destination, expected_sha256=expected_shared_digest)
             image_paths.append(destination)
         return image_paths
+
+    def _collect_chunk_outputs(self, result, out_dir):
+        # Runtime retrieval has already happened before managed-result hashing.
+        # Copy the very same attributed custody files into action staging; do
+        # not fetch raw /view or rebuild the producer envelope.
+        metadata_path = Path(result.metadata_path)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        descriptors = [_validate_output_descriptor(item)
+                       for item in _extract_output_descriptors(metadata.get("comfy_outputs"))]
+        artifacts = metadata.get("artifacts")
+        if not descriptors or not isinstance(artifacts, list) or len(artifacts) != len(descriptors):
+            raise ValueError("remote result lost accepted output attribution")
+        paths = []
+        custody = (metadata_path.parent / "downloaded-artifacts").resolve(strict=True)
+        for artifact in artifacts:
+            descriptor = _validate_output_descriptor(artifact.get("descriptor"))
+            if descriptor not in descriptors:
+                raise ValueError("remote result descriptor differs from accepted history")
+            descriptors.remove(descriptor)
+            source = Path(artifact["path"]).resolve(strict=True)
+            source.relative_to(custody)
+            expected = (custody / "output" / descriptor[1] / descriptor[0]).resolve(strict=True)
+            if source != expected or not source.is_file():
+                raise ValueError("remote result path differs from accepted history")
+            destination = out_dir / source.name
+            counter = 0
+            while destination.exists():
+                counter += 1
+                destination = out_dir / f"{source.stem}_{counter}{source.suffix}"
+            digest = _file_sha256(source)
+            shutil.copyfile(source, destination)
+            if _file_sha256(destination) != digest:
+                destination.unlink(missing_ok=True)
+                raise ValueError("remote output changed during action custody")
+            paths.append(destination)
+        return paths

@@ -1335,7 +1335,7 @@ def test_invoke_maps_orchestrator_result_errors_into_public_taxonomy(
 
     observed = []
 
-    def failed_execution(request, definition):
+    def failed_execution(request, definition, *, _captured_source=None):
         # Registry lookup, request resolution, the real runner result DTO,
         # and the public SDK error projection remain live; only execution is fake.
         assert definition.id == orchestrator_id
@@ -1421,24 +1421,13 @@ def test_generate_image_reconstructs_typed_result_from_generation_payload(
     assert seen["kwargs"]["inputs"]["prompt"] == "a lantern in fog"
 
 
-def test_generate_facade_maps_contract_failures_and_openai_rejection(
+def test_generate_facade_maps_contract_failures_and_openai_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     astrid = _import_public_module()
     sdk = importlib.import_module("astrid.sdk")
     from astrid.core.generation import GENERATION_RESULT_KEY
-
-    with pytest.raises(
-        astrid.CapabilityPreconditionError,
-        match="generation.generate_image_openai",
-    ):
-        astrid.generate.image(
-            model="gpt-image-1",
-            mode="t2i",
-            execution="openai",
-            out=tmp_path,
-        )
 
     def missing_generation_result(capability_id: str, **kwargs: Any) -> Any:
         return astrid.InvocationResult(
@@ -1450,6 +1439,11 @@ def test_generate_facade_maps_contract_failures_and_openai_rejection(
         )
 
     monkeypatch.setattr(sdk, "invoke", missing_generation_result)
+    with pytest.raises(astrid.CapabilityRuntimeError, match=GENERATION_RESULT_KEY):
+        astrid.generate.image(
+            model="gpt-image-1", mode="t2i", execution="openai",
+            prompt="a lantern in fog", out=tmp_path, project="demo",
+        )
     with pytest.raises(
         astrid.CapabilityRuntimeError,
         match=GENERATION_RESULT_KEY,
@@ -1646,22 +1640,19 @@ def test_generate_facade_rejects_openai_for_video_too(
     tmp_path: Path,
 ) -> None:
     """``astrid.generate.video(execution=\"openai\")`` must raise a clear
-    diagnostic even though the video facade does not have a dedicated
-    openai rejection guard — it should fail through the executor path."""
+    diagnostic through the catalog's declared backend matrix."""
     astrid = _import_public_module()
 
-    # Video facade doesn't have an explicit openai rejection like image does,
-    # but if someone passes execution="openai" it should be forwarded to the
-    # executor which will reject it.  We only assert the image guard here.
-    # The image guard is the primary contract.
     with pytest.raises(
-        astrid.CapabilityPreconditionError,
-        match="generation.generate_image_openai",
+        astrid.CapabilityValidationError,
+        match="Execution 'openai' is not available for model 'wan-2.2' mode 't2v'",
     ):
-        astrid.generate.image(
-            model="gpt-image-1",
-            mode="t2i",
+        astrid.generate.video(
+            model="wan-2.2",
+            mode="t2v",
             execution="openai",
+            prompt="a lantern in fog",
+            project="demo",
             out=tmp_path,
         )
 
@@ -3026,3 +3017,70 @@ def test_public_v3_local_parent_uses_real_runner_guard_and_result(tmp_path, monk
     assert result.raw_result["dispatch"] == "public_sdk_local_orchestrator"
     assert result.kernel_task_id is None and result.kernel_attempt_id is None
     assert json.loads(target.read_text()) == {"guard": "1", "value": "bound"}
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_generate_facade_maps_contract_failures_and_openai_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    astrid = _import_public_module()
+    sdk = importlib.import_module("astrid.sdk")
+    from astrid.core.generation import GENERATION_RESULT_KEY
+
+    with pytest.raises(
+        astrid.CapabilityPreconditionError,
+        match="generation.generate_image_openai",
+    ):
+        astrid.generate.image(
+            model="gpt-image-1",
+            mode="t2i",
+            execution="openai",
+            out=tmp_path,
+        )
+
+    def missing_generation_result(capability_id: str, **kwargs: Any) -> Any:
+        return astrid.InvocationResult(
+            capability_id=capability_id,
+            capability_type="executor",
+            native_kind="built_in",
+            ok=True,
+            raw_result={"payload": {"returncode": 0}},
+        )
+
+    monkeypatch.setattr(sdk, "invoke", missing_generation_result)
+    with pytest.raises(
+        astrid.CapabilityRuntimeError,
+        match=GENERATION_RESULT_KEY,
+    ):
+        astrid.generate.video(
+            model="wan-2.2",
+            mode="t2v",
+            execution="cloud",
+            out=tmp_path,
+            project="demo",
+        )
+
+    def failed_invoke(capability_id: str, **kwargs: Any) -> Any:
+        return astrid.InvocationResult(
+            capability_id=capability_id,
+            capability_type="executor",
+            native_kind="built_in",
+            ok=False,
+            error={
+                "message": "wrong interpreter",
+                "sdk_error": "CapabilityPreconditionError",
+                "sdk_category": "precondition",
+            },
+            raw_result={"payload": {GENERATION_RESULT_KEY: {}}},
+        )
+
+    monkeypatch.setattr(sdk, "invoke", failed_invoke)
+    with pytest.raises(astrid.CapabilityPreconditionError, match="wrong interpreter"):
+        astrid.generate.video(
+            model="wan-2.2",
+            mode="t2v",
+            execution="cloud",
+            out=tmp_path,
+            project="demo",
+        )

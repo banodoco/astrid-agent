@@ -17,7 +17,8 @@ from typing import Any, Callable
 
 from astrid.core._shared.result_manifest import write_json_atomic, write_manifest
 from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.atomic_io import write_bytes_atomic
+from astrid.core.generation.backends.fal import FalBackend
+from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.core.foundation.hash import sha256_file
 from astrid.core.pack.entrypoint import run_pack_main
 from astrid.core.util.credentials_scope import CredentialsScope
@@ -161,10 +162,7 @@ def _video_url(result: dict[str, Any]) -> str:
 
 
 def _download_video(client: HttpClient, url: str, destination: Path, timeout_seconds: int) -> None:
-    if not url.startswith("https://"):
-        raise ValueError("fal.ai returned a non-HTTPS output URL")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    write_bytes_atomic(destination, client.get_bytes(url, timeout=timeout_seconds))
+    FalBackend.download(client, url, destination, timeout_seconds)
 
 
 def _write_run_manifest(
@@ -260,27 +258,25 @@ def execute(
             api_key = CredentialsScope.get_local("fal", env_file=args.env_file)
         if client is None:
             client = default_client()
-        client.register_secret(api_key)
-
-        payload: dict[str, Any] = {
+        params: dict[str, Any] = {
             "prompt": prompt,
             "duration": args.duration,
             "resolution": "2K",
             "aspect_ratio": args.aspect_ratio,
         }
-        if staged_images:
-            payload["reference_image_urls"] = [uploader(client, path, api_key) for path in staged_images]
-        if staged_videos:
-            payload["reference_video_urls"] = [uploader(client, path, api_key) for path in staged_videos]
-        if staged_audios:
-            payload["reference_audio_urls"] = [uploader(client, path, api_key) for path in staged_audios]
-
-        result = submitter(
-            client,
-            ENDPOINTS[args.mode],
-            payload,
-            api_key,
-            max_wait_sec=args.timeout_seconds,
+        params.update(
+            image_refs=staged_images,
+            video_refs=staged_videos,
+            audio_refs=staged_audios,
+            timeout_seconds=args.timeout_seconds,
+        )
+        result = FalBackend(client=client).submit(
+            ModelRegistry.load_default().get("minimax-h3"),
+            "t2v" if args.mode == "text-to-video" else "v2v",
+            params,
+            api_key=api_key,
+            uploader=uploader,
+            submitter=submitter,
         )
         if not isinstance(result, dict):
             raise ValueError("fal.ai returned a non-object result")
@@ -310,7 +306,7 @@ def execute(
             request_id=result.get("request_id"),
         )
         write_json_atomic(
-            out / "result.json",
+            out / "h3_video_receipt.json",
             {
                 "schema_version": 1,
                 "status": "completed",
@@ -336,7 +332,7 @@ def execute(
             error=message,
         )
         write_json_atomic(
-            out / "result.json",
+            out / "h3_video_receipt.json",
             {
                 "schema_version": 1,
                 "status": "failed",
@@ -381,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             raise AstridError(
                 manifest.get("error", "MiniMax H3 fal.ai request failed"),
                 recovery_command=(
-                    "inspect result.json and manifest.json; do not alter an exact "
+                    "inspect h3_video_receipt.json and manifest.json; do not alter an exact "
                     "prompt or submit a paid approximation without explicit intent"
                 ),
                 state_snapshot={

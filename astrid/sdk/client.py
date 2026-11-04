@@ -135,7 +135,7 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
         identity = health.get(field)
         if not isinstance(identity, str) or not identity.strip():
             raise _protocol_error(f"health.{field}", f"runtime health {field} is invalid")
-    _validate_startup_identity(health.get("identity"))
+    _validate_startup_identity(health["identity"])
     if "services" in health:
         services = health["services"]
         if not isinstance(services, list):
@@ -285,6 +285,12 @@ class AstridClient:
                 "runtime realm, actor, and client identity are required; run the Astrid install line again",
                 details={"next_action": "run the Astrid install line again"},
             )
+        # The aggregate validation above establishes these invariants, but
+        # mypy cannot narrow optional values through ``all``.
+        assert realm_id is not None
+        assert actor_id is not None
+        assert client_name is not None
+        assert client_version is not None
 
         def unavailable(exc: Exception, *, operation: str | None = None) -> ServiceUnavailableError:
             from astrid.core.audit.util import redact
@@ -435,9 +441,16 @@ class AstridClient:
         except AutoBootstrapError as exc:
             lifecycle_details = dict(getattr(exc, "details", {}) or {})
             lifecycle_details.setdefault("lifecycle_code", exc.code)
-            lifecycle_details.setdefault("next_action", exc.next_action)
+            message = str(exc)
+            if "no workspace is configured" in message.lower():
+                message = "No workspace is configured; run the Astrid install line again."
+                lifecycle_details.pop("recovery_action", None)
+                lifecycle_details.pop("cause_message", None)
+                lifecycle_details["next_action"] = "run the Astrid install line again"
+            else:
+                lifecycle_details.setdefault("next_action", exc.next_action)
             raise ServiceUnavailableError(
-                str(exc), details=lifecycle_details
+                message, details=lifecycle_details
             ) from exc
         if credential is not None:
             credential_value: str | Path = credential

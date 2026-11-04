@@ -1,12 +1,152 @@
 """Units (canvas px vs an element's stored grid) and formula/moment values as the sheet and --set write them."""
 from __future__ import annotations
 
+import math
 import re
+from fractions import Fraction
 from typing import Any, Mapping
 
 from astrid.core.timeline import moments as mo
+from astrid.sdk.timeline._common import LOGICAL_PX, POSITION_KEYS, TimelineEditError, _num, _r
 
-from astrid.sdk.timeline._common import (LOGICAL_PX, POSITION_KEYS, TimelineEditError, _num)
+
+def trim_source_interval(source_in: int | float, source_out: int | float,
+                         limit: int | float) -> tuple[float, float, float]:
+    """Round an already validated source interval without exceeding the raw file limit.
+
+    Keep nearest six-decimal precision, moving an overshooting out point to
+    the greatest six-decimal point inside the file. Do the floor in exact
+    arithmetic: floating multiplication could round back up to the boundary.
+    If converting the floor to binary64 exceeds the original integer limit,
+    use its immediate binary64 predecessor (the floor itself is inside).
+    Refuse collapsed intervals rather than expanding a tiny requested window.
+    """
+    applied_in, applied_out = _r(source_in), _r(source_out)
+    if applied_out > limit:
+        applied_out = math.floor(Fraction(limit) * 1_000_000) / 1_000_000
+        if applied_out > limit:
+            applied_out = math.nextafter(applied_out, -math.inf)
+    hold = _r(applied_out - applied_in)
+    if applied_out <= applied_in or hold <= 0:
+        raise TimelineEditError("source range collapses at authored precision")
+    return applied_in, applied_out, hold
+
+
+def frame_time(frame: int, fps: int | float) -> Fraction:
+    if isinstance(frame, bool) or isinstance(fps, bool) or frame < 0 or fps <= 0:
+        raise TimelineEditError("frame and fps must be non-negative/positive")
+    return Fraction(frame) / Fraction(str(fps))
+
+
+def _time_fraction(value: int | float | Fraction, label: str) -> Fraction:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Fraction)):
+        raise TimelineEditError(f"{label} must be a number")
+    return value if isinstance(value, Fraction) else Fraction(str(value))
+
+
+def _playback_rate(speed: int | float | Fraction) -> Fraction:
+    rate = _time_fraction(speed, "speed")
+    if rate <= 0:
+        raise TimelineEditError("speed must be positive")
+    return rate
+
+
+def source_to_timeline_time(
+    source_time: int | float | Fraction,
+    *,
+    source_start: int | float | Fraction = 0,
+    timeline_start: int | float | Fraction = 0,
+    speed: int | float | Fraction = 1,
+) -> Fraction:
+    """Map a source timestamp into its local timeline timestamp.
+
+    The half-open interval mapping is ``timeline_start + (source_time -
+    source_start) / speed``. Fractions keep rational frame boundaries exact;
+    callers can apply :func:`quantize_time` at the renderer boundary.
+    """
+
+    rate = _playback_rate(speed)
+    return _time_fraction(timeline_start, "timeline_start") + (
+        _time_fraction(source_time, "source_time") - _time_fraction(source_start, "source_start")
+    ) / rate
+
+
+def timeline_to_source_time(
+    timeline_time: int | float | Fraction,
+    *,
+    source_start: int | float | Fraction = 0,
+    timeline_start: int | float | Fraction = 0,
+    speed: int | float | Fraction = 1,
+) -> Fraction:
+    """Map a local timeline timestamp back into source time."""
+
+    rate = _playback_rate(speed)
+    return _time_fraction(source_start, "source_start") + (
+        _time_fraction(timeline_time, "timeline_time") - _time_fraction(timeline_start, "timeline_start")
+    ) * rate
+
+
+def quantize_time(seconds: int | float | Fraction, fps: int | float | Fraction, *, policy: str = "nearest") -> int:
+    if isinstance(fps, bool) or isinstance(seconds, bool) or fps <= 0 or policy not in {"floor", "ceil", "nearest"}:
+        raise TimelineEditError("invalid fps or quantization policy")
+    frames = _time_fraction(seconds, "seconds") * Fraction(str(fps))
+    if policy == "floor":
+        return math.floor(frames)
+    if policy == "ceil":
+        return math.ceil(frames)
+    return math.floor(frames + Fraction(1, 2))
+
+
+def quantize_interval(
+    start: int | float | Fraction,
+    end: int | float | Fraction,
+    fps: int | float,
+    *,
+    policy: str = "nearest",
+) -> dict[str, Any]:
+    """Quantize a half-open interval and report requested/applied boundaries.
+
+    The returned frame numbers are renderer-facing values; the Fraction
+    values are the exact seconds represented by those frames. A collapsed
+    interval is rejected instead of becoming a zero-frame clip.
+    """
+
+    start_value = _time_fraction(start, "start")
+    end_value = _time_fraction(end, "end")
+    if end_value <= start_value:
+        raise TimelineEditError("interval must be non-empty")
+    if isinstance(fps, bool) or fps <= 0:
+        raise TimelineEditError("fps must be positive")
+    fps_value = Fraction(str(fps))
+    start_frame = quantize_time(start_value, fps_value, policy=policy)
+    end_frame = quantize_time(end_value, fps_value, policy=policy)
+    if end_frame <= start_frame:
+        raise TimelineEditError(
+            "quantization collapsed the interval; choose a wider interval or a different policy"
+        )
+    applied_start = Fraction(start_frame, 1) / fps_value
+    applied_end = Fraction(end_frame, 1) / fps_value
+    return {
+        "policy": policy,
+        "fps": fps_value,
+        "requested_start": start_value,
+        "requested_end": end_value,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "applied_start": applied_start,
+        "applied_end": applied_end,
+        "rounded": applied_start != start_value or applied_end != end_value,
+    }
+
+
+def grid(rows: int, columns: int, *, gap: float = 0.0) -> list[dict[str, float]]:
+    if rows <= 0 or columns <= 0 or gap < 0 or gap >= 1:
+        raise TimelineEditError("invalid grid dimensions or gap")
+    width, height = (1 - gap * (columns - 1)) / columns, (1 - gap * (rows - 1)) / rows
+    return [
+        {"x": c * (width + gap), "y": r * (height + gap), "width": width, "height": height}
+        for r in range(rows) for c in range(columns)
+    ]
 
 # The frozen donor declared these units in each element's metadata. The current
 # V3 element declarations do not carry that metadata yet, so the SDK preserves
@@ -34,8 +174,6 @@ def element_units(element: str) -> tuple[float, frozenset[str]]:
     """``(canvas px per stored unit, the params stored in those units)`` as the element DECLARES it in its
     element.yaml (``metadata.units: {scale: 6, logical: [x, y, keyframes[].x, keyframes[].y]}``). An element
     that declares nothing stores canvas px. Every surface (show, the sheet, --set, formulas) reads this."""
-    from astrid.sdk.timeline_address import element_schema
-
     units = _declared_units(element)
     paths = frozenset(str(p) for p in units.get("logical") or [])
     scale = float(units.get("scale") or LOGICAL_PX) if paths else 1.0
@@ -54,8 +192,6 @@ def is_logical(element: str, path: str) -> bool:
 def param_unit(element: str, path: str) -> str | None:
     """What a param's number means, as the element declares it: ``canvas px`` (stored on a grid or not),
     ``clip frames``, ``clip seconds``; None when the element says nothing about it."""
-    from astrid.sdk.timeline_address import element_schema
-
     units = _declared_units(element)
     key = _unit_path(path)
     for name, label in (("frames", "clip frames"), ("seconds", "clip seconds")):

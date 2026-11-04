@@ -88,6 +88,7 @@ def test_quick_run_branches_through_browser_render_and_strict_teardown(
     app.mkdir()
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(runtime))
     reference = tmp_path / "reference"
     (reference / "runtime" / "source-profiles").mkdir(parents=True)
     (reference / "runtime" / "source-profiles" / "astrid.json").write_text("{}")

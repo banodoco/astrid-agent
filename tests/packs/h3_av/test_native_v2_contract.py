@@ -49,7 +49,7 @@ def _av(path: Path, *, frames: int, color: str, frequency: int) -> None:
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=64x48:r=24",
+            "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
             "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000",
             "-frames:v", str(frames), "-t", str(frames / 24),
             "-c:v", "ffv1", "-c:a", "pcm_s16le", str(path),
@@ -94,10 +94,7 @@ def test_native_v2_schema_profile_and_supported_branch_bindings(tmp_path: Path) 
         compiled = compile_preparation(prepared, out_dir=tmp_path / branch)
         assert compiled["profile"] == "h3_av.native.v2"
         assert compiled["branch"] == branch
-        assert compiled["capabilities"]["output_contract"] == (
-            "separate_av_full_timeline" if branch == "source_backed_v2v"
-            else "muxed_av_full_timeline"
-        )
+        assert compiled["capabilities"]["output_contract"] == "muxed_av_full_timeline"
         workflow_path = Path(compiled["workflow"]["workflow.py"]["path"])
         workflow = load_workflow_any(str(workflow_path))
         assert set(compiled["workflow_inputs"]).issubset(workflow.inputs)
@@ -203,7 +200,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=24",
+            "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-frames:v", "24", "-t", "1", "-c:v", "ffv1", "-pix_fmt", "yuv420p",
             "-c:a", "pcm_s16le", str(source),
@@ -212,7 +209,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
         capture_output=True,
     )
     _av(generated, frames=24, color="red", frequency=880)
-    mask_image = Image.new("L", (64, 48), color=0)
+    mask_image = Image.new("L", (1024, 576), color=0)
     # Odd boundaries cross 4:2:0 chroma blocks; nonuniform source pixels
     # prove the lossless full-resolution output preserves the RGB complement.
     for y in range(11, 35):
@@ -228,7 +225,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
         "changes": {
             "video": [{
                 "during": [0, 0.5],
-                "area": {"rectangle": [0, 0, 32, 48]},
+                "area": {"rectangle": [0, 0, 512, 576]},
                 "mask_asset": "mask.png",
                 "action": "generate",
             }],
@@ -258,7 +255,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
     assert verification["preservation"]["status"] == "protected_sample_evidence"
     evidence = verification["preservation"]["spatial_complement"][0]
     assert evidence["frame_count"] == 12
-    assert evidence["protected_pixel_count_per_frame"] == 64 * 48 - 30 * 24
+    assert evidence["protected_pixel_count_per_frame"] == 1024 * 576 - 30 * 24
     assert evidence["max_abs_channel_difference"] == 0
     assert verification["preservation"]["status"] == "protected_sample_evidence"
 
@@ -290,9 +287,9 @@ def test_masked_composition_keeps_temporal_yuv420p_witnesses_exact(tmp_path: Pat
     mask = tmp_path / "mask.png"
     _av(source, frames=48, color="blue", frequency=440)
     _av(generated, frames=48, color="red", frequency=880)
-    mask_image = Image.new("L", (64, 48), color=0)
-    for y in range(48):
-        for x in range(32):
+    mask_image = Image.new("L", (1024, 576), color=0)
+    for y in range(576):
+        for x in range(512):
             mask_image.putpixel((x, y), 255)
     mask_image.save(mask)
     request = normalize_request({
@@ -524,7 +521,7 @@ def test_v2_same_length_edit_binds_intervals_and_reaches_compose_verify(
     audio = tmp_path / "generated.flac"
     _av(source, frames=24, color="blue", frequency=440)
     # The video container deliberately has the source tone; edited audio must
-    # come from the separate LanPaint output, not that container's soundtrack.
+    # come from the separately imported audio, not that container's soundtrack.
     _av(video, frames=24, color="red", frequency=440)
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
@@ -553,27 +550,11 @@ def test_v2_same_length_edit_binds_intervals_and_reaches_compose_verify(
     assert schedule["audio"]["generated_intervals"] == [[0.5, 0.75]]
     assert schedule["video"]["protected_intervals"] == [[0.0, 0.25], [0.5, 1.0]]
     assert schedule["audio"]["protected_intervals"] == [[0.0, 0.5], [0.75, 1.0]]
-    compilation = compile_preparation(preparation, out_dir=tmp_path / "compiled")
-    assert compilation["profile"] == "h3_av.native.v2"
-    assert compilation["branch"] == "source_backed_v2v"
-    assert compilation["request_digest"] == request.digest
-    assert "continuation_timing" not in compilation
-    assert compilation["capabilities"]["output_contract"] == "separate_av_full_timeline"
-    workflow = load_workflow_any(compilation["workflow"]["workflow.py"]["path"])
-    assert workflow.validate().ok
-    api = workflow.compile("api", run_inputs=compilation["workflow_inputs"])
-    editor = api["164"]
-    assert editor["class_type"] == "LanPaint_VideoMaskEditor"
-    keyframes = json.loads(editor["inputs"]["keyframes"])
-    assert set(keyframes) == {"0", "6", "12"}
-    assert keyframes["0"].endswith("mask_preserve.png")
-    assert keyframes["6"].endswith("mask_full_frame.png")
-    assert keyframes["12"] == keyframes["0"]
-    assert json.loads(editor["inputs"]["audio_mask"]) == [{"start": 0.5, "end": 0.75}]
-    assert editor["inputs"]["video"] == compilation["workflow_inputs"]["source_video"]
-    for node_id in ("105::166", "105::168"):
-        assert api[node_id]["inputs"]["mask"] == ["164", 1]
-        assert api[node_id]["inputs"]["audio_mask"] == ["164", 2]
+    # Independent soundtrack regeneration has no native masked-edit binding.
+    # Keep the existing composition assertions below: imported AV outputs can
+    # still be composed, but this request cannot reach a legacy edit sampler.
+    with pytest.raises(CompilationError, match="Dialogue and channel conditioning are outside SPEC-MIN"):
+        compile_preparation(preparation, out_dir=tmp_path / "compiled")
 
     bundle = _write_generated_bundle(
         {role: (path, {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()})

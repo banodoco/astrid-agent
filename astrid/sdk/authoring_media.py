@@ -357,6 +357,7 @@ def plan_authoring_media(
         return by_path[path]
 
     def clean(entry: dict[str, Any], row: Mapping[str, Any]) -> None:
+        had_catalog_binding = bool(entry.get("generationId") and entry.get("variantId"))
         for field in (*_PATH_FIELDS, *_ID_FIELDS):
             entry.pop(field, None)
         # Source locators are a projection of the former selected object, not
@@ -364,19 +365,22 @@ def plan_authoring_media(
         entry.pop("source", None)
         entry["media_id"] = row["digest"]
         entry["type"] = row["media_type"].split("/", 1)[0]
-        entry["media_type"] = row["media_type"]
-        entry["filename"] = row["filename"]
-        width, height = row.get("width"), row.get("height")
-        if width is not None and height is not None:
-            entry["resolution"] = f"{width}x{height}"
-        else:
-            entry.pop("resolution", None)
-        if "duration_seconds" in row:
-            entry["duration"] = row["duration_seconds"]
-        else:
-            entry.pop("duration", None)
-        for field in ("width", "height", "duration_seconds"):
-            entry.pop(field, None)
+        # Catalog-bound rebinds retain authored labels and opaque fields.
+        # Unmarked aliases receive the imported media metadata.
+        if not had_catalog_binding:
+            entry["media_type"] = row["media_type"]
+            entry["filename"] = row["filename"]
+            width, height = row.get("width"), row.get("height")
+            if width is not None and height is not None:
+                entry["resolution"] = f"{width}x{height}"
+            else:
+                entry.pop("resolution", None)
+            if "duration_seconds" in row:
+                entry["duration"] = row["duration_seconds"]
+            else:
+                entry.pop("duration", None)
+            for field in ("width", "height", "duration_seconds"):
+                entry.pop(field, None)
 
     def rewrite_registry(
         node: dict[str, Any], base: Mapping[str, Any], *, explicit_only: bool = False
@@ -639,6 +643,21 @@ def import_authoring_media(plan: Mapping[str, Any], transport: Any) -> dict[str,
         ):
             raise ValueError("Runtime import did not return a completed managed catalog pair")
         receipts.append(dict(resource))
+    # Runtime owns the exact generation/variant pair for every imported object;
+    # preserve it on the detached alias so native capture can authenticate it.
+    receipts_by_object = {row["asset_id"]: row for row in receipts}
+    for shot in work.get("shots", {}).values():
+        internal = shot.get("internal_timeline", {})
+        assets = internal.get("registry", {}).get("assets", {})
+        if not isinstance(assets, Mapping):
+            continue
+        for entry in assets.values():
+            if not isinstance(entry, dict):
+                continue
+            receipt = receipts_by_object.get(entry.get("media_id"))
+            if receipt is not None:
+                entry["generationId"] = receipt["generation_id"]
+                entry["variantId"] = receipt["variant_id"]
     validate_authoring_candidate(work)
     return {"candidate": work, "imports": receipts}
 

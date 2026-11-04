@@ -120,29 +120,45 @@ def _starter_manifest(
     roles: tuple[str, ...],
     dependency: str,
 ) -> dict[str, Any]:
+    role_names = ", ".join(roles) if roles else "support-only"
     manifest: dict[str, Any] = {
         "schema_version": 3,
         "id": pack_id,
         "name": pack_name,
         "version": "0.1.0",
-        "description": f"A pack for {pack_name}.",
+        "description": (
+            f"Starter pack for {pack_name} demonstrating {role_names} declarations; "
+            "replace this with a summary of the pack's actual contribution."
+        ),
         "domain": "integration" if starter in {"wrapper", "nested"} else "general",
         "stability": "experimental",
         "support": "project",
         "documentation": {"kind": "skill", "path": "docs/SKILL.md"},
+        "agent": {
+            "purpose": (
+                f"This starter demonstrates {role_names} contributions. Replace this "
+                "with when the completed pack is useful."
+            ),
+        },
     }
 
     if "action" in roles:
         if starter == "wrapper":
+            action_name = "adapt"
             manifest["actions"] = {
-                "adapt": {
+                action_name: {
                     "description": "Call the external package's public adapter API.",
                     "invocation": {
                         "kind": "python",
                         "path": "actions/adapter.py",
                         "function": "run",
                     },
-                    "inputs": [{"name": "value", "type": "string", "required": True}],
+                    "inputs": [{
+                        "name": "value",
+                        "type": "string",
+                        "required": True,
+                        "description": "Value passed to the external package's public API.",
+                    }],
                     "outputs": {"type": "string"},
                 }
             }
@@ -157,10 +173,17 @@ def _starter_manifest(
                         "path": f"actions/{action_name}.py",
                         "function": "run",
                     },
-                    "inputs": [{"name": "value", "type": "string", "required": True}],
+                    "inputs": [{
+                        "name": "value",
+                        "type": "string",
+                        "required": True,
+                        "description": "Value returned unchanged by this starter action.",
+                    }],
                     "outputs": {"type": "string"},
                 }
             }
+
+        manifest["agent"]["normal_entrypoints"] = [f"{pack_id}.{action_name}"]
 
     if "ui" in roles:
         manifest["ui"] = {

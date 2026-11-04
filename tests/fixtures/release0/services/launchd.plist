@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/astrid/tools:/usr/bin:/bin</string>
+		<key>PYTHONUTF8</key>
+		<string>1</string>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>90</integer>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>haus.astrid.runtime</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/astrid/versions/v1/py/bin/python</string>
+		<string>-X</string>
+		<string>utf8</string>
+		<string>-I</string>
+		<string>-c</string>
+		<string>import json,os,sys
+from pathlib import Path
+path=Path('/astrid/versions/v1/service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/astrid data', '--source-manifest', '/astrid/versions/v1/profile.json']))</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/logs/runtime-service.log</string>
+	<key>StandardOutPath</key>
+	<string>/logs/runtime-service.log</string>
+</dict>
+</plist>

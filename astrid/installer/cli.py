@@ -32,6 +32,7 @@ PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
     "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button."
 )
 PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
+RECOVERED_PREVIOUS_VERSION = "Recovered your previous version — run Update again"
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -51,12 +52,16 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
                       help="write a redacted support bundle using the installed version")
+    mode.add_argument("--update-recovery", action="store_true",
+                      help="plan or apply data-preserving recovery of unresolved update evidence")
     result.add_argument("--delete-data", action="store_true", help="also delete the selected data root during uninstall")
     result.add_argument("--root", type=Path, help="absolute managed program directory")
     result.add_argument("--managed-by", choices=["pinokio"], help="install without a login service; Pinokio owns the process")
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
     result.add_argument("--update-job", help=argparse.SUPPRESS)
+    result.add_argument("--apply", metavar="PLAN_SHA256",
+                        help="apply the reviewed --update-recovery plan hash")
     result.add_argument("--uv", type=Path, help="absolute pinned uv executable supplied by the bootstrap")
     result.add_argument("--sandbox", action="store_true",
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
@@ -66,8 +71,28 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    mode = ("app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
+    mode = ("update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
+    if args.apply and mode != "update-recovery":
+        parser().error("--apply is only valid with --update-recovery.")
+    if mode == "update-recovery":
+        if args.root is None or args.data_root is None:
+            parser().error("--update-recovery requires --root and --data-root.")
+        if args.manifest or args.managed_by or args.sandbox or args.delete_data or args.uv or args.update_job:
+            parser().error("--update-recovery only accepts --root, --data-root, and optional --apply.")
+        from .maintenance import MaintenanceRefusal, apply_update_recovery, plan_update_recovery
+
+        try:
+            result = (apply_update_recovery(args.root, args.data_root, args.apply)
+                      if args.apply else plan_update_recovery(args.root, args.data_root))
+        except MaintenanceRefusal as failure:
+            payload = {"state": "recovery-needed", "reason": failure.reason, "message": str(failure)}
+            if failure.plan is not None:
+                payload["plan"] = failure.plan
+            print(json.dumps(payload, sort_keys=True))
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
     if args.delete_data and mode != "uninstall":
         parser().error("--delete-data is only valid for uninstall.")
     if args.managed_by and (args.root is None or not args.root.expanduser().is_absolute()):
@@ -97,31 +122,41 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
         if (args.update_app or (mode in {"install", "update"} and args.root
                 and marker.get("managed_by") == "pinokio")):
-            from .app_update import recover_app, selection, update_app, update_pinokio
+            from .app_update import (
+                preflight_pinokio_update,
+                recover_app,
+                selection,
+                update_app,
+                update_pinokio,
+            )
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
-            # The session holds the lifetime installer lock. The shared update
-            # adapter serializes the journal separately and takes that lock
-            # only for pointer writes, then hands it to the journal-admitted foreground.
+            # A running session holds lifetime admission. A stopped operation
+            # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
-            if pending and pending.get("step") not in TERMINAL_STEPS:
-                recover_app(root, backend)
+            from .custody import operation
+
+            if not pending or pending.get("step") in TERMINAL_STEPS:
+                preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
+            with operation(root, backend):
+                if pending and pending.get("step") not in TERMINAL_STEPS:
+                    recover_app(root, backend)
+                    print(RECOVERED_PREVIOUS_VERSION)
+                    return 0
+                # Recovery-only invocations return above; fresh operations preflight
+                # once here before downloads or staging. C1 remains stop authority.
+                if not uv.is_absolute() or not uv.is_file():
+                    raise ValueError("Run the install line to provide the pinned user-local uv.")
+                manifest_path = args.manifest or root / "install-manifest.json"
+                if not args.manifest:
+                    download("https://astrid.haus/install-manifest.json", manifest_path)
+                manifest = validate_manifest(read_json(manifest_path))
+                if args.update_app:
+                    update_app(root, backend, manifest)
+                else:
+                    update_pinokio(root, backend, manifest, force=args.update)
                 return 0
-            # Recovery-only invocations return above; fresh operations preflight
-            # once here before downloads or staging. C1 remains stop authority.
-            backend.preflight_stop(absolute(marker["data_root"]))
-            if not uv.is_absolute() or not uv.is_file():
-                raise ValueError("Run the install line to provide the pinned user-local uv.")
-            manifest_path = args.manifest or root / "install-manifest.json"
-            if not args.manifest:
-                download("https://astrid.haus/install-manifest.json", manifest_path)
-            manifest = validate_manifest(read_json(manifest_path))
-            if args.update_app:
-                update_app(root, backend, manifest)
-            else:
-                update_pinokio(root, backend, manifest, force=args.update)
-            return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
@@ -216,9 +251,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
-                pending = pending_transaction(root)
-                if mode in {"install", "update"} and pending:
-                    if pending.get("transaction_kind") == "app":
+                pending_update = pending_transaction(root)
+                if mode in {"install", "update"} and pending_update:
+                    if pending_update.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.
                         # Drop the broad installer lock first; recover_app
                         # revalidates immutable selection under its own lock
@@ -228,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                         from .app_update import recover_app
 
                         recover_app(root, backend)
+                        print(RECOVERED_PREVIOUS_VERSION)
                     else:
                         from .app_update import locked as app_locked
 
@@ -235,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                             Installer(root, data, backend, managed_by=managed_by)._recover_update()
                         if marker.get("owner") == LABEL:
                             update_job.sweep_owned_jobs(root, locked=True)
+                        print(RECOVERED_PREVIOUS_VERSION)
                     return 0
                 if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
                     # Sweep only jobs and artifacts named by Astrid's durable
@@ -246,10 +283,12 @@ def main(argv: list[str] | None = None) -> int:
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
-                update_job_record = None
+                update_job_record: dict | None = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(
                         root, args.update_job, backend, installed, data, args.manifest)
+                    if update_job_record is None:
+                        raise ValueError("The update job could not be admitted.")
                     log = backend.log
                 if mode != "doctor":
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
@@ -281,7 +320,9 @@ def main(argv: list[str] | None = None) -> int:
                 options = {"managed_by": managed_by} if managed_by else {}
                 installer = Installer(root, data, backend, **options)
                 if args.update_job:
-                    backend._update_job_operation_id = args.update_job
+                    if update_job_record is None:
+                        raise ValueError("The update job could not be admitted.")
+                    setattr(backend, "_update_job_operation_id", args.update_job)
                     try:
                         installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
                     except (Exception, KeyboardInterrupt) as update_failure:

@@ -225,6 +225,8 @@ def test_doctor_bundle_cli_writes_archive_without_mutating_services(tmp_path, mo
     monkeypatch.setattr(astrid.runtime_cli, "RuntimeCLI", type("RuntimeCLI", (), {}))
     monkeypatch.setattr(astrid.sdk.storage_root, "resolve_runtime_data_root", lambda: tmp_path)
     monkeypatch.setattr(doctor_bundle, "_logs", lambda *_args: [])
+    from astrid.installer import service
+    monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
     target = tmp_path / "doctor.zip"
 
     assert dispatch._dispatch_doctor(["--bundle", str(target)]) == 0
@@ -232,6 +234,7 @@ def test_doctor_bundle_cli_writes_archive_without_mutating_services(tmp_path, mo
     assert "Astrid doctor bundle:" in capsys.readouterr().out
     with zipfile.ZipFile(target) as archive:
         status = json.loads(archive.read("status.json"))
+    assert "does not restart after a crash" in status["warnings"][0]
     assert status["runtime_health"]["services"][0]["state"] == "running"
 
 
@@ -314,3 +317,38 @@ def test_doctor_bundle_survives_unavailable_support_root(tmp_path, monkeypatch, 
         status = json.loads(archive.read("status.json"))
     assert status["state"] == "runtime_unavailable"
     assert "Astrid doctor bundle:" in capsys.readouterr().out
+
+
+def test_doctor_emits_supervision_warning_in_text_and_json(tmp_path, monkeypatch, capsys):
+    import astrid.core.gateway.diagnostics as diagnostics
+    import astrid.installer.service as service
+    import astrid.sdk.storage_root as storage_root
+
+    observed = type("Observed", (), {"data": {"ok": True}, "returncode": 0})()
+    diagnostic = {"problemCode": None, "facts": {"computeWorker": {}}}
+    monkeypatch.setattr(diagnostics, "collect_diagnostic", lambda *_args, **_kwargs: (diagnostic, None, observed))
+    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", lambda: tmp_path)
+    monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
+    # Shared output skips unrelated product checks; this warning contains no paths.
+    assert dispatch._dispatch_doctor(["--shared", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["warnings"] == [service.UNSUPERVISED_WARNING]
+    assert report["ok"] is True
+    assert dispatch._dispatch_doctor(["--shared"]) == 0
+    assert "warning: " + service.UNSUPERVISED_WARNING in capsys.readouterr().out
+
+
+def test_doctor_preserves_supervision_warning_when_runtime_is_unavailable(tmp_path, monkeypatch, capsys):
+    import astrid.core.gateway.diagnostics as diagnostics
+    import astrid.installer.service as service
+    import astrid.runtime_cli as runtime_cli
+    import astrid.sdk.storage_root as storage_root
+
+    def unavailable(*_args, **_kwargs):
+        raise runtime_cli.RuntimeCLIError("Runtime is unavailable")
+
+    monkeypatch.setattr(diagnostics, "collect_diagnostic", unavailable)
+    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", lambda: tmp_path)
+    monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
+    assert dispatch._dispatch_doctor(["--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["warnings"] == [service.UNSUPERVISED_WARNING]

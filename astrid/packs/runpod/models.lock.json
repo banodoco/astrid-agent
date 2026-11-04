@@ -1,0 +1,55 @@
+{
+  "schema": "astrid.models-lock.v1",
+  "models": [
+    {
+      "name": "h3-reference-to-video",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "e5eb578a89295337b8ff433a035929ce0279e0b6",
+      "path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "url": null,
+      "destination": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "bytes": 20970379616,
+      "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779"
+    },
+    {
+      "name": "h3-text-encoder",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "e5eb578a89295337b8ff433a035929ce0279e0b6",
+      "path": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "url": null,
+      "destination": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "bytes": 27141342152,
+      "sha256": "bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923"
+    },
+    {
+      "name": "h3-video-vae",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "e5eb578a89295337b8ff433a035929ce0279e0b6",
+      "path": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+      "url": null,
+      "destination": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+      "bytes": 2811065184,
+      "sha256": "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e"
+    },
+    {
+      "name": "h3-audio-vae",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "e5eb578a89295337b8ff433a035929ce0279e0b6",
+      "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "url": null,
+      "destination": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "bytes": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
+    },
+    {
+      "name": "h3-turbo-lora",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "e5eb578a89295337b8ff433a035929ce0279e0b6",
+      "path": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "url": null,
+      "destination": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "bytes": 1956193000,
+      "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e"
+    }
+  ]
+}

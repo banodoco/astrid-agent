@@ -1,7 +1,7 @@
 """``timelines show``'s editor views: the cut table, ``--as sheet``, one address, ``--summary``, ``--at``.
 
-The working copy is what ``show`` reads unless ``--published`` or an exact revision is asked for. Each view is
-a projection of the bundle (astrid.sdk.timeline_cuts / timeline_views / timeline_sheet / timeline_address).
+Published current is the default. A named working copy or exact revision must be selected explicitly. Each view is
+a projection of the selected bundle (astrid.sdk.timeline_cuts / timeline_views / timeline_sheet / timeline_address).
 """
 from __future__ import annotations
 
@@ -15,34 +15,83 @@ from collections.abc import Mapping
 from typing import Any
 
 from astrid.core.cli.domain_output import DomainResult, print_result
-from astrid.packs.timeline.cli_common import clips_changed, short_rev, working_banner, working_copy_view
+from astrid.packs.timeline.cli_common import clips_changed, short_rev, working_copy_view
+from astrid.sdk.contracts import ErrorObject
+
+
+def _loaded_revision(data: Mapping[str, Any]) -> str | None:
+    """Return the immutable revision represented by the loaded bundle.
+
+    Only the immutable parent image proves which revision was loaded.
+    Envelope fields may repeat the requested id or a moving head label and
+    therefore cannot establish readback identity.
+    """
+    bundle = data.get("bundle")
+    if isinstance(bundle, Mapping):
+        parent = bundle.get("base_parent")
+        if isinstance(parent, Mapping):
+            revision = parent.get("revision_id")
+            if isinstance(revision, str) and revision:
+                return revision
+    return None
+
+
+def _readback_error(data: Mapping[str, Any], requested_revision: str | None) -> DomainResult | None:
+    loaded_revision = _loaded_revision(data)
+    if loaded_revision is None:
+        return DomainResult.failure(
+            ErrorObject("protocol_error", "immutable timeline read omitted its revision identity", {})
+        )
+    if requested_revision is not None and loaded_revision != requested_revision:
+        return DomainResult.failure(ErrorObject(
+            "protocol_error",
+            "immutable timeline read returned a different revision than requested",
+            {"requested_revision_id": requested_revision, "loaded_revision_id": loaded_revision},
+        ))
+    return None
 
 
 def show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any, str] | int:
-    """The timeline ``show`` reads, as a Checkout: the working copy (unless --published/--revision-id)
-    or the published head; with the banner line that says which. An int is an exit code."""
+    """Read the explicitly selected draft, exact revision, or published current."""
     from astrid.sdk.timeline_checkout import Checkout, find_draft
 
-    if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+    if getattr(parsed, "draft", None) and (getattr(parsed, "published", False)
+                                            or getattr(parsed, "revision_id", None)):
+        print("error: --draft cannot be combined with --published or --revision-id", file=sys.stderr)
+        return 2
+    if getattr(parsed, "draft", None):
         try:
-            path = find_draft(parsed.project, parsed.ref, getattr(parsed, "draft", None), client=parsed.client)
-        except Exception as exc:  # noqa: BLE001 - say so and show the head
-            print(f"working copy: not checked ({exc}); showing the published head", file=sys.stderr)
-            path = None
+            path = find_draft(parsed.project, parsed.ref, parsed.draft,
+                              client=getattr(parsed, "client", None))
+        except Exception as exc:  # noqa: BLE001 - an explicit source must not fall back
+            print(f"error: could not read working copy {parsed.draft!r}: {exc}", file=sys.stderr)
+            return 1
         if path is not None:
             tl = Checkout.load(path)
             n = len(tl.edits().get("changes") or [])
-            return tl, (f"WORKING COPY · {clips_changed(n)} vs published "
-                        f"{short_rev(tl.base_revision)} · --published for the live version")
+            return tl, (f"WORKING COPY {parsed.draft} · {clips_changed(n)} · base revision "
+                        f"{tl.base_revision}")
+        print(f"error: working copy {parsed.draft!r} does not exist", file=sys.stderr)
+        return 1
     opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
     if not opened.ok or not isinstance(opened.data, Mapping):
         return print_result(opened, as_json=False)
-    tl = Checkout(dict(opened.data["bundle"]))
-    return tl, f"PUBLISHED {short_rev(opened.data.get('revision_id') or (tl.bundle.get('base_parent') or {}).get('revision_id'))}"
+    bundle = opened.data.get("bundle")
+    if not isinstance(bundle, Mapping):
+        return print_result(DomainResult.failure(
+            ErrorObject("protocol_error", "immutable timeline read omitted its bundle", {})
+        ), as_json=False)
+    readback_error = _readback_error(opened.data, getattr(parsed, "revision_id", None))
+    if readback_error is not None:
+        return print_result(readback_error, as_json=False)
+    loaded_revision = _loaded_revision(opened.data)
+    assert loaded_revision is not None
+    tl = Checkout(dict(bundle))
+    return tl, f"PUBLISHED {short_rev(loaded_revision)}"
 
 
 def print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
-    """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
+    """``show --as sheet``: the selected published revision or named working copy."""
     from astrid.sdk.timeline_address import AddressError, resolve
     from astrid.sdk.timeline_sheet import SheetError, moment_range, range_cuts, render_sheet
 
@@ -76,6 +125,28 @@ def print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
     if sys.stdout.isatty():
         print(f"next: save it (> FILE), change a line, then  timelines apply {where} FILE", file=sys.stderr)
+    return 0
+
+
+def print_native_sheet(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.timeline.sync import TimelineSession
+    from astrid.sdk.timeline_sheet import NativeSheet, SheetError
+
+    try:
+        if any(getattr(parsed, name, None) for name in (
+            "draft", "revision_id", "range", "at", "address", "shot", "track",
+            "asset", "cursor", "page", "page_size", "summary", "layers", "detail", "full", "keys", "clips",
+        )):
+            raise SheetError("native export supports current published clips selected by --clip and --occurrence only")
+        session = TimelineSession.open(parsed.project, parsed.ref, client=parsed.client)
+        sheet = NativeSheet.export(session, clip=parsed.clip, occurrence=parsed.occurrence)
+    except Exception as exc:  # noqa: BLE001 - no partial export on failure
+        return print_result(DomainResult.failure(ErrorObject(
+            getattr(exc, "code", "timeline_edit_error"), str(exc), getattr(exc, "details", {}),
+        )), as_json=parsed.json)
+    if parsed.json:
+        return print_result(DomainResult.success({"text": sheet.text}), as_json=True)
+    print(sheet.text, end="")
     return 0
 
 
@@ -136,47 +207,86 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     )
     from astrid.sdk.timeline_views import render_at, render_clips
 
+    if getattr(parsed, "draft", None) and (getattr(parsed, "published", False)
+                                            or getattr(parsed, "revision_id", None)):
+        print("error: --draft cannot be combined with --published or --revision-id")
+        return 2
+
     opened = bundle_opener(parsed.project, parsed.ref, revision_id=getattr(parsed, "revision_id", None))
     if not opened.ok or not isinstance(opened.data, Mapping):
         return print_result(opened, as_json=bool(parsed.json))
     data = opened.data
-    # The working copy (unpublished draft) is what show reads unless --published or an exact revision is asked for.
+    bundle = data.get("bundle")
+    if not isinstance(bundle, Mapping):
+        return print_result(DomainResult.failure(
+            ErrorObject("protocol_error", "immutable timeline read omitted its bundle", {})
+        ), as_json=bool(parsed.json))
+    readback_error = _readback_error(data, getattr(parsed, "revision_id", None))
+    if readback_error is not None:
+        return print_result(readback_error, as_json=bool(parsed.json))
+    loaded_revision = _loaded_revision(data)
+    assert loaded_revision is not None
+    # A draft is read only when named explicitly; otherwise this immutable bundle is published current.
     working = None
-    if not getattr(parsed, "published", False) and not getattr(parsed, "revision_id", None):
+    if getattr(parsed, "draft", None):
         working = working_copy_view(parsed)
-    bundle = working["bundle"] if working else data["bundle"]
+        if working is None:
+            print(f"error: working copy {parsed.draft!r} does not exist", file=sys.stderr)
+            return 1
+    bundle = working["bundle"] if working else bundle
     table = build_cut_table(bundle)
     changes = working["changes"] if working else []
     changed = {str(change.get("clip_id")) for change in changes if change.get("clip_id")}
     working_info = None if working is None else {
-        "draft": working["path"], "base_revision": working["base_revision"], "edits": len(changes),
+        "name": parsed.draft, "draft": working["path"], "base_revision": working["base_revision"], "edits": len(changes),
     }
     banner: list[str] = []
     if working_info is not None:
         banner = [
-            f"WORKING COPY · {clips_changed(len(changes))} vs published {working['base_revision']} · "
-            "--published for the live version"
+            f"WORKING COPY {parsed.draft} · {clips_changed(len(changes))} · base revision "
+            f"{working['base_revision']}"
         ]
+    head_revision_id = data.get("head_revision_id")
+    is_current_head = (
+        loaded_revision == head_revision_id
+        if isinstance(head_revision_id, str) and head_revision_id
+        else None
+    )
     if parsed.json:
         payload = cut_table_payload(bundle, table)
         payload.update({
             "project_id": data.get("project_id"),
             "timeline_id": data.get("timeline_id"),
-            "revision_id": data.get("revision_id"),
-            "is_current_head": data.get("is_current_head"),
+            "revision_id": None if working_info is not None else loaded_revision,
+            "publication_id": data.get("publication_id"),
+            "is_current_head": is_current_head,
             "head_revision_id": data.get("head_revision_id"),
+            "head_publication_id": data.get("head_publication_id"),
             "working_copy": working_info,
         })
         return print_result(
             DomainResult.success(payload, receipt=opened.receipt, idempotency_key=opened.idempotency_key),
             as_json=True,
         )
-    revision = str(data.get("revision_id") or "")
-    state = "current head" if data.get("is_current_head") else f"saved revision (current head is {data.get('head_revision_id')})"
-    title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}\n  revision {revision}"
-    project = str(parsed.project or data.get("project_id"))
+    revision = str(loaded_revision or "")
+    if is_current_head is True:
+        state = "current head"
+    elif head_revision_id:
+        state = f"saved revision (current head is {head_revision_id})"
+    else:
+        state = "saved revision (current head is unavailable)"
+    if working_info is not None:
+        state = f"working copy {parsed.draft} · base revision {working['base_revision']}"
+        revision = ""
+    project = str(data.get("project_slug") or parsed.project or data.get("project_id"))
+    title = f"Timeline {data.get('timeline_id')} · project {project} · {state}"
+    if revision:
+        title += f"\n  revision {revision}"
     timeline = str(parsed.ref or data.get("timeline_id"))
     show_base = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
+    source_args = (["--draft", str(parsed.draft)] if working_info is not None
+                   else ["--revision-id", revision])
+    show_base += source_args
 
     if getattr(parsed, "at", None):
         from astrid.sdk.timeline_address import AddressError, resolve
@@ -255,8 +365,7 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     if info is not None:
         lines.insert(len(lines) - 1, paging_hint(table, rows, shown, info))
     visual = ["python3", "-m", "astrid", "timelines", "visualize", timeline, "--project", project]
-    if not data.get("is_current_head"):
-        visual += ["--revision-id", revision]
+    visual += source_args
     if shown and (getattr(parsed, "range", None) or getattr(parsed, "shot", None) or info is not None):
         low, high = shown[0]["start"], shown[-1]["end"]
         lines.append("see these cuts: " + shlex.join(visual + ["--view", "contact", "--range", f"{low:.2f}..{high:.2f}"]))
@@ -266,10 +375,6 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     lines.append("one moment on screen: " + shlex.join(visual) + " --at SECONDS   ·   every N frames: --range A..B --every-frames N")
     lines.append("how one cut moves: " + shlex.join(visual + ["--view", "motion", "--cut", "N"])
                  + "   ·   lint: " + shlex.join(["python3", "-m", "astrid", "timelines", "lint", timeline, "--project", project]))
-    from astrid.packs.timeline.cli import _editing_navigation
-
-    edit = _editing_navigation(project=project, timeline=timeline)
-    lines.append(f"edit: {edit['commands']['checkout']}   (guide: {edit['guide']})")
     lines.append("per-track layer rows: --layers · SDK envelope (complete): --json")
     if provenance_target is not None and getattr(provenance_target, "clip", None) is not None:
         from astrid.sdk.timeline_views import render_asset_provenance

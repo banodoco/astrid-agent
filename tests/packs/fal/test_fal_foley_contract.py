@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import runpy
+import sys
 from pathlib import Path
 
+import pytest
+
+from astrid.core.contracts.errors import AstridError
 from astrid.core.pack.canonical import validate_canonical_pack
 
 PACK_ROOT = Path(__file__).resolve().parents[3] / "astrid" / "packs" / "fal"
@@ -13,9 +18,61 @@ class _FakeClient:
     def register_secret(self, _value: str) -> None:
         return None
 
-    def get_bytes(self, _url: str, *, timeout: int) -> bytes:
+    def get_bytes(self, _url: str, *, timeout: int, max_bytes: int) -> bytes:
         assert timeout == 300
+        assert max_bytes == 512 * 1024 * 1024
         return b"audio"
+
+
+def test_foley_missing_audio_url_is_a_coded_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    from astrid.packs.fal.actions.fal_foley import run
+
+    with pytest.raises(AstridError) as raised:
+        run._save_audio(_FakeClient(), {"request_id": "request-1"}, tmp_path / "audio.wav")
+
+    envelope = raised.value.to_envelope()
+    assert envelope["code"] == "FAL_FOLEY_MISSING_AUDIO_URL"
+    assert envelope["message"] == "fal foley result had no audio url: {'request_id': 'request-1'}"
+    assert envelope["field"] == "audio.url"
+    assert "Retry" in envelope["fix"]
+
+
+def test_foley_command_renders_missing_audio_url_code_and_fix(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from astrid.core.util import generation_helpers, http
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"video")
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    monkeypatch.setattr(generation_helpers, "load_provider_key", lambda *args, **kwargs: "test-key")
+    monkeypatch.setattr(http, "default_client", lambda: _FakeClient())
+    monkeypatch.setattr(http, "fal_submit_and_poll", lambda *args, **kwargs: {"request_id": "request-1"})
+    monkeypatch.setattr(
+        sys, "argv", ["run", "--clip", str(clip), "--prompt", "rain", "--out", str(tmp_path / "audio.wav")]
+    )
+    monkeypatch.delitem(sys.modules, "astrid.packs.fal.actions.fal_foley.run", raising=False)
+
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_module("astrid.packs.fal.actions.fal_foley.run", run_name="__main__")
+
+    assert raised.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "FAL_FOLEY_MISSING_AUDIO_URL" in stderr
+    assert "Retry the Foley request" in stderr
+
+
+def test_foley_command_preserves_argparse_help_exit(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    monkeypatch.setattr(sys, "argv", ["run", "--help"])
+    monkeypatch.delitem(sys.modules, "astrid.packs.fal.actions.fal_foley.run", raising=False)
+
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_module("astrid.packs.fal.actions.fal_foley.run", run_name="__main__")
+
+    assert raised.value.code == 0
+    assert "--clip" in capsys.readouterr().out
 
 
 def test_foley_host_contract_declares_inputs_outputs_and_typed_manifest(
@@ -30,7 +87,7 @@ def test_foley_host_contract_declares_inputs_outputs_and_typed_manifest(
     out = tmp_path / "run"
     client = _FakeClient()
 
-    monkeypatch.setattr(run.CredentialsScope, "get_local", lambda *args, **kwargs: "test-key")
+    monkeypatch.setattr(run, "load_provider_key", lambda *args, **kwargs: "test-key")
     monkeypatch.setattr(run, "default_client", lambda: client)
     monkeypatch.setattr(
         run,
@@ -111,3 +168,20 @@ def test_foley_host_contract_declares_inputs_outputs_and_typed_manifest(
         "--out",
         "{out}/audio.wav",
     ]
+
+
+def test_foley_missing_audio_response_redacts_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    from astrid.packs.fal.actions.fal_foley import run
+
+    with pytest.raises(AstridError) as raised:
+        run._save_audio(
+            _FakeClient(),
+            {"request_id": "request-1", "api_key": "provider-secret", "FAL_KEY": "fal-secret", "detail": "token=another-secret"},
+            tmp_path / "audio.wav",
+        )
+    assert "request-1" in raised.value.message
+    assert "provider-secret" not in raised.value.message
+    assert "fal-secret" not in raised.value.message
+    assert "another-secret" not in raised.value.message
+    assert raised.value.code == "FAL_FOLEY_MISSING_AUDIO_URL"

@@ -197,6 +197,14 @@
         },
         {
           "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/helper.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-footage/scene.ts"
+        },
+        {
+          "kind": "implementation",
           "path": "rendering/elements/effects/am-footage/element.yaml"
         }
       ]
@@ -304,6 +312,10 @@
         {
           "kind": "implementation",
           "path": "rendering/elements/effects/am-presenter/presenter-core.ts"
+        },
+        {
+          "kind": "implementation",
+          "path": "rendering/elements/effects/am-presenter/scene.ts"
         }
       ]
     },
@@ -494,27 +506,27 @@
   },
   "resources": [
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/scenes.json"
     },
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/render.mjs"
     },
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/make_art.py"
     },
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/src/Preview.tsx"
     },
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/src/Root.tsx"
     },
     {
-      "kind": "example",
+      "kind": "fixture",
       "path": "preview/src/index.ts"
     }
   ]

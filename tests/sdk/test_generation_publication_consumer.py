@@ -383,6 +383,49 @@ def test_host_generation_policy_zero_and_ambiguous_binding_fail_closed(tmp_path)
         host._typed_outputs(_host_record(), [string_selector], tmp_path, generation_intent=_intent("allow"))
 
 
+def test_named_raw_publication_keeps_same_port_unselected_producer_output(tmp_path) -> None:
+    from astrid.core.execution.generic_host import _named_raw_publication_port, _task_generation_intent
+
+    host = GenericPackHost.__new__(GenericPackHost)
+    task = {"spec": {"delegated_parent": {"parent_task_id": "parent"}, "delegated_stage": "run",
+                     "verified_publication_source": {"publication_name": "raw", "output_port": "generated_videos"}}}
+    port = _named_raw_publication_port(task)
+    intent = _intent("allow")
+    intent["groups"] = intent["groups"][:1]
+    task["expected_effect"] = {"effect_type": "generation.publish_v1", "payload": {
+        **intent, "groups": [{"group_key": "left", "selectors": [
+            {**intent["groups"][0]["selectors"][0], "output_port": port}]}]}}
+    assert _task_generation_intent(task)["groups"] == intent["groups"]
+    video = _descriptor(tmp_path, "generated_videos", b"video", 0, output_port=port,
+                        producer={"output_port": "video"})
+    audio = _descriptor(tmp_path, "generated_videos", b"audio", 1, output_port=port,
+                        producer={"output_port": "audio"})
+    outputs = host._typed_outputs(_host_record(), [video, audio], tmp_path,
+                                  generation_intent=_task_generation_intent(task), unselected_generation_port=port)
+    assert outputs[0]["selector"] == {"group_key": "left", "variant_key": "left-v"}
+    assert outputs[1]["producer"] == {"output_port": "audio"}
+    assert "selector" not in outputs[1] and outputs[1]["role"] == "result"
+    with pytest.raises(HostError, match="unauthorized"):
+        host._typed_outputs(_host_record(), [video, audio], tmp_path, generation_intent=intent)
+    assert _named_raw_publication_port({"spec": {"verified_publication_source": task["spec"]["verified_publication_source"]}}) is None
+
+
+def test_named_parent_output_uses_admitted_final_selector() -> None:
+    from astrid.core.execution.generic_host import _bind_named_parent_output
+
+    final = {"output_port": "verified_candidate", "effect": {"payload": {"groups": [{
+        "group_key": "main", "selectors": [{"output_port": "verified_candidate", "ordinal": 0,
+                                                "variant_key": "final-composition"}]}]}}}
+    task = {"spec": {"child_delegation": {"publications": {"final": final}}}}
+    outputs = [{"name": "verified_candidate", "ordinal": 0, "digest": "sha256:actual"}]
+    _bind_named_parent_output(task, outputs)
+    assert outputs[0]["selector"] == {"group_key": "main", "variant_key": "final-composition"}
+    with pytest.raises(HostError, match="cannot be bound"):
+        _bind_named_parent_output(task, [])
+    with pytest.raises(HostError, match="cannot be bound"):
+        _bind_named_parent_output(task, outputs * 2)
+
+
 def test_host_rejects_positional_ordinal_injected_by_manifest_harvest(tmp_path) -> None:
     host = GenericPackHost.__new__(GenericPackHost)
     positional = _descriptor(

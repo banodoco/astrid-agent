@@ -1,0 +1,7 @@
+{
+  "format": "astrid-install-update/v1",
+  "operation_id": "22222222222222222222222222222222",
+  "transaction_id": "tx-refusal-2222",
+  "step": "rolled_back",
+  "target_release": 2
+}

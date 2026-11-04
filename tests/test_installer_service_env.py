@@ -3,6 +3,7 @@
 import json
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
 
@@ -10,7 +11,14 @@ import pytest
 
 from astrid.installer.backend import Backend
 from astrid.installer.core import Version, read_json, write_json
-from astrid.installer.service import LABEL, Service, command, default_program_root, render
+from astrid.installer.service import (
+    LABEL,
+    Service,
+    command,
+    default_program_root,
+    installer_lock_path,
+    render,
+)
 
 
 def _selected_version(tmp_path, *, managed_by=None, release=37):
@@ -162,6 +170,36 @@ def test_registration_preserves_settings_and_records_selection(tmp_path, monkeyp
     assert read_json(manager.selection)["identity"] == {"release": 12, "managed_by": None}
     assert read_json(manager.selection)["other_record_field"] == "preserved"
     assert default_program_root(tmp_path, "linux") == tmp_path / "xdg-data/astrid"
+
+
+def test_registration_kill_during_service_replacement_preserves_previous_file(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="linux")
+    manager.path.parent.mkdir(parents=True, exist_ok=True)
+    previous = b"previous service definition\n"
+    manager.path.write_bytes(previous)
+    write_json(manager.env_file, {})
+    write_json(manager.selection, {"owner": LABEL})
+    version = Version(root / "versions/one", tmp_path / "python", tmp_path / "profile", {})
+    replacement = render("linux", version, tmp_path / "data", manager.log, env_file=manager.env_file).encode()
+    observed = []
+    durable_replace = platform.durable_replace
+
+    def interrupted(source, destination):
+        if destination == manager.path:
+            observed.append(source.read_bytes())
+            raise KeyboardInterrupt("killed during service replacement")
+        return durable_replace(source, destination)
+
+    monkeypatch.setattr(platform, "durable_replace", interrupted)
+    with pytest.raises(KeyboardInterrupt, match="killed during service replacement"):
+        manager.register(version, tmp_path / "data")
+
+    assert observed == [replacement]
+    assert manager.path.read_bytes() == previous
+    assert not list(manager.path.parent.glob(f".{manager.path.name}.*.tmp"))
 
 
 def test_healthy_noop_repair_migrates_identity_without_service_registration(tmp_path, monkeypatch):
@@ -335,18 +373,27 @@ def test_doctor_returns_a_new_bundle_for_an_unhealthy_runtime(tmp_path, monkeypa
     reveal.assert_called_once_with(bundle)
 
 
-@pytest.mark.parametrize("step,selected,allowed", [
-    (None, "old", True),
-    ("staged", "old", False), ("stopping", "old", False),
-    ("stopped", "old", False), ("backed_up", "old", False),
-    ("migrated", "old", False), ("migrated", "candidate", False),
-    ("switched", "candidate", True), ("switched", "old", False),
-    ("verified", "candidate", False), ("recovering", "old", False),
-    ("rollback_selected", "old", True), ("rollback_selected", "candidate", False),
-    ("complete", "candidate", True), ("rolled_back", "old", True),
-    ("unrecognized", "old", False),
+@pytest.mark.parametrize("step,selected,allowed,hold_update_lock", [
+    (None, "old", True, False),
+    ("staged", "old", False, False), ("stopping", "old", False, False),
+    ("stopped", "old", False, False), ("backed_up", "old", False, False),
+    ("migrated", "old", False, False), ("migrated", "candidate", False, False),
+    ("switched", "candidate", True, True), ("switched", "candidate", False, False),
+    ("switched", "old", False, False), ("verified", "candidate", False, False),
+    ("recovering", "old", False, False),
+    ("rollback_selected", "old", True, True),
+    ("rollback_selected", "old", False, False),
+    ("rollback_selected", "candidate", False, False),
+    ("complete", "candidate", True, False), ("rolled_back", "old", True, False),
+    ("unrecognized", "old", False, False),
 ])
-def test_generated_command_pending_journal_admission_table(tmp_path, monkeypatch, step, selected, allowed):
+def test_generated_command_pending_journal_admission_table(
+        tmp_path, monkeypatch, step, selected, allowed, hold_update_lock):
+    from runtime_protocol import platform
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     root = tmp_path / "program"
     data = tmp_path / "data"
     versions = {}
@@ -374,15 +421,31 @@ def test_generated_command_pending_journal_admission_table(tmp_path, monkeypatch
     monkeypatch.setitem(sys.modules, "astrid_runtime.cli", runtime)
     generated = command(versions[selected], data)
     assert generated[1:5] == ["-X", "utf8", "-I", "-c"]
-    if allowed:
-        with pytest.raises(SystemExit) as result:
-            exec(generated[-1], {})
-        assert result.value.code == 0
-        assert len(calls) == 1
-    else:
-        with pytest.raises(ValueError, match="An Astrid update was interrupted"):
-            exec(generated[-1], {})
-        assert calls == []
+    lock = None
+    if hold_update_lock:
+        path = installer_lock_path(Path.home(), sys.platform)
+        platform.private_directory(path.parent)
+        lock = path.open("a+b")
+        platform.lock_file(lock.fileno(), blocking=False)
+    try:
+        if allowed:
+            with pytest.raises(SystemExit) as result:
+                exec(generated[-1], {})
+            assert result.value.code == 0
+            assert len(calls) == 1
+        else:
+            with pytest.raises(ValueError) as result:
+                exec(generated[-1], {})
+            if (step, selected) in {
+                    ("switched", "candidate"), ("rollback_selected", "old")}:
+                assert str(result.value) == "Choose Update to finish"
+            else:
+                assert "An Astrid update was interrupted" in str(result.value)
+            assert calls == []
+    finally:
+        if lock is not None:
+            platform.unlock_file(lock.fileno())
+            lock.close()
     assert not data.exists()
 
 
@@ -605,8 +668,13 @@ def _posix_action_fixture(tmp_path, monkeypatch, system, form):
 def test_posix_migrates_only_known_action_and_preserves_service_properties(tmp_path, monkeypatch, system, form):
     import plistlib
 
+    from runtime_protocol import platform
+
     from astrid.installer.service import systemd_quote
 
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
     manager, version, data, transaction, canonical = _posix_action_fixture(tmp_path, monkeypatch, system, form)
     before, record = manager.path.read_bytes(), manager.selection.read_bytes()
     if form == "unknown":
@@ -655,8 +723,15 @@ def test_posix_migrates_only_known_action_and_preserves_service_properties(tmp_p
     for step in ("switched", "rollback_selected"):
         transaction["step"] = step
         write_json(manager.root / "update-transaction.json", transaction)
-        with pytest.raises(SystemExit) as exited:
-            exec(stored[-1], {})
+        lock_path = installer_lock_path(Path.home(), sys.platform)
+        platform.private_directory(lock_path.parent)
+        with lock_path.open("a+b") as lock:
+            platform.lock_file(lock.fileno(), blocking=False)
+            try:
+                with pytest.raises(SystemExit) as exited:
+                    exec(stored[-1], {})
+            finally:
+                platform.unlock_file(lock.fileno())
         assert exited.value.code == 0
     assert len(calls) == 2
 

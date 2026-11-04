@@ -158,38 +158,102 @@ def publish_runtime_runner(root: Path) -> Path:
     """Durably publish current admission before an update can stop or migrate."""
     from runtime_protocol import platform
 
-    from . import foreground, service
+    from . import custody, foreground, service
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
-    # Retained packages supply the interpreter and core. Carry the current
-    # command builder and admission together so their older service cannot
-    # reintroduce an ordinary-launch bypass after rollback.
+    # The retained version supplies only the interpreter and Runtime. Carry the
+    # complete current launcher so an older installed Agent is never imported.
     import inspect
 
-    admission_source = inspect.getsource(service.launch_admission)
+    prelude_source = service._launch_prelude_source()
     service_source = (
-        'import inspect,json,os,re,sys\nfrom pathlib import Path\n'
-        'from astrid.installer.core import Version,absolute,current,read_json,version_id\n'
+        prelude_source + '\n'
+        'from runtime_protocol import platform\n'
         f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
+        f'_EMBEDDED_LAUNCH_PRELUDE={prelude_source!r}\n'
         + "\n".join(inspect.getsource(function) for function in (
-            service.default_program_root, service.installer_lock_path,
-            service.launch_admission, service.command,
+            service.default_program_root, service.installer_lock_path, service.pinokio_lock_paths,
+            service.command,
         ))
     )
-    foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
+    # Keep the generated foreground self-contained: retained release-0 Agents
+    # do not provide the current installer modules.  The ticket client uses the
+    # already-embedded admission helpers, so it never imports the retained Agent.
+    custody_attach_source = '''import hashlib,hmac,secrets,socket
+def _custody_send(stream, value):
+    stream.write(json.dumps(value).encode() + b"\\n")
+    stream.flush()
+
+def _custody_receive(stream):
+    line = stream.readline(65537)
+    if not line or len(line) > 65536:
+        raise ValueError("The stopped-update lock owner disconnected.")
+    return json.loads(line)
+
+def _custody_identity_matches(expected, observed):
+    return (isinstance(expected, dict) and isinstance(observed, dict)
+            and all(expected.get(field) == observed.get(field)
+                    for field in ("pid", "uid", "birth_id")))
+
+def _CUSTODY_ATTACH(ticket, root, version, data):
+    try:
+        root, data = absolute(root), absolute(data)
+        marker = read_json(root / "install.json")
+        if (marker.get("owner") != "haus.astrid.runtime" or marker.get("managed_by") != "pinokio"
+                or absolute(marker["data_root"]) != data or current(root) != version
+                or not launch_admission(version, data, custody=True)):
+            raise ValueError("The stopped update does not authorize this foreground activation.")
+        journal = read_json(root / "update-transaction.json")
+        try:
+            with (root / ".app-update.lock").open("r+b") as operation_lock:
+                try:
+                    platform.lock_file(operation_lock.fileno(), blocking=False)
+                except BlockingIOError:
+                    pass
+                else:
+                    platform.unlock_file(operation_lock.fileno())
+                    raise ValueError("The stopped update no longer owns activation admission.")
+        except FileNotFoundError:
+            raise ValueError("The stopped update no longer owns activation admission.") from None
+        binding = {"root": str(root), "data": str(data), "version": version.document(),
+                   "operation_id": journal["operation_id"], "step": journal["step"]}
+        if binding != ticket["binding"]:
+            raise ValueError("The stopped-update activation identity changed.")
+        receipt = json.loads((root / ".app-update-custody.json").read_text(encoding="utf-8"))
+        observed = platform.process_identity(receipt["identity"]["pid"])
+        if (receipt["port"] != ticket["port"] or receipt["root"] != str(root.resolve())
+                or receipt["lock"] != ticket["lock"]
+                or not _custody_identity_matches(receipt["identity"], observed)):
+            raise ValueError("The stopped-update lock owner identity changed.")
+        challenge = secrets.token_hex(32)
+        connection = socket.create_connection(("127.0.0.1", ticket["port"]), timeout=10)
+        try:
+            with connection.makefile("rwb", buffering=0) as stream:
+                _custody_send(stream, {"token": ticket["token"], "binding": binding,
+                                       "challenge": challenge})
+                reply = _custody_receive(stream)
+                proof = hmac.new(bytes.fromhex(receipt["key"]), challenge.encode(), hashlib.sha256).hexdigest()
+                if reply.get("accepted") is not True or not hmac.compare_digest(reply.get("proof", ""), proof):
+                    raise ValueError("The stopped-update activation ticket was refused.")
+            connection.settimeout(None)
+            return connection
+        except BaseException:
+            connection.close()
+            raise
+    except (OSError, KeyError, TypeError) as exc:
+        raise ValueError("The stopped-update activation ticket was refused.") from exc
+'''
+    foreground_source = "\n".join(inspect.getsource(function) for function in (
+        foreground._probe_operation_lock, foreground.launch, foreground._run,
+    ))
     source = (
-        'import sys, importlib, types\nfrom pathlib import Path\n'
-        '_retained_service = importlib.import_module("astrid.installer.service")\n'
-        '_service = types.ModuleType("astrid.installer.service")\n'
-        '_service.__dict__.update(_retained_service.__dict__)\n'
-        f'exec(compile({service_source!r}, "<Astrid service launcher>", "exec"), _service.__dict__)\n'
-        f'_service._ADMISSION_SOURCE = {admission_source!r}\n'
-        'sys.modules["astrid.installer.service"] = _service\n'
-        '_foreground = {"__name__": "astrid.installer.foreground", '
-        '"__package__": "astrid.installer"}\n'
-        f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'
-        '_foreground["launch"](Path(__file__).resolve().parent, sys.argv[1:])\n'
+        service_source + '\n'
+        + custody_attach_source + '\n'
+        + f'_CUSTODY_KEEPER_SOURCE = {inspect.getsource(custody.keeper)!r}\n'
+        + '# <Astrid foreground launcher>\n'
+        + foreground_source + '\n'
+        + 'launch(Path(__file__).resolve().parent, sys.argv[1:])\n'
     )
     fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
     temporary = Path(temporary)

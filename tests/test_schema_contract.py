@@ -116,9 +116,21 @@ class SchemaContractTest(unittest.TestCase):
         self.assertEqual(
             clip_keys,
             set(timeline._CLIP_ALLOWED)
-            - {"app", "derived_output", "elementRef", "keyframes", "label", "shot_id", "shot_occurrence_id", "shot_name"},
+            - {
+                "app",
+                "derived_output",
+                "elementRef",
+                "keyframes",
+                "label",
+                "meta",
+                "shot_id",
+                "shot_occurrence_id",
+                "shot_name",
+            },
         )
-        self.assertEqual(track_keys, set(timeline._TRACK_ALLOWED) - {"app"})
+        # ``meta`` is optional on tracks for the same reason: the full golden
+        # fixture intentionally preserves its original digest input.
+        self.assertEqual(track_keys, set(timeline._TRACK_ALLOWED) - {"app", "meta"})
         self.assertEqual(theme_overrides_keys, set(timeline._THEME_OVERRIDES_ALLOWED))
         self.assertEqual(asset_entry_keys, set(timeline._ASSET_ENTRY_ALLOWED))
 

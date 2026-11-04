@@ -373,11 +373,11 @@ def test_checkout_server_url_accepts_canonical_origin() -> None:
     )
 
 
-def test_system_stats_probe_requires_exact_version_and_bounds_body(
+def test_system_stats_probe_warns_for_workflow_drift_and_bounds_body(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter = CheckoutServerAdapter("https://gpu.example.test")
+    adapter = CheckoutServerAdapter("https://gpu.example.test", expected_comfyui_version="==" + COMFYUI_VERSION)
     monkeypatch.setattr(
         backend_module,
         "_open_checkout_http",
@@ -402,9 +402,15 @@ def test_system_stats_probe_requires_exact_version_and_bounds_body(
             payload={"system": {"comfyui_version": "0.25.0"}},
         ),
     )
+    adapter._probe_system_stats()
+    assert adapter._system_stats_verified
+    assert adapter._version_readiness["status"] == "ready_with_warnings"
+    assert adapter._version_readiness["issues"][0]["code"] == "version_drift"
+    adapter._host_profile = {"runtime": {"comfyui_version": "==" + COMFYUI_VERSION}}
     with pytest.raises(ValueError, match="0.26.0"):
         adapter._probe_system_stats()
     assert not adapter._system_stats_verified
+    adapter._host_profile = None
     monkeypatch.setattr(
         backend_module,
         "_open_checkout_http",

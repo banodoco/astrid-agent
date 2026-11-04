@@ -427,6 +427,68 @@ def build_canonical_timeline(
     return build_authoring_proposal(resolved_children, continuation_id=continuation_id)["timeline"]
 
 
+def build_native_proposal(payload: Mapping[str, Any], assembled: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture against the admitted original; only the requester may commit this file."""
+    from astrid.sdk.timeline._command_state import equal
+    from astrid.sdk.timeline.commands import _VALIDATOR
+    from astrid.sdk.timeline.native_parent_media_commands import capture_assembled_media
+
+    capture = _mapping(payload.get("capture"), "capture")
+    target = _mapping(capture.get("admitted_target"), "admitted_target")
+    bundle = _mapping(capture.get("bundle"), "bundle")
+    if (bundle.get("project_id") != target.get("project_id")
+            or bundle.get("timeline_id") != target.get("timeline_id")
+            or bundle.get("base_parent", {}).get("revision_id") != target.get("base_revision_id")):
+        raise TimelineAuthoringError("assembly closure differs from admitted original target")
+    children = _list(capture.get("children"), "capture.children")
+    associations = _list(payload.get("associations"), "associations")
+    resolved = {child["ordinal"]: child for child in payload["resolved_children"]}
+    if (len(children) != 2 or len(associations) != 2
+            or len({child["task_id"] for child in children}) != 2
+            or len({child["association"]["association_id"] for child in children}) != 2):
+        raise TimelineAuthoringError("assembly requires two exact ordered associations")
+    for ordinal, (child, association) in enumerate(zip(children, associations)):
+        output = _candidate_outputs(resolved[ordinal], f"resolved_children[{ordinal}]")[0]
+        selected, media, verified = child["association"], child["media"], child["verified_media"]
+        if (type(child["ordinal"]) is not int or child["ordinal"] != ordinal
+                or child["task_id"] != assembled["children"][ordinal]["task_id"]
+                or association["task_id"] != child["task_id"]
+                or association["project_id"] != target["project_id"]
+                or association["association_id"] != selected["association_id"]
+                or type(selected["version"]) is not int
+                or association["lifecycle"]["version"] != selected["version"]
+                or association["lifecycle"]["state"] not in ("available", "promoted")
+                or association["durability"] != "durable"
+                or association["object_id"] != selected["object_id"]
+                or selected["object_id"] != media["object_id"]
+                or association["generation_id"] != media["generation_id"]
+                or not equal(verified["selection"], media)
+                or any(not equal(association[key], output.get(key, default)) for key, default in (
+                    ("output_port", output.get("name", "output")), ("group_key", "default"),
+                    ("variant_key", str(output.get("ordinal", 0))), ("ordinal", 0), ("role", "output"),
+                    ("size", None), ("media_type", None)))
+                or verified["media_type"] != association["media_type"]
+                or not equal(verified["size"], association["size"])
+                or not equal(verified["duration_seconds"], _output_duration(output, "primary_visual"))
+                or _output_identity(output, "primary_visual") != selected["object_id"]):
+            raise TimelineAuthoringError("assembly differs from exact ordered verified child association")
+    producer = _mapping(payload.get("producer"), "host producer identity")
+    if producer.get("task_id") != assembled["continuation_id"]:
+        raise TimelineAuthoringError("host producer task differs from continuation")
+    commands = capture_assembled_media(
+        capture["bundle"], assembled, [child["media"] for child in children],
+        replace_clips=capture["replace_clips"], verified_media=[child["verified_media"] for child in children])
+    proposal = {"schema_version": 1, "producer": dict(producer), "admitted_target": dict(target),
+                "commands": commands, "rationale": capture.get("rationale", "Assemble ordered child visuals")}
+    encoded = json.dumps(proposal, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False).encode("utf-8")
+    proposal["proposal_digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    errors = list(_VALIDATOR.evolve(schema={"$ref": "#/$defs/SettledProducerProposal"}).iter_errors(proposal))
+    if errors:
+        raise TimelineAuthoringError(errors[0].message)
+    return proposal
+
+
 def _load_json_argument(value: str) -> Mapping[str, Any]:
     candidate = Path(value).expanduser()
     if candidate.is_file():
@@ -455,23 +517,24 @@ def main(argv: list[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         args.out.mkdir(parents=True, exist_ok=True)
         payload = _load_json_argument(args.resolved_children)
-        proposal = build_authoring_proposal(payload, continuation_id=args.continuation_id)
+        assembled = build_authoring_proposal(payload, continuation_id=args.continuation_id)
+        proposal = build_native_proposal(payload, assembled) if "capture" in payload else assembled
         timeline_path = args.out / "timeline.json"
         assets_path = args.out / "assets.json"
         proposal_path = args.out / "authoring-proposal.json"
-        write_json_atomic(timeline_path, proposal["timeline"])
-        write_json_atomic(assets_path, proposal["registry"])
+        write_json_atomic(timeline_path, assembled["timeline"])
+        write_json_atomic(assets_path, assembled["registry"])
         write_json_atomic(proposal_path, proposal)
         manifest = build_manifest(
             kind="rendering.assemble_timeline",
-            inputs={"resolved_children": args.resolved_children, "continuation_id": proposal["continuation_id"]},
+            inputs={"resolved_children": args.resolved_children, "continuation_id": assembled["continuation_id"]},
             outputs=[
                 {"name": "timeline", "path": timeline_path.name, "type": "file", "artifact_type": "timeline"},
                 {"name": "assets", "path": assets_path.name, "type": "file", "artifact_type": "timeline/assets"},
                 {"name": "authoring_proposal", "path": proposal_path.name, "type": "file", "artifact_type": "timeline/authoring-proposal"},
             ],
             created=datetime.now(timezone.utc).isoformat(),
-            continuation_id=proposal["continuation_id"],
+            continuation_id=assembled["continuation_id"],
         )
         write_manifest(args.out / "manifest.json", manifest)
         return 0
@@ -482,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "TimelineAuthoringError",
     "assemble_timeline",
+    "build_native_proposal",
     "build_authoring_proposal",
     "build_canonical_timeline",
     "build_parser",

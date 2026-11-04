@@ -7,10 +7,9 @@ same canonical ownership root on a physical pod; runtime/executor identity is
 in the marker, never in the lock key. Stopping requires Linux pidfd support;
 there is deliberately no kill-by-PID or process-group fallback.
 
-The Pod adapter uses exec_ssh and open_ssh_client().open_sftp(), both present in
-the checked-in runpod_lifecycle-0.3.1.dev0 wheel (pod.py). upload_path is a tree
-uploader and is unsuitable for a pre-reserved secret file. Credentials only go
-through SFTP into an already-created 0600 file under a private operation root.
+The Pod adapter executes through the configured lifecycle transport. Credentials
+use put_file(reserved=True) for HTTPS, or SFTP for SSH, preserving the inode of
+an already-created 0600 file under a private operation root.
 No credentials are enabled and no Runtime activation is committed here.
 """
 
@@ -644,6 +643,12 @@ class RunPodWorkerProcessTransport:
         return result
 
     async def upload_private(self, local_path: Path, remote_path: str) -> None:
+        if getattr(getattr(self.pod, "config", None), "transport", "ssh") == "https":
+            try:
+                await self.pod.put_file(local_path, remote_path, reserved=True)
+            except Exception:
+                raise WorkerProcessError("private credential upload failed") from None
+            return
         def upload() -> None:
             client = self.pod.open_ssh_client()
             try:

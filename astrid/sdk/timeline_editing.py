@@ -15,7 +15,6 @@ import math
 import re
 import uuid
 from collections.abc import Mapping, MutableMapping, Sequence
-from fractions import Fraction
 from typing import Any
 
 from astrid.sdk.timeline._common import TimelineEditError
@@ -162,7 +161,13 @@ def _set_clip_interval(clip: MutableMapping[str, Any], start: Any, end: Any) -> 
 def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name: str | None = None, track_id: str | None = None) -> MutableMapping[str, Any]:
     """Add and return a valid empty track in a main timeline or shot."""
 
-    timeline = _timeline(container)
+    from astrid.sdk.timeline.native_checkout import AttachedCheckout
+
+    attached = container if isinstance(container, AttachedCheckout) else None
+    if attached is not None:
+        timeline = _timeline(attached.bundle["parent"])
+    else:
+        timeline = _timeline(container)
     tracks = _tracks(timeline)
     new_id = track_id or _next_id("track")
     if any(track.get("id") == new_id for track in tracks):
@@ -177,6 +182,17 @@ def add_track(container: MutableMapping[str, Any], *, kind: str = "video", name:
     }
     if name is not None:
         track["name"] = name
+    if attached is not None:
+        from astrid.sdk.timeline._command_state import State
+
+        attached._unchanged_preview()
+        with attached.session.outbox.locked():
+            state = attached.session._state()
+            if state['pending'] or state['flight'] is not None:
+                raise TimelineEditError('attached track creation cannot be mixed with another draft')
+        attached._queue({'schema_version': 1, 'op': 'track.create', 'version': '1',
+                         'select': 'parent', 'args': {'row': copy.deepcopy(track)}})
+        return State(attached.bundle).entity("parent/track:" + new_id)
     tracks.append(track)
     return track
 
@@ -348,198 +364,6 @@ def move(container: MutableMapping[str, Any], clip_id: str, *, track: MutableMap
     return clip
 
 
-def retime(clip: MutableMapping[str, Any], *, start: int | float | None = None, end: int | float | None = None, ripple: str = "none") -> MutableMapping[str, Any]:
-    """Change one interval; neighbours never move unless ripple is explicit."""
-
-    if ripple != "none":
-        raise TimelineEditError("only ripple='none' is supported by the primitive; use an explicit sequence for ripple")
-    current_start = clip.get("at", 0)
-    current_end = current_start + _clip_duration(clip)
-    new_start, new_end = current_start if start is None else start, current_end if end is None else end
-    if start is not None and end is None:
-        new_end = new_start + _clip_duration(clip)
-    if new_end <= new_start:
-        raise TimelineEditError("retimed interval must be non-empty")
-    _set_clip_interval(clip, new_start, new_end)
-    return clip
-
-
-def retime_with_ripple(
-    container: MutableMapping[str, Any],
-    clip_id: str,
-    *,
-    start: int | float | None = None,
-    end: int | float | None = None,
-    scope: str = "track",
-    parent_duration: str = "preserve",
-) -> MutableMapping[str, Any]:
-    """Retime one visual clip and shift only later clips on its own track.
-
-    Ripple is deliberately opt-in and narrowly scoped. ``scope='track'`` is
-    the only supported scope: audio/voice/music tracks are rejected, and no
-    other track is ever moved. ``parent_duration`` makes overflow behavior
-    explicit (``preserve`` rejects overflow, ``extend`` grows the container,
-    and ``trim`` sets it to the latest resulting clip end).
-    """
-
-    if scope != "track":
-        raise TimelineEditError("only scope='track' is supported by retime_with_ripple")
-    if parent_duration not in {"preserve", "extend", "trim"}:
-        raise TimelineEditError("parent_duration must be 'preserve', 'extend', or 'trim'")
-    timeline = _timeline(container)
-    track, clips, clip = _find_clip(container, clip_id)
-    kind = str(track.get("kind", "")).lower()
-    if kind in {"audio", "voice", "vo", "music", "sound"}:
-        raise TimelineEditError("ripple is not allowed on audio/voice/music tracks")
-    old_start = clip.get("at", 0)
-    old_end = old_start + _clip_duration(clip)
-    if old_end is None or old_end <= old_start:
-        raise TimelineEditError("existing interval must be non-empty")
-    new_start = old_start if start is None else start
-    new_end = new_start + _clip_duration(clip) if end is None else end
-    if new_end <= new_start:
-        raise TimelineEditError("retimed interval must be non-empty")
-
-    delta = new_end - old_end
-    shifted: list[tuple[MutableMapping[str, Any], Any, Any]] = []
-    for sibling in clips:
-        if sibling is clip or sibling.get("track") != track.get("id"):
-            continue
-        sibling_start = sibling.get("at", 0)
-        sibling_end = sibling_start + _clip_duration(sibling)
-        if sibling_start >= old_end and delta:
-            shifted.append((sibling, sibling_start + delta, sibling_end + delta))
-
-    resulting_end = max([new_end, *(end_value for _, _, end_value in shifted)] or [new_end])
-    existing_duration = timeline.get("duration")
-    if (
-        parent_duration == "preserve"
-        and existing_duration is not None
-        and resulting_end > existing_duration
-    ):
-        raise TimelineEditError(
-            "ripple exceeds parent duration; choose parent_duration='extend' or 'trim'"
-        )
-
-    _set_clip_interval(clip, new_start, new_end)
-    for sibling, sibling_start, sibling_end in shifted:
-        _set_clip_interval(sibling, sibling_start, sibling_end)
-    if parent_duration == "extend":
-        timeline["duration"] = max(existing_duration or 0, resulting_end)
-    elif parent_duration == "trim":
-        timeline["duration"] = max(
-            [item.get("at", 0) + _clip_duration(item) for item in clips] or [0]
-        )
-    return clip
-
-
-def frame_time(frame: int, fps: int | float) -> Fraction:
-    if isinstance(frame, bool) or isinstance(fps, bool) or frame < 0 or fps <= 0:
-        raise TimelineEditError("frame and fps must be non-negative/positive")
-    return Fraction(frame) / Fraction(str(fps))
-
-
-def _time_fraction(value: int | float | Fraction, label: str) -> Fraction:
-    if isinstance(value, bool) or not isinstance(value, (int, float, Fraction)):
-        raise TimelineEditError(f"{label} must be a number")
-    return value if isinstance(value, Fraction) else Fraction(str(value))
-
-
-def _playback_rate(speed: int | float | Fraction) -> Fraction:
-    rate = _time_fraction(speed, "speed")
-    if rate <= 0:
-        raise TimelineEditError("speed must be positive")
-    return rate
-
-
-def source_to_timeline_time(
-    source_time: int | float | Fraction,
-    *,
-    source_start: int | float | Fraction = 0,
-    timeline_start: int | float | Fraction = 0,
-    speed: int | float | Fraction = 1,
-) -> Fraction:
-    """Map a source timestamp into its local timeline timestamp.
-
-    The half-open interval mapping is ``timeline_start + (source_time -
-    source_start) / speed``.  Fractions keep 30fps/0.1s boundaries exact;
-    callers can apply :func:`quantize_time` at the renderer boundary.
-    """
-
-    rate = _playback_rate(speed)
-    return _time_fraction(timeline_start, "timeline_start") + (
-        _time_fraction(source_time, "source_time") - _time_fraction(source_start, "source_start")
-    ) / rate
-
-
-def timeline_to_source_time(
-    timeline_time: int | float | Fraction,
-    *,
-    source_start: int | float | Fraction = 0,
-    timeline_start: int | float | Fraction = 0,
-    speed: int | float | Fraction = 1,
-) -> Fraction:
-    """Map a local timeline timestamp back into source time."""
-
-    rate = _playback_rate(speed)
-    return _time_fraction(source_start, "source_start") + (
-        _time_fraction(timeline_time, "timeline_time") - _time_fraction(timeline_start, "timeline_start")
-    ) * rate
-
-
-def quantize_time(seconds: int | float | Fraction, fps: int | float, *, policy: str = "nearest") -> int:
-    if isinstance(fps, bool) or isinstance(seconds, bool) or fps <= 0 or policy not in {"floor", "ceil", "nearest"}:
-        raise TimelineEditError("invalid fps or quantization policy")
-    frames = _time_fraction(seconds, "seconds") * Fraction(str(fps))
-    if policy == "floor":
-        return math.floor(frames)
-    if policy == "ceil":
-        return math.ceil(frames)
-    return math.floor(frames + Fraction(1, 2))
-
-
-def quantize_interval(
-    start: int | float | Fraction,
-    end: int | float | Fraction,
-    fps: int | float,
-    *,
-    policy: str = "nearest",
-) -> dict[str, Any]:
-    """Quantize a half-open interval and report requested/applied boundaries.
-
-    The returned frame numbers are renderer-facing values; the Fraction
-    values are the exact seconds represented by those frames. A collapsed
-    interval is rejected instead of becoming a zero-frame clip.
-    """
-
-    start_value = _time_fraction(start, "start")
-    end_value = _time_fraction(end, "end")
-    if end_value <= start_value:
-        raise TimelineEditError("interval must be non-empty")
-    if isinstance(fps, bool) or fps <= 0:
-        raise TimelineEditError("fps must be positive")
-    fps_value = Fraction(str(fps))
-    start_frame = quantize_time(start_value, fps_value, policy=policy)
-    end_frame = quantize_time(end_value, fps_value, policy=policy)
-    if end_frame <= start_frame:
-        raise TimelineEditError(
-            "quantization collapsed the interval; choose a wider interval or a different policy"
-        )
-    applied_start = Fraction(start_frame, 1) / fps_value
-    applied_end = Fraction(end_frame, 1) / fps_value
-    return {
-        "policy": policy,
-        "fps": fps_value,
-        "requested_start": start_value,
-        "requested_end": end_value,
-        "start_frame": start_frame,
-        "end_frame": end_frame,
-        "applied_start": applied_start,
-        "applied_end": applied_end,
-        "rounded": applied_start != start_value or applied_end != end_value,
-    }
-
-
 def sequence(clips: Sequence[MutableMapping[str, Any]], *, start: int | float = 0, durations: Sequence[int | float] | None = None, gap: int | float = 0) -> Sequence[MutableMapping[str, Any]]:
     """Place supplied clips consecutively; never shifts unrelated tracks."""
 
@@ -569,16 +393,6 @@ def align(clips: Sequence[MutableMapping[str, Any]], anchors: Sequence[int | flo
         else:
             _set_clip_interval(clip, anchor - duration / 2, anchor + duration / 2)
     return clips
-
-
-def grid(rows: int, columns: int, *, gap: float = 0.0) -> list[dict[str, float]]:
-    if rows <= 0 or columns <= 0 or gap < 0 or gap >= 1:
-        raise TimelineEditError("invalid grid dimensions or gap")
-    width, height = (1 - gap * (columns - 1)) / columns, (1 - gap * (rows - 1)) / rows
-    return [
-        {"x": c * (width + gap), "y": r * (height + gap), "width": width, "height": height}
-        for r in range(rows) for c in range(columns)
-    ]
 
 
 def fit_duration(container: MutableMapping[str, Any], *, mode: str = "extend") -> int | float:
@@ -757,13 +571,27 @@ def duplicate_authoring_shot(
 ) -> MutableMapping[str, Any]:
     """Duplicate a bundle shot with independent payload/placement identities."""
 
-    return add_authoring_shot(
+    placements = bundle.get("placements", [])
+    owner = next((row for row in placements if row.get("shot_id") == shot_id), None)
+    if owner is None:
+        raise TimelineEditError("duplicate requires a placed source shot")
+    destination = new_shot_id or _next_id("shot")
+    occurrence = occurrence_id or _next_id("occurrence")
+    result = add_authoring_shot(
         bundle,
         template_shot_id=shot_id,
-        shot_id=new_shot_id or _next_id("shot"),
-        occurrence_id=occurrence_id or _next_id("occurrence"),
+        shot_id=destination,
+        occurrence_id=occurrence,
         start_ms=start_ms,
     )
+    bundle.setdefault("_authoring_duplicates", []).append({
+        "command": {"schema_version": 1, "op": "occurrence.duplicate", "version": "1",
+                    "select": "occurrence:" + owner["occurrence_id"],
+                    "args": {"occurrence_id": occurrence, "shot_id": destination},
+                    "intent": {"ownership": "occurrence"}},
+        "start_ms": start_ms,
+    })
+    return result
 
 
 def remove_authoring_shot(bundle: MutableMapping[str, Any], shot_id: str) -> MutableMapping[str, Any]:
@@ -875,9 +703,8 @@ def move_occurrence_group(
 
 __all__ = [
     "TimelineEditError", "clone_candidate", "add_track", "add_shot", "place_media",
-    "replace_media", "duplicate", "remove", "move", "retime", "frame_time",
-    "source_to_timeline_time", "timeline_to_source_time", "quantize_time", "quantize_interval",
-    "sequence", "align", "grid", "fit_duration", "reorder_layers", "retime_with_ripple",
+    "replace_media", "duplicate", "remove", "move",
+    "sequence", "align", "fit_duration", "reorder_layers",
     "add_authoring_shot", "duplicate_authoring_shot", "remove_authoring_shot",
     "move_occurrence_group",
 ]
