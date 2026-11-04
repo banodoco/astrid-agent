@@ -78,7 +78,7 @@ def test_first_exit_and_latest_sample_survive_actual_nested_timeout(capture, mon
     first = (nested / "pack-host-readiness-first-failed-poll.json").read_bytes()
     health["services"][0].update(state="restarting", last_exit=1, reason="exited", restart_count=1)
     assert windows.host_ready() is False
-    first_exit = (nested / "pack-host-readiness-first-service-exit-service-pack-host.log").read_bytes()
+    first_exit = (nested / "pack-host-readiness-first-service-exit.json").read_bytes()
     child.write_text("latest child error\n")
     health["services"][0].update(state="failed", restart_count=9)
     monkeypatch.setattr(jumps.sys, "platform", "win32")
@@ -88,8 +88,7 @@ def test_first_exit_and_latest_sample_survive_actual_nested_timeout(capture, mon
     with pytest.raises(RuntimeError, match="Timed out after 0s: pack-host is running with its current ready file"):
         jumps.task_after_update({}, nested, "project")
     assert (nested / "pack-host-readiness-first-failed-poll.json").read_bytes() == first
-    assert (nested / "pack-host-readiness-first-service-exit-service-pack-host.log").read_bytes() == first_exit
-    assert first_exit == b"first child error\n"
+    assert (nested / "pack-host-readiness-first-service-exit.json").read_bytes() == first_exit
     assert manifest(nested)["health"]["pack_host"]["restart_count"] == 9
     assert len(list(nested.glob("pack-host-readiness-*.json"))) == 3
     (evidence / "journey-result.json").write_text(json.dumps({"status": "fail"}))
@@ -112,29 +111,24 @@ def test_first_exit_and_latest_sample_survive_actual_nested_timeout(capture, mon
     assert {p.name: p.read_bytes() for p in after.iterdir()} == names
 
 
-def test_native_child_wrapper_roots_bounds_and_secret_redaction(capture):
+def test_native_child_wrapper_roots_and_metadata_without_content(capture):
     data, _, nested, native, local, _ = capture
     (data / "logs").mkdir()
     (data / "logs/service-pack-host.log").write_text("wrong root decoy")
-    raw = b"x" * 70000 + b"\nTraceback: child failure\nAuthorization: Bearer abc123\n"
+    raw = b"x" * 70000 + b"\nAuthorization: Bearer abc123\n"
     (native / "service-pack-host.log").write_bytes(raw)
-    (native / "runtime.log").write_text("native supervisor")
     (local / "Astrid Runtime/logs/runtime-service.log").write_text("isolated wrapper")
     (data / "runtime/generic-host.json").write_text(json.dumps({"pid": 27, "token": "hidden"}))
     assert windows.host_ready() is False
     result = manifest(nested)
     logs = {item["source"]: item for item in result["logs"]}
-    child = logs["service-pack-host.log"]
-    safe = (nested / child["evidence"]).read_bytes()
-    assert child["search_root"] == "native-runtime-logs"
-    assert child["truncated"] is True
-    assert child["raw_tail_sha256"] == hashlib.sha256(raw[-65536:]).hexdigest()
-    assert child["captured_sha256"] == hashlib.sha256(safe).hexdigest()
-    assert len(safe) <= 65536
-    assert b"child failure" in safe and b"abc123" not in safe and b"wrong root" not in safe
+    assert logs["service-pack-host.log"]["search_root"] == "native-runtime-logs"
+    assert logs["service-pack-host.log"]["truncated"] is True
+    assert logs["service-pack-host.log"]["bytes"] == len(raw)
+    assert logs["service-pack-host.log"]["content_retained"] is False
     assert logs["runtime-service.log"]["search_root"] == "isolated-service-logs"
-    assert (nested / logs["runtime-service.log"]["evidence"]).read_text() == "isolated wrapper"
-    assert "hidden" not in json.dumps(result)
+    assert not list(nested.glob("pack-host-readiness-*.log"))
+    assert all(secret not in json.dumps(result) for secret in ("abc123", "hidden", "isolated wrapper"))
 
 
 @pytest.mark.parametrize("mode", ["symlink", "oversized", "permission"])
@@ -211,5 +205,64 @@ def test_readiness_manifest_identifies_rejected_predicate(capture, case, field):
     assert observation["predicates"][field] is False
     assert observation["predicate_result"] is False
     if case == "mismatch":
-        assert observation["health"]["runtime_instance_id"] == "current"
-        assert observation["markers"][0]["content"]["runtime_instance_id"] == "old"
+        assert observation["health"]["runtime_instance_id_sha256"] == hashlib.sha256(b"current").hexdigest()
+        assert observation["markers"][0]["content"]["runtime_instance_id_sha256"] == hashlib.sha256(b"old").hexdigest()
+
+
+def test_arbitrary_secret_text_and_huge_keys_never_enter_promoted_manifests(capture, monkeypatch):
+    data, evidence, nested, native, _, health = capture
+    secrets = ["synthetic_one", "synthetic_two", "synthetic_private", "synthetic_code", "synthetic_argument"]
+    payload = ("Cookie: session=synthetic_one; csrftoken=synthetic_two\n"
+               "2026 logger -----BEGIN PRIVATE KEY-----\nsynthetic_private\n"
+               "2026 logger -----END PRIVATE KEY-----\nhttps://example.invalid/?code=synthetic_code")
+    (native / "service-pack-host.log").write_text(payload)
+    (data / "runtime/generic-host.ready.json").write_text("{malformed " + payload)
+    (data / "runtime/generic-host.json").write_text(json.dumps({"pid": 5, "unknown": payload, "status": payload}))
+    (data / "runtime/discovery.json").write_text(json.dumps({"runtime_instance_id": "current", "token": payload}))
+    health["services"][0]["reason"] = {"k" * 1_100_000: payload}
+    declaration = data / "declaration.json"
+    declaration.write_text(json.dumps({"services": [{"name": "pack-host", "restart": payload,
+        "argv": ["synthetic_argument", payload], "ready": {"file": payload}}]}))
+    profile = data / "profile.json"
+    profile.write_text(json.dumps({"service_declaration": str(declaration)}))
+    monkeypatch.setattr(windows, "version", lambda: {"profile": str(profile)})
+    assert windows.host_ready() is False
+    manifests = list(nested.glob("pack-host-readiness-*.json"))
+    assert len(manifests) == 3
+    for path in manifests:
+        content = path.read_bytes()
+        assert len(content) <= windows.PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES
+        assert all(secret.encode() not in content for secret in secrets)
+        result = json.loads(content)
+        assert result["health"]["pack_host"]["reason"] == "other"
+        assert result["markers"][0]["status"] == "malformed"
+        assert "content" not in result["markers"][0]
+        assert result["service_action"]["action"]["restart"] == "other"
+    (evidence / "journey-result.json").write_text('{}')
+    monkeypatch.setattr(shared, "capture_runtime_service_logs", lambda *a: None)
+    monkeypatch.setattr(shared, "capture_manager_state", lambda *a: None)
+    run_root = evidence.parent.parent
+    shared.snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+    staged = list((run_root / "evidence-upload/before-cleanup").iterdir())
+    assert len(staged) == 4
+    assert all(not any(secret.encode() in path.read_bytes() for secret in secrets) for path in staged)
+
+
+def test_manifest_ceiling_and_oversized_staging_failure_are_explicit(capture, monkeypatch):
+    data, evidence, nested, _, _, _ = capture
+    monkeypatch.setattr(windows, "PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES", 1024)
+    assert windows.host_ready() is False
+    result = manifest(nested)
+    assert result["status"] == "truncated" and result["reason"] == "manifest_size_limit"
+    assert len((nested / "pack-host-readiness-last-failed-poll.json").read_bytes()) <= 1024
+    (nested / "pack-host-readiness-last-failed-poll.json").write_bytes(b"x" * 1025)
+    (evidence / "journey-result.json").write_text('{}')
+    monkeypatch.setattr(shared, "capture_runtime_service_logs", lambda *a: None)
+    monkeypatch.setattr(shared, "capture_manager_state", lambda *a: None)
+    run_root = evidence.parent.parent
+    shared.snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+    receipt = json.loads((run_root / "evidence-upload/before-cleanup/journey-result.json").read_text())
+    diagnostic = receipt["failure_diagnostics"]["before-cleanup"]
+    assert diagnostic["pack_host_readiness_staging_errors"] == [
+        {"index": 1, "observation": "last-failed-poll", "status": "oversized"}]
+    assert len(diagnostic["pack_host_readiness"]) == 1

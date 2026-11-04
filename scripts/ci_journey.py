@@ -572,7 +572,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
-def retain_named_evidence(evidence: Path, phase: str) -> None:
+def retain_named_evidence(evidence: Path, phase: str) -> list:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
     try:
@@ -621,12 +621,12 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     if workspace_owners:
         write_json(destination / "runtime-owner-workspace.json", workspace_owners)
 
+    readiness_staging_errors = []
     # Readiness capture lives at fixed task directories, including the R0 seed.
     # Promote only finite known names through the existing hosted log allowlist.
     roots = (evidence, evidence / "release0-api-seed" / "release0-task",
              evidence / "release1-working-task")
-    suffixes = (".json", "-service-pack-host.log", "-runtime.log",
-                "-runtime-service.log", "-generic-host.log")
+    suffixes = (".json",)
     for index, directory in enumerate(roots):
         if not directory.is_dir() or any(p.is_symlink() for p in (directory, *directory.parents)):
             continue
@@ -637,15 +637,30 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                     continue
                 target = destination / f"runtime-service-service-readiness-{index}-{observation}{suffix}.log"
                 try:
-                    if source.stat().st_size <= EVIDENCE_LOG_LIMIT:
-                        shutil.copyfile(source, target)
+                    with source.open("rb") as stream:
+                        content = stream.read(windows.PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES + 1)
+                    if len(content) > windows.PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES:
+                        readiness_staging_errors.append({"index": index, "observation": observation, "status": "oversized"})
+                    else:
+                        target.write_bytes(content)
                 except OSError as exc:
+                    readiness_staging_errors.append({"index": index, "observation": observation, "status": "error"})
                     print(f"Journey readiness staging failed: {type(exc).__name__}", file=sys.stderr, flush=True)
     if phase == "after-cleanup":
-        for source in sorted((destination.parent / "before-cleanup").glob("runtime-service-service-readiness-*.log")):
+        for source in sorted((destination.parent / "before-cleanup").glob("runtime-service-service-readiness-*.json.log")):
+            if not re.fullmatch(r"runtime-service-service-readiness-[012]-(?:first-failed-poll|first-service-exit|last-failed-poll)\.json\.log", source.name):
+                continue
             target = destination / source.name
             if not target.exists() and source.is_file() and not source.is_symlink():
-                shutil.copyfile(source, target)
+                try:
+                    with source.open("rb") as stream:
+                        content = stream.read(windows.PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES + 1)
+                    if len(content) > windows.PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES:
+                        readiness_staging_errors.append({"status": "oversized_before_cleanup", "name": source.name})
+                    else:
+                        target.write_bytes(content)
+                except OSError:
+                    readiness_staging_errors.append({"status": "error_before_cleanup", "name": source.name})
 
 
     # The existing hosted boundary accepts this legacy service-log filename
@@ -667,6 +682,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                     print(f"Journey seed evidence copy ({phase}) failed for {source}: "
                           f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    return readiness_staging_errors
+
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
@@ -674,7 +691,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     try:
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
-        retain_named_evidence(evidence, phase)
+        readiness_staging_errors = retain_named_evidence(evidence, phase)
         destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
@@ -682,6 +699,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
             r"runtime-service-service-readiness-[012]-"
             r"(?:first-failed-poll|first-service-exit|last-failed-poll)\.json\.log"
         )
+        diagnostic["pack_host_readiness_staging_errors"] = readiness_staging_errors or []
         diagnostic["pack_host_readiness"] = [
             {"path": path.relative_to(run_root).as_posix(),
              "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}

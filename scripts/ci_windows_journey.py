@@ -29,23 +29,8 @@ TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
 PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES = 65536
 PACK_HOST_DIAGNOSTIC_MARKER_BYTES = 65536
-PACK_HOST_DIAGNOSTIC_VALUE_BYTES = 2048
-PACK_HOST_DIAGNOSTIC_JSON_BUDGET = 8192
+PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES = 32768
 NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
-_PACK_HOST_SECRET_FIELD = re.compile(
-    r"(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|"
-    r"credential|password|private[_-]?key|refresh[_-]?token|secret|signature|sig|token)",
-    re.IGNORECASE,
-)
-_PACK_HOST_SECRET_TEXT = re.compile(
-    r"(?im)((?:[\"']?\b(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|"
-    r"cookie|credential|password|private[_-]?key|refresh[_-]?token|secret|signature|sig|token)\b[\"']?)\s*(?:=|:)\s*)"
-    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)"
-)
-_PACK_HOST_BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
-_PACK_HOST_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
-_PACK_HOST_PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
-_PACK_HOST_PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
 PACK_HOST_DIAGNOSTIC_OBSERVATIONS = ("first-failed-poll", "first-service-exit", "last-failed-poll")
 
 
@@ -364,70 +349,38 @@ def health():
     return value
 
 
-def _redact_pack_host_private_key_blocks(value):
-    """Drop complete keys and a tail that starts inside an unbounded key."""
-    output = []
-    inside = False
-    safe_length = 0
-    for line in value.splitlines(keepends=True):
-        if _PACK_HOST_PRIVATE_KEY_BEGIN.match(line):
-            if not inside:
-                output.append("<redacted private key>\n")
-            inside = True
-        elif _PACK_HOST_PRIVATE_KEY_END.match(line):
-            if inside:
-                inside = False
-                safe_length = len(output)
-            else:
-                output = output[:safe_length]
-                output.append("<redacted truncated private key>\n")
-                safe_length = len(output)
-        elif not inside:
-            output.append(line)
-    return "".join(output)
+def _diagnostic_enum(value, choices):
+    return value if isinstance(value, str) and value in choices else (None if value is None else "other")
 
-def _redact_pack_host_text(value):
-    """Keep diagnostics useful without retaining credential material."""
-    value = _redact_pack_host_private_key_blocks(value)
-    value = _PACK_HOST_URL_CREDENTIALS.sub(r"\1<redacted>@", value)
-    value = _PACK_HOST_BEARER.sub("Bearer <redacted>", value)
-    value = _PACK_HOST_SECRET_TEXT.sub(r"\1<redacted>", value)
-    return value
 
-def _bounded_pack_host_value(value, budget=None, depth=0):
-    """Return a small, redacted JSON-compatible diagnostic projection."""
-    budget = [PACK_HOST_DIAGNOSTIC_JSON_BUDGET] if budget is None else budget
-    if budget[0] <= 0:
-        return "<omitted: diagnostic budget exhausted>"
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        text = _redact_pack_host_text(value)
-        encoded = text.encode("utf-8", errors="replace")
-        allowed = min(PACK_HOST_DIAGNOSTIC_VALUE_BYTES, budget[0])
-        if len(encoded) > allowed:
-            text = encoded[:allowed].decode("utf-8", errors="ignore") + "<truncated>"
-        budget[0] -= min(len(encoded), allowed)
-        return text
-    if depth >= 4:
-        return "<omitted: nesting limit>"
-    if isinstance(value, list):
-        result = [_bounded_pack_host_value(item, budget, depth + 1) for item in value[:16]]
-        if len(value) > 16:
-            result.append(f"<omitted: {len(value) - 16} additional entries>")
-        return result
-    if isinstance(value, dict):
-        result = {}
-        for key in sorted(value, key=str)[:16]:
-            name = str(key)
-            if _PACK_HOST_SECRET_FIELD.search(name):
-                result[name] = "<redacted>"
-            else:
-                result[name] = _bounded_pack_host_value(value[key], budget, depth + 1)
-        if len(value) > 16:
-            result["<omitted>"] = f"{len(value) - 16} additional fields"
-        return result
-    return f"<unsupported {type(value).__name__}>"
+def _diagnostic_int(value):
+    # Keep JSON output bounded even for adversarial integers or booleans.
+    return value if type(value) is int and -(2**63) <= value < 2**63 else None
+
+
+def _diagnostic_identity(value):
+    # Digests permit equality checks without publishing arbitrary marker text.
+    if not isinstance(value, str) or not value or len(value) > 256:
+        return None
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _pack_host_marker_projection(value):
+    if not isinstance(value, dict):
+        return {"object": False}
+    result = {"object": True}
+    for name in ("runtime_instance_id", "process_birth_id", "runtime_service_launch_id"):
+        if name in value:
+            result[name + "_sha256"] = _diagnostic_identity(value[name])
+    for name in ("pid", "version", "runtime_epoch"):
+        if name in value:
+            result[name] = _diagnostic_int(value[name])
+    if "status" in value:
+        result["status"] = _diagnostic_enum(value["status"], {"ready", "failed", "starting"})
+    if "terminal" in value:
+        result["terminal"] = value["terminal"] if type(value["terminal"]) is bool else None
+    return result
+
 
 def _pack_host_path_kind(info):
     if stat.S_ISDIR(info.st_mode):
@@ -466,36 +419,14 @@ def _read_pack_host_file(path, *, limit, tail):
     return {"status": "read", "bytes": size, "truncated": tail and size > limit}, content, size
 
 def _capture_pack_host_log(path, logical_name, observation, search_root):
-    details, content, _size = _read_pack_host_file(
+    # Raw log content is intentionally not retained: credentials can appear in
+    # arbitrary formats, including inside otherwise ordinary-looking lines.
+    details, _content, _size = _read_pack_host_file(
         path, limit=PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES, tail=True,
     )
-    record = {"source": logical_name, "path": str(path), "search_root": search_root, **details}
-    if content is None:
-        return record
-    safe = _redact_pack_host_text(content.decode("utf-8", errors="replace")).encode("utf-8")
-    # Redaction can only reduce normal log lines, but preserve the hard cap if
-    # an unusual replacement expands an invalid byte sequence.
-    safe = safe[-PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES:]
-    evidence_name = f"pack-host-readiness-{observation}-{logical_name}"
-    try:
-        (EVIDENCE / evidence_name).write_bytes(safe)
-    except OSError as exc:
-        return {
-            "source": logical_name, "search_root": search_root,
-            "status": "error", "error": type(exc).__name__,
-        }
-    return {
-        "source": logical_name,
-        "search_root": search_root,
-        "status": "captured",
-        "evidence": evidence_name,
-        "source_bytes": details["bytes"],
-        "captured_bytes": len(safe),
-        "truncated": details["truncated"],
-        "redacted": safe != content,
-        "raw_tail_sha256": hashlib.sha256(content).hexdigest(),
-        "captured_sha256": hashlib.sha256(safe).hexdigest(),
-    }
+    return {"source": logical_name, "search_root": search_root, **details,
+            "content_retained": False}
+
 
 def _capture_pack_host_marker(path, logical_name):
     details, content, _size = _read_pack_host_file(
@@ -507,18 +438,9 @@ def _capture_pack_host_marker(path, logical_name):
     try:
         value = json.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        return {
-            "source": logical_name,
-            "status": "malformed",
-            "bytes": details["bytes"],
-            "content": _redact_pack_host_text(content.decode("utf-8", errors="replace")),
-        }
-    return {
-        "source": logical_name,
-        "status": "captured",
-        "bytes": details["bytes"],
-        "content": _bounded_pack_host_value(value),
-    }
+        return {"source": logical_name, "status": "malformed", "bytes": details["bytes"]}
+    return {"source": logical_name, "status": "captured", "bytes": details["bytes"],
+            "content": _pack_host_marker_projection(value)}
 
 def _pack_host_service(value):
     if not isinstance(value, dict) or not isinstance(value.get("services"), list):
@@ -528,28 +450,22 @@ def _pack_host_service(value):
 
 def _pack_host_health_observation(value):
     if not isinstance(value, dict):
-        error_path = EVIDENCE / "health-error.json"
-        details, content, _size = _read_pack_host_file(
-            error_path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False,
-        )
-        health = {"status": "unavailable"}
-        if content is not None:
-            try:
-                health["error"] = _bounded_pack_host_value(json.loads(content.decode("utf-8")))
-            except (UnicodeDecodeError, ValueError):
-                health["error"] = _redact_pack_host_text(content.decode("utf-8", errors="replace"))
-        elif details["status"] != "missing":
-            health["error"] = details
-        return health
+        return {"status": "unavailable"}
     service = _pack_host_service(value)
     health = {
-        "status": _bounded_pack_host_value(value.get("status")),
-        "runtime_instance_id": _bounded_pack_host_value(value.get("runtime_instance_id")),
-        "pack_host": {"status": "missing"} if service is None else {
-            name: _bounded_pack_host_value(service.get(name))
-            for name in ("name", "state", "last_exit", "restart_count", "reason") if name in service
-        },
+        "status": _diagnostic_enum(value.get("status"), {"ok", "error", "starting"}),
+        "runtime_instance_id_sha256": _diagnostic_identity(value.get("runtime_instance_id")),
+        "pack_host": {"status": "missing"},
     }
+    if service is not None:
+        health["pack_host"] = {
+            "name": "pack-host",
+            "state": _diagnostic_enum(service.get("state"), {"starting", "running", "restarting", "failed"}),
+            "last_exit": _diagnostic_int(service.get("last_exit")),
+            "restart_count": _diagnostic_int(service.get("restart_count")),
+            "reason": _diagnostic_enum(service.get("reason"),
+                                       {"exited", "readiness_timeout", "log_failed", "cleanup_failed", "launch_failed"}),
+        }
     return health
 
 def _load_pack_host_json(path):
@@ -566,29 +482,8 @@ def _load_pack_host_json(path):
         return {"status": "invalid_type", "type": type(value).__name__}, None
     return {"status": "read", "bytes": details["bytes"]}, value
 
-def _redacted_pack_host_argv(value):
-    if not isinstance(value, list):
-        return _bounded_pack_host_value(value)
-    result = []
-    redact_next = False
-    for raw in value[:16]:
-        text = str(raw)
-        if redact_next:
-            result.append("<redacted>")
-            redact_next = False
-            continue
-        flag, separator, _argument = text.partition("=")
-        if _PACK_HOST_SECRET_FIELD.search(flag.lstrip("-/")):
-            result.append(flag + "=<redacted>" if separator else flag)
-            redact_next = not separator
-        else:
-            result.append(_bounded_pack_host_value(text))
-    if len(value) > 16:
-        result.append(f"<omitted: {len(value) - 16} additional entries>")
-    return result
-
 def _pack_host_service_action_observation():
-    """Read only the safe fields needed to reproduce the installed service action."""
+    """Project only known service declaration facts; never retain argv or paths."""
     try:
         installed = version()
         profile_path = installed.get("profile") if isinstance(installed, dict) else None
@@ -600,31 +495,24 @@ def _pack_host_service_action_observation():
         declaration_path = profile.get("service_declaration")
         if not isinstance(declaration_path, str) or not declaration_path:
             return {"status": "unavailable", "stage": "profile", "error": "missing_declaration"}
-        declaration_details, declaration = _load_pack_host_json(Path(declaration_path))
+        details, declaration = _load_pack_host_json(Path(declaration_path))
         if declaration is None:
-            return {
-                "status": "unavailable", "stage": "service_declaration",
-                "source": declaration_details,
-            }
+            return {"status": "unavailable", "stage": "service_declaration", "source": details}
         service = _pack_host_service(declaration)
         if service is None:
             return {"status": "missing", "stage": "service_declaration"}
-        action = {
-            name: _bounded_pack_host_value(service.get(name))
-            for name in ("name", "restart", "ready") if name in service
-        }
-        if "argv" in service:
-            action["argv"] = _redacted_pack_host_argv(service["argv"])
-        return {
-            "status": "observed",
-            "action": action,
-            # Runtime redirects the supervised child's stderr into this same
-            # stdout stream; the bounded log capture below retains its tail.
-            "child_output": {
-                "stdout": "service-pack-host.log",
-                "stderr": "redirected_to_stdout",
-            },
-        }
+        argv = service.get("argv")
+        ready = service.get("ready")
+        return {"status": "observed", "action": {
+            "name": "pack-host",
+            "restart": _diagnostic_enum(service.get("restart"), {"always", "on-failure", "never"}),
+            "argv_is_list": isinstance(argv, list),
+            "argv_count": min(len(argv), 1000) if isinstance(argv, list) else None,
+            "generic_host_module": isinstance(argv, list) and "astrid.core.execution.generic_host" in argv,
+            "service_flag": isinstance(argv, list) and "--service" in argv,
+            "ready_file_expected": isinstance(ready, dict) and ready.get("file") == "generic-host.ready.json",
+            "ready_timeout_seconds": _diagnostic_int(ready.get("timeout_seconds")) if isinstance(ready, dict) else None,
+        }, "child_output": {"stdout": "service-pack-host.log", "stderr": "redirected_to_stdout"}}
     except (KeyError, OSError, TypeError, ValueError) as exc:
         return {"status": "unavailable", "stage": "version", "error": type(exc).__name__}
 
@@ -692,9 +580,14 @@ def capture_pack_host_readiness(health_value, accepted):
                         ("generic-host.ready.json", "generic-host.json", "discovery.json")],
             "logs": [_capture_pack_host_log(path, path.name, observation, selection)
                      for path, selection in sources],
-            "native_log_root": native or None,
         }
-        save(manifest.name, capture)
+        encoded = (json.dumps(capture, indent=2, ensure_ascii=True) + "\n").encode("utf-8")
+        if len(encoded) > PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES:
+            # Never stage an oversized or partial JSON document.
+            encoded = (json.dumps({"schema_version": 1, "observation": observation,
+                                   "status": "truncated", "reason": "manifest_size_limit",
+                                   "limit_bytes": PACK_HOST_DIAGNOSTIC_MANIFEST_BYTES}) + "\n").encode("utf-8")
+        manifest.write_bytes(encoded)
 
 
 def wait_for(label, probe, *, seconds=900):
