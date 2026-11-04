@@ -321,10 +321,37 @@
                     "required": {
                       "type": "boolean"
                     },
-                    "default": {}
+                    "default": {},
+                    "enum": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "$ref": "#/$defs/non_blank"
+                      }
+                    }
                   },
                   "required": [
                     "name"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "required": [
+                          "enum"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "type": {
+                            "const": "string"
+                          }
+                        }
+                      }
+                    }
                   ]
                 }
               },
@@ -472,6 +499,14 @@
             "type": "array",
             "items": {
               "type": "object"
+            }
+          },
+          "secrets": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z_][A-Z0-9_]*$"
             }
           }
         },

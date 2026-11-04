@@ -98,6 +98,9 @@ actions:
         - input: since
           flag: --since
           optional: true
+        - input: until
+          flag: --until
+          optional: true
         - input: channel
           flag: --channel
           optional: true
@@ -133,6 +136,10 @@ actions:
       type: string
       required: false
       description: ISO timestamp lower bound for created_at.
+    - name: until
+      type: string
+      required: false
+      description: Exclusive ISO timestamp upper bound for created_at.
     - name: channel
       type: string
       required: false
@@ -149,11 +156,11 @@ actions:
       description: Discord thread id (snowflake); searches messages in that thread only (index-backed
         message_filters surface).
     - name: limit
-      type: number
+      type: integer
       required: false
       description: Max results per page (default 20).
     - name: offset
-      type: number
+      type: integer
       required: false
       description: Skip this many ranked results; page through a query with --limit + --offset. The response
         carries total/has_more. The ranked pool is deterministic while the corpus is unchanged (page N
@@ -161,6 +168,9 @@ actions:
     - name: sort
       type: string
       required: false
+      enum:
+      - relevance
+      - recent
       description: 'relevance (default: score, then recency, then table+id) or recent (created_at desc,
         then score).'
     outputs:
@@ -222,15 +232,23 @@ actions:
         - '{id}'
         - --out
         - '{out}/item.json'
+        input_args:
+        - input: revision_id
+          flag: --revision-id
+          optional: true
     inputs:
     - name: kind
       type: string
       required: true
-      description: 'Item kind: message | resource | distillation.'
+      description: 'Item kind: message | resource | revision.'
     - name: id
       type: string
       required: true
       description: Decimal item id, kept as text so Discord snowflakes are lossless.
+    - name: revision_id
+      type: string
+      required: false
+      description: Exact resource revision id when retrieving a pinned revision.
     outputs:
     - name: item
       type: file
@@ -363,6 +381,75 @@ actions:
         - input: conditions
           flag: --conditions
           optional: true
+        - input: external_id
+          flag: --external-id
+          optional: true
+        - input: idempotency_token
+          flag: --idempotency-token
+          optional: true
+        - input: resource_id
+          flag: --resource-id
+          optional: true
+        - input: base_revision_id
+          flag: --base-revision-id
+          optional: true
+        - input: revision_id
+          flag: --revision-id
+          optional: true
+        - input: decision
+          flag: --decision
+          optional: true
+        - input: canonical
+          flag: --canonical
+          optional: true
+        - input: uncanonical
+          flag: --uncanonical
+          optional: true
+        - input: payload_file
+          flag: --payload-file
+          optional: true
+        - input: metadata_file
+          flag: --metadata-file
+          optional: true
+        - input: provenance_file
+          flag: --provenance-file
+          optional: true
+        - input: references_file
+          flag: --references-file
+          optional: true
+        - input: claim
+          flag: --claim
+          optional: true
+        - input: reported_result
+          flag: --reported-result
+          optional: true
+        - input: basis
+          flag: --basis
+          optional: true
+        - input: subjects_file
+          flag: --subjects-file
+          optional: true
+        - input: sources_file
+          flag: --sources-file
+          optional: true
+        - input: supersedes_evidence
+          flag: --supersedes-evidence
+          optional: true
+        - input: message_id
+          flag: --message-id
+          optional: true
+        - input: content
+          flag: --content
+          optional: true
+        - input: source_metadata_file
+          flag: --source-metadata-file
+          optional: true
+        - input: original_author_id
+          flag: --original-author-id
+          optional: true
+        - input: original_author_name
+          flag: --original-author-name
+          optional: true
         - input: from_file
           flag: --from-file
           optional: true
@@ -409,6 +496,105 @@ actions:
       type: string
       required: false
       description: conditions
+    - name: external_id
+      type: string
+      required: false
+      description: Stable source-side identity for a resource.
+    - name: idempotency_token
+      type: string
+      required: false
+      description: Caller-scoped retry token required for knowledge-model writes.
+    - name: resource_id
+      type: string
+      required: false
+      description: Stable resource id for revision and canonical operations.
+    - name: base_revision_id
+      type: string
+      required: false
+      description: Accepted head used as the revision base.
+    - name: revision_id
+      type: string
+      required: false
+      description: Revision id to decide.
+    - name: decision
+      type: string
+      required: false
+      enum:
+      - accepted
+      - rejected
+      - withdrawn
+      description: Revision decision.
+    - name: canonical
+      type: boolean
+      required: false
+      description: Mark a guide as canonical.
+    - name: uncanonical
+      type: boolean
+      required: false
+      description: Remove the canonical-guide marker.
+    - name: payload_file
+      type: string
+      required: false
+      description: JSON file containing the native workflow payload.
+    - name: metadata_file
+      type: string
+      required: false
+      description: JSON file containing revision metadata.
+    - name: provenance_file
+      type: string
+      required: false
+      description: JSON file containing revision provenance.
+    - name: references_file
+      type: string
+      required: false
+      description: JSON array of typed references.
+    - name: claim
+      type: string
+      required: false
+      description: Evidence claim.
+    - name: reported_result
+      type: string
+      required: false
+      description: Evidence reported result.
+    - name: basis
+      type: string
+      required: false
+      enum:
+      - reported
+      - observed
+      description: Evidence basis.
+    - name: subjects_file
+      type: string
+      required: false
+      description: JSON array of exact evidence subjects.
+    - name: sources_file
+      type: string
+      required: false
+      description: JSON array of evidence sources or ordinary URLs.
+    - name: supersedes_evidence
+      type: string
+      required: false
+      description: Evidence id being corrected or superseded.
+    - name: message_id
+      type: string
+      required: false
+      description: Source message id for a trusted snapshot.
+    - name: content
+      type: string
+      required: false
+      description: Observed message content.
+    - name: source_metadata_file
+      type: string
+      required: false
+      description: JSON object of observed message metadata.
+    - name: original_author_id
+      type: string
+      required: false
+      description: Original message author id.
+    - name: original_author_name
+      type: string
+      required: false
+      description: Original message author name.
     - name: from_file
       type: string
       required: false

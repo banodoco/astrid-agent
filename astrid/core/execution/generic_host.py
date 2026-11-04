@@ -6844,20 +6844,40 @@ class GenericPackHost:
                 records[record.id] = record
         # Use the SDK's exact static projection, preserving host-configured
         # source authority even when shared discovery also sees managed/env roots.
+        from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
         from astrid.core.pack.discovery import discover_pack_metadata
         from astrid.sdk.actions import action_executor_definition
 
+        core_hivemind_root = (PACKAGE_ROOT / "core" / "hivemind").resolve()
         discovered_packs = discover_pack_metadata(
-            project_root=self.pack_roots[0] if self.pack_roots else Path.cwd(),
+            project_root=self.pack_roots[0] if self.pack_roots else REPO_ROOT,
             extra_pack_roots=tuple(str(root) for root in self.pack_roots),
         )
         from astrid.core.execution.executor.actions import action_is_local_orchestrator
+
+        # An explicitly configured pack with the same ID is a complete
+        # override of the bundled core pack, preserving the caller's source
+        # authority without mixing capabilities from different implementations.
+        explicit_pack_ids = {
+            record.id.split(".", 1)[0]
+            for record in records.values()
+            if any(
+                record.source_root.resolve() == root
+                or record.source_root.resolve().is_relative_to(root)
+                for root in self.pack_roots
+            )
+        }
 
         local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
-            if not any(pack_root == root or pack_root.is_relative_to(root) for root in self.pack_roots):
+            if pack_root == core_hivemind_root and pack.id in explicit_pack_ids:
+                continue
+            if pack_root != core_hivemind_root and not any(
+                pack_root == root or pack_root.is_relative_to(root)
+                for root in self.pack_roots
+            ):
                 continue
             for local_id, declaration in pack.actions.items():
                 try:
@@ -6878,7 +6898,9 @@ class GenericPackHost:
                     )
                 except (ExecutorValidationError, OSError, ValueError):
                     continue
-                records[record.id] = record
+                existing = records.get(record.id)
+                if existing is None or existing.source_root.resolve() != core_hivemind_root:
+                    records[record.id] = record
         if self.matrix:
             discovered = set(records)
             expected = set(self.matrix)
