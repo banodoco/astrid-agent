@@ -684,26 +684,34 @@ def capture_windows_schema_acl(evidence: Path, run_root: Path) -> None:
     schemas = sorted(versions.glob(pattern))
     with log.open("w", encoding="utf-8") as stream:
         stream.write(f"Schema candidates: {len(schemas)}\n")
+        def capture(command: list[str], env: dict[str, str] | None = None) -> None:
+            stream.write(f"\n$ {command!r}\n")
+            stream.flush()
+            try:
+                result = subprocess.run(command, env=env, stdout=stream,
+                                        stderr=subprocess.STDOUT, timeout=30, check=False)
+                stream.write(f"exit: {result.returncode}\n")
+            except (OSError, subprocess.SubprocessError) as exc:
+                stream.write(f"capture error: {exc}\n")
+
+        capture(["whoami", "/user"])
+        capture(["whoami", "/groups"])
         for schema in schemas:
             for path in (schema, *schema.parents):
                 stream.write(f"\n--- {path} ---\n")
-                stream.flush()
-                try:
-                    env = os.environ.copy()
-                    env["ASTRID_ACL_DIAGNOSTIC_PATH"] = str(path)
-                    owner = subprocess.run(
-                        ["powershell.exe", "-NoProfile", "-Command",
-                         "(Get-Acl -LiteralPath $env:ASTRID_ACL_DIAGNOSTIC_PATH).Owner"],
-                        env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=30, check=False)
-                    stream.write(f"owner exit: {owner.returncode}\n")
-                    stream.flush()
-                    result = subprocess.run(["icacls", str(path)], stdout=stream,
-                                            stderr=subprocess.STDOUT, timeout=30, check=False)
-                    stream.write(f"icacls exit: {result.returncode}\n")
-                except (OSError, subprocess.SubprocessError) as exc:
-                    stream.write(f"icacls error: {exc}\n")
+                env = os.environ.copy()
+                env["ASTRID_ACL_DIAGNOSTIC_PARENT"] = str(path.parent)
+                # Listing the parent gives the owner of this entry, including directories.
+                capture(["cmd.exe", "/d", "/c", 'dir /q /a "%ASTRID_ACL_DIAGNOSTIC_PARENT%"'], env)
+                capture(["icacls", str(path)])
+                saved_acl = evidence / "schema-acl-saved.txt"
+                capture(["icacls", str(path), "/save", str(saved_acl)])
+                if saved_acl.exists():
+                    stream.write(saved_acl.read_text(encoding="utf-16", errors="replace"))
+                    saved_acl.unlink()
                 if path == run_root:
                     break
+
 
 
 def _under(path: Path, parent: Path) -> bool:
