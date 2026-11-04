@@ -649,24 +649,26 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     if workspace_owners:
         write_json(destination / "runtime-owner-workspace.json", workspace_owners)
 
-    # The existing hosted boundary accepts this legacy service-log filename
-    # pattern. Flatten the seed directories into it without truncating bytes.
-    # Numbering follows sorted relative paths so distinct invocations survive.
+    # The hosted boundary accepts this legacy filename pattern. Keep only a
+    # minimal exit receipt: requests, argv, and process streams can contain
+    # user data, paths, or credentials. Numbering preserves distinct calls.
     seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
                        if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
     for index, directory in enumerate(seed_dirs, 1):
         if directory.is_symlink() or not directory.is_dir():
             continue
-        for kind in ("input", "command", "stdout", "stderr", "exit"):
-            suffix = "json" if kind in {"input", "command", "exit"} else "txt"
-            source = directory / f"{kind}.{suffix}"
-            if source.is_file() and not source.is_symlink():
-                target = destination / f"runtime-service-service-seed-{index:04d}-{kind}.log"
-                try:
-                    shutil.copyfile(source, target)
-                except Exception as exc:
-                    print(f"Journey seed evidence copy ({phase}) failed for {source}: "
-                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        source = directory / "exit.json"
+        if not source.is_file() or source.is_symlink():
+            continue
+        target = destination / f"runtime-service-service-seed-{index:04d}-exit.log"
+        try:
+            value = json.loads(source.read_text(encoding="utf-8"))
+            code = value.get("exit_code") if isinstance(value, dict) else None
+            # bool is an int subclass, but is not a process exit code.
+            receipt = {"exit_code": code if type(code) is int else None}
+            write_json(target, receipt)
+        except (OSError, UnicodeError, ValueError, TypeError):
+            pass
 
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:

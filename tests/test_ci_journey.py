@@ -1130,7 +1130,7 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
         "import json, pathlib, sys\n"
         "payload = pathlib.Path(sys.argv[sys.argv.index('--request') + 1]).read_bytes()\n"
         "sys.stdout.buffer.write(json.dumps({'payload': json.loads(payload)}).encode() + b'\\n')\n"
-        "sys.stderr.buffer.write(b'diagnostic-' + b'x' * 1048600)\n"
+        "sys.stderr.buffer.write(b'credential-secret diagnostic-' + b'x' * 1048600)\n"
         f"sys.exit({exit_code})\n", encoding="utf-8")
     monkeypatch.setattr(journey, "ROOT", script.parent.parent)
     monkeypatch.setattr(journey, "workspace_root", lambda unused: data / "realm")
@@ -1162,14 +1162,10 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     assert not (evidence / "release0-api-seed").exists()
     staged = run_root / "evidence-upload" / "before-cleanup"
     prefix = "runtime-service-service-seed-0001-"
-    request = (staged / (prefix + "input.log")).read_bytes()
-    assert request == (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
-    command = json.loads((staged / (prefix + "command.log")).read_bytes())
-    assert command[:4] == [sys.executable, "-I", str(script), "seed"]
-    assert command[-2:] == ["--request", str(evidence / "release0-api-seed" / "seed-request.json")]
-    assert (staged / (prefix + "stdout.log")).read_bytes() == json.dumps({"payload": json.loads(request)}).encode() + b"\n"
-    assert (staged / (prefix + "stderr.log")).read_bytes() == b"diagnostic-" + b"x" * 1048600
+    assert not any((staged / (prefix + kind + ".log")).exists()
+                   for kind in ("input", "command", "stdout", "stderr"))
     assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
+    assert all(b"credential-secret" not in path.read_bytes() for path in staged.iterdir())
 
 
 def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
@@ -1191,8 +1187,8 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
     staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
     for index, generation in enumerate(("one", "two"), 1):
         prefix = f"runtime-service-service-seed-{index:04d}-"
-        assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
-        assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
+        assert not (staged / (prefix + "input.log")).exists()
+        assert not (staged / (prefix + "stdout.log")).exists()
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
 
 
