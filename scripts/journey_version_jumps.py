@@ -13,6 +13,7 @@ import platform
 import re
 import sys
 import time
+import traceback
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -519,9 +520,11 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
     }
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
+    stage = "release0-admission"
     try:
         fixture, release0_manifest, fixture_receipt = release0_admission(args)
         result["release0_fixture"] = fixture_receipt
+        stage = "candidate-validation"
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
@@ -532,52 +535,68 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
                                          "artifacts": candidate["artifacts"]}
         result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
                              "runtime": manifest["runtime"]}
+        stage = "sentinel-before-bootstrap"
         before_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["before_lifecycle"] = before_sentinel
         if not before_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
+        stage = "release0-bootstrap"
         bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
+        stage = "release0-start"
         start_direct_runtime(evidence / "release0")
         journey.wait_ready(data)
+        stage = "release0-installation"
         old_path, old_data, old = journey.installation(root, data)
         if old_data != data or installed_release(old) != 0:
             # Release 0 predates identity-bearing version records; only its
             # frozen manifest can attest the old release identity.
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
+        stage = "release0-service-ownership"
         old_service = journey.assert_direct_service_ownership(root, data)
+        stage = "release0-owner-selection"
         journey.assert_release0_runtime(data, old_path, evidence)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
+        stage = "release0-preseed-checkpoint"
         write_diagnostic_release0_preconditions(
             args, root, data, fixture_receipt=fixture_receipt,
             release0_manifest=release0_manifest, target_manifest=manifest,
             candidate=candidate, version_path=old_path, version=old,
         )
         baseline = evidence / "release0-api-seed"
+        stage = "release0-observe"
         journey.verify("observe", old_path, data, baseline)
         project = "tst-m4-3b-release0"
+        stage = "release0-api-seed"
         keys = direct_workspace(root, old, data, baseline, "seed", {
             "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        stage = "release0-task"
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
+        stage = "release0-api-snapshot"
         before = direct_workspace(root, old, data, baseline, "snapshot", keys)
         # The helper temporarily stops the service, so identify the actual R0
         # owner that the update must replace after the last offline observation.
+        stage = "release0-update-identity"
         old_health = journey.healthy(data)
         old_pid = int(old_health["pid"])
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
+        stage = "release1-bootstrap"
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
+        stage = "release1-start"
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
+        stage = "release1-installation"
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
         selected = selected_candidate(manifest, version, old_tuple)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
+        stage = "release1-service-health"
         new_service = journey.assert_direct_service_ownership(root, data)
         new_health = journey.healthy(data)
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
@@ -593,20 +612,27 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         }
         result["checks"].update(release="pass", service="pass", health="pass")
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        stage = "release1-verify-update"
         journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
+        stage = "release1-verify-install"
         journey.verify("install", version_path, data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+        stage = "release1-api-snapshot"
         after = direct_workspace(root, version, data, evidence / "release1-api-observe", "snapshot", keys)
+        stage = "release1-semantic-data"
         assert_preserved(before, after)
         before_sha, after_sha = semantic_digest(before), semantic_digest(after)
         if before_sha != after_sha:
             raise RuntimeError("Release-1 semantic snapshot digest differs after exact preservation")
         result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
         result["checks"]["semantic_data"] = "pass"
+        stage = "release1-task"
         task_after_update(version, evidence / "release1-working-task", project)
         result["checks"]["task_settled"] = "pass"
+        stage = "release1-owner-selection"
         journey.assert_one_runtime(data)
         result["checks"]["one_runtime"] = "pass"
+        stage = "sentinel-settlement"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
         if not settled_sentinel["alive"]:
@@ -614,7 +640,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}",
+                      failure_stage=stage, error_traceback=traceback.format_exc())
+        print(f"Journey failed in {stage}:\n{result['error_traceback']}", file=sys.stderr, flush=True)
         raise
     finally:
         journey.write_json(result_path, result)

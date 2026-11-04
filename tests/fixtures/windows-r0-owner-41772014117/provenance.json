@@ -1,0 +1,21 @@
+{
+  "run_id": 41772014117,
+  "url": "https://github.com/banodoco/astrid-agent/actions/runs/41772014117",
+  "agent_sha": "813bde5648ffd86d64d288b7a4ba58cdc36377d5",
+  "phase": "before-cleanup",
+  "native_observations": "Recorded by the actual hosted query-only GetProcessTimes helper; no supplied identities.",
+  "files": {
+    "runtime-owner-selection.json": {
+      "bytes": 38137,
+      "sha256": "2a2388f91c5450f48110c9db296e2ba9a24fdc0b00b2cb4fd66b116c9b6f79de"
+    },
+    "runtime-owner-selection-context.json": {
+      "bytes": 1656,
+      "sha256": "202671e262678257ef0f842280dcfa7e16a09466e8afbc7d96d0d86e036022da"
+    },
+    "unit-file-before-cleanup.txt": {
+      "bytes": 5425,
+      "sha256": "ac94fbb233fcd4a82ed72d65fcf6430bc78479e7f6e221c157ceaf1fa5b81d86"
+    }
+  }
+}
