@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 from urllib.parse import urlsplit
@@ -135,7 +136,7 @@ class _TimelineHttp:
         return self._response(response)
 
 
-def _open(outbox, *, timeout=0.04):
+def _open(outbox, *, timeout=15.0):
     http = _TimelineHttp(outbox)
     generated = GeneratedWorkspaceClient("http://ce2.invalid", transport=http)
     transport = WorkspaceClient.__new__(WorkspaceClient)
@@ -147,6 +148,26 @@ def _open(outbox, *, timeout=0.04):
     return http, generated, client, timeline
 
 
+@contextmanager
+def _known_refusal_clock(monkeypatch, timeline):
+    """Let real HTTP refusals arrive; virtualize only the retry backoff."""
+    import time as real_time
+    from types import SimpleNamespace
+
+    import astrid.sdk.timeline.sync as sync_module
+
+    virtual_offset = [0.0]
+    deadline_clock = SimpleNamespace(
+        monotonic=lambda: real_time.monotonic() + virtual_offset[0],
+        sleep=lambda delay: virtual_offset.__setitem__(0, virtual_offset[0] + delay),
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(timeline.session, "user_editing_timeout", 15.0)
+        scoped.setattr(timeline.session, "user_editing_interval", 10.0)
+        scoped.setattr(sync_module, "time", deadline_clock)
+        yield
+
+
 def _lease(generated, *, release=False):
     _, _, payload = generated._request(
         "DELETE" if release else "PUT", "/v1/projects/p/timelines/t/editing",
@@ -155,14 +176,15 @@ def _lease(generated, *, release=False):
     assert generated._json(payload)["data"]["active"] is not release
 
 
-def test_ce2_pending_user_editing_refusal_is_retryable_via_tl_retry(tmp_path):
+def test_ce2_pending_user_editing_refusal_is_retryable_via_tl_retry(tmp_path, monkeypatch):
     for contradict in (False, True):
         path = tmp_path / f"pending-{contradict}.json"
         http, generated, client, timeline = _open(path)
         commands = [capture_move(timeline.bundle, "parent/clip:a", 5)]
         _lease(generated)
-        with pytest.raises(CommitRefused) as caught:
-            timeline.commit(commands, label="CE-2 captured move", key="ce2-pending", reads=[])
+        with _known_refusal_clock(monkeypatch, timeline):
+            with pytest.raises(CommitRefused) as caught:
+                timeline.commit(commands, label="CE-2 captured move", key="ce2-pending", reads=[])
         pending_id = caught.value.pending_id
         assert pending_id
         assert caught.value.detail == (
