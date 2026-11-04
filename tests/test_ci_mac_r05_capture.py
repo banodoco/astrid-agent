@@ -37,7 +37,7 @@ def test_host_census_rejects_exact_runtime_match_but_not_unrelated():
 def test_export_copies_only_capture_and_recomputes_recursive_hashes(tmp_path):
     home = tmp_path / 'home'
     root = tmp_path / 'fresh'
-    data = root / 'run/capture-upload/nested'
+    data = root / 'evidence/nested'
     data.mkdir(parents=True)
     (data / 'receipt.json').write_text(json.dumps({'path': str(home / 'secret'), 'value': 'ok'}))
     (root / 'private-logs').mkdir()
@@ -116,7 +116,7 @@ def test_global_guard_is_rechecked_just_before_driver():
     import inspect
     source = inspect.getsource(capture.main)
     assert source.count('guard_host(home)') == 2
-    assert source.rindex('guard_host(home)') < source.index('argv = [str(py)')
+    assert source.rindex('guard_host(home)') < source.index('inner.write_text(')
     assert 'host_owners_exist()' in inspect.getsource(capture.guard_host)
     assert 'port_free()' in inspect.getsource(capture.guard_host)
 
@@ -128,3 +128,18 @@ def test_guard_checks_lsof_before_launchd_and_refuses_unknown(monkeypatch, tmp_p
     with pytest.raises(RuntimeError, match='port'):
         capture.guard_host(tmp_path)
     assert events == ['lsof']
+
+
+def test_stopped_owner_diagnostic_binds_sources_and_guards_before_mutation():
+    import inspect
+    source = inspect.getsource(capture.main)
+    inner = (Path(__file__).parents[1] / 'scripts/ci_mac_r1fix_inner.py').read_text()
+    assert repr(inner) in source
+    assert inner.index("done('candidate-manifest-pins')") < inner.index('v.bootstrap_release0(')
+    assert inner.index("done('r0-stopped-and-lock-free')") < inner.index("j.run(['/bin/sh','public/install'")
+    assert "selection.get('program_root')!=str(root)" in inner
+    assert 'fcntl.LOCK_EX|fcntl.LOCK_NB' in inner
+    assert "loaded_path.group(1)!=str(plist)" in inner
+    assert "'--manifest','public/install-manifest.json'" in inner
+    assert capture.REFS['agent'][1] == '30761f4a3916ce6e5822669dd5865f65a4e6654a'
+    assert capture.REFS['runtime'][1] == 'de98a5aa44768419656bfeffcdaa1b2eda9e9845'

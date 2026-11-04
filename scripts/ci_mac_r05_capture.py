@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Truthful, isolated R0-only capture; never invokes an R1 update."""
+"""Run a stopped-owner R0-to-R1 test in a runner-owned sandbox."""
 import hashlib
 import json
 import os
@@ -15,9 +15,13 @@ import time
 from pathlib import Path
 
 UID = 503
-REFS = {"driver": ("astrid-agent", "332b478afb459b0f9290fb5f73aefbd8169d7fd4"),
-        "release0-agent": ("astrid-agent", "3204bb00135bec8ee2d2d3fb21eed5abfceca649"),
-        "release0-runtime": ("astrid-runtime", "6d53a19070faf63fc15ae1f81417722edc2c8a5f")}
+REFS = {"driver": ("astrid-agent", "997d8c3d95971170b812b8c415fbbf5c1656edd0"),
+        "agent": ("astrid-agent", "30761f4a3916ce6e5822669dd5865f65a4e6654a"),
+        "runtime": ("astrid-runtime", "de98a5aa44768419656bfeffcdaa1b2eda9e9845"),
+        "int-app": ("astrid-app", "878c28df7a6c80fa9aaa6540c5fccad95473e7c1"),
+        "candidate-app": ("astrid-app", "37ac4d709e9bb211f88b8df6520a0d0e2de0228e"),
+        "r0-launcher": ("astrid-pinokio", "bbba620e3d89eeff8021417f365e6ea584203105")}
+
 
 
 def owner_match(command):
@@ -28,7 +32,7 @@ def owner_match(command):
 
 
 def host_owners_exist():
-    result = subprocess.run(["/bin/ps", "-ww", "-axo", "pid=,command="], capture_output=True,
+    result = subprocess.run(["/bin/ps", "-ww", "-u", str(UID), "-o", "pid=,command="], capture_output=True,
                             text=True, timeout=20, check=True)
     records = []
     for line in result.stdout.splitlines():
@@ -61,6 +65,7 @@ def guard_host(home):
     plist = home / "Library/LaunchAgents/haus.astrid.runtime.plist"
     if plist.exists() or plist.is_symlink():
         raise RuntimeError("Runner Runtime plist already exists")
+    
     if host_owners_exist():
         raise RuntimeError("Host has existing Runtime owner; no installation attempted")
     if shutil.disk_usage(home).free < 10_000_000_000:
@@ -142,19 +147,24 @@ def redact(data, home, root):
 
 
 def export_capture(root, home, output, status):
-    original = root / "run/capture-upload" if root is not None else None
+    original = root / "evidence" if root is not None else None
     source_rows = []
     if original is not None and original.is_dir() and not original.is_symlink():
         for source in sorted(original.rglob("*")):
             if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(original): continue
             name = source.relative_to(original)
             if name.name == "SHA256SUMS": continue
-            if source.stat().st_size > 16_000_000: raise RuntimeError("Capture exceeds safe export limit")
+            if source.stat().st_size > 16_000_000: raise RuntimeError("Evidence exceeds safe export limit")
             data = source.read_bytes()
             dest = output / "capture-upload" / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(redact(data, home, root))
             source_rows.append(hashlib.sha256(data).hexdigest() + "  " + (Path("capture-upload") / name).as_posix())
+    if root is not None:
+        private_log = root / "private-logs/capture-private.log"
+        if private_log.is_file() and not private_log.is_symlink():
+            data = private_log.read_bytes()[-1_000_000:]
+            (output / "driver.log").write_bytes(redact(data, home, root))
     (output / "SOURCE-SHA256SUMS").write_text("\n".join(source_rows) + ("\n" if source_rows else ""))
     (output / "custody.json").write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
     rows=[]
@@ -181,7 +191,11 @@ def main():
     try:
         guard_host(home)
         # Do not leave a task root behind when host preflight refuses.
-        root = Path(tempfile.mkdtemp(prefix="astrid-r0-capture-src.", dir="/private/tmp"))
+        preserve = home / ".astrid-r1fix-stopped"
+        preserve.mkdir(mode=0o700, exist_ok=True)
+        if preserve.is_symlink() or preserve.resolve() != preserve or preserve.stat().st_uid != UID or stat.S_IMODE(preserve.stat().st_mode) != 0o700:
+            raise RuntimeError("Fresh capture root is unsafe")
+        root = Path(tempfile.mkdtemp(prefix="task.", dir=preserve))
         if root.is_symlink() or root.resolve() != root or root.stat().st_uid != UID or stat.S_IMODE(root.stat().st_mode) != 0o700:
             raise RuntimeError("Fresh capture root is unsafe")
         pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
@@ -211,18 +225,17 @@ def main():
         status["stages"]["fixture-check"] = "pass"
         # Recheck service, global owner census and fixed port immediately before execution.
         guard_host(home)
-        argv = [str(py), "-u", str(root / "driver/scripts/ci_journey.py"), "--shared-executor", "authentic-r0-capture",
-                "--run-root", str(root / "run"), "--root", str(root / "run/program"), "--data-root", str(root / "run/data"),
-                "--shell", "sh", "--fixture", str(fixture), "--release0-agent-checkout", str(root / "release0-agent"),
-                "--release0-runtime-checkout", str(root / "release0-runtime")]
-        status["inner"] = run_process(argv, root, env, logs / "capture-private.log", home, is_driver=True)
-        status["status"] = "capture-exited"
-        receipt = root / "run/capture-upload/capture-receipt.json"
+        inner = root / "diagnostic.py"
+        inner.write_text('import fcntl, hashlib, json, os, plistlib, re, subprocess, sys, time, traceback\nfrom pathlib import Path\nbase=Path(sys.argv[1]); driver=base/\'driver\'; app=base/\'candidate-app\'; run=base/\'run\'; data=run/\'data\'; home=run/\'home\'; root=home/\'.local/share/astrid\'; evidence=base/\'evidence\'; evidence.mkdir()\nsys.path.insert(0,str(driver/\'scripts\'))\nimport ci_journey as j\nimport journey_version_jumps as v\ndef runner_owners(data):\n p=subprocess.run([\'/bin/ps\',\'-ww\',\'-u\',str(os.getuid()),\'-o\',\'pid=,command=\'],capture_output=True,text=True,timeout=20,check=True)\n rows=[]\n for line in p.stdout.splitlines():\n  match=re.match(r\'^\\s*(\\d+)\\s+(.*)$\',line)\n  if match: rows.append([int(match.group(1)),match.group(2)])\n  elif rows: rows[-1][1]+=\'\\n\'+line\n return [pid for pid,cmd in rows if j._runtime_owner_command(cmd)]\nj.runtime_processes=runner_owners\nstatus={\'stages\':{},\'outcome\':\'not-run\',\'cleanup\':\'unverified\'}\ndef done(name):\n status[\'stages\'][name]=\'pass\'; print(\'STAGE \'+name+\' pass\',flush=True)\ndef save(): (evidence/\'result.json\').write_text(json.dumps(status,indent=2,sort_keys=True)+\'\\n\')\ndef prove_owned():\n service=j.assert_direct_service_ownership(root,data)\n plist=Path(service[\'service_path\']); spec=plistlib.loads(plist.read_bytes()); args=spec.get(\'ProgramArguments\') or []\n if not isinstance(args,list) or not any(str(root) in str(x) for x in args) or not any(str(data) in str(x) for x in args): raise RuntimeError(\'LaunchAgent program or data root mismatch\')\n p=subprocess.run([\'/bin/launchctl\',\'print\',f\'gui/{os.getuid()}/haus.astrid.runtime\'],capture_output=True,text=True,timeout=30,check=True)\n loaded_path=re.search(r\'(?m)^\\s*path\\s*=\\s*(.+?)\\s*$\',p.stdout)\n if loaded_path is None or loaded_path.group(1)!=str(plist): raise RuntimeError(\'Loaded LaunchAgent plist mismatch\')\n health=j.healthy(data); pid=int(health[\'pid\']); birth=j.process_birth(pid)\n if not birth or not re.search(r\'(?m)^\\s*pid\\s*=\\s*\'+str(pid)+r\'\\s*$\',p.stdout): raise RuntimeError(\'Loaded service PID differs from healthy owner\')\n if j.runtime_processes(data)!=[pid]: raise RuntimeError(\'Runner owner census differs\')\n return pid,birth,plist\n\ndef stop_owned():\n pid,birth,plist=prove_owned(); realm=j.workspace_root(data)\n j.run([\'/bin/launchctl\',\'bootout\',f\'gui/{os.getuid()}/haus.astrid.runtime\'],evidence/\'stop.log\',timeout=120)\n deadline=time.monotonic()+120\n while j.process_birth(pid)==birth:\n  if time.monotonic()>deadline: raise RuntimeError(\'Stopped owner did not exit\')\n  time.sleep(1)\n lock=realm/\'owner.lock\'\n if lock.is_symlink() or not lock.is_file() or not lock.resolve().is_relative_to(data): raise RuntimeError(\'Realm owner lock identity not proven\')\n fd=os.open(lock,os.O_RDWR|os.O_NOFOLLOW)\n try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); fcntl.flock(fd,fcntl.LOCK_UN)\n finally: os.close(fd)\n return realm\n\ntry:\n manifest=app/\'public/install-manifest.json\'; raw=manifest.read_bytes(); value=json.loads(raw)\n if hashlib.sha256(raw).hexdigest()!=\'3b49b1f930b3ee71683cb3b0ec462ebae6dea717434297446ddadb60c17226b1\' or value[\'agent\'][\'sha\']!=\'30761f4a3916ce6e5822669dd5865f65a4e6654a\' or value[\'runtime\'][\'sha\']!=\'de98a5aa44768419656bfeffcdaa1b2eda9e9845\': raise RuntimeError(\'Candidate manifest mismatch\')\n done(\'candidate-manifest-pins\')\n fixture, oldmanifest, receipt=v.verified_release0_fixture(driver/\'tests/fixtures/release0\'); done(\'r0-fixture-verification\')\n with j.isolated_environment(run,root,data):\n  v.bootstrap_release0(fixture,oldmanifest,\'sh\',evidence/\'release0\',root,data); done(\'r0-install\')\n  j.wait_ready(data); oldpath,_,old=j.installation(root,data)\n  if v.installed_release(old)!=0: raise RuntimeError(\'Installed release is not R0\')\n  prove_owned(); done(\'r0-service-identity\')\n  j.verify(\'observe\',oldpath,data,evidence/\'seed\'); done(\'r0-observe\')\n  keys=v.direct_workspace(root,old,data,evidence/\'seed\',\'seed\',{\'project\':\'r1fix-stopped-workspace\',\'generation\':\'release0\',\'task_id\':None,\'create_project\':True}); done(\'seed\')\n  prove_owned(); before=v.direct_workspace(root,old,data,evidence/\'snapshot\',\'snapshot\',keys); done(\'snapshot-before\')\n  selection=json.loads((root.parent/\'astrid-install.json\').read_text())\n  if selection.get(\'owner\')!=\'haus.astrid.runtime\' or selection.get(\'program_root\')!=str(root) or selection.get(\'data_root\')!=str(data): raise RuntimeError(\'Selection does not identify this R0\')\n  realm=stop_owned(); done(\'r0-stopped-and-lock-free\')\n  if hashlib.sha256(manifest.read_bytes()).hexdigest()!=\'3b49b1f930b3ee71683cb3b0ec462ebae6dea717434297446ddadb60c17226b1\': raise RuntimeError(\'Candidate changed before update\')\n  previous=os.getcwd()\n  try:\n   os.chdir(app); j.run([\'/bin/sh\',\'public/install\',\'--manifest\',\'public/install-manifest.json\'],evidence/\'update-bootstrap.log\',env=dict(os.environ),timeout=3600)\n  finally: os.chdir(previous)\n  done(\'candidate-command\')\n  j.wait_ready(data); path,_,new=j.installation(root,data); actual=j.read_json(Path(new[\'root\'])/\'manifest.json\')\n  if any(actual.get(k)!=value.get(k) for k in (\'agent\',\'runtime\')): raise RuntimeError(\'Installed manifest pins differ\')\n  if v.installed_release(new)!=1: raise RuntimeError(\'Installed release is not R1\')\n  prove_owned(); done(\'r1-service-and-pins\')\n  j.verify(\'update\',path,data,evidence/\'verification\',before=evidence/\'seed/verify-observe.json\'); done(\'r1-update-verification\')\n  j.verify(\'install\',path,data,evidence/\'verification\'); done(\'r1-install-verification\')\n  after=v.direct_workspace(root,new,data,evidence/\'after\',\'snapshot\',keys); v.assert_preserved(before,after); done(\'workspace-survives\')\n  status[\'outcome\']=\'pass\'\nexcept Exception as exc:\n status[\'outcome\']=\'failed\'; status[\'error_type\']=type(exc).__name__; status[\'error\']=str(exc); traceback.print_exc()\nfinally:\n try:\n  state=subprocess.run([\'/bin/launchctl\',\'print\',f\'gui/{os.getuid()}/haus.astrid.runtime\'],capture_output=True,text=True,timeout=20)\n  if state.returncode == 0:\n   with j.isolated_environment(run,root,data): stop_owned()\n   state=subprocess.run([\'/bin/launchctl\',\'print\',f\'gui/{os.getuid()}/haus.astrid.runtime\'],capture_output=True,text=True,timeout=20)\n  missing=\'Could not find service \\"haus.astrid.runtime\\" in domain for user gui: \'+str(os.getuid())\n  if state.returncode!=113 or state.stderr.strip().replace(\'\\r\\n\',\'\\n\') not in (missing,\'Bad request.\\n\'+missing): raise RuntimeError(\'Service absence unverified\')\n  if runner_owners(data): raise RuntimeError(\'Runner Runtime owner still present\')\n  status[\'cleanup\']=\'owned service stopped; workspace retained\'\n except Exception as exc: status[\'cleanup\']=\'unverified\'; status[\'cleanup_error\']=str(exc)\n log=home/\'Library/Logs/Astrid Runtime/install.log\'\n if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(home):\n  (evidence/\'install-log-tail.txt\').write_bytes(log.read_bytes()[-100000:])\n save()\n')
+        env.pop("RUNNER_TEMP", None)
+        env["ASTRID_CI_EXPECTED_RUNNER"] = "local"
+        status["inner"] = run_process([str(py), "-u", str(inner), str(root)], root, env, logs / "capture-private.log", home, is_driver=True)
+        status["status"] = "diagnostic-exited"
+        receipt = root / "evidence/result.json"
         if receipt.is_file() and not receipt.is_symlink():
             value = json.loads(receipt.read_text())
-            status["receipt"] = {"status": value.get("status"), "runner_image": (value.get("runner") or {}).get("runner_image"),
-                                 "cleanup": (value.get("cleanup") or {}).get("status"), "r1_update_invoked": value.get("r1_update_invoked")}
-            if status["receipt"]["runner_image"] != "local": raise RuntimeError("Receipt runner image is not local")
+            status["receipt"] = {"outcome": value.get("outcome"), "stages": value.get("stages"), "cleanup": value.get("cleanup")}
+
     except Exception as exc:
         status["error"] = safe_error(exc)
         status["error_type"] = type(exc).__name__
@@ -232,7 +245,7 @@ def main():
         status["disk_free_after"] = shutil.disk_usage(home).free
         export_capture(root, home, output, status)
         print(json.dumps({"status": status["status"], "receipt": status.get("receipt"), "service_absent_after": status["service_absent_after"]}))
-    if status["status"] != "capture-exited" or status["inner"]["exit"] != 0 or status.get("receipt", {}).get("runner_image") != "local": raise SystemExit(1)
+    if status["status"] != "diagnostic-exited" or status["inner"]["exit"] != 0 or status.get("receipt", {}).get("outcome") != "pass": raise SystemExit(1)
 
 
 if __name__ == "__main__":
