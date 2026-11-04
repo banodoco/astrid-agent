@@ -42,7 +42,7 @@ def setup_diagnostic(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(jumps, 'task_after_update', lambda *a: 'task')
     monkeypatch.setattr(journey, 'healthy', lambda *a: {'pid': 1 if state['release'] == 0 else 2, 'runtime_instance_id': str(state['release'])})
     monkeypatch.setattr(journey, 'process_birth', lambda pid: 'birth' if state['release'] == 0 else None)
-    def bootstrap(*args):
+    def bootstrap(*args, **kwargs):
         calls.append('update')
         if failure == 'update':
             raise RuntimeError('update exact failure')

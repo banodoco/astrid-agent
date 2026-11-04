@@ -1155,12 +1155,14 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
+              evidence: Path, root: Path, data: Path, *, path_prefix: Path | None = None) -> None:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
         flags.append("--update")
     env = dict(os.environ)
+    if path_prefix is not None:
+        env["PATH"] = str(path_prefix) + os.pathsep + env.get("PATH", os.defpath)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
         # Avoid passing hosted pwsh's module paths to Windows PowerShell 5.1.

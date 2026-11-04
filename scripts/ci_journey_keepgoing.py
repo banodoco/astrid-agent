@@ -2,6 +2,8 @@
 from pathlib import Path
 import json
 import os
+import sys
+import tempfile
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -131,7 +133,18 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Unrelated sentinel exited before installation")
             state.update(app=app, candidate_path=path, manifest=manifest)
         def fresh_install():
-            journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+            if sys.platform.startswith("linux"):
+                # Hide usable host media tools only from this diagnostic bootstrap.
+                with tempfile.TemporaryDirectory(prefix="astrid-ffmpeg-shims-") as directory:
+                    shims = Path(directory)
+                    for name in ("ffmpeg", "ffprobe"):
+                        executable = shims / name
+                        executable.write_text("#!/bin/sh\nexit 1\n", encoding="ascii")
+                        executable.chmod(0o755)
+                    journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install",
+                                      evidence / "release1", root, data, path_prefix=shims)
+            else:
+                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
             state["updated"] = True
         def fresh_start():
             jumps.start_direct_runtime(evidence / "release1")
