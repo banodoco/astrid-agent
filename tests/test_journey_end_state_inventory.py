@@ -28,7 +28,7 @@ def release1_row(contract, pinned):
         "service_manager_prerequisite": {"required": True, "outcome": "pass", "manager": "native",
                                            "version": "1", "foreground_fallback": False},
         "checks": {name: "pass" for name in ("semantic_data", "release", "service", "health",
-                                                 "task_settled", "one_runtime", "unrelated_sentinel")},
+                                                 "task_settled", "unrelated_sentinel")},
     }
     if contract["mode"] == "direct":
         row.update(

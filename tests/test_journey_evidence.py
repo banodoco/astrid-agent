@@ -28,7 +28,7 @@ def release1_receipts(tmp_path):
                "import_origins": {"runtime": "/owned/runtime"},
                "service_manager_prerequisite": service,
                "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass",
-                          "task_settled": "pass", "one_runtime": "pass", "unrelated_sentinel": "pass"}}
+                          "task_settled": "pass", "unrelated_sentinel": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
             row["release_transition"] = {"from": 0, "to": 1,
@@ -60,7 +60,7 @@ def evidence(tmp_path):
            'sources': {'app': {'sha': candidate['app']}, 'agent': manifest['agent'], 'runtime': manifest['runtime']},
            'installed_tuple': {**{k: candidate[k] for k in ('app', 'agent', 'runtime')}, 'schema_digest': 'schema', 'tools': {'uv': '1'}},
            'import_origins': {'runtime': '/owned/runtime'},
-           'checks': {k: 'pass' for k in ('task_settled', 'workspace_content', 'one_runtime', 'unrelated_sentinel')}}
+           'checks': {k: 'pass' for k in ('task_settled', 'workspace_content', 'unrelated_sentinel')}}
     def write(value):
         (tmp_path / 'journey-result.json').write_text(json.dumps(value))
     return candidate, manifest, row, write
@@ -262,3 +262,17 @@ def test_release1_aggregate_accepts_full_staged_receipts_with_capture_status(tmp
         assert (stage / "sdk-capture-status.json").is_file()
         shutil.copytree(stage, aggregate_root / job)
     assert not gate.evaluate_release1_matrix(candidate, aggregate_root)
+
+
+def test_direct_receipts_require_observed_checks_without_pid_count(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    path = tmp_path / "direct-linux" / "journey-result.json"
+    row = json.loads(path.read_text())
+    assert "one_runtime" not in row["checks"]
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for check in ("release", "service", "health", "semantic_data", "task_settled", "unrelated_sentinel"):
+        bad = copy.deepcopy(row)
+        bad["checks"][check] = "not-run"
+        path.write_text(json.dumps(bad))
+        assert any(f"direct-linux: {check} assertion did not pass" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path))
