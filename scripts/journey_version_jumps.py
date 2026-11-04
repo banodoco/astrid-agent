@@ -37,10 +37,28 @@ DIAGNOSTIC_START_STAGE = "release0-api-seed"
 DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
 
 
-def _bytes_sha256(path: Path, label: str) -> str:
-    if path.is_symlink() or not path.is_file():
+def _preseed_call(operation, relative, call):
+    try:
+        return call()
+    except PermissionError as exc:
+        known = {".", "owner.lock", "realm.sqlite3", "realm.sqlite3-wal",
+                 "realm.sqlite3-shm", "realm.sqlite3-journal", "cas", "cas/sha256",
+                 "staging", "staging/settlements"}
+        exc.preseed_denial = {"operation": operation,
+                              "relative_path": relative if relative in known else "<redacted>",
+                              "path_redacted": relative not in known}
+        raise
+
+
+def _bytes_sha256(path: Path, label: str, *, preseed_relative=None) -> str:
+    def call(operation, method):
+        if preseed_relative is None:
+            return method()
+        return _preseed_call(operation, preseed_relative, method)
+
+    if call("is_symlink", path.is_symlink) or not call("is_file", path.is_file):
         raise RuntimeError(f"Diagnostic {label} must be a regular file")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(call("read_bytes", path.read_bytes)).hexdigest()
 
 
 def _target_tuple(manifest: dict) -> dict:
@@ -102,15 +120,18 @@ def _preseed_workspace_state(data: Path) -> dict:
 
     def entries() -> list[dict[str, str]]:
         found = []
-        for path in sorted(realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()):
+        paths = _preseed_call("rglob", None, lambda: sorted(
+            realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()))
+        for path in paths:
             relative = path.relative_to(realm).as_posix()
-            if path.is_symlink():
+            if _preseed_call("is_symlink", relative, path.is_symlink):
                 raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
-            if path.is_dir():
+            if _preseed_call("is_dir", relative, path.is_dir):
                 found.append({"path": relative, "kind": "directory"})
-            elif path.is_file():
+            elif _preseed_call("is_file", relative, path.is_file):
                 found.append({"path": relative, "kind": "file",
-                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+                              "sha256": _bytes_sha256(path, "pre-seed workspace file",
+                                                      preseed_relative=relative)})
             else:
                 raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
         return found
@@ -270,7 +291,9 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
         result["checks"]["snapshot"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        result.update(status="fail", error=journey.format_journey_error(exc))
+        if isinstance(exc, PermissionError) and hasattr(exc, "preseed_denial"):
+            result["preseed_denial"] = exc.preseed_denial
         raise
     finally:
         journey.write_json(result_path, result)
@@ -614,7 +637,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
-        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        result.update(status="fail", error=journey.format_journey_error(exc))
+        if isinstance(exc, PermissionError) and hasattr(exc, "preseed_denial"):
+            result["preseed_denial"] = exc.preseed_denial
         raise
     finally:
         journey.write_json(result_path, result)
