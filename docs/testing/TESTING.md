@@ -649,3 +649,32 @@ These are known. Report what you see, but don't stop testing for them.
   sign-in. The line is the restart.
 - With a systemd user session, Astrid restarts after a crash or an ordinary process kill. Stopping the unit with
   `systemctl --user stop astrid.service` keeps it stopped until the install line runs again.
+
+## Refreshing the reviewed installed identity row
+
+After an R1 install candidate has been frozen and its App publishing commit is
+known, run this single command from the Agent checkout:
+
+```bash
+python scripts/refresh_reviewed_runtime_schema.py \
+  --program-root /path/to/astrid-program \
+  --app-manifest-commit <exact-40-character-App-commit> \
+  --evidence tests/upgrade/evidence/identity-aware-installed.json
+```
+
+The command reads `<program-root>/current`, the selected
+`versions/<current>` tree, its canonical `manifest.json`, profile and version
+records, the installed Runtime Python contract, and the fixed
+`bin/runtime` target. It checks the installed Agent and Runtime checkout SHAs
+against the manifest, replaces the one identity-aware reviewed row in
+`tests/upgrade/releases.json`, and writes the raw manifest/profile/version
+bytes plus derived contract evidence to the requested evidence file. The App
+commit must come from frozen App publishing provenance because the installed
+tree alone does not identify the repository commit that published its
+manifest. The command does not launch Runtime. It fails before changing the
+reviewed row if any provenance or layout check fails.
+
+The reviewed R1 path rule contains no run-specific version suffix: `current`
+must select a directory directly under `versions`, and `bin/runtime` must
+resolve inside that selected directory. Verifier identity, manifest, source,
+protocol and schema comparisons remain exact.
