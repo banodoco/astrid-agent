@@ -636,8 +636,18 @@ class CommitPatch:
             after = inverse_closure(self.outputs[step['id']], self.inverse_sources.get(ordinal, []),
                                     inverse_records=self.inverse_records.get(ordinal, ()))
             record = plan.records[ordinal]
+            legacy_parent_step = (not self.v2 and not self.inverse_stages
+                and all(effect['ref'] == 'parent' for effect in step['patch'])
+                and all(write['ref'] == 'parent' or write['ref'].startswith('parent/')
+                    for index in step['command_ordinals'] for write in plan.records[index]['writes']))
             if self.active:
                 for index, effect in enumerate(step['patch']):
+                    # Legacy native parent edits already carry exact logical
+                    # writes. A redundant whole-image effect pin would change
+                    # their recorder on an unrelated-head CAS retry. Child
+                    # turnover and inverse stages still need physical proof.
+                    if legacy_parent_step:
+                        continue
                     segment = next(((first, second) for source_ordinal in step['command_ordinals']
                         for stage, (first, second) in zip(
                             [binding for binding in plan.records[source_ordinal]['bindings']

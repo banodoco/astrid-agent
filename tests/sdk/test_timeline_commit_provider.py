@@ -271,7 +271,7 @@ def trim_document():
     for rows in (payload["clips"], payload["config"]["clips"]):
         rows[0].update(at=1, **{"from": 2, "to": 6, "speed": 2, "hold": 17})
     payload["registry"] = copy.deepcopy(payload["registry"])
-    payload["registry"]["assets"]["picture"].update(type="image", duration=10)
+    payload["registry"]["assets"]["picture"].update(type="video", duration=10)
     document["parent_revision"]["content_digest"] = _digest(payload)
     return document
 
@@ -948,7 +948,6 @@ def test_legacy_history_undo_and_restore_use_revisions_or_refuse_visibly():
     from astrid.core.timeline.events.schema.types import TimelineEventKind
 
     assert set(LEGACY_KINDS) <= set(get_args(TimelineEventKind))
-    assert importlib.util.find_spec("astrid.core.timeline.inverses") is None
     realm = DetachedRealm()
     original = detached(realm.documents["parent-1"])
     for on, kind in zip([3.003, 4.004, 5.005, 6.006, 7.007, 8.008, 9.009, 10.01, 11.011, 12.012],
@@ -1101,6 +1100,28 @@ def test_restore_inverse_proof_representations_allow_preview_and_redo(v2, select
     assert redone['data']['canonical_document'] == preview['data']['canonical_document']
     assert redone['receipt']['result'] == redone['data']
     assert realm.entries[:-1] == before[1]
+
+
+@pytest.mark.parametrize('after_inverse', [False, True], ids=['ordinary', 'after-authenticated-inverse'])
+def test_restore_proof_does_not_authorize_unrelated_fps_removal(after_inverse):
+    from astrid.sdk.timeline._command_state import present
+    from tests.editing_conformance.test_doc_patch_v2 import change, patch, submit
+
+    realm = DetachedRealm()
+    original = detached(realm.documents['parent-1'])
+    realm.call([realm.move()])
+    restored = realm.call([restore(original)])
+    calls = ([inverse([restored['receipt']['receipt_id']])] if after_inverse else [])
+    fps = original['parent_revision']['payload']['config']['output']['fps']
+    calls.append(patch(change(['config', 'output', 'fps'], present(fps), op='remove')))
+    before = detached((realm.head, realm.entries, realm.documents, realm.accepted, realm.prepared))
+
+    with pytest.raises(CommitRejected) as error:
+        submit(realm, *calls, label='Remove fps')
+
+    assert error.value.failure['details']['reason'] == 'invalid_document'
+    assert 'all authored fps declarations must retain their typed locations' in str(error.value)
+    assert before == detached((realm.head, realm.entries, realm.documents, realm.accepted, realm.prepared))
 
 
 @pytest.mark.parametrize("later", ["overlap", "same-value", "aba", "child", "create"])

@@ -1407,10 +1407,20 @@ class RuntimeCommitService:
                     validation_bundle = bundle_from_document(document_from_bundle(plan.bundle))
                     validation_bundle['source_mapping']['pinned_documents'] = copy.deepcopy(
                         plan.bundle['source_mapping'].get('pinned_documents', []))
+                validation_baseline = bundle if current == base else head_bundle
+                for record in plan.records:
+                    if record['command']['op'] not in ('timeline.restore', 'timeline.inverse'):
+                        continue
+                    for write in record['writes']:
+                        if write['ref'] == 'timeline' and not write['path']:
+                            # State.set has checked this exact pin against an
+                            # authenticated closure. Its declarations are the
+                            # baseline for whole-closure undo and redo as well
+                            # as direct restoration; later edits remain checked.
+                            validation_baseline = closures[write['after']['value']['revision_id']]
                 validate_final_candidate(
                     validation_bundle,
-                    baseline=(closures[restored_from['revision_id']] if restored_from is not None
-                              else bundle if current == base else head_bundle),
+                    baseline=validation_baseline,
                     schema_inputs=schema_inputs,
                     realm_id=context.get('realm_id'),
                     source_bundles=[*inverse_sources, *closures.values()],
