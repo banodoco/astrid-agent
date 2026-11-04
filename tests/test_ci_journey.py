@@ -928,6 +928,12 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
 
     selected = matrix("false", JOURNEY_ROW="direct-windows")
     assert [row["job_id"] for row in selected] == ["direct-windows"]
+    diagnostic = matrix("false", JOURNEY_ROW="direct-windows", SCHEMA_ACL_DIAGNOSTIC="true")
+    assert [(row["job_id"], row["leg"]) for row in diagnostic] == [("direct-windows", "fresh-install")]
+    invalid = config("false", SCHEMA_ACL_DIAGNOSTIC="true")
+    assert invalid.returncode != 0
+    assert "requires row direct-windows" in invalid.stderr
+    selected = matrix("false", JOURNEY_ROW="direct-windows")
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert values["wait_timeout"] == "180"
     all_direct = matrix("false", JOURNEY_ROW="direct")

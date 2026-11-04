@@ -1488,7 +1488,9 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
               "candidate_checkouts": getattr(args, "candidate_checkouts", None),
               "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
               "source_override_test_mode": args.source_override,
-              "evidence_class": "hosted-lifecycle",
+              "evidence_class": ("diagnostic-only" if
+                                 os.environ.get("ASTRID_CI_SCHEMA_ACL_DIAGNOSTIC", "").lower() == "true"
+                                 else "hosted-lifecycle"),
               "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
               "pinokio_backend": None,
               "retained_for_next_leg": getattr(args, "retain_for_next_leg", False),
