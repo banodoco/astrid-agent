@@ -285,7 +285,9 @@ def main():
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=UID or target.is_symlink(): raise RuntimeError('Audit file identity unsafe')
         value=json.loads(target.read_text())
         if value.get('schema')!='r1fix-source-clean/v1' or value.get('status')!='complete': raise RuntimeError('Audit file provenance differs')
-        if not no_process_reference(target) or not no_open_files(target): raise RuntimeError('Audit file busy or unverified')
+        if not no_process_reference(target): raise RuntimeError('Audit file busy or unverified')
+        open_check=subprocess.run(['/usr/sbin/lsof','-n',str(target)],capture_output=True,text=True,timeout=30)
+        if open_check.returncode!=1 or open_check.stdout.strip() or open_check.stderr.strip(): raise RuntimeError('Audit file open or unverified')
         fd=os.open(str(parent),FLAGS)
         try:
             current=os.stat(name,dir_fd=fd,follow_symlinks=False)
