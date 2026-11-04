@@ -161,10 +161,10 @@ def plan_update_recovery(root: Path | str, data_root: Path | str, *, recovery_bu
     marker = _load_owned_marker(root_path, data, selection)
     selected = _selected_version(root_path)
     try:
-        require_boundary_available(selected)
+        require_boundary_available(selected, login_managed=True)
         journal = read_json(root_path / "update-transaction.json")
         if journal:
-            require_recovery_boundary(journal)
+            require_recovery_boundary(journal, login_managed=True)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise MaintenanceRefusal("r0-boundary-unavailable",
                                  "The retained update cannot be recovered until its data boundary is available.") from error

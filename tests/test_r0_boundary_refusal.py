@@ -128,3 +128,70 @@ def test_maintenance_refuses_before_inventorying_r0(tmp_path, monkeypatch):
     monkeypatch.setattr(maintenance, '_tree_manifest', lambda *a: pytest.fail('data inventoried'))
     with pytest.raises(maintenance.MaintenanceRefusal, match='data boundary'):
         maintenance.plan_update_recovery(root, data)
+
+
+def test_login_transaction_rejects_pinokio_version_before_callbacks(tmp_path):
+    old = version(tmp_path / 'program' / 'versions' / 'r0', managed_by='pinokio')
+    calls = []
+    installer = core.Installer(tmp_path / 'program', tmp_path / 'data', SimpleNamespace())
+    with pytest.raises(ValueError, match='installation manager'):
+        installer._run_update_transaction(old, {}, prepare=lambda: calls.append('prepare'),
+            stop=lambda *a: calls.append('stop'), switch_candidate=lambda *a: calls.append('switch'),
+            switch_old=lambda *a: calls.append('rollback'), activate=lambda *a: calls.append('activate'),
+            activate_old=lambda *a: calls.append('activate old'))
+    assert calls == []
+
+
+def test_login_selection_refuses_mismatched_manager_before_discovery(tmp_path, monkeypatch):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    old = version(root / 'versions' / 'r0', managed_by='pinokio')
+    marker = {'owner': local_update.LABEL, 'data_root': str(data)}
+    (root / 'install.json').write_text(json.dumps(marker))
+    record = {**marker, 'program_root': str(root)}
+    monkeypatch.setattr(local_update, 'current', lambda _: old)
+    backend = SimpleNamespace(service=SimpleNamespace(recorded=lambda: record),
+                              source_checkout_ownership=lambda *a: pytest.fail('discovery invoked'))
+    with pytest.raises(ValueError, match='installation manager'):
+        local_update._selection(root, backend)
+
+
+def test_job_request_refuses_mismatched_manager_before_live_identity(tmp_path, monkeypatch):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    old = version(root / 'versions' / 'r0', managed_by='pinokio')
+    marker = {'owner': update_job.LABEL, 'data_root': str(data)}
+    (root / 'install.json').write_text(json.dumps(marker))
+    selected = tmp_path / 'selection.json'
+    selected.write_text(json.dumps({**marker, 'program_root': str(root)}))
+    monkeypatch.setattr(update_job, '_selection_path', lambda: selected)
+    monkeypatch.setattr(core, 'current', lambda _: old)
+    request = {'operation_id': 'a' * 32, 'root': str(root), 'data_root': str(data),
+               'selection_path': str(selected)}
+    with pytest.raises(ValueError, match='installation manager'):
+        update_job._validate_request(request, root)
+
+
+def test_dangling_selection_is_not_treated_as_fresh(tmp_path):
+    root = tmp_path / 'program'
+    root.mkdir()
+    (root / 'current').symlink_to(root / 'missing')
+    with pytest.raises(ValueError, match='cannot be identified'):
+        core.require_known_update_selection(root, tmp_path / 'data', None)
+
+
+def test_fallback_legacy_version_refused_before_repair(tmp_path, monkeypatch):
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    old = version(tmp_path / 'other' / 'r0')
+    backend = SimpleNamespace(existing=lambda _: old,
+                              workspace=lambda *a: pytest.fail('workspace inspected'))
+    monkeypatch.setattr(core.Installer, '_recover_update', lambda *_: None)
+    installer = core.Installer(root, data, backend)
+    with pytest.raises(ValueError, match='adoption boundary'):
+        installer._run_locked('install', {})
+
+
+def test_login_recovery_rejects_mismatched_journal_before_replay(tmp_path):
+    old = version(tmp_path / 'r0', managed_by='pinokio')
+    with pytest.raises(ValueError, match='installation manager'):
+        core.require_recovery_boundary({'old': old.document()}, login_managed=True)
+    # The Pinokio recovery path keeps its original manager handling.
+    core.require_recovery_boundary({'old': old.document()})

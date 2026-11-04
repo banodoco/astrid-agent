@@ -215,6 +215,8 @@ def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
     if (old is None or not old.python.is_file()
             or old.root.parent != root / "versions"):
         raise ValueError("The installed Astrid Runtime is incomplete.")
+    if old.managed_by != marker.get("managed_by"):
+        raise ValueError("The selected version does not match the installation manager.")
     require_boundary_available(old)
     if backend.source_checkout_ownership(data, old):
         raise ValueError("This Astrid runs from source checkouts; update those instead.")

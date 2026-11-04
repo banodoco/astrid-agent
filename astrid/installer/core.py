@@ -103,26 +103,28 @@ def owned_by_local_update(journal: dict) -> bool:
     return isinstance(context, dict) and context.get("owner") == "local-update"
 
 
-def require_boundary_available(version: "Version") -> None:
-    """Refuse legacy login-service updates until offline adoption is wired."""
+def require_boundary_available(version: "Version", *, login_managed: bool = False) -> None:
+    """Refuse a mismatched manager or legacy login update before any lifecycle work."""
+    if login_managed and version.managed_by is not None:
+        raise ValueError("The selected version does not match the login installation manager.")
     if version.managed_by != "pinokio" and version.release == 0:
         raise ValueError("This Astrid update needs the R0 data adoption boundary, which is not available yet. Your existing installation has not been changed.")
 
 
-def require_recovery_boundary(transaction: dict) -> None:
+def require_recovery_boundary(transaction: dict, *, login_managed: bool = False) -> None:
     """Do not replay a legacy transaction using the old in-place restore path."""
     old = Version.load(transaction["old"])
-    require_boundary_available(old)
+    require_boundary_available(old, login_managed=login_managed)
 
 
 def require_known_update_selection(root: Path, data: Path, version: "Version | None", *,
                                    allow_fresh_claim: bool = False) -> None:
     """An existing but unidentifiable installation must not become a fresh install."""
     if version is not None:
-        require_boundary_available(version)
+        require_boundary_available(version, login_managed=True)
         if not version.python.is_file():
             raise ValueError("The selected Astrid installation is incomplete; update is unavailable.")
-    elif ((root / "current").exists() or ((root / "install.json").exists() and not allow_fresh_claim)
+    elif ((root / "current").exists() or (root / "current").is_symlink() or ((root / "install.json").exists() and not allow_fresh_claim)
           or (data.exists() and any(p.name != "logs" for p in data.iterdir()))):
         raise ValueError("The existing Astrid installation cannot be identified safely; update is unavailable.")
 
@@ -460,7 +462,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
-        require_boundary_available(old)
+        require_boundary_available(old, login_managed=self.managed_by != "pinokio")
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {
@@ -573,6 +575,8 @@ class Installer:
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
+        if old is not None and self.managed_by != "pinokio" and mode not in {"doctor", "uninstall"}:
+            require_boundary_available(old, login_managed=True)
         # The public install path is also the normal update check. Compare
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.

@@ -257,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
                 fresh_claim = not marker and not recorded.get("program_root")
                 if managed_by != "pinokio" and mode in {"install", "update", "app-update"}:
                     if pending_update:
-                        require_recovery_boundary(pending_update)
+                        require_recovery_boundary(pending_update, login_managed=True)
                     else:
                         require_known_update_selection(root, data, current(root))
                 if mode in {"install", "update"} and pending_update:
