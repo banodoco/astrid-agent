@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -62,10 +63,12 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
 
 
 def _retained_r0_roots(service) -> list[Path]:
+    from .boundary_registration import retained_roots
     from .r0_stop import _marker_path
 
     intent = read_json(absolute(_marker_path(service)))
-    return [absolute(intent[key]) for key in ("program_root", "data_root")] if intent else []
+    roots = [absolute(intent[key]) for key in ("program_root", "data_root")] if intent else []
+    return roots + retained_roots(service)
 
 
 def _provisional_roots(root: Path, requested_data: Path | None, service, mode: str) -> list[Path]:
@@ -331,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
                     # R0's data stays read-only. This must precede legacy
                     # journal replay, Runtime preflight, staging and claims.
                     stage_r0_upgrade(root, data, backend)
+                else:
+                    from .boundary_registration import journal_path
+                    from .r0_stop import refuse_unintegrated_r1_handoff
+
+                    if os.path.lexists(journal_path(backend.service)):
+                        raise ValueError("An R1 registration needs recovery. Run the install line again before this operation.")
+                    if managed_by != "pinokio":
+                        refuse_unintegrated_r1_handoff(root, backend.service)
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":

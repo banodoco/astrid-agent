@@ -8,8 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import plistlib
 import os
+import plistlib
 import re
 import stat
 import subprocess
@@ -141,7 +141,11 @@ def refuse_legacy_r0_recovery(root):
 
 
 def refuse_unintegrated_r1_handoff(root, service):
+    from .boundary_registration import journal_path
     from .core import read_json
+
+    if os.path.lexists(journal_path(service)):
+        raise R0StopError("An R1 registration needs recovery. Run the install line again; both data roots were kept.")
     marker = read_json(root / "install.json")
     selection = read_json(service.selection)
     if service.system == "linux":
@@ -165,6 +169,12 @@ def stage_r0_upgrade(root, data, backend, *, say=print):
     successful handoff in A: after proving stop/lock, restore R0 and refuse.
     """
     service = backend.service
+    from .boundary_registration import journal_path
+
+    # B owns partial registration recovery. It must exclude R1 before A can
+    # re-enable R0; never replay the legacy in-place transaction for this intent.
+    if os.path.lexists(journal_path(service)) and backend.recover_r1_registration():
+        raise R0StopError("Recovered the interrupted R1 registration. " + STAGING_REFUSAL)
     if recover_r0(service):
         raise R0StopError("Recovered the interrupted R0 stop. " + STAGING_REFUSAL)
     refuse_unintegrated_r1_handoff(root, service)
