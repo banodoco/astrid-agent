@@ -1,4 +1,4 @@
-name: WS02 launchd state audit
+name: WS06 launchd state audit
 on:
   workflow_dispatch:
 permissions:
@@ -16,11 +16,14 @@ jobs:
           if os.getuid()!=503 or os.environ.get('RUNNER_NAME')!='hannah-mac': raise SystemExit('Unexpected runner')
           q=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
           if 'disabled services' not in q.stdout: raise SystemExit('Disabled state unverified')
-          m=re.search(r'(?m)^\s*"haus\.astrid\.runtime"\s*=>\s*(\w+)\s*$',q.stdout)
-          value=m.group(1) if m else 'not-listed'
-          service=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
-          missing='Could not find service "haus.astrid.runtime" in domain for user gui: 503'
-          absent=service.returncode==113 and service.stderr.strip().replace('\r\n','\n') in (missing,'Bad request.\n'+missing)
-          print(json.dumps({'label_state':value,'service_absent':absent}))
-          if value not in ('enabled','false','not-listed') or not absent: raise SystemExit('Launchd state requires review')
+          results={}
+          for label in ('haus.astrid.runtime','haus.astrid.runtime.r1'):
+              m=re.search(r'(?m)^\s*"'+re.escape(label)+r'"\s*=>\s*(\w+)\s*$',q.stdout)
+              value=m.group(1) if m else 'not-listed'
+              service=subprocess.run(['/bin/launchctl','print','gui/503/'+label],capture_output=True,text=True,timeout=20)
+              missing=f'Could not find service "{label}" in domain for user gui: 503'
+              absent=service.returncode==113 and service.stderr.strip().replace('\r\n','\n') in (missing,'Bad request.\n'+missing)
+              results[label]={'state':value,'absent':absent}
+          print(json.dumps(results))
+          if any(v['state'] not in ('enabled','false','not-listed') or not v['absent'] for v in results.values()): raise SystemExit('Launchd state requires review')
           PYCODE
