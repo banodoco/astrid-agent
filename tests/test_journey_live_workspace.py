@@ -66,6 +66,26 @@ def test_failure_diagnostic_rejects_untrusted_fields():
         assert not live.valid_failure_diagnostic(bad)
 
 
+def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
+    from scripts import ci_journey as journey
+
+    evidence = tmp_path / "evidence" / "release0-to-release1"
+    source = evidence / "release0-api-seed" / "live-snapshot-failure.json"
+    source.parent.mkdir(parents=True)
+    safe = {"schema": "astrid.live-workspace-failure.v1", "error_type": "HTTPError",
+            "frames": [{"function": "snapshot", "line": 123}],
+            "http_status": 503, "runtime_code": "unavailable"}
+    source.write_text(json.dumps(safe))
+
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "evidence-upload" / "before-cleanup" / "live-snapshot-failure.json"
+    assert json.loads(staged.read_text()) == safe
+
+    source.write_text(json.dumps({**safe, "runtime_code": "credential-secret"}))
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert not staged.exists()
+
+
 def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeypatch):
     from scripts import ci_journey as journey
 
@@ -80,6 +100,7 @@ def test_live_workspace_checks_owner_identity_without_stopping(tmp_path, monkeyp
         events.append("api")
         assert "journey_live_workspace.py" in str(argv[1])
         assert json.loads(Path(argv[argv.index("--selection") + 1]).read_text()) == selected
+        assert Path(argv[argv.index("--diagnostic") + 1]).name == "live-snapshot-failure.json"
         return '{"actual": true}'
     monkeypatch.setattr(journey, "run", run)
     assert jumps.live_workspace(tmp_path, tmp_path, tmp_path / "evidence", "snapshot", {}) == {"actual": True}

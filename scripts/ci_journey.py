@@ -616,16 +616,17 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
     # Never upload the helper's raw stdout, traceback, request, or selection.
-    source = evidence / "release0-api-seed" / "live-seed-failure.json"
-    target = destination / "live-seed-failure.json"
-    try:
-        target.unlink(missing_ok=True)
-        if source.is_file() and not source.is_symlink() and source.stat().st_size <= 4096:
-            value = json.loads(source.read_text(encoding="utf-8"))
-            if live_workspace.valid_failure_diagnostic(value):
-                write_json(target, value)
-    except (OSError, UnicodeError, ValueError, TypeError):
-        pass
+    for action in ("seed", "snapshot"):
+        source = evidence / "release0-api-seed" / f"live-{action}-failure.json"
+        target = destination / f"live-{action}-failure.json"
+        try:
+            target.unlink(missing_ok=True)
+            if source.is_file() and not source.is_symlink() and source.stat().st_size <= 4096:
+                value = json.loads(source.read_text(encoding="utf-8"))
+                if live_workspace.valid_failure_diagnostic(value):
+                    write_json(target, value)
+        except (OSError, UnicodeError, ValueError, TypeError):
+            pass
 
     # Keep each R0 workspace census and exact native identities separately
     # from initial selection and from subsequent restart observations.
