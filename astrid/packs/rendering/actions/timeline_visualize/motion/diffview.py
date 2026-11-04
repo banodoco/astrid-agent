@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from astrid.core.timeline.astrid_ns import read_app
-from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle, picture_cuts
+from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
 
 from ..layers.base import Finding
 

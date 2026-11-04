@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.quality_zones')
 
@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.media import require_runtime_materialized_file
-from astrid.core.audit import register_outputs
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import require_runtime_materialized_file
+from astrid.pack_api import register_outputs
 from astrid.packs.editorial.shared.hype import enriched_arrangement
 
 sys.modules.setdefault("quality_zones", sys.modules[__name__])

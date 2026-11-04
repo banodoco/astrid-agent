@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import sys
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("generation.generate_image_upscale")
 

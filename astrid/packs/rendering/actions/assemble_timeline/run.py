@@ -12,7 +12,7 @@ or mutate a timeline.
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("rendering.assemble_timeline")
 
@@ -26,10 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.foundation.atomic_io import write_json_atomic
-from astrid.core.pack.entrypoint import run_pack_main
-from astrid.core.timeline import canonical_timeline_config
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import write_json_atomic
+from astrid.pack_api import run_pack_main
+from astrid.pack_api import canonical_timeline_config
 from astrid.core.timeline.validators.registry import validate_registry
 
 

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.jsonio import write_json_atomic
+from astrid.pack_api import write_json_atomic
 
 from .artifacts import HASHES_KEY, sidecar_hashes, write_hashed_sidecar
 from ...shared.items import repo_relative_path, utc_now_iso

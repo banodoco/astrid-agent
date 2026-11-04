@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("fal.h3_video")
 
@@ -15,19 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core._shared.result_manifest import write_json_atomic, write_manifest
-from astrid.core.contracts.errors import AstridError
-from astrid.core.generation.backends.fal import FalBackend
-from astrid.core.model_catalog.registry import ModelRegistry
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.pack.entrypoint import run_pack_main
-from astrid.core.util.credentials_scope import CredentialsScope
-from astrid.core.util.http import (
-    HttpClient,
-    default_client,
-    fal_storage_upload,
-    fal_submit_and_poll,
-)
+from astrid.pack_api import write_json_atomic, write_manifest
+from astrid.pack_api import AstridError
+from astrid.pack_api import FalBackend
+from astrid.pack_api import ModelRegistry
+from astrid.pack_api import sha256_file
+from astrid.pack_api import run_pack_main
+from astrid.pack_api import CredentialsScope
+from astrid.pack_api import HttpClient, default_client, fal_storage_upload, fal_submit_and_poll
 
 
 ENDPOINTS = {

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from astrid.core.rendering.contracts import SCHEMA_VERSION as RENDER_SCHEMA_VERSION
 from astrid.core.rendering.contracts import RenderRequest
 from astrid.core.rendering.errors import RendererProtocolError, raise_unsupported_error
 from astrid.packs.rendering.actions.render import run as render_run
@@ -68,6 +69,19 @@ def test_render_delegates_to_service_with_default_selector(fake_service: _FakeSe
     assert request.backend_config["rendering.remotion"] == {
         "composition_id": "TimelineComposition"
     }
+
+
+def test_render_request_uses_render_contract_schema_version(
+    fake_service: _FakeService, tmp_path: Path
+) -> None:
+    timeline, assets, out = _inputs(tmp_path)
+
+    render_run.render(timeline, assets, out)
+
+    request = fake_service.calls[0][0][0]
+    assert render_run.RENDER_SCHEMA_VERSION == RENDER_SCHEMA_VERSION == 1
+    assert type(request.schema_version) is int
+    assert request.schema_version == RENDER_SCHEMA_VERSION
 
 
 def test_render_writes_universal_result_manifest(

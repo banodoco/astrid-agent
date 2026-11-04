@@ -29,11 +29,8 @@ provider; only the safe mount prefix is added around run-relative paths.
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import (
-    guard_canonical_entrypoint,
-    run_pack_main,
-)
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("iteration.experiment_review_session")
 import argparse  # noqa: E402
@@ -46,20 +43,11 @@ import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Mapping  # noqa: E402
 
-from astrid.core._shared.result_manifest import write_manifest  # noqa: E402
-from astrid.core.experiments.evaluation import (  # noqa: E402
-    build_rubric_response_schema,
-    validate_conclusions,
-    validate_review_final,
-)
-from astrid.core.experiments.schema import (  # noqa: E402
-    ExperimentValidationError,
-    validate_experiment,
-)
-from astrid.core.experiments.state import (  # noqa: E402
-    init_experiment_review_state,
-)
-from astrid.core.runtime import run_subprocess  # noqa: E402
+from astrid.pack_api import write_manifest  # noqa: E402
+from astrid.pack_api import build_rubric_response_schema, validate_conclusions, validate_review_final
+from astrid.pack_api import ExperimentValidationError, validate_experiment
+from astrid.pack_api import init_experiment_review_state
+from astrid.pack_api import run_subprocess  # noqa: E402
 from astrid import sdk  # noqa: E402
 
 _REVIEW_CHILD_KEY = "experiment-human-review"

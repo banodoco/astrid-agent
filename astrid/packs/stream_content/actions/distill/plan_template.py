@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from astrid.core.events import canonical_event_json
+from astrid.pack_api import canonical_event_json
 
 
 def _file_output(name: str, path: str | Path) -> dict[str, Any]:

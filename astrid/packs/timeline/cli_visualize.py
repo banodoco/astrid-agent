@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
+from astrid.pack_api import print_result
 
 PRESETS = ("overview", "scan", "motion", "beat", "frame", "cut", "compare")
 

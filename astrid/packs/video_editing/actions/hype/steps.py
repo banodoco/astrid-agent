@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core.execution.executor.argv import executor_argv
+from astrid.pack_api import executor_argv
 
 from .config import STEP_ORDER  # noqa: F401 — exported callback order
 
@@ -62,7 +62,7 @@ def asset_args(asset_pairs: list[tuple[str, Path | str]]) -> list[str]:
     return args
 
 def probe_audio_duration(path: Path | str) -> float:
-    from astrid.core.media import ffprobe_duration_seconds
+    from astrid.pack_api import ffprobe_duration_seconds
 
     return ffprobe_duration_seconds(path)
 
@@ -430,7 +430,7 @@ def select_steps(args: argparse.Namespace) -> list[Step]:
     downstream steps. Replaces the old mode-fork logic; equivalent for
     source-video, audio-only, and pure-generative briefs.
     """
-    from astrid.core.execution.executor.registry import load_default_registry
+    from astrid.pack_api import load_default_registry
 
     registry = load_default_registry()
     executors_by_step = {

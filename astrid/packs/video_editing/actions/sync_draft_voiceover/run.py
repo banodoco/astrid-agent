@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("video_editing.sync_draft_voiceover")
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.path_utils import has_url_scheme
+from astrid.pack_api import AstridError
+from astrid.pack_api import has_url_scheme
 
 try:
     import yaml
