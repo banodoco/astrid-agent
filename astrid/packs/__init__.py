@@ -45,8 +45,7 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
         with os.scandir(root) as entries:
             return tuple(sorted(
                 entry.name for entry in entries
-                if not entry.name.startswith(".")
-                and entry.name != "__pycache__"
+                if entry.name != "__pycache__"
                 and entry.is_dir()
             ))
     except (FileNotFoundError, NotADirectoryError):
