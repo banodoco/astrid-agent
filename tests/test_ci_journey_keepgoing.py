@@ -37,6 +37,12 @@ def setup_diagnostic(tmp_path, monkeypatch, failure):
         calls.append('verify-' + mode)
         if failure == 'verify' and mode == 'observe':
             raise RuntimeError('verification exact failure')
+        receipt = args[2] / f'verify-{mode}.json'
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        passed = not (failure == 'observe-failed' and mode == 'observe')
+        receipt.write_text(json.dumps({'passed': passed,
+                                       'failures': [] if passed else ['capabilities.approval', 'capabilities.required']}))
+        return receipt
     monkeypatch.setattr(journey, 'verify', verify)
     monkeypatch.setattr(jumps, 'direct_workspace', lambda *a: {'project': 'p'} if a[4] == 'seed' else {'snapshot': True})
     monkeypatch.setattr(jumps, 'task_after_update', lambda *a: 'task')
@@ -66,7 +72,31 @@ def test_failed_verification_is_labelled_and_independent_update_runs(tmp_path, m
     receipt = json.loads((evidence / 'journey-result.json').read_text())
     assert receipt['proof_mode'] == keepgoing.PROOF_MODE and receipt['status'] == 'fail'
     assert receipt['qualification']['eligible'] is False and receipt['classification'] == 'NON-PROOF'
-    assert '| stage | result | forced-continuation-used | first error |' in (evidence / 'keepgoing-report.md').read_text()
+    assert '| stage | result | observation | forced-continuation-used | first error |' in (evidence / 'keepgoing-report.md').read_text()
+
+
+def test_failed_release0_observation_is_reported_without_gating_continuation(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'observe-failed')
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence,
+                               SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    observation = rows['release0-verify']
+    assert observation['result'] == 'observed-failed'
+    assert observation['observation'] == {
+        'passed': False,
+        'failures': ['capabilities.approval', 'capabilities.required'],
+    }
+    assert observation['failure_class'] == 'real'
+    assert observation['forced_continuation_used'] is False
+    assert rows['release1-update']['result'] == 'pass' and 'update' in calls
+    assert rows['release1-verify-update']['result'] == 'pass'
+    assert any(item['name'] == 'verified0' and item['source'] == 'genuine'
+               for item in rows['release1-verify-update']['preconditions'])
+    rendered = (evidence / 'keepgoing-report.md').read_text()
+    assert '| release0-verify | observed-failed | {"failures": ["capabilities.approval", "capabilities.required"], "passed": false} |' in rendered
+    assert 'REAL failures: release0-verify' in rendered
+    stage_index = [row['stage'] for row in report['stages']].index('release0-verify')
+    assert f'style s{stage_index} fill:#f99' in rendered
 
 
 def test_failed_update_does_not_force_service_or_marker(tmp_path, monkeypatch):

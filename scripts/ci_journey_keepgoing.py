@@ -54,10 +54,13 @@ def write(evidence, report):
     suspect = [r for r in report["stages"] if str(r.get("failure_class", "")).startswith("suspect:")]
     lines = ["NON-PROOF: keep-going diagnostic", "", "REAL failures: " + (", ".join(r["stage"] for r in real) or "none"),
              "SUSPECT failures: " + (", ".join(r["stage"] + " (" + r["failure_class"] + ")" for r in suspect) or "none"),
-             "", "| stage | result | forced-continuation-used | first error |", "| --- | --- | --- | --- |"]
+             "", "| stage | result | observation | forced-continuation-used | first error |",
+             "| --- | --- | --- | --- | --- |"]
     for row in report["stages"]:
         error = (row.get("first_error") or "").replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {row['stage']} | {row['result']} | {row['forced_continuation_used']} | {error} |")
+        observation = json.dumps(row["observation"], sort_keys=True) if "observation" in row else ""
+        observation = observation.replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {row['stage']} | {row['result']} | {observation} | {row['forced_continuation_used']} | {error} |")
     lines.extend(["", "| stage | needs | source | result | class |", "| --- | --- | --- | --- | --- |"])
     for row in report["stages"]:
         needs = row.get("preconditions", [])
@@ -67,7 +70,7 @@ def write(evidence, report):
     lines.extend(["", "```mermaid", "graph TD"])
     for index, row in enumerate(report["stages"]):
         lines.append(f'  s{index}["{row["stage"]}"]')
-        if row["result"] == "fail":
+        if row["result"] in {"fail", "observed-failed"}:
             lines.append(f"  style s{index} fill:#f99")
     indexes = {row["stage"]: index for index, row in enumerate(report["stages"])}
     for index, row in enumerate(report["stages"]):
@@ -164,8 +167,15 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             row.update(result="not-run", first_error="Unsafe or unavailable prerequisites: " + ", ".join(missing))
         else:
             try:
-                action()
-                row["result"] = "pass"
+                outcome = action()
+                if isinstance(outcome, dict) and outcome.get("result") in {"observed-passed", "observed-failed"}:
+                    row["result"] = outcome["result"]
+                    row["observation"] = outcome["observation"]
+                    row["continuation"] = "Observation recorded; subsequent diagnostic stages continue"
+                    if outcome["result"] == "observed-failed":
+                        row["failure_class"] = "real"
+                else:
+                    row["result"] = "pass"
                 row["postconditions"] = [key for key, producer in producers.items() if producer == name and key in state]
             except Exception as exc:
                 row.update(result="fail", first_error=f"{type(exc).__name__}: {exc}")
@@ -305,8 +315,15 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
     def verify0():
-        journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
+        receipt_path = journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
+        receipt = journey.read_json(receipt_path)
+        passed = receipt.get("passed")
+        failures = receipt.get("failures")
+        if type(passed) is not bool or not isinstance(failures, list):
+            raise RuntimeError("Release-0 observation receipt has invalid passed or failures fields")
         state["verified0"] = True
+        return {"result": "observed-passed" if passed else "observed-failed",
+                "observation": {"passed": passed, "failures": failures}}
     def verify_update():
         journey.verify("update", state["version_path"], data, evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
     def verify_install():
