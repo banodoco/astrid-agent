@@ -224,3 +224,34 @@ def test_release0_workspace_uses_current_helper_signature(monkeypatch, tmp_path,
 
     assert keepgoing.release0_workspace(*args) == {"action": action}
     assert calls == [args]
+
+
+def test_failed_fresh_bootstrap_capture_preserves_stage_failure(tmp_path, monkeypatch):
+    from scripts import journey_windows_acl_capture as capture
+    app = tmp_path / 'app'
+    app.mkdir()
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_text('{}')
+    evidence = tmp_path / 'evidence'
+    args = SimpleNamespace(job_id='direct-windows', mode='direct', leg='fresh-install',
+                           shell='ps1', app_checkout=app, candidate=candidate)
+    manifest = {'release': 1}
+    calls = []
+    monkeypatch.setattr(journey.sys, 'platform', 'win32')
+    monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
+    monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
+    monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
+    def fail(*args):
+        calls.append('bootstrap')
+        raise ValueError('primary')
+    def broken_capture(*args):
+        calls.append('capture')
+        raise RuntimeError('sink failure')
+    monkeypatch.setattr(journey, 'bootstrap', fail)
+    monkeypatch.setattr(capture, 'capture', broken_capture)
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence,
+                               SimpleNamespace(pid=1), 'birth')
+    install = next(row for row in report['stages'] if row['stage'] == 'release1-install')
+    assert install['result'] == 'fail' and install['first_error'] == 'ValueError: primary'
+    assert calls == ['bootstrap', 'capture']
+    assert next(row for row in report['stages'] if row['stage'] == 'release1-start')['result'] == 'not-run'

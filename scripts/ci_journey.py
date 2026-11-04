@@ -63,7 +63,7 @@ RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
-    "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
+    "windows-schema-acl.json", "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
@@ -83,6 +83,20 @@ SDK_CAPTURE_RECEIPTS: dict[Path, dict[str, dict]] = {}
 
 def journey_os_label() -> str:
     return {"darwin": "macos", "linux": "linux", "win32": "windows"}.get(sys.platform, sys.platform)
+
+
+def capture_failed_windows_fresh_install(root: Path, evidence: Path) -> None:
+    """Best effort after failed bootstrap; never change the primary failure."""
+    if sys.platform != "win32":
+        return
+    try:
+        if __package__:
+            from . import journey_windows_acl_capture as capture
+        else:
+            import journey_windows_acl_capture as capture
+        capture.capture(root, root.parent, evidence)
+    except Exception:
+        pass
 
 
 def _git_show(checkout: Path, ref: str, path: str) -> bytes:
@@ -1705,8 +1719,13 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if args.leg == "reinstall":
             installed_cli(old, ["install", "--uninstall", "--root", str(root),
                                 "--data-root", str(data)], evidence, "uninstall.log", timeout=1800)
-        bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
-                  evidence, root, data)
+        try:
+            bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
+                      evidence, root, data)
+        except Exception:
+            if args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct":
+                capture_failed_windows_fresh_install(root, evidence)
+            raise
         after_sentinel = sentinel_observation(sentinel, birth)
         result["sentinel"]["after_lifecycle"] = after_sentinel
         if not after_sentinel["alive"]:

@@ -1343,3 +1343,39 @@ def test_direct_workspace_never_opens_workspace_if_runtime_remains(tmp_path, mon
     with pytest.raises(RuntimeError, match="did not stop"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert events == ["ownership", "health", "stop", "start", "ready", "ownership"]
+
+
+def test_windows_fresh_bootstrap_capture_precedes_snapshot_and_cleanup(tmp_path, monkeypatch):
+    from scripts import journey_windows_acl_capture as capture
+    run_root = tmp_path / 'run'
+    root, data = run_root / 'program', run_root / 'data'
+    app = tmp_path / 'app'
+    app.mkdir()
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data, leg='fresh-install',
+                              shell='ps1', mode='direct', source_override=False,
+                              agent_checkout=None, runtime_checkout=None, app_checkout=app)
+    calls = []
+    monkeypatch.setattr(journey.sys, 'platform', 'win32')
+    monkeypatch.setattr(journey, 'runner_identity', lambda: {})
+    monkeypatch.setattr(journey, 'assert_runner_identity', lambda *_: None)
+    monkeypatch.setattr(journey, 'assert_host_available', lambda *a: calls.append('cleanup') if a[0] == 'cleanup' else None)
+    monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (tmp_path / 'manifest', {}))
+    monkeypatch.setattr(journey, 'git_source', lambda *_: {'sha': 'x'})
+    monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
+    monkeypatch.setattr(journey, 'snapshot_failure_evidence', lambda *a: calls.append(a[-1]))
+    @contextmanager
+    def sentinel(*_):
+        yield SimpleNamespace(pid=1), 'birth'
+    monkeypatch.setattr(journey, 'sentinel_process', sentinel)
+    def bootstrap(*_):
+        calls.append('bootstrap')
+        raise ValueError('primary')
+    def broken_capture(*_):
+        calls.append('capture')
+        raise OSError('secret')
+    monkeypatch.setattr(journey, 'bootstrap', bootstrap)
+    monkeypatch.setattr(capture, 'capture', broken_capture)
+    with pytest.raises(ValueError, match='primary'):
+        journey.execute(args)
+    assert calls[:4] == ['bootstrap', 'capture', 'before-cleanup', 'cleanup']
+    assert journey.read_json(run_root / 'evidence' / 'fresh-install' / 'journey-result.json')['error'] == 'ValueError: primary'
