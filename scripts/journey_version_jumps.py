@@ -18,12 +18,13 @@ import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
-    from . import ci_journey as journey, upgrade_release, journey_workspace
+    from . import ci_journey as journey, upgrade_release, journey_workspace, journey_live_workspace as live
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import upgrade_release
     import journey_workspace
+    import journey_live_workspace as live
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -324,15 +325,27 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict) -> dict:
     """Observe or seed through the selected live owner without releasing it."""
     journey.assert_direct_service_ownership(root, data)
-    instance = journey.healthy(data)["runtime_instance_id"]
+    discovery = journey.healthy(data)
+    selection = live.selection_for(data, root, discovery)
+    # The old offline path imposed this gate; also ensure its second discovery
+    # read cannot silently choose another realm.
+    if journey.workspace_root(data) != Path(selection["realm_root"]):
+        raise RuntimeError("Runtime owner changed during live workspace access")
+    live.check_selection(data, root, selection)
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
+    selection_path = evidence / (action + "-selection.json")
     journey.write_json(request_path, request)
-    output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
-                          action, "--data", data, "--request", request_path],
-                         evidence / (action + ".json"), timeout=120)
-    if journey.healthy(data)["runtime_instance_id"] != instance:
-        raise RuntimeError("Runtime owner changed during live workspace access")
+    journey.write_json(selection_path, selection)
+    try:
+        output = journey.run([sys.executable, journey.ROOT / "scripts/journey_live_workspace.py",
+                              action, "--data", data, "--root", root, "--selection", selection_path,
+                              "--request", request_path], evidence / (action + ".json"), timeout=120)
+    except RuntimeError:
+        # Preserve the helper's normal failure while giving turnover a clear error.
+        live.check_selection(data, root, selection)
+        raise
+    live.check_selection(data, root, selection)
     journey.assert_direct_service_ownership(root, data)
     return json.loads(output)
 

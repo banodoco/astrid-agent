@@ -4,19 +4,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 
 class LiveWorkspace:
-    def __init__(self, endpoint, token):
+    def __init__(self, endpoint, token, guard=None):
         parsed = urlsplit(endpoint)
         if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or parsed.path not in ("", "/"):
             raise ValueError("Runtime endpoint must be loopback HTTP")
-        self.endpoint, self.token = endpoint.rstrip("/"), token
+        self.endpoint, self.token, self.guard = endpoint.rstrip("/"), token, guard
 
     def request(self, method, path, body=None, *, key=None, binary=False):
+        if self.guard and method not in ("GET", "HEAD"):
+            self.guard()
         headers = {"Authorization": "Bearer " + self.token, "Origin": "https://astrid.haus"}
         if key:
             headers["Idempotency-Key"] = key
@@ -52,9 +55,12 @@ def seed(client, project, generation, task_id=None, create_project=False):
         "parent_composition": {"config": {"tracks": [], "clips": [], "metadata": {"user_note": generation}},
                                "registry": {"assets": {}}, "clips": [], "occurrences": []},
     }, key="composition-" + generation)
-    preferences = client.request("GET", path("preferences", "user"))
-    client.request("PUT", path("preferences", "user"), {
-        "content": "Keep user changes " + generation, "expected_version": preferences["version"]},
+    preference_path = path("preferences", "project") + "?project_id=" + quote(project_id, safe="")
+    preferences = client.request("GET", preference_path)
+    if preferences["version"] != 0 or preferences["content"]:
+        raise ValueError("Seed project already has preferences")
+    client.request("PUT", preference_path, {
+        "content": "Keep user changes " + generation, "expected_version": 0},
         key="preferences-" + generation)
     payload = ("C1 object " + generation + "\n").encode()
     client.request("POST", path("objects"), payload, key="object-" + generation, binary=True)
@@ -75,7 +81,8 @@ def snapshot(client, keys):
             or content["config"] != {"tracks": [], "clips": [], "metadata": {"user_note": generation}}
             or content["registry"] != {"assets": {}}):
         raise ValueError("Seeded canonical timeline content differs from the requested data")
-    preferences = client.request("GET", path("preferences", "user"))
+    preference_path = path("preferences", "project") + "?project_id=" + quote(keys["project"], safe="")
+    preferences = client.request("GET", preference_path)
     if preferences["content"] != "Keep user changes " + generation:
         raise ValueError("Seeded preferences differ from the requested data")
     payload = client.request("GET", path("objects", keys["object_digest"]), binary=True)
@@ -97,22 +104,74 @@ def snapshot(client, keys):
             "schema_version": schema["actual_version"], "target_schema_version": schema["expected_version"]}
 
 
+# These fields bind discovery to the owner selected by the parent. Do not pass
+# the credential itself through the command line or the evidence files.
+SELECTION_FIELDS = ("endpoint", "realm_root", "active_realm", "runtime_instance_id",
+                    "pid", "process_birth_id", "credential_file")
+
+
+def selection_for(data, root, discovery):
+    data, root = Path(data), Path(root)
+    if (not data.is_absolute() or data != data.resolve(strict=True)
+            or not root.is_absolute() or root != root.resolve(strict=True)
+            or root != data.parent / "program" or data != data.parent / "data"):
+        raise ValueError("Live workspace requires the owned program and data roots")
+    owner_path = data.parent / "tst-b1-owner.json"
+    if owner_path.is_symlink():
+        raise ValueError("Live workspace ownership record cannot be a symlink")
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    if (owner.get("schema_version") != 1
+            or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
+            or owner.get("root") != str(root) or owner.get("data_root") != str(data)):
+        raise ValueError("Live workspace ownership record does not match the run")
+    selection = {field: discovery.get(field) for field in SELECTION_FIELDS}
+    if any(not selection[field] for field in SELECTION_FIELDS):
+        raise ValueError("Runtime discovery lacks selected owner identity")
+    realm = Path(selection["realm_root"])
+    if not realm.is_absolute() or not realm.is_dir() or realm != realm.resolve() or not realm.is_relative_to(data.parent):
+        raise ValueError("Selected workspace is missing or outside the owned run")
+    credential = Path(selection["credential_file"])
+    if (not credential.is_absolute() or credential.is_symlink()
+            or not credential.resolve(strict=True).is_relative_to(data)):
+        raise ValueError("Runtime credential is outside the owned data root")
+    selection["credential_sha256"] = hashlib.sha256(credential.read_bytes()).hexdigest()
+    selection["run_id"] = owner["run_id"]
+    return selection
+
+
+def check_selection(data, root, expected):
+    try:
+        discovery = json.loads((data / "runtime" / "discovery.json").read_text(encoding="utf-8"))
+        current = selection_for(data, root, discovery)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("Runtime owner changed during live workspace access") from exc
+    if current != expected:
+        raise RuntimeError("Runtime owner changed during live workspace access")
+    # Health is queried at the bound endpoint, never at an independently
+    # selected discovery endpoint.
+    client = LiveWorkspace(expected["endpoint"], "")
+    health = client.request("GET", "/v1/health")
+    if health.get("status") != "ok" or health.get("runtime_instance_id") != expected["runtime_instance_id"]:
+        raise RuntimeError("Runtime owner changed during live workspace access")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("seed", "snapshot"))
     parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--request", type=Path, required=True)
     args = parser.parse_args()
-    data = args.data.resolve(strict=True)
-    if not (data.parent / "tst-b1-owner.json").is_file():
-        raise ValueError("Live workspace requires the B1 owned run")
-    discovery = json.loads((data / "runtime" / "discovery.json").read_text(encoding="utf-8"))
-    credential = Path(discovery["credential_file"])
-    if credential.is_symlink() or not credential.resolve(strict=True).is_relative_to(data):
-        raise ValueError("Runtime credential is outside the owned data root")
-    client = LiveWorkspace(discovery["endpoint"], credential.read_text(encoding="utf-8").strip())
+    data, root = args.data, args.root
+    selection = json.loads(args.selection.read_text(encoding="utf-8"))
+    check_selection(data, root, selection)
+    credential = Path(selection["credential_file"])
+    client = LiveWorkspace(selection["endpoint"], credential.read_text(encoding="utf-8").strip(),
+                           guard=lambda: check_selection(data, root, selection))
     request = json.loads(args.request.read_text(encoding="utf-8"))
     result = seed(client, **request) if args.action == "seed" else snapshot(client, request)
+    check_selection(data, root, selection)
     print(json.dumps(result, sort_keys=True))
 
 
