@@ -236,3 +236,33 @@ finally: s.close()
                                 str(tmp_path / "realm"), revision], capture_output=True, text=True, timeout=120)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert json.loads(completed.stdout)["revision"] == revision
+
+
+def test_busy_refusal_keeps_safety_checks_without_counting_runtime_pids(tmp_path, monkeypatch):
+    root, data, evidence = (tmp_path / name for name in ("program", "data", "evidence"))
+    old_root = root / "versions/old"
+    old_root.mkdir(parents=True)
+    (root / "current").write_text("old\n")
+    (old_root / "version.json").write_text("{}\n")
+    discovery = data / "runtime/discovery.json"
+    discovery.parent.mkdir(parents=True)
+    discovery.write_text("{}\n")
+    (evidence / "busy").mkdir(parents=True)
+    (evidence / "busy/update-bootstrap.log").write_text("busy task task-id\n")
+    monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
+    monkeypatch.setattr(jumps.journey_workspace, "realm_identity", lambda *_: {"realm": "test"})
+    actions = []
+    def workspace(_old, _data, _folder, action, _request, **_kwargs):
+        actions.append(action)
+        return {"task_id": "task-id"} if action == "busy" else {"released": True}
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    monkeypatch.setattr(journey, "bootstrap", lambda *_: (_ for _ in ()).throw(RuntimeError("busy")))
+    monkeypatch.setattr(journey, "process_birth", lambda _pid: "birth")
+    monkeypatch.setattr(journey, "sentinel_alive", lambda *_: True)
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: pytest.fail("must not count Runtime PIDs"))
+    result = {"checks": {}}
+    jumps.busy_refusal(argparse.Namespace(app_checkout=tmp_path, shell="sh"), root, data, evidence,
+                       tmp_path / "manifest", {"root": str(old_root)}, 123, "birth",
+                       argparse.Namespace(pid=321), "sentinel-birth", result)
+    assert actions == ["busy", "release"]
+    assert result["checks"] == {"busy_refusal": "pass", "unrelated_sentinel": "pass"}
