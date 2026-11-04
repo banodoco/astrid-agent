@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import sys
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -191,7 +192,14 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Unrelated sentinel did not survive fresh installation")
         def fresh_task():
             try:
-                return jumps.task_after_update(state["version"], evidence / "release1-working-task", project)
+                task_evidence = evidence / "release1-working-task"
+                if sys.platform == "win32":
+                    journey.windows.EVIDENCE = task_evidence
+                    journey.windows.wait_for("pack-host is running with its current ready file",
+                                             journey.windows.host_ready)
+                    journey.windows.snapshot("processes-host-ready.json")
+                    return journey.windows.task(project, create_project=True)
+                return journey.task(state["version"], task_evidence, project)
             except Exception:
                 journey.capture_failed_release1_task(evidence, state["version"])
                 raise
