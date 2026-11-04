@@ -135,11 +135,12 @@ def test_adopt_diagnostic_binds_sources_and_guards_before_mutation():
     source = inspect.getsource(capture.main)
     inner = (Path(__file__).parents[1] / 'scripts/ci_mac_r1fix_inner.py').read_text()
     assert repr(inner) in source
-    assert inner.index("done('r0-fixture-verification')") < inner.index('v.bootstrap_release0(')
-    assert inner.index("done('r0-stopped-and-lock-free')") < inner.index("command('adopt'")
+    assert inner.index("done('r0-fixture')") < inner.index('v.bootstrap_release0(')
+    assert inner.index("done('r0-stopped-lock-free')") < inner.index("command('adopt'")
     assert 'fcntl.LOCK_EX|fcntl.LOCK_NB' in inner
-    assert 'loaded_path.group(1)!=str(plist)' in inner
+    assert 'loaded.group(1)!=str(plist)' in inner
     assert "'workspace','adopt','--data-root'" in inner
     assert "'--expected-realm-id',realm_id,'--json'" in inner
-    assert capture.REFS['agent'][1] == 'ffe476b7efb7387acca4097c0569d3dffe2fbab0'
+    assert "'--read-only-source','--no-start'" in inner
+    assert capture.REFS['agent'][1] == 'a052829cfe2f3725b1c2cf608974c10faf8eb99f'
     assert capture.REFS['runtime'][1] == '9fc53b771134940aaac901e4cfc5d03c1db1a20a'
