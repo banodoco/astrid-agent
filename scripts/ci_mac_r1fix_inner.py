@@ -47,16 +47,32 @@ def stop_owned():
  return realm
 
 disabled_by_us=False
-r1=run/'r1-data'; realm=None; realm_id=None
+r1=Path(str(data)+'-r1'); realm=None; realm_id=None
 try:
  agent_fixture=base/'agent/tests/fixtures/release0'
  driver_fixture=base/'driver/tests/fixtures/release0'
  if (agent_fixture/'SHA256SUMS').read_bytes()!=(driver_fixture/'SHA256SUMS').read_bytes(): raise RuntimeError('Agent and driver fixture manifests differ')
  fixture, oldmanifest, receipt=v.verified_release0_fixture(driver_fixture); done('r0-fixture-verification')
+ app_manifest=base/'app/public/install-manifest.json'; app_bytes=app_manifest.read_bytes()
+ (evidence/'app-publishing-manifest.json').write_bytes(app_bytes)
+ status['app_publishing_sha']='878c28df7a6c80fa9aaa6540c5fccad95473e7c1'
+ status['app_manifest_sha256']=hashlib.sha256(app_bytes).hexdigest(); done('app-manifest-captured')
  with j.isolated_environment(run,root,data):
   v.bootstrap_release0(fixture,oldmanifest,'sh',evidence/'release0',root,data); done('r0-install')
   j.wait_ready(data); oldpath,_,old=j.installation(root,data)
   if v.installed_release(old)!=0: raise RuntimeError('Installed release is not R0')
+  installed_manifest=Path(old['root'])/'manifest.json'
+  if installed_manifest.is_symlink() or not installed_manifest.is_file() or not installed_manifest.resolve().is_relative_to(root): raise RuntimeError('Installed manifest identity unsafe')
+  manifest_bytes=installed_manifest.read_bytes(); (evidence/'installed-r0-manifest.json').write_bytes(manifest_bytes)
+  status['installed_manifest_sha256']=hashlib.sha256(manifest_bytes).hexdigest()
+  def tree(path,depth=0):
+   rows=[]
+   for item in sorted(path.iterdir()):
+    row={'name':item.name,'kind':'symlink' if item.is_symlink() else 'directory' if item.is_dir() else 'file' if item.is_file() else 'other'}
+    if row['kind']=='directory' and depth<1: row['children']=tree(item,depth+1)
+    rows.append(row)
+   return rows
+  (evidence/'installed-program-tree.json').write_text(json.dumps(tree(root),indent=2)+'\n'); done('installed-program-inventory')
   prove_owned(); done('r0-service-identity')
   keys=v.direct_workspace(root,old,data,evidence/'seed','seed',{'project':'ws02-r0-workspace','generation':'release0','task_id':None,'create_project':True}); done('seed')
   realm=j.workspace_root(data)
@@ -100,7 +116,7 @@ try:
      if item.is_symlink(): raise RuntimeError('CAS contains symlink')
      if item.is_file(): result[item.relative_to(rootcas).as_posix()]=hashlib.sha256(item.read_bytes()).hexdigest()
     return result
-   before=cas_map(realm); after=cas_map(target); status['cas']={'source_count':len(before),'target_count':len(after),'identical':before==after}; save()
+   before=cas_map(realm); after=cas_map(target); status['cas']={'source_count':len(before),'target_count':len(after),'identical':before==after,'source_sha256':before,'target_sha256':after}; save()
   else: status['stages']['inspect']='not-run-target-missing'; status['cas']='not-run-target-missing'
   status['outcome']='pass' if adopt.returncode==0 and status['stages'].get('inspect',{}).get('exit')==0 and isinstance(status.get('cas'),dict) and status['cas']['identical'] and status['cas']['source_count']>0 else 'failed'
 except Exception as exc:
