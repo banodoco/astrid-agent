@@ -9,6 +9,25 @@ from scripts import ci_journey_keepgoing as keepgoing
 from scripts import journey_version_jumps as jumps
 
 
+@pytest.mark.parametrize("platform,release,expected", [
+    ("win32", 1, 0),
+    ("linux", 1, 1),
+    ("darwin", 1, 1),
+    ("win32", 0, 0),
+])
+def test_cleanup_checks_only_platform_supported_service_ownership(monkeypatch, tmp_path,
+                                                                  platform, release, expected):
+    calls = []
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda root, data, *, release: calls.append((root, data, release)) or {})
+
+    assert journey.assert_cleanup_service_ownership(tmp_path / "root", tmp_path / "data",
+                                                    release=release) == {}
+
+    assert calls == [(tmp_path / "root", tmp_path / "data", expected)]
+
+
 @pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatch, platform):
     monkeypatch.setattr(keepgoing.sys, "platform", platform)
