@@ -1104,10 +1104,11 @@ def assert_direct_service_ownership(root: Path, data: Path) -> dict:
                                     "--property=LoadState,FragmentPath,ActiveState"], capture_output=True,
                                    text=True, timeout=30, check=False)
         fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
-        if (completed.returncode or fields.get("LoadState") == "not-found"
-                or fields.get("FragmentPath") != str(unit)
-                or fields.get("ActiveState") != "active"):
+        if completed.returncode or fields.get("LoadState") != "loaded" or fields.get("FragmentPath") != str(unit):
             raise RuntimeError("Direct journey service is not owned by the expected systemd user unit")
+        if fields.get("ActiveState") != "active":
+            state = fields.get("ActiveState", "unknown")
+            raise RuntimeError(f"Direct journey systemd user service is inactive (ActiveState={state})")
         return {"manager": "systemd-user", "service_path": str(unit), "foreground_fallback": False}
     if sys.platform == "darwin":
         plist = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
