@@ -357,10 +357,20 @@ class Installer:
     def _activate(self, version: Version, realm_id: str) -> None:
         self.backend.register(version, self.data)
         if self.managed_by != "pinokio":
+            self._observe_autostart()
             self.backend.start(version, self.data)
             self.backend.verify(version, self.data, realm_id)
         elif self.backend.workspace(version, self.data)["realm_id"] != realm_id:
             raise VerificationError("The installed workspace identity changed.")
+
+    def _observe_autostart(self) -> None:
+        # Registration is distinct from the Runtime's readiness. Observation
+        # must not turn a successful installation into a failure.
+        self.outcomes["autostart_registered"] = None
+        try:
+            self.outcomes["autostart_registered"] = self.backend.service.login_service_exists()
+        except Exception:  # noqa: BLE001 - observation is best effort
+            pass
 
     def _publish_stop_admission(self, version: Version | None) -> None:
         publish = getattr(self.backend, "publish_launch_admission", None)
@@ -641,6 +651,7 @@ class Installer:
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             self.backend.register(old, self.data)
+            self._observe_autostart()
             self.outcomes["startup"] = "configured; readiness not confirmed"
             install_launcher(self.root)
             self.backend.start(old, self.data)
@@ -687,6 +698,8 @@ class Installer:
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
                 self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
                 self.backend.register(candidate, data)
+                if self.managed_by != "pinokio":
+                    self._observe_autostart()
                 self.outcomes["startup"] = "configured; readiness not confirmed"
                 if self.managed_by != "pinokio":
                     self.backend.start(candidate, data)
@@ -741,6 +754,8 @@ class Installer:
             switch(self.root, candidate_version)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
             self.backend.register(candidate_version, self.data)
+            if self.managed_by != "pinokio":
+                self._observe_autostart()
             self.outcomes["startup"] = "configured; readiness not confirmed"
             install_launcher(self.root)
             if self.managed_by != "pinokio":

@@ -6,11 +6,13 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from runtime_protocol import platform
 
 from astrid.installer import cli
 from astrid.installer.backend import Backend
 from astrid.installer.choices import RECOMMENDED_CHOICES
+from astrid.installer.core import Installer
 from astrid.installer.service import install_selection
 
 
@@ -163,6 +165,49 @@ def test_summary_does_not_claim_failed_or_unreached_work(capsys):
     assert "Skill destinations: sync failed" in output
     assert "Failure: ValueError: failed safely" in output
     assert "running and ready" not in output
+
+
+@pytest.mark.parametrize(("observed", "expected"), [
+    (True, "registered"), (False, "not registered"), (None, "not confirmed"),
+])
+def test_summary_separates_observed_autostart_from_runtime_readiness(observed, expected, capsys):
+    cli._print_run_summary(RECOMMENDED_CHOICES, mode="install", outcomes={
+        "startup": "running and ready", "autostart_registered": observed,
+    })
+    output = capsys.readouterr().out
+    assert "Startup: running and ready." in output
+    assert f"Sign-in autostart: {expected}." in output
+
+
+@pytest.mark.parametrize("observed", [True, False, None])
+def test_activation_observes_registration_without_failing_on_observation_error(tmp_path, observed):
+    calls = []
+
+    def observe():
+        calls.append("observe")
+        if observed is None:
+            raise OSError("observation unavailable")
+        return observed
+
+    backend = SimpleNamespace(
+        service=SimpleNamespace(login_service_exists=observe),
+        register=lambda *_: calls.append("register"),
+        start=lambda *_: calls.append("start"),
+        verify=lambda *_: calls.append("verify"),
+    )
+    installer = Installer(tmp_path / "root", tmp_path / "data", backend)
+    installer._activate(object(), "realm")
+    assert calls == ["register", "observe", "start", "verify"]
+    assert installer.outcomes["autostart_registered"] is observed
+
+
+def test_summary_preserves_pinokio_startup_wording(capsys):
+    cli._print_run_summary(RECOMMENDED_CHOICES, mode="install", outcomes={
+        "startup": "Pinokio owns startup",
+    })
+    output = capsys.readouterr().out
+    assert "Startup: Pinokio owns startup." in output
+    assert "Sign-in autostart: not confirmed." in output
 
 
 def test_summary_reports_command_off_effects_and_keeps_way_back(capsys):

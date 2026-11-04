@@ -108,6 +108,9 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
     else:
         outcomes = outcomes or {}
         print(f"  Startup: {outcomes.get('startup', 'not confirmed')}.")
+        registered = outcomes.get("autostart_registered")
+        status = "registered" if registered is True else "not registered" if registered is False else "not confirmed"
+        print(f"  Sign-in autostart: {status}.")
         command = outcomes.get("command")
         if command is None:
             print("  Command/PATH: not reached in this run.")
