@@ -14,12 +14,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 
 from . import adoption_receipt, boundary_registration as registration, r0_stop
 from .core import Version, absolute, current, pending_transaction, read_json, separate_roots, version_id
 from .service import LABEL, bootstrap_root
+
+
+UPGRADE_UNINSTALL_REFUSAL = (
+    "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. "
+    "Both data folders were kept."
+)
 
 
 def journal_path(service):
@@ -297,147 +302,24 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     return True
 
 
-def _require_inactive_r0_linux(reg, service):
-    output = reg._run(["systemctl", "--user", "show", registration.R0_LINUX,
-                       "--property=LoadState", "--property=ActiveState",
-                       "--property=UnitFileState", "--property=FragmentPath",
-                       "--property=DropInPaths"])
-    pairs = [line.split("=", 1) for line in output.splitlines() if "=" in line]
-    fields = dict(pairs)
-    if (len(fields) != len(pairs) or fields.get("LoadState") != "loaded"
-            or fields.get("FragmentPath") != str(service.path)
-            or fields.get("DropInPaths") != ""
-            or fields.get("ActiveState") not in {"inactive", "failed"}
-            or fields.get("UnitFileState") != "disabled"):
-        raise ValueError("R0 service state or ownership changed; both roots were kept.")
-
-
-def _mac_disabled(output, label):
-    return bool(re.search(r'(?m)^\s*"' + re.escape(label)
-                          + r'"\s*(?:=>|=)\s*(?:true|disabled)\s*$', output))
-
-
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
-    """Remove a completed, bound handoff without ever restarting R0.
+    """Refuse uninstall after an R0 to R1 handoff, preserving both installs."""
+    raise ValueError(UPGRADE_UNINSTALL_REFUSAL)
 
-    A partial removal deliberately retains the journals and fails closed on a
-    subsequent invocation if its evidence is no longer complete.
-    """
-    tx = BoundaryHandoff(backend)
-    value = tx._load()
-    candidate, destination = tx.validate_active(value)
-    if absolute(data) != Path(value["r0_data_root"]) or pending_transaction(tx.root):
-        raise ValueError("The handoff or another installer transaction needs recovery before uninstall.")
-    reg = tx.registration
-    bound = read_json(registration._regular(reg.journal))
-    intent_path = r0_stop._marker_path(tx.service)
-    intent = read_json(registration._regular(intent_path))
-    if (bound.get("version") != 1 or bound.get("phase") != "disabled"
-            or bound.get("system") != tx.service.system
-            or any(bound.get(k) != value[k] for k in
-                   ("program_root", "r0_data_root", "r1_data_root", "r0_realm", "realm_id", "candidate", "old_pointer"))
-            or bound.get("log") != value["r1_log"]
-            or bound.get("r0_intent") != intent
-            or any(intent.get(k) != v for k, v in {
-                "version": 1, "system": tx.service.system, "program_root": str(tx.root),
-                "data_root": str(data), "unit": str(tx.service.path),
-                "unit_sha256": value["r0_unit_sha256"]}.items())
-            or r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]):
-        raise ValueError("Handoff service evidence changed; both roots were kept.")
-    registration._publication_alias(reg.journal, bound)
-    r0_realm = Path(value["r0_realm"])
-    if (r0_stop._selected_realm(data) != (value["realm_id"], r0_realm)
-            or backend.preflight_remove(tx.root, data, delete_data=delete_data,
-                                        expected_realm=r0_realm,
-                                        expected_realm_id=value["realm_id"]) != r0_realm):
-        raise ValueError("The selected R0 workspace changed; both roots were kept.")
-    bootstrap = bootstrap_root(tx.service.home, tx.service.system)
-    if (tx.root != bootstrap.parent and backend.uv.parent == bootstrap and bootstrap.exists()
-            and not separate_roots(destination, absolute(bootstrap))):
-        raise ValueError("The installer bootstrap overlaps the retained R1 workspace.")
-    shim = absolute(tx.service.home / ".local/bin/astrid")
-    if not separate_roots(data, shim) or not separate_roots(destination, shim):
-        raise ValueError("The command shim overlaps a retained workspace.")
-    backend.preflight_stop(destination)
-    selection = read_json(tx.service.selection)
-    if "chat_settings" not in selection:
-        chat_cwd, options = backend._selected_chat_settings(candidate, data)
-        selection["chat_settings"] = {"ASTRID_ACP_CWD": str(chat_cwd), **options}
-    # Validate both manager entries before making either change. R0 must have
-    # remained stopped since adoption; never stop a newly appeared R0 owner.
-    if tx.service.system == "linux":
-        _require_inactive_r0_linux(reg, tx.service)
-        if reg._linux_state() is None:
-            raise ValueError("R1 service is missing; both roots were kept.")
-        reg._run(["systemctl", "--user", "disable", "--now", registration.R1_LINUX])
-        state = reg._linux_state()
-        if state is None or state.get("UnitFileState") != "disabled" or state.get("ActiveState") not in {"inactive", "failed"}:
-            raise ValueError("R1 stop is uncertain; both roots were kept.")
-    else:
-        r0_stop._validate_plist(tx.service)
-        if r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None:
-            raise ValueError("R0 service unexpectedly loaded; both roots were kept.")
-        disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
-        if not _mac_disabled(disabled, registration.R0_MAC):
-            raise ValueError("R0 service state is uncertain; both roots were kept.")
-        if not reg._mac_state(bound):
-            raise ValueError("R1 service is missing; both roots were kept.")
-        target = f"gui/{reg.uid}/{registration.R1_MAC}"
-        reg._run(["launchctl", "disable", target])
-        reg._run(["launchctl", "bootout", target])
-        disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
-        if (reg._mac_state(bound)
-                or not _mac_disabled(disabled, registration.R1_MAC)):
-            raise ValueError("R1 stop is uncertain; both roots were kept.")
 
-    r1_realm = destination / "runtime/realms" / value["realm_id"]
-    r0_stop._wait_for_owner_lock(r1_realm, 90, .2)
-    with r0_stop.owner_lock(r1_realm), r0_stop.owner_lock(r0_realm):
-        # Revalidate the owned definitions immediately before disabling R0 and
-        # deleting anything. Do not use process-name or PID discovery here.
-        if any(not path.exists() for path in reg._check_files(bound)):
-            raise ValueError("R1 registration is missing; both roots were kept.")
-        if r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]:
-            raise ValueError("R0 service changed; both roots were kept.")
-        reg.r1_path.unlink()
-        r0_stop._sync_directory(reg.r1_path.parent)
-        if tx.service.system == "linux":
-            reg._run(["systemctl", "--user", "daemon-reload"])
-        r0_stop._require_no_r1(tx.service)
-        if tx.service.system == "linux":
-            _require_inactive_r0_linux(reg, tx.service)
-            reg._run(["systemctl", "--user", "disable", registration.R0_LINUX])
-            _require_inactive_r0_linux(reg, tx.service)
-            if r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]:
-                raise ValueError("R0 service changed; both roots were kept.")
-        else:
-            if r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None:
-                raise ValueError("R0 service unexpectedly loaded; both roots were kept.")
-            reg._run(["launchctl", "disable", f"gui/{reg.uid}/{registration.R0_MAC}"])
-            disabled = reg._run(["launchctl", "print-disabled", f"gui/{reg.uid}"])
-            if (r0_stop._launchd_print(tx.service, f"gui/{reg.uid}/{registration.R0_MAC}") is not None
-                    or not _mac_disabled(disabled, registration.R0_MAC)
-                    or r0_stop._unit_digest(tx.service) != value["r0_unit_sha256"]):
-                raise ValueError("R0 service state or ownership changed; both roots were kept.")
-        tx.service.path.unlink()
-        r0_stop._sync_directory(tx.service.path.parent)
-        if tx.service.system == "linux":
-            reg._run(["systemctl", "--user", "daemon-reload"])
-        # A changed selection cannot authorize a teardown receipt.
-        if _text(tx.service.selection) != tx._records(value)[1]:
-            raise ValueError("R1 handoff selection changed; both roots were kept.")
-        for key in ("r1_data_root", "r1_realm_root", "service_label", "identity", "version"):
-            selection.pop(key, None)
-        selection.update(uninstalled=True, retained_r1_data_root=str(destination))
-        registration._publish(tx.service.selection, _json(selection), exclusive=False)
-        for path in (reg.journal, intent_path, tx.journal):
-            path.unlink()
-            r0_stop._sync_directory(path.parent)
-        residue = backend.remove(tx.root, data, delete_data=delete_data, expected_realm=r0_realm,
-                                 expected_realm_id=value["realm_id"])
-    say("Astrid was uninstalled." if not residue else "Astrid was unregistered; some files remain.")
-    for path in residue:
-        say(f"Remaining: {path}")
-    if not delete_data:
-        say(f"Workspace kept at {data}.")
-    say(f"R1 workspace kept at {destination}.")
+def refuse_handoff_uninstall(service, root):
+    """Fail closed on handoff records or residual R1 evidence."""
+    registration_journal = registration.journal_path(service)
+    r1_service = (service.path.with_name(registration.R1_LINUX)
+                  if service.system == "linux" else service.path.with_name(registration.R1_MAC + ".plist")
+                  if service.system == "darwin" else Path(root) / "task-r1.xml")
+    if any(os.path.lexists(path) for path in
+           (journal_path(service), registration_journal, r1_service)):
+        raise ValueError(UPGRADE_UNINSTALL_REFUSAL)
+    try:
+        marker = read_json(Path(root) / "install.json")
+        selection = read_json(service.selection)
+    except (OSError, TypeError, ValueError):
+        raise ValueError(UPGRADE_UNINSTALL_REFUSAL) from None
+    if marker.get("r1_data_root") or selection.get("r1_data_root"):
+        raise ValueError(UPGRADE_UNINSTALL_REFUSAL)

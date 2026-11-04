@@ -10,7 +10,7 @@ import pytest
 
 from astrid.installer import cli
 from astrid.installer.core import Version, current, read_json, write_json
-from astrid.installer.service import LABEL, default_program_root
+from astrid.installer.service import LABEL, Service, default_program_root
 
 
 @pytest.mark.parametrize("explicit_root", [False, True])
@@ -31,11 +31,12 @@ def test_partial_uninstall_can_finish_after_version_metadata_was_removed(
     write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
     (root / "current").write_text("removed-version\n")
     backend = Mock()
-    backend.source_checkout_ownership.return_value = False
-    backend.service.recorded.return_value = {
+    backend.service = Service(root, tmp_path / "logs/install.log", None, home=home, system=sys.platform)
+    backend.service.recorded = Mock(return_value={
         "owner": LABEL, "program_root": str(root),
         "data_root": str(data), "uninstalled": True,
-    }
+    })
+    backend.source_checkout_ownership.return_value = False
     backend.existing.return_value = None
     backend.remove.return_value = []
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
