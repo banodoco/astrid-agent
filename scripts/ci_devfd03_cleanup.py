@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Retain sanitized evidence, then remove this job's isolated temporary tree."""
-import json, os, pwd, re, shutil, stat, subprocess, sys
+import hashlib, json, os, pwd, re, shutil, stat, subprocess, sys
 from pathlib import Path
 UID=503
 if os.getuid()!=UID or os.environ.get('RUNNER_NAME')!='hannah-mac' or sys.platform!='darwin': raise SystemExit('Unexpected runner')
@@ -19,6 +19,7 @@ dest=parent/(run+'-'+attempt); dest.mkdir(mode=0o700)
 for path in files:
  with path.open('rb') as inp, (dest/path.name).open('xb') as out: shutil.copyfileobj(inp,out)
  os.chmod(dest/path.name,0o600)
+ if hashlib.sha256(path.read_bytes()).digest()!=hashlib.sha256((dest/path.name).read_bytes()).digest(): raise SystemExit('Evidence copy differs')
 if result.get('cleanup')!={'task_argument_pids':[],'open_file_scan':'clear'}: raise SystemExit('Preceding cleanup check not clear')
 if not shutil.rmtree.avoids_symlink_attacks: raise SystemExit('Safe rmtree unavailable')
 for target in (task,source):
@@ -27,7 +28,7 @@ for target in (task,source):
  if any(str(target) in x for x in listing.stdout.splitlines()): raise SystemExit('Task referenced')
  opened=subprocess.run(['/usr/sbin/lsof','-n','+D',str(target)],capture_output=True,text=True,timeout=180)
  if opened.returncode!=1 or opened.stdout.strip() or opened.stderr.strip(): raise SystemExit('Open-file check failed')
- for directory,dirs,files in os.walk(target,followlinks=False):
+ for directory,dirs,files in os.walk(target,followlinks=False,onerror=lambda exc: (_ for _ in ()).throw(exc)):
   for name in dirs+files:
    st_entry=os.lstat(os.path.join(directory,name))
    if st_entry.st_uid!=UID or st_entry.st_dev!=st.st_dev: raise SystemExit('Foreign owner or filesystem boundary')
