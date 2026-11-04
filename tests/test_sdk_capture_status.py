@@ -154,3 +154,144 @@ def test_local_write_failure_does_not_replace_child_failure(monkeypatch, tmp_pat
     if error is RuntimeError:
         assert "exit 7" in str(exc.value)
     assert receipt(tmp_path)["response_size"] == "within_limit"
+
+
+@pytest.mark.parametrize("failure", ["thread-start", "interrupt"])
+def test_exception_reaps_child_before_it_can_write(monkeypatch, tmp_path, failure):
+    import os
+    import signal
+    import threading
+    import time
+
+    ready, release, marker = (tmp_path / name for name in ("ready", "release", "late"))
+    code = ("from pathlib import Path\nimport time\n"
+            f"Path({str(ready)!r}).touch()\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            f"Path({str(marker)!r}).touch()\n")
+    children = []
+
+    def spawn(_command, **kwargs):
+        process = POPEN([sys.executable, "-c", code], **kwargs)
+        children.append(process)
+        deadline = time.monotonic() + 3
+        while not ready.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        if failure == "interrupt":
+            original_wait = process.wait
+            def interrupt_once(*args, **kwargs):
+                process.wait = original_wait
+                raise KeyboardInterrupt("interrupted wait")
+            process.wait = interrupt_once
+        return process
+
+    monkeypatch.setattr(journey.subprocess, "Popen", spawn)
+    if failure == "thread-start":
+        def fail_start(_thread):
+            raise RuntimeError("thread start failed")
+        monkeypatch.setattr(threading.Thread, "start", fail_start)
+    try:
+        with pytest.raises(RuntimeError if failure == "thread-start" else KeyboardInterrupt):
+            journey.installed_cli_with_capture({"python": sys.executable, "env": {}}, [], tmp_path,
+                                               "sdk-invocation.json", status_name=STATUS)
+        child = children[0]
+        release.touch()
+        assert child.returncode == -signal.SIGKILL
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)
+        assert not marker.exists()
+        assert receipt(tmp_path)["exit_condition"] == "failure"
+        assert receipt(tmp_path)["response_size"] == "unavailable"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            POPEN.wait(child, timeout=3)
+            child.stdout.close()
+
+
+def test_timeout_cleanup_failure_preserves_primary_and_reports_it(monkeypatch, tmp_path):
+    children = []
+
+    def spawn(_command, **kwargs):
+        process = POPEN([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        children.append(process)
+        original_kill = process.kill
+        def fail_once():
+            process.kill = original_kill
+            raise OSError("synthetic kill failure")
+        process.kill = fail_once
+        return process
+
+    monkeypatch.setattr(journey.subprocess, "Popen", spawn)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as exc:
+            journey.installed_cli_with_capture({"python": sys.executable, "env": {}}, [], tmp_path,
+                                               "sdk-invocation.json", status_name=STATUS, timeout=0.1)
+        assert any("synthetic kill failure" in note for note in exc.value.__notes__)
+        assert children[0].returncode is not None
+        assert receipt(tmp_path)["exit_condition"] == "timeout"
+        assert receipt(tmp_path)["response_size"] == "unavailable"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            POPEN.wait(child, timeout=3)
+            child.stdout.close()
+
+
+def test_cleanup_failure_is_reported_without_replacing_primary(monkeypatch, tmp_path):
+    import threading
+
+    children = []
+    def spawn(_command, **kwargs):
+        process = POPEN([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        children.append(process)
+        def fail_kill():
+            raise OSError("synthetic termination failure")
+        process.kill = fail_kill
+        return process
+
+    def fail_start(_thread):
+        raise RuntimeError("primary thread failure")
+
+    monkeypatch.setattr(journey.subprocess, "Popen", spawn)
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    try:
+        with pytest.raises(RuntimeError, match="primary thread failure") as exc:
+            journey.installed_cli_with_capture({"python": sys.executable, "env": {}}, [], tmp_path,
+                                               "sdk-invocation.json", status_name=STATUS)
+        assert any("synthetic termination failure" in note for note in exc.value.__notes__)
+        assert receipt(tmp_path)["exit_condition"] == "failure"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                POPEN.kill(child)
+            POPEN.wait(child, timeout=3)
+            child.stdout.close()
+
+
+def test_buffer_allocation_failure_reaps_launched_child(monkeypatch, tmp_path):
+    children = []
+    def spawn(_command, **kwargs):
+        process = POPEN([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        children.append(process)
+        return process
+
+    def fail_allocation():
+        raise MemoryError("synthetic allocation failure")
+
+    monkeypatch.setattr(journey.subprocess, "Popen", spawn)
+    monkeypatch.setattr(journey, "bytearray", fail_allocation, raising=False)
+    try:
+        with pytest.raises(MemoryError, match="synthetic allocation failure"):
+            journey.installed_cli_with_capture({"python": sys.executable, "env": {}}, [], tmp_path,
+                                               "sdk-invocation.json", status_name=STATUS)
+        assert children[0].returncode is not None
+        assert receipt(tmp_path)["response_size"] == "unavailable"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            POPEN.wait(child, timeout=3)
+            child.stdout.close()
