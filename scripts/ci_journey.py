@@ -1533,13 +1533,6 @@ def runtime_processes(data: Path) -> list[int]:
     return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
-def assert_one_runtime(data: Path) -> None:
-    """Require the selected data root to have exactly one Runtime owner."""
-    owners = runtime_processes(data)
-    if len(owners) != 1:
-        raise RuntimeError(f"Expected one Runtime process for the selected data root; found {len(owners)}")
-
-
 def wait_ready(data: Path, *, timeout: int = 900) -> None:
     deadline = time.monotonic() + timeout
     while True:
