@@ -168,7 +168,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 raise RuntimeError("Unrelated sentinel exited before installation")
             state.update(app=app, candidate_path=path, manifest=manifest)
         def fresh_install():
-            journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+            try:
+                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+            except Exception:
+                if getattr(args, "mode", "direct") == "direct":
+                    journey.capture_failed_windows_fresh_install(root, evidence)
+                raise
             state["updated"] = True
         def fresh_start():
             jumps.start_direct_runtime(evidence / "release1")
