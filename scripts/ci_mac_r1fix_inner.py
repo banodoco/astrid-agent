@@ -49,7 +49,10 @@ def stop_owned():
 disabled_by_us=False
 r1=run/'r1-data'; realm=None; realm_id=None
 try:
- fixture, oldmanifest, receipt=v.verified_release0_fixture(base/'agent/tests/fixtures/release0'); done('r0-fixture-verification')
+ agent_fixture=base/'agent/tests/fixtures/release0'
+ driver_fixture=base/'driver/tests/fixtures/release0'
+ if (agent_fixture/'SHA256SUMS').read_bytes()!=(driver_fixture/'SHA256SUMS').read_bytes(): raise RuntimeError('Agent and driver fixture manifests differ')
+ fixture, oldmanifest, receipt=v.verified_release0_fixture(driver_fixture); done('r0-fixture-verification')
  with j.isolated_environment(run,root,data):
   v.bootstrap_release0(fixture,oldmanifest,'sh',evidence/'release0',root,data); done('r0-install')
   j.wait_ready(data); oldpath,_,old=j.installation(root,data)
