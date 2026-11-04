@@ -40,7 +40,7 @@ on:
         default: false
         type: boolean
       direct_only:
-        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        description: Run only the five direct Release-1 rows (the full Release-1 gate; Pinokio is deferred to R1.1)
         required: false
         default: false
         type: boolean
@@ -112,7 +112,7 @@ on:
         default: false
         type: boolean
       direct_only:
-        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        description: Run only the five direct Release-1 rows (the full Release-1 gate; Pinokio is deferred to R1.1)
         required: false
         default: false
         type: boolean
@@ -155,7 +155,7 @@ on:
         required: false
         type: string
       row:
-        description: Run one direct journey row or all three direct rows
+        description: Run one direct journey row or all five direct rows
         required: false
         default: direct
         type: choice
@@ -163,6 +163,8 @@ on:
           - direct-linux
           - direct-macos
           - direct-windows
+          - direct-linux-fresh
+          - direct-macos-fresh
           - direct
 
 concurrency:
@@ -324,9 +326,9 @@ jobs:
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           journey_row = os.environ["JOURNEY_ROW"].strip()
-          valid_rows = {"", "direct-linux", "direct-macos", "direct-windows", "direct"}
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct"}
           if journey_row not in valid_rows:
-              raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
+              raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
               direct_only = True
           diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
@@ -374,21 +376,15 @@ jobs:
                   raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
           else:
               m4_6_candidate = {}
-          matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"direct-windows", "mode":"direct", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-          ]
-          if direct_only:
-              matrix = [row for row in matrix if row["mode"] == "direct"]
-          elif backend_only:
-              matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
+          # The Release-1 strict matrix is the five direct rows; each keeps its
+          # own leg.  Pinokio rows are deferred to R1.1 (backend-only M4-4a).
+          if backend_only:
+              matrix = [dict(row) for row in journey_matrix.M4_4A_BACKEND_MATRIX]
+          else:
+              matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
+          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
+              # Keep-going diagnostics re-leg the original three direct rows.
+              matrix = [row for row in matrix if row["job_id"] not in journey_matrix.RELEASE1_DIRECT_FRESH_JOB_IDS]
           if journey_row and journey_row != "direct":
               matrix = [row for row in matrix if row["job_id"] == journey_row]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg == "release0-to-release1":
@@ -401,9 +397,7 @@ jobs:
               matrix = matrix + [dict(row, leg="fresh-install") for row in matrix]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
-          wait_timeout = "180" if journey_row in {
-              "direct-linux", "direct-macos", "direct-windows"
-          } else "900"
+          wait_timeout = "180" if journey_row in journey_matrix.RELEASE1_JOB_IDS else "900"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
@@ -501,19 +495,21 @@ jobs:
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
       - name: Establish Linux user service manager
-        if: matrix.job_id == 'direct-linux'
+        if: matrix.mode == 'direct' && matrix.os == 'linux'
         shell: bash
         timeout-minutes: 3
+        env:
+          JOB_ID: ${{ matrix.job_id }}
         run: |
-          # Hosted direct Linux row only. Keep diagnostics outside the driver's fresh root.
+          # Hosted direct Linux rows only. Keep diagnostics outside the driver's fresh root.
           set -Eeuo pipefail
-          diag="$RUNNER_TEMP/journey-manager-direct-linux"
+          diag="$RUNNER_TEMP/journey-manager-$JOB_ID"
           mkdir -p "$diag"
           exec > >(tee "$diag/prerequisite.log") 2>&1
           uid=$(id -u)
           export XDG_RUNTIME_DIR="/run/user/$uid"
           export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-          run_root="$RUNNER_TEMP/astrid-r1-direct-linux"
+          run_root="$RUNNER_TEMP/astrid-r1-$JOB_ID"
           config="$run_root/home/.config"
           data="$run_root/home/.local/share"
           probe="journey-manager-path-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service"
@@ -695,7 +691,7 @@ jobs:
           Get-Content -LiteralPath $stderr | ForEach-Object { Write-Output $_ }
           if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }
       - name: Retain hosted service-manager prerequisite diagnostics
-        if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
+        if: always() && matrix.mode == 'direct' && (matrix.os == 'linux' || matrix.os == 'windows')
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30

@@ -6,7 +6,8 @@ import subprocess
 from collections import Counter
 
 from scripts import check_journey_evidence as gate
-from scripts.journey_matrix import END_STATE_INVENTORY, M4_5_SCENARIO_IDS, M4_6_SLOT_IDS, RELEASE1_MATRIX
+from scripts.journey_matrix import (END_STATE_INVENTORY, M4_5_SCENARIO_IDS, M4_6_SLOT_IDS, RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
+                                    RELEASE1_MATRIX)
 
 
 def candidate():
@@ -45,8 +46,9 @@ def release1_row(contract, pinned):
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
-    if contract["job_id"] == "direct-windows":
+    if contract.get("leg", "fresh-install") == "fresh-install":
         row["checks"]["workspace_content"] = "pass"
+    if contract["job_id"] == "direct-windows":
         row["windows_upgrade_refusal"] = {
             "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
             "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
@@ -60,7 +62,7 @@ def release1_row(contract, pinned):
 
 def write_release1_set(root, pinned):
     paths = {}
-    for contract in RELEASE1_MATRIX:
+    for contract in (*RELEASE1_MATRIX, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX):
         path = root / contract["job_id"] / "journey-result.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(release1_row(contract, pinned)), encoding="utf-8")
@@ -94,7 +96,8 @@ def test_obligation_statuses_are_complete_and_missing_routes_are_not_run(tmp_pat
     assert len(statuses) == len(END_STATE_INVENTORY) == 64
     assert {row["status"] for row in statuses} == {"not-run"}
     rows = by_id(statuses)
-    assert "no supported authenticated evidence route" in rows["fresh-install:direct-linux"]["reasons"]
+    assert "fresh-install:direct-linux" not in rows
+    assert "missing Release-1 lifecycle receipt" in rows["fresh-install:direct-linux-fresh"]["reasons"]
     assert "hosted M4-6 route is unimplemented" in rows["rollback:direct-linux"]["reasons"][0]
     assert rows["release2-button-direct-linux"]["status"] == "not-run"
     assert rows["linux-unsaved-draft-browser"]["status"] == "not-run"
@@ -109,7 +112,8 @@ def test_obligation_statuses_attribute_pass_failed_skipped_duplicate_and_wrong_t
     rows = by_id(gate.evaluate_end_state_obligations(pinned, tmp_path)[0])
     assert rows["populated-r0-update:direct-linux"]["status"] == "passed"
     assert rows["fresh-install:pinokio-backend-linux"]["status"] == "passed"
-    assert rows["fresh-install:direct-linux"]["status"] == "not-run"
+    assert rows["fresh-install:direct-linux-fresh"]["status"] == "passed"
+    assert rows["fresh-install:direct-macos-fresh"]["status"] == "passed"
 
     wrong_tuple = json.loads(paths["direct-linux"].read_text(encoding="utf-8"))
     wrong_tuple["installed_tuple"]["runtime"] = "e" * 40

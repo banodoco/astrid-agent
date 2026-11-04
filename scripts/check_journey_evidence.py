@@ -26,6 +26,7 @@ if __package__:
         M4_6_SLOT_IDS,
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
+        RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
     )
 else:
     try:
@@ -44,6 +45,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
@@ -61,6 +63,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         )
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -87,7 +90,7 @@ def _migrate_macos_receipt_key(contract):
 
 REQUIRED = {
     # Release candidates are no longer a loose list of legs.  They are the
-    # exact nine ownership/OS jobs and must use --aggregate-release1.
+    # exact five direct jobs and must use --aggregate-release1.
     "release-candidate": RELEASE1_JOB_IDS,
     "weekly": ("fresh-install", "update-from-release:pre-updater"),
 }
@@ -267,10 +270,12 @@ def _release1_row_errors(candidate, contract, row):
         manager = row.get("service_manager")
         if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
             errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
-        if job_id == "direct-windows":
+        fresh = contract.get("leg") == "fresh-install"
+        if fresh:
             for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
                     errors.append(f"{job_id}: fresh {check} assertion did not pass")
+        if job_id == "direct-windows":
             refusal = row.get("windows_upgrade_refusal")
             if not isinstance(refusal, dict):
                 errors.append(f"{job_id}: separate Windows upgrade refusal receipt is absent")
@@ -304,7 +309,7 @@ def _release1_row_errors(candidate, contract, row):
                 for check in ("refusal", "data_marker", "r0_selected", "scheduled_task"):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
-        else:
+        elif not fresh:
             if row.get("scenario") != "release0-to-release1":
                 errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
             transition = row.get("release_transition")
@@ -339,7 +344,7 @@ def _release1_row_errors(candidate, contract, row):
 
 
 def evaluate_release1_matrix(candidate, results):
-    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set."""
+    """Reject an incomplete, skipped, or ownership-ambiguous five-job receipt set."""
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
@@ -815,7 +820,7 @@ def evaluate_end_state_obligations(candidate, results):
     ``not-run`` because the inventory requires hosted native-service evidence.
     """
     release1, m4_5, m4_6, errors = _visibility_receipts(results)
-    release1_contracts = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    release1_contracts = {row["job_id"]: row for row in (*RELEASE1_MATRIX, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX)}
     m4_6_contracts = {row["job_id"]: row for row in M4_6_MATRIX}
     statuses = []
 
@@ -968,7 +973,7 @@ def main():
     parser.add_argument("--allow-source-override", action="store_true", help="Explicit test-mode evidence only")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--aggregate-release1", action="store_true",
-                        help="require the exact nine Release-1 job receipts under --results")
+                        help="require the exact five direct Release-1 job receipts under --results")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
