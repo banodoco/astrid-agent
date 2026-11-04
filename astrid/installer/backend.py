@@ -1375,7 +1375,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         if self.managed_by != "pinokio":
             self.service.unregister()
 
-    def preflight_remove(self, root: Path, data: Path, *, delete_data: bool) -> Path | None:
+    def preflight_remove(self, root: Path, data: Path, *, delete_data: bool,
+                         expected_realm: Path | None = None,
+                         expected_realm_id: str | None = None) -> Path | None:
         """Prove that removing programs cannot also remove a workspace."""
         root, data = absolute(root), absolute(data)
         trees = [root]
@@ -1395,7 +1397,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         catalog = data / "runtime" / "catalog.json"
         version = current(root) or (self.existing(data) if data.exists() else None)
         realm_root = None
-        if catalog.exists():
+        if expected_realm is not None:
+            # Completed handoffs bind the retained R0 realm in their journal.
+            # Do not parse R0's legacy Runtime discovery using R1's Runtime.
+            from .r0_stop import _selected_realm
+
+            realm_id, realm_root = _selected_realm(data)
+            if realm_root != expected_realm or realm_id != expected_realm_id:
+                raise ValueError("The selected workspace changed; no files were removed.")
+        elif catalog.exists():
             realm_root = absolute(self.workspace(version, data)["realm_root"])
         elif recorded_realm is not None and recorded_realm.exists():
             # Recover through Runtime's public read-only identity API even if a
@@ -1415,7 +1425,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("The attached workspace overlaps a program removal directory.")
         return realm_root
 
-    def remove(self, root: Path, data: Path, *, delete_data: bool) -> list[Path]:
+    def remove(self, root: Path, data: Path, *, delete_data: bool,
+               expected_realm: Path | None = None,
+               expected_realm_id: str | None = None) -> list[Path]:
         residue = []
         # Only directories created and marked by this installer are removable.
         marker = read_json(root / "install.json")
@@ -1425,7 +1437,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         bootstrap_only = not root.exists() or all(path.name == "bootstrap" for path in root.iterdir())
         if marker.get("owner") != "haus.astrid.runtime" and not (kept and bootstrap_only):
             raise ValueError("Refusing to remove an unowned installation directory.")
-        realm_root = self.preflight_remove(root, data, delete_data=delete_data)
+        if expected_realm is None:
+            realm_root = self.preflight_remove(root, data, delete_data=delete_data)
+        else:
+            realm_root = self.preflight_remove(root, data, delete_data=delete_data,
+                                               expected_realm=expected_realm,
+                                               expected_realm_id=expected_realm_id)
+        if expected_realm is not None and realm_root != expected_realm:
+            raise ValueError("The selected workspace changed; no files were removed.")
         remove_shim(self.service)
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:

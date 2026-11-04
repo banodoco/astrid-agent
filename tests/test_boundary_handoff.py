@@ -543,3 +543,127 @@ def test_real_r0_v31_fixture_migrates_copies_legacy_edit_and_rolls_back_after_wo
     c.tx.recover(rollback=True)
     assert_r0(c)
     assert snapshot(c.data) == before and snapshot(c.destination) == retained
+
+
+def prepare_uninstall(c, monkeypatch):
+    upgrade(c)
+    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
+    monkeypatch.setattr(c.backend, 'preflight_stop', lambda data: None)
+    monkeypatch.setattr(c.backend, 'preflight_remove', lambda root, data, **kw: c.realm)
+
+
+@pytest.mark.parametrize('delete_data', [False, True])
+def test_cli_uninstall_completed_handoff_orders_services_and_preserves_r1(case, monkeypatch, delete_data):
+    c = case
+    prepare_uninstall(c, monkeypatch)
+    r1_work(c)
+    retained = snapshot(c.destination)
+    original = snapshot(c.data)
+    events = []
+    run, unlink, remove = c.service.run, Path.unlink, c.backend.remove
+    def manager(argv, **options):
+        if list(argv) in (["systemctl", "--user", "disable", "--now", registration.R1_LINUX],
+                          ["systemctl", "--user", "disable", "--now", registration.R0_LINUX]):
+            events.append(list(argv)[-1])
+        return run(argv, **options)
+    def removed(path, *args, **kwargs):
+        if path in (c.tx.registration.r1_path, c.service.path):
+            events.append(path.name + ' removed')
+        return unlink(path, *args, **kwargs)
+    def files(*args, **kwargs):
+        events.append('program files')
+        return remove(*args, **kwargs)
+    monkeypatch.setattr(c.service, 'run', manager)
+    monkeypatch.setattr(Path, 'unlink', removed)
+    monkeypatch.setattr(c.backend, 'remove', files)
+    args = ['--root', str(c.root), '--uninstall'] + (['--delete-data'] if delete_data else [])
+    assert cli.main(args) == 0
+    assert events == ['astrid-r1.service', 'astrid-r1.service removed', 'astrid.service',
+                      'astrid.service removed', 'program files']
+    assert not c.root.exists()
+    assert snapshot(c.destination) == retained
+    assert not c.data.exists() if delete_data else snapshot(c.data) == original
+    assert read_json(c.service.selection)['retained_r1_data_root'] == str(c.destination)
+    assert not handoff.journal_path(c.service).exists()
+    assert not registration.journal_path(c.service).exists()
+    assert not r0_stop._marker_path(c.service).exists()
+
+
+@pytest.mark.parametrize('problem', ['incomplete', 'changed-selection', 'changed-unit', 'changed-r0-unit',
+                                      'foreign-manager', 'active-r0', 'changed-r0-realm',
+                                      'failed-r1-stop', 'failed-r0-stop', 'busy-r1'])
+def test_cli_uninstall_handoff_refuses_uncertain_or_failed_steps(case, monkeypatch, problem):
+    c = case
+    prepare_uninstall(c, monkeypatch)
+    if problem == 'incomplete':
+        value = read_json(c.tx.journal)
+        value['phase'] = 'starting'
+        c.tx._save(value)
+    elif problem == 'changed-selection':
+        value = read_json(c.service.selection)
+        write_json(c.service.selection, {**value, 'r1_data_root': '/foreign'})
+    elif problem == 'changed-unit':
+        c.tx.registration.r1_path.write_text('foreign service')
+    elif problem == 'changed-r0-unit':
+        c.service.path.write_text('foreign service')
+    elif problem == 'foreign-manager':
+        state(c.manager, r1_fragment='/foreign/service')
+    elif problem == 'active-r0':
+        state(c.manager, enabled=True, running=True)
+    elif problem == 'changed-r0-realm':
+        value = read_json(c.data / 'runtime/catalog.json')
+        value['realms'][0]['data_root'] = str(c.root.parent / 'unrelated')
+        write_json(c.data / 'runtime/catalog.json', value)
+    elif problem == 'failed-r1-stop':
+        state(c.manager, fail_r1_stop=True)
+    elif problem == 'failed-r0-stop':
+        run = c.service.run
+        def failing(argv, **options):
+            if list(argv) == ['systemctl', '--user', 'disable', '--now', registration.R0_LINUX]:
+                raise subprocess.CalledProcessError(1, argv)
+            return run(argv, **options)
+        monkeypatch.setattr(c.service, 'run', failing)
+    wait = r0_stop._wait_for_owner_lock
+    monkeypatch.setattr(r0_stop, '_wait_for_owner_lock', lambda path, *_: wait(path, .02, .005))
+    before = snapshot(c.data), snapshot(c.destination)
+    lock = (c.destination / 'runtime/realms/r0/owner.lock').open('rb')
+    try:
+        if problem == 'busy-r1':
+            platform.lock_file(lock.fileno(), blocking=False)
+        assert cli.main(['--root', str(c.root), '--uninstall', '--delete-data']) == 1
+    finally:
+        lock.close()
+    assert (snapshot(c.data), snapshot(c.destination)) == before
+    assert c.root.exists() and c.service.path.exists()
+    assert c.tx.registration.r1_path.exists() == (problem != 'failed-r0-stop')
+    assert c.tx.journal.exists() and c.tx.registration.journal.exists()
+    calls = state(c.manager)['calls']
+    if problem in {'incomplete', 'changed-selection', 'changed-unit', 'changed-r0-unit', 'foreign-manager',
+                   'active-r0', 'changed-r0-realm', 'failed-r1-stop', 'busy-r1'}:
+        # Ignore the initial upgrade's R0 stop.
+        assert calls.count(['--user', 'disable', '--now', registration.R0_LINUX]) == 1
+
+
+def test_uninstall_uses_real_remove_preflight_and_r1_stop_preflight(case, monkeypatch):
+    c = case
+    upgrade(c)
+    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
+    monkeypatch.setattr(c.backend, 'workspace', lambda *args: pytest.fail('R0 Runtime inspection'))
+    assert cli.main(['--root', str(c.root), '--uninstall']) == 0
+    assert c.data.exists() and c.destination.exists()
+
+
+def test_uninstall_rechecks_realm_at_file_removal(case, monkeypatch):
+    c = case
+    prepare_uninstall(c, monkeypatch)
+    foreign = c.root.parent / 'unrelated'
+    foreign.mkdir()
+    (foreign / 'keep').write_text('user data')
+    calls = []
+    def preflight(*args, **kwargs):
+        calls.append(True)
+        return c.realm if len(calls) == 1 else foreign
+    monkeypatch.setattr(c.backend, 'preflight_remove', preflight)
+    assert cli.main(['--root', str(c.root), '--uninstall', '--delete-data']) == 1
+    assert (foreign / 'keep').read_text() == 'user data'
+    assert c.root.exists() and c.data.exists() and c.destination.exists()
