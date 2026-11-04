@@ -335,6 +335,12 @@ def main(argv: list[str] | None = None) -> int:
                 backend.console_diagnostics = log is None
                 if log is not None:
                     backend.log = log
+                if mode == "uninstall" and managed_by != "pinokio":
+                    from .boundary_handoff import journal_path as handoff_journal, uninstall_complete
+
+                    if os.path.lexists(handoff_journal(backend.service)):
+                        uninstall_complete(backend, data, delete_data=args.delete_data)
+                        return 0
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
                     from .boundary_handoff import handle
 
