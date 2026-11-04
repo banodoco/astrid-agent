@@ -51,6 +51,49 @@ def test_preservation_rejects_changed_data_and_wrong_schema():
         jumps.assert_preserved(before, {**after, "schema_version": 31})
 
 
+def test_preservation_checks_public_schema_digest():
+    before = {k: {"value": 1} for k in ("project", "timeline", "preferences", "task", "cas_sha256")}
+    before.update(schema_digest="sha256:expected", target_schema_digest="sha256:expected")
+    after = dict(before)
+    jumps.assert_preserved(before, after)
+    with pytest.raises(RuntimeError, match="Runtime schema"):
+        jumps.assert_preserved(before, {**after, "schema_digest": "sha256:other"})
+
+
+def test_snapshot_checks_user_data_and_public_schema_without_doctor():
+    from astrid_runtime_client.generated import PROTOCOL, SCHEMA_DIGEST
+
+    payload = b"C1 object release0\n"
+    keys = {"project": "p", "timeline": "t", "revision": "r", "generation": "release0",
+            "object_digest": hashlib.sha256(payload).hexdigest(), "task_id": "task"}
+    class Client:
+        def request(self, method, path, **_kwargs):
+            assert method == "GET"
+            if path == "/v1/projects/p":
+                return {"project_id": "p", "slug": "p", "name": "project", "metadata": {}}
+            if path == "/v1/projects/p/timelines/t":
+                return {"name": "User edit release0", "head_revision_id": "r"}
+            if path == "/v1/projects/p/timelines/t/composition-revisions/r":
+                return {"revision_id": "r", "content_digest": "digest", "payload": {
+                    "config": {"tracks": [], "clips": [], "metadata": {"user_note": "release0"}},
+                    "registry": {"assets": {}}}}
+            if path.startswith("/v1/preferences/project?"):
+                return {"content": "Keep user changes release0", "version": 1}
+            if path.startswith("/v1/objects/"):
+                return payload
+            if path == "/v1/tasks/task":
+                return {"task_id": "task", "state": "succeeded", "spec": {}, "result": {}}
+            if path == "/v1/health":
+                return {"protocol": PROTOCOL, "schema_digest": SCHEMA_DIGEST}
+            raise AssertionError(f"unexpected request: {path}")
+
+    result = live.snapshot(Client(), keys)
+    assert result["preferences"]["content"] == "Keep user changes release0"
+    assert result["task"]["state"] == "succeeded"
+    assert result["cas_sha256"] == keys["object_digest"]
+    assert result["schema_digest"] == result["target_schema_digest"] == SCHEMA_DIGEST
+
+
 def test_live_client_refuses_non_loopback():
     with pytest.raises(ValueError, match="loopback"):
         live.LiveWorkspace("https://example.com", "secret")
