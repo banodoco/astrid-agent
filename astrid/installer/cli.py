@@ -469,7 +469,6 @@ def main(argv: list[str] | None = None) -> int:
                 matching_selection = (
                     recorded.get("owner") == LABEL
                     and recorded.get("program_root") == str(root)
-                    and not recorded.get("uninstalled")
                 )
                 resolved_choices = resolve_choices(
                     explicit=args.choices,
