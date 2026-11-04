@@ -696,7 +696,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-manager-${{ matrix.job_id }}-${{ matrix.leg }}
+          name: journey-manager-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
@@ -876,7 +876,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-receipt-${{ matrix.job_id }}-${{ matrix.leg }}
+          name: journey-receipt-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
