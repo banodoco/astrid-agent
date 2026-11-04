@@ -242,7 +242,7 @@ def main():
     if os.getuid()!=UID or os.environ.get('RUNNER_NAME')!='hannah-mac' or sys.platform!='darwin': raise RuntimeError('Unexpected runner identity')
     home=Path(pwd.getpwuid(UID).pw_dir)
     if home.is_symlink() or home.resolve()!=home or home.stat().st_uid!=UID: raise RuntimeError('Unsafe runner home')
-    base=home/'.astrid-r1fix-stopped'; safe_private_dir(base)
+    base=home/'.astrid-mac-bundle-cache'; safe_private_dir(base)
     temp=Path(os.environ['RUNNER_TEMP'])
     if temp != home/'actions-runner/_work/_temp' or temp.resolve()!=temp or temp.stat().st_uid!=UID: raise RuntimeError('Unexpected temp')
     out=temp/'r1-owned-clean'; out.mkdir(mode=0o700)
@@ -254,17 +254,14 @@ def main():
     p=subprocess.run(['/bin/launchctl','print','gui/503/haus.astrid.runtime'],capture_output=True,text=True,timeout=20)
     missing='Could not find service "haus.astrid.runtime" in domain for user gui: 503'
     if p.returncode!=113 or p.stderr.strip().replace('\r\n','\n') not in {missing,'Bad request.\n'+missing}: raise RuntimeError('Runtime service absence unverified')
-    expected={'task.gob70ofe':'first','task.y8ycyqhp':'retry'}
-    if {p.name for p in base.iterdir()} != set(expected): raise RuntimeError('Task root inventory differs')
+    expected={'bundle-a-v1':'bundle-a','bundle-b-v1':'bundle-b'}
+    if {p.name for p in base.iterdir()} != set(expected): raise RuntimeError('Cache inventory differs')
     for name,label in expected.items():
         target=base/name; identity=target_identity(target,base)
-        if identity is None: raise RuntimeError('Expected task absent')
-        receipt=target/'evidence/result.json'
-        if receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_uid!=UID: raise RuntimeError('Task receipt unsafe')
-        value=json.loads(receipt.read_text()); stages=value.get('stages',{})
-        if value.get('cleanup')!='owned service stopped; workspace retained' or stages.get('r0-observe')!='pass': raise RuntimeError('Task receipt differs')
-        if label=='retry' and stages.get('r0-stopped-and-lock-free')!='pass': raise RuntimeError('Retry receipt differs')
-        if label=='first' and stages.get('seed')=='pass': raise RuntimeError('First receipt differs')
+        if identity is None: raise RuntimeError('Expected cache absent')
+        children={p.name for p in target.iterdir()}
+        if label=='bundle-a' and not {'agent.git','runtime.git','pinokio.git','git-home'}.issubset(children): raise RuntimeError('Bundle A identity differs')
+        if label=='bundle-b' and (not children or any(not re.fullmatch(r'build-[A-Za-z0-9_]+',name) for name in children)): raise RuntimeError('Bundle B identity differs')
     for name,label in expected.items():
         target=base/name; record=audit['targets'][label]={'status':'checking'}; save()
         try:
