@@ -10,6 +10,22 @@ from astrid.core.model_catalog.schema import ModelEntry, ModeSpec
 from vibecomfy.workflow import VibeNode, VibeWorkflow, WorkflowSource
 
 
+def test_shipped_foley_description_preserves_explicit_sfx_video_and_license(tmp_path):
+    identifier = 'audio/hunyuan_video_foley'
+    video = tmp_path / 'clip.mp4'
+    video.write_bytes(b'local synthetic video fixture')
+    description, values = entries.resolve_entry_inputs(identifier,
+        {'prompt': 'gravel footsteps', 'video_ref': str(video)}, mode='sfx', kind='audio')
+    assert description['kind'] == 'audio' and description['modes'] == ['sfx']
+    assert description['mode'] == 'sfx'
+    assert description['license_notice'] == 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert {row['name']: row['type'] for row in description['inputs']}['video_ref'] == 'file'
+    assert values == {'prompt': 'gravel footsteps', 'video_ref': str(video)}
+    native = entries.describe_entry(identifier, mode='sfx', _native=True)
+    assert all(next(row for row in native['inputs'] if row['name'] == name)['required']
+               for name in ('video_ref', 'prompt'))
+
+
 @pytest.fixture
 def catalog(monkeypatch):
     monkeypatch.setattr(entries, 'user_entries', lambda: [])
@@ -176,6 +192,23 @@ def test_unknown_declared_type_fails_closed():
     description = {'inputs': [{'name': 'opaque', 'type': 'unknown', 'required': False}]}
     with pytest.raises(ValueError, match='no declared scalar type'):
         entries.validate_inputs(description, {'opaque': 'guess'})
+
+
+def test_image_widget_is_a_file_only_for_load_image():
+    workflow = VibeWorkflow('image', WorkflowSource('image'))
+    workflow.nodes['1'] = VibeNode('1', 'LoadImage', inputs={'image': 'input.png'})
+    workflow.nodes['2'] = VibeNode('2', 'CustomNode', inputs={'image': 'input.png'})
+    workflow.register_input('load', '1', 'image', 'input.png', type='IMAGE')
+    workflow.register_input('custom', '2', 'image', 'input.png', type='IMAGE')
+    ports = entries._workflow_inputs({'binds': {}, 'defaults': {}}, 'edit', workflow=workflow)
+    by_name = {port['name']: port for port in ports}
+    assert by_name['load']['type'] == 'file'
+    assert by_name['custom']['type'] == 'image'
+    assert entries.validate_inputs({'inputs': ports}, {'load': 'reference.png'})['load'] == 'reference.png'
+    with pytest.raises(ValueError, match='requires a string'):
+        entries.validate_inputs({'inputs': ports}, {'load': 4})
+    with pytest.raises(ValueError, match='no declared scalar type'):
+        entries.validate_inputs({'inputs': ports}, {'custom': 'guess'})
 
 
 def test_number_values_must_be_finite():

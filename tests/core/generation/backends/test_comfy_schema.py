@@ -36,7 +36,9 @@ def test_actual_zero_minimum_group_accepts_text_only_without_changing_capture():
     data = capture()
     original = copy.deepcopy(data)
     old = OriginalProvider.from_object_info(data, server_url='http://127.0.0.1:8188')
-    assert any(issue.code == 'missing_required_input' for issue in issues(prompt(), old))
+    # Current VibeComfy also understands the empty native group; keep both
+    # implementations under the same live compatibility contract.
+    assert issues(prompt(), old) == []
     provider = TargetSchemaProvider.from_object_info(data, server_url='http://127.0.0.1:8188')
     assert issues(prompt(), provider) == []
     schema = provider.get_schema('TextEncodeQwenImage21')

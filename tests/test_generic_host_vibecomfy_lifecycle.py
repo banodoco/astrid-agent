@@ -31,16 +31,17 @@ class _FakeCheckout(CheckoutServerAdapter):
         *,
         spawn_child: bool,
         hc03_profile: dict[str, object],
-        model_id: str,
-        template_id: str,
-        invocation_identity: str,
+        binding,
+        endpoint_transport=None,
     ) -> None:
         # Deliberately no super().__init__(): it would validate and probe a server.
         self._host_session = dict(hc03_profile["vibecomfy_session"])  # type: ignore[arg-type]
         self._host_profile = hc03_profile
-        self._bound_model_id = model_id
-        self._bound_template_id = template_id
-        self._invocation_identity = invocation_identity
+        self.binding = binding
+        self.observed_binding = binding
+        self.contexts = []
+        self.prompt_id = None
+        self.uncertain = False
         self._runtime_instance_id = hc03_profile["runtime"]["runtime_instance_id"]  # type: ignore[index]
         self._bound_fingerprint = hc03_profile["verified_facts_digest"]  # type: ignore[assignment]
         self.events = events
@@ -51,21 +52,30 @@ class _FakeCheckout(CheckoutServerAdapter):
         )
         self.events.append("construct")
 
-    def _revalidate_host_session(self) -> None:
+    def observe(self, *, binding) -> dict[str, object]:
         self.events.append("observe")
+        return {"ok": binding == self.binding == self.observed_binding}
 
-    def cancel(self) -> dict[str, object]:
-        self.events.append("cancel")
-        return {"ok": True, "cancelled": True}
+    def invoke(self, *, token, model_id, template_id):
+        assert token.binding_identity == self.binding.identity_key
+        self.contexts.append((token, model_id, template_id))
+        self.prompt_id = token.token_id
+        return {"ok": True, "child_context": {"token_id": token.token_id,
+                "invocation_id": token.invocation_id, "generation": token.generation,
+                "binding_identity": list(token.binding_identity)}}
+
+    def fence(self, *, reason):
+        self.events.append("fence:" + reason)
+        return {"ok": True, "fenced": True}
+
+    def cancel(self, *, reason) -> dict[str, object]:
+        self.events.append("cancel:" + str(self.prompt_id))
+        return {"ok": not self.uncertain, "cancelled": not self.uncertain}
 
     def release(self, *, reason: str = "requested") -> dict[str, object]:
-        if self.child is not None:
-            self.child.terminate()
-            self.child.wait(timeout=5)
-            assert self.child.returncode is not None
-            self.events.append("old-child-exited")
         self.events.append(f"release:{reason}")
-        return {"ok": True, "released": True}
+        return {"ok": not self.uncertain, "released": not self.uncertain,
+                "release_requested": True, "memory_observed_returned": False}
 
 
 def _task(task_id: str, digest: str) -> dict[str, object]:
@@ -76,6 +86,7 @@ def _task(task_id: str, digest: str) -> dict[str, object]:
             "project_id": "fixture-project",
             "attempt_id": f"{task_id}-attempt",
             "fence": 1,
+            "runtime_epoch": 1,
             "input_object_ids": [digest],
             "spec": {"spec": {"inputs": {}, "input_digests": [{"name": "workflow", "digest": digest}]}},
         }
@@ -126,7 +137,7 @@ def _profile() -> dict[str, object]:
             }
         },
         "vibecomfy_session": {
-            "session_dir": "/tmp/session", "process_birth_id": "process-a", "comfy_process_birth_id": "comfy-a",
+            "session_dir": "/tmp/session", "process_birth_id": "process-a", "comfy_process_birth_id": "comfy-a", "launch_generation": "launch-a",
             "server_url": "http://127.0.0.1:8188", "source_revision": "source-a",
             "source_content_digest": "sha256:" + "c" * 64, "config_digest": "sha256:" + "d" * 64,
         },
@@ -141,7 +152,7 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
 
     def read_profile() -> dict[str, object]:
         profile = _profile()
-        pid = 100 + len(profile_reads)
+        pid = 100
         profile_reads.append(pid)
         session = profile["vibecomfy_session"]
         assert isinstance(session, dict)
@@ -155,18 +166,16 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
     events: list[str] = []
     monkeypatch.setattr(
         vibecomfy.CheckoutServerAdapter,
-        "from_host_session",
+        "open_host_session",
         classmethod(lambda cls, **kwargs: (
             events.append(f"profile-pid:{kwargs['hc03_profile']['vibecomfy_session']['pid']}"),
             _FakeCheckout(
                 events,
-                spawn_child=("old-child-exited" in events or "construct" not in events),
+                spawn_child=False,
                 hc03_profile=kwargs["hc03_profile"],
-                model_id=kwargs["model_id"],
-                template_id=kwargs["template_id"],
-                invocation_identity=kwargs["invocation_identity"],
+                binding=kwargs["binding"],
             ),
-        )[1]),
+        )[1]), raising=False,
     )
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.discover()
@@ -175,7 +184,7 @@ def test_generic_host_run_task_keeps_same_resident_identity_warm(tmp_path: Path,
         runtime.tasks[task_id] = task
         assert host.run_task(task, lease_token=f"lease-{task_id}")["task"]["status"] == "completed"
     observed_binding = runtime.settlements[0][2]["result"]["managed_tool_session"]["binding"]
-    assert observed_binding["launch_generation"] == "process-a"
+    assert observed_binding["launch_generation"] == "launch-a"
     assert observed_binding["engine_birth_id"] == "comfy-a"
     assert [settled[0] for settled in runtime.settlements] == ["warm-1", "warm-2"]
     second_binding = runtime.settlements[1][2]["result"]["managed_tool_session"]["binding"]
@@ -210,8 +219,8 @@ def test_idle_expiry_frees_the_warm_vibecomfy_session_and_the_next_task_starts_c
     monkeypatch.setattr(generic_host, "_prepare_vibecomfy_execution_identity", lambda *args: (
         "execution-a", "model-a", "template-a", {"model_id": "model-a", "resident_metadata": {"model_assets": ["model-a"]}}))
     events: list[str] = []
-    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "from_host_session", classmethod(
-        lambda cls, **kwargs: _FakeCheckout(events, spawn_child=False, **kwargs)))
+    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "open_host_session", classmethod(
+        lambda cls, **kwargs: _FakeCheckout(events, spawn_child=False, **kwargs)), raising=False)
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.discover()
     timers = Timers()

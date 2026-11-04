@@ -8,6 +8,7 @@ local application. Runtime discovery and credentials are resolved by
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -243,6 +244,9 @@ def _validate_handshake(
             "handshake.capabilities",
             "runtime handshake did not advertise targeted execution binding support",
         )
+
+
+_RELEASE_TIMEOUT_SECONDS = 10.0
 
 
 class AstridClient:
@@ -664,6 +668,81 @@ class AstridClient:
         from astrid.sdk.authoring_remote import TargetBoundAuthoringBundle
 
         return TargetBoundAuthoringBundle(self._remote._transport, target)
+
+    def release_generation(self, *, engine: str, target: str, wait: bool = False) -> dict[str, Any]:
+        """Release the managed ComfyUI engine's loaded state; claim only what is proven.
+
+        Attached or unmanaged targets are refused. The managed engine must be
+        registered and its queue idle. The custody supervisor verifies the live
+        child and performs the unload through its own connected transport. Only
+        proven facts are claimed: queue state, the explicit free
+        completion, and VRAM before and after. ``models_unloaded`` reports the
+        free result; ``released`` also requires a completed release. Process
+        exit is never claimed.
+        """
+        from astrid.core.generation.preflight import _registered_managed_engine, generation_error
+
+        if engine != "comfyui":
+            raise generation_error(ValueError("release supports only comfyui"),
+                                   details={"field": "engine"}, code="unsupported_engine")
+        if target != "managed":
+            raise generation_error(
+                ValueError("release refuses attached or unmanaged targets; only the managed engine can be released"),
+                code="release_refused", details={"field": "target"},
+                fixes=[{"argv": ["astrid", "generate", "targets", "--target", target],
+                        "scope": "read_only", "details": {}}],
+            )
+        registered = _registered_managed_engine()
+        if registered is None:
+            raise generation_error(
+                ValueError("no managed ComfyUI engine is installed or registered"),
+                code="missing_dependency", details={"field": "target"},
+                fixes=[{"argv": ["astrid", "generate", "targets", "--target", "managed"],
+                        "scope": "read_only", "details": {}}],
+            )
+        from urllib.parse import urlsplit
+        from astrid.core.generation.engine_contracts import EngineError
+        from astrid.core.generation.engine_custody import LinuxEngineServiceClient
+        from astrid.core.generation.engine_local_endpoint import DEFAULT_PLATFORM
+        from astrid.core.generation.engine_recipe import load_recipe
+        import time
+
+        endpoint = registered["endpoint"]
+        try:
+            parts = urlsplit(endpoint)
+            if parts.scheme != "http" or parts.hostname != "127.0.0.1" or parts.path not in ("", "/"):
+                raise ValueError("managed release endpoint must be the loopback ComfyUI origin")
+            recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
+            if parts.port != recipe.start.port:
+                raise ValueError("registered endpoint does not match engine recipe")
+            client = LinuxEngineServiceClient.for_recipe(root=registered["root"], recipe=recipe,
+                                                         platform=DEFAULT_PLATFORM)
+            outcome = client.release_owned(deadline=time.monotonic() + _RELEASE_TIMEOUT_SECONDS)
+        except (EngineError, OSError, ValueError) as exc:
+            raise generation_error(ValueError("managed engine release could not be proven"),
+                                   code="release_not_proven", details={"field": "target"}) from exc
+        if not isinstance(outcome, dict) or outcome.get("status") not in {"busy", "completed", "failed"}:
+            raise generation_error(ValueError("managed engine release could not be proven"),
+                                   code="release_not_proven", details={"field": "target"})
+        if outcome["status"] == "busy":
+            raise generation_error(ValueError("managed engine is busy; release is refused until its queue is idle"),
+                                   code="release_pending", details={"field": "target"})
+        total, before, after = (outcome.get(key) for key in
+                                ("vram_total_bytes", "vram_free_before_bytes", "vram_free_after_bytes"))
+        if any(type(value) is not int for value in (total, before, after)):
+            raise generation_error(ValueError("managed engine release could not be proven"),
+                                   code="release_not_proven", details={"field": "target"})
+        models_unloaded = outcome.get("models_unloaded") is True
+        released = outcome["status"] == "completed" and models_unloaded
+        return {
+            "ok": released, "released": released, "release_requested": True,
+            "engine": "comfyui", "target": "managed", "owner": registered["owner"],
+            "endpoint": endpoint, "queue_idle": True, "models_unloaded": models_unloaded,
+            "process_exited": False, "memory_observed_returned": after > before,
+            "vram_total_bytes": total, "vram_free_before_bytes": before,
+            "vram_free_after_bytes": after,
+            "reason": "" if released else "release did not prove model unload",
+        }
 
     def __enter__(self) -> Self:
         return self

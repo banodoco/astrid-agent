@@ -1,6 +1,7 @@
 """CPU-only acceptance of the existing host's single Comfy session slot."""
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -139,7 +140,7 @@ def _comfy_host(tmp_path, monkeypatch, *, spawn_child=False):
         backends.append(backend)
         return backend
 
-    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "from_host_session", classmethod(construct))
+    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "open_host_session", classmethod(construct), raising=False)
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.discover()
     host.warm_holds.close()
@@ -156,6 +157,13 @@ def _comfy_host(tmp_path, monkeypatch, *, spawn_child=False):
 
 def test_same_pid_reuse_and_stale_timer_after_owner_release(tmp_path, monkeypatch):
     host, runtime, timers, events, backends, run = _comfy_host(tmp_path, monkeypatch, spawn_child=True)
+    child_contexts = []
+    child_environment = host._child_environment
+    def capture_child(*args, **kwargs):
+        env, secrets = child_environment(*args, **kwargs)
+        child_contexts.append(json.loads(env["ASTRID_COMFY_INVOCATION"]))
+        return env, secrets
+    monkeypatch.setattr(host, "_child_environment", capture_child)
     try:
         run("first")
         backend = host.managed_tool_session.current_adapter.backend
@@ -163,6 +171,10 @@ def test_same_pid_reuse_and_stale_timer_after_owner_release(tmp_path, monkeypatc
         first_timer = timers.live()
         run("second")
         assert host.managed_tool_session.current_adapter.backend is backend
+        assert [context[0].invocation_id for context in backend.contexts] == [
+            "first:first-attempt:1", "second:second-attempt:1"]
+        assert [context["token_id"] for context in child_contexts] == [
+            context[0].token_id for context in backend.contexts]
         assert backend.child.pid == pid and backend.child.poll() is None
         assert first_timer.cancelled
         first_timer.callback()

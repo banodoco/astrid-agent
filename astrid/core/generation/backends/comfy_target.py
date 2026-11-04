@@ -30,8 +30,12 @@ from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
+MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ENGINE_BODY_BYTES = 1024 * 1024 * 1024
+HTTP_TRANSFER_SECONDS = 15
+LOCAL_HTTP_SECONDS = 30
 _CHUNK_BYTES = 1024 * 1024
 
 
@@ -130,8 +134,10 @@ class ComfyTargetClient:
     def _read_bounded(response, limit: int, deadline: float) -> bytes:
         blocks, size = [], 0
         while True:
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError("Comfy response deadline exceeded")
+            _set_response_read_timeout(response, remaining)
             block = response.read(min(64 * 1024, limit + 1 - size))
             if not block:
                 return b"".join(blocks)
@@ -143,7 +149,7 @@ class ComfyTargetClient:
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
         timeout = float(timeout)
-        if not math.isfinite(timeout) or not 0 < timeout <= 30:
+        if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
             raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
         if not isinstance(response_limit, int) or not 0 < response_limit <= MAX_JSON_BYTES:
             raise ValueError("invalid Comfy response bound")
@@ -189,6 +195,8 @@ class ComfyTargetClient:
             allowed = path in {"/queue", "/interrupt", "/api/free"}
         if not allowed:
             raise ValueError("unsupported Comfy HTTP operation")
+        if timeout > HTTP_TRANSFER_SECONDS and path != "/object_info":
+            raise ValueError("Comfy request timeout must be at most 15 seconds")
         if self.target.kind == "attached" and payload is not None:
             scoped_delete = (path == "/queue" and isinstance(payload, dict)
                              and set(payload) == {"delete"} and isinstance(payload["delete"], list)
@@ -202,16 +210,17 @@ class ComfyTargetClient:
             if not (scoped_delete or scoped_interrupt):
                 raise ValueError("attached Comfy target refuses unowned control operations")
         try:
-            return self._json(path, payload, timeout=timeout, response_limit=response_limit)
+            return self._json(path, payload, timeout=timeout, response_limit=response_limit,
+                              acknowledge_empty=payload is not None)
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"checkout_server {path} request failed") from exc
 
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
         if self.endpoint_transport is not None:
-            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + 30)
+            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + HTTP_TRANSFER_SECONDS)
         else:
-            payload = self.request_json("/object_info", timeout=30, response_limit=MAX_JSON_BYTES)
+            payload = self.request_json("/object_info", timeout=LOCAL_HTTP_SECONDS, response_limit=MAX_JSON_BYTES)
         if not isinstance(payload, dict):
             raise ValueError("Comfy object_info response is not an object")
         from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -246,7 +255,7 @@ class ComfyTargetClient:
                 raise TransportError("prompt already attempted; do not resubmit; reconcile the original attempt")
             self._prompt_attempted = True
         try:
-            result = self._json("/prompt", body, timeout=30, acknowledge_empty=False)
+            result = self._json("/prompt", body, timeout=HTTP_TRANSFER_SECONDS, acknowledge_empty=False)
             if not isinstance(result, dict):
                 raise ValueError("Comfy prompt acceptance is not an object")
             self.witness_prompt(result.get("prompt_id"))
@@ -267,7 +276,7 @@ class ComfyTargetClient:
 
     def history(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
-        result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=30,
+        result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=HTTP_TRANSFER_SECONDS,
                             response_limit=MAX_JSON_BYTES, acknowledge_empty=False)
         if not isinstance(result, dict):
             raise ValueError("Comfy history response is not an object")
@@ -279,8 +288,12 @@ class ComfyTargetClient:
             raise ValueError("Comfy cancellation requires witnessed prompt acceptance")
         self.request_json("/queue", {"delete": [prompt_id]})
         queue = self.request_json("/queue")
-        running = queue.get("queue_running", []) if isinstance(queue, dict) else []
-        if any(isinstance(item, list) and len(item) > 1 and item[1] == prompt_id for item in running):
+        running = queue.get("queue_running") if isinstance(queue, dict) else None
+        if (not isinstance(running, list) or any(
+                not isinstance(item, list) or len(item) < 2 or not isinstance(item[1], str)
+                for item in running)):
+            raise ValueError("Comfy queue response has invalid running prompt identities")
+        if any(item[1] == prompt_id for item in running):
             self.request_json("/interrupt", {"prompt_id": prompt_id})
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",
@@ -316,17 +329,20 @@ class ComfyTargetClient:
                 self.endpoint_transport.put(frozen, str(root / subfolder / filename))
             return f"{subfolder}/{filename}"
         boundary = uuid.uuid4().hex
-        body = bytearray()
+        fields = []
         for name, value in (("subfolder", subfolder), ("type", "input")):
-            body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
-        body.extend(data)
-        body.extend(f"\r\n--{boundary}--\r\n".encode())
-        request = urllib_request.Request(self.http_origin + "/upload/image", data=bytes(body),
+            fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
+        ending = f"\r\n--{boundary}--\r\n".encode()
+        body_size = sum(map(len, fields)) + len(data) + len(ending)
+        if body_size > MAX_ENGINE_BODY_BYTES:
+            raise ValueError("multipart media upload exceeds the engine request body limit")
+        body = b"".join((*fields, data, ending))
+        request = urllib_request.Request(self.http_origin + "/upload/image", data=body,
                                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
                                                  "Accept-Encoding": "identity"})
-        deadline = time.monotonic() + 30
-        with self._opener(request, timeout=30) as response:
+        deadline = time.monotonic() + HTTP_TRANSFER_SECONDS
+        with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
             if not 200 <= getattr(response, "status", 200) < 300:
                 raise ValueError("Comfy upload returned a non-2xx status")
             result = json.loads(self._read_bounded(response, 64 * 1024, deadline))
@@ -377,8 +393,8 @@ class ComfyTargetClient:
                 query = urllib_parse.urlencode({"filename": filename, "subfolder": subfolder, "type": output_type})
                 request = urllib_request.Request(self.http_origin + "/view?" + query,
                                                  headers={"Accept-Encoding": "identity"}, method="GET")
-                deadline = time.monotonic() + 30
-                with self._opener(request, timeout=30) as response, temporary_path.open("wb") as temporary:
+                deadline = time.monotonic() + LOCAL_HTTP_SECONDS
+                with self._opener(request, timeout=LOCAL_HTTP_SECONDS) as response, temporary_path.open("wb") as temporary:
                     if getattr(response, "status", 200) != 200:
                         raise ValueError("checkout_server /view returned a non-200 status")
                     headers = getattr(response, "headers", {})
@@ -391,8 +407,10 @@ class ComfyTargetClient:
                             raise ValueError("Comfy output length is invalid or too large")
                         declared_length = int(declared_length)
                     while True:
-                        if time.monotonic() >= deadline:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
                             raise TimeoutError("Comfy output deadline exceeded")
+                        _set_response_read_timeout(response, remaining)
                         block = response.read(_CHUNK_BYTES)
                         if not block:
                             break
@@ -415,6 +433,19 @@ class ComfyTargetClient:
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+
+
+def _set_response_read_timeout(response: Any, timeout: float) -> None:
+    """Make each blocking urllib read respect the operation's remaining time."""
+    stream = response
+    for _ in range(4):
+        sock = getattr(getattr(stream, "raw", None), "_sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+            return
+        stream = getattr(stream, "fp", None)
+        if stream is None:
+            return
 
 
 def _digest_hex(value: str) -> str:
@@ -506,24 +537,29 @@ def validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
         raise ValueError("checkout_server output descriptor must be an object")
     if not {"filename", "subfolder", "type"}.issubset(descriptor):
         raise ValueError("checkout_server output descriptor has an invalid schema")
-    # Comfy/VHS may attach routing metadata to a descriptor, but accepting an
-    # arbitrary key set would make the custody contract ambiguous.  Keep the
-    # required routing fields plus the documented metadata emitted by Comfy;
-    # reject unknown fields so malformed or attacker-controlled descriptors do
-    # not silently pass through settlement.
-    allowed_metadata = {
-        "filename",
-        "subfolder",
-        "type",
-        "format",
-        "frame_rate",
-        "workflow",
-        "fullpath",
-        "prompt_id",
-        "node_id",
-    }
-    if set(descriptor).difference(allowed_metadata):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
+    # All other fields are provenance only: never use them for routing.
+    # Bound and validate even descriptors supplied outside the JSON transport.
+    info = {key: value for key, value in descriptor.items()
+            if key not in {"filename", "subfolder", "type"}}
+    def plain_json(value: object, depth: int = 0) -> bool:
+        if depth > 32:
+            return False
+        if value is None or type(value) in (str, bool, int):
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is list:
+            return all(plain_json(item, depth + 1) for item in value)
+        if type(value) is dict:
+            return all(type(key) is str and plain_json(item, depth + 1)
+                       for key, item in value.items())
+        return False
+    try:
+        valid_info = plain_json(info) and len(json.dumps(info, ensure_ascii=True, allow_nan=False).encode()) <= MAX_DESCRIPTOR_INFO_BYTES
+    except (ValueError, TypeError, RecursionError):
+        valid_info = False
+    if not valid_info:
+        raise ValueError("checkout_server output descriptor has invalid informational fields")
     filename = validate_output_field(
         descriptor.get("filename"), field="filename", reject_slash=True
     )
@@ -561,22 +597,33 @@ def extract_output_descriptors(value: object) -> list[object]:
 class ComfyModelMissing(ValueError):
     """Required roles have zero or multiple exact target filename matches."""
 
-    code = "COMFY_MODEL_MISSING"
+    code = "missing_model"
+    engine_code = "COMFY_MODEL_MISSING"
 
     def __init__(self, model: str, mode: str, failures: dict[str, list[str]],
-                 alternatives: list[str]):
+                 alternatives: list[str], expected_names: dict[str, list[str]] | None = None):
         self.model = model
         self.mode = mode
         self.failures = failures
         self.alternatives = alternatives
+        self.expected_names = expected_names or {}
+        import shlex
+        from astrid.core.generation.asset_gaps import asset_readiness, align_argv
+        names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
+        self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
         super().__init__(
             f"{self.code}: {model}/{mode}: unresolved roles {failures}; "
-            f"compatible catalog entries: {', '.join(alternatives) or 'none'}"
+            f"expected filenames: {self.expected_names}; "
+            f"compatible catalog entries: {', '.join(alternatives) or 'none'}; "
+            f"run: {shlex.join(align_argv(model))}"
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {"code": self.code, "model": self.model, "mode": self.mode,
-                "roles": self.failures, "alternatives": self.alternatives}
+        return {"code": self.code, "engine_code": self.engine_code,
+                "model": self.model, "mode": self.mode,
+                "roles": self.failures, "alternatives": self.alternatives,
+                "expected_names": self.expected_names,
+                "readiness": self.readiness}
 
 
 def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, str], dict[str, list[str]]]:
@@ -609,6 +656,13 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
     resolved, failures = (_resolve_roles(spec, object_info) if spec and spec.model_roles
                           else ({}, {"catalog_roles": []}))
     if failures:
+        missing_nodes = sorted({spec.model_roles[role].node_class for role in failures
+                                if spec and role in spec.model_roles
+                                and spec.model_roles[role].node_class not in object_info})
+        if missing_nodes:
+            from astrid.core.generation.asset_gaps import asset_readiness
+            from astrid.core.generation.preflight import GenerationReadinessError
+            raise GenerationReadinessError(asset_readiness(model_id, nodes=missing_nodes))
         alternatives = []
         for candidate in registry.list_all():
             candidate_mode = candidate.modes.get(mode)
@@ -625,7 +679,8 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
                     candidate_spec, candidate_roles, object_info, client.http_origin,
                 ):
                     alternatives.append(candidate.id)
-        raise ComfyModelMissing(model_id, mode, failures, sorted(alternatives))
+        raise ComfyModelMissing(model_id, mode, failures, sorted(alternatives),
+            {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles})
     plan = {"model": model_id, "mode": mode, "template": spec.template,
             "target": {"url": client.target.url, "kind": client.target.kind},
             "roles": resolved, "model_bytes": "unverified_target_inventory"}

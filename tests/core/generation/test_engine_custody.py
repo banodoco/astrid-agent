@@ -10,14 +10,16 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation.engine_contracts import (
     CommandRequest, CustodyUnresolved, DeadlineExceeded, EndpointOwnershipError,
-    IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
+    EngineReinstallRequired, IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
@@ -35,6 +37,12 @@ if mode.read_text()=='exit': raise SystemExit(3)
 class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
   request=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
+  if self.path=='/api/free':
+   if mode.read_text()=='freefails':
+    self.send_response(500);self.end_headers();return
+   with (started.parent/'release-posts').open('a') as f: f.write(self.path+'\n')
+   data=json.dumps({'models_unloaded':True}).encode()
+   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   prompt_id=request['client_id']
   with (started.parent/'prompts').open('a') as f: f.write(prompt_id+'\n')
   data=json.dumps({'prompt_id':prompt_id,'number':1,'node_errors':{}}).encode()
@@ -43,9 +51,14 @@ class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
   setting=mode.read_text()
   if setting=='slow': time.sleep(30)
+  if setting=='releasewait' and self.path=='/queue':
+   (started.parent/'queue-entered').write_text('yes')
+   time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
   value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
+  if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
    prompt_id=self.path.rsplit('/',1)[1]
    value={prompt_id:{'status':{'completed':True,'status_str':'success'},'outputs':{}}}
@@ -169,6 +182,234 @@ print(json.dumps(LinuxEngineServiceClient(**identity).call(sys.argv[3],payload,d
     return subprocess.run([sys.executable, "-c", program, _json(identity), _json(payload), operation,
                            *([bootstrap] if bootstrap is not None else [])],
                           capture_output=True, text=True, timeout=20, check=True)
+
+
+def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, monkeypatch):
+    """DEEP-BUG13: a post-TERM error must not leave the retained Popen zombie."""
+    from astrid.core.execution import process_group as groups
+
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "test-owner")
+    owned = supervisor.spawn(_request(tmp_path, "import time;time.sleep(60)"))
+    original = groups._signal_valid_tree_members
+    failure = groups.CleanupUncertainError("injected verification failure after root TERM")
+
+    def fail_after_signal(process, members, sig, *args, **kwargs):
+        original(process, members, sig, *args, **kwargs)
+        if process.pid in members and sig == groups.platform.TERM:
+            stat = Path(f"/proc/{process.pid}/stat")
+            _wait(lambda: stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+            raise failure
+
+    monkeypatch.setattr(groups, "_signal_valid_tree_members", fail_after_signal)
+    try:
+        with pytest.raises(CustodyUnresolved) as error:
+            supervisor.drain(owned, time.monotonic() + 8)
+        assert error.value.__cause__ is failure
+        assert owned.process.returncode == -groups.platform.TERM
+        assert not Path(f"/proc/{owned.process.pid}").exists()
+        assert owned.process._astrid_tree_uncertain
+        assert owned.process._astrid_retained_containment["original_wait"] == owned.process.returncode
+        assert supervisor.unresolved and supervisor.commands == [owned]
+    finally:
+        monkeypatch.setattr(groups, "_signal_valid_tree_members", original)
+        if owned.process.poll() is None:
+            groups.contain_retained_handles(owned.process, cleanup_deadline=time.monotonic() + 5,
+                                           first_error="test teardown")
+        owned.process.wait(timeout=5)
+        for output in (owned.stdout, owned.stderr):
+            output.thread.join(timeout=5)
+            output.stream.close()
+
+
+@pytest.mark.parametrize("stage", ["terminate", "verify", "stdout_drain", "stderr_drain", "stdout_close", "stderr_close"])
+def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_path, monkeypatch, stage):
+    from astrid.core.execution import process_group as groups
+
+    token, env_secret, arg_secret = "owner-launch-token-value", "private-env-value", "private-arg-value"
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), token)
+    # Exercise secret capture at the real spawn boundary without starting a process.
+    process = SimpleNamespace(stdout=None, stderr=None)
+    monkeypatch.setattr(groups, "popen_owned_group", lambda *args, **kwargs: process)
+    monkeypatch.setattr(custody, "_Output", lambda *args: None)
+    owned = supervisor.spawn(CommandRequest((sys.executable, "--token", arg_secret), str(tmp_path),
+                                           {"SERVICE_API_KEY": env_secret}, time.monotonic() + 5, 1024))
+    supervisor.engine = owned
+    message = (f"injected {stage}; token={token}; env={env_secret}; arg={arg_secret}; "
+               "authorization=Bearer labelled-value; https://user:private-url@example.test; "
+               "sk-abcdefghijklmnopqrstuvwx; " + "detail " * 150)
+    failure = OSError(message)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(groups, "terminate_tree", fail if stage == "terminate" else lambda *args, **kwargs: None)
+    monkeypatch.setattr(groups, "verify_tree_absent", fail if stage == "verify" else lambda *args, **kwargs: None)
+    for name in ("stdout", "stderr"):
+        setattr(owned, name, SimpleNamespace(
+            thread=SimpleNamespace(join=fail if stage == name + "_drain" else lambda **kwargs: None,
+                                   is_alive=lambda: False),
+            stream=SimpleNamespace(close=fail if stage == name + "_close" else lambda: None)))
+    with custody._directory(supervisor.control) as fd:
+        custody._write(fd, "session.json", b"retained marker")
+    with custody._directory(supervisor.registry) as fd:
+        custody._write(fd, "launch.json", b"retained registry")
+    supervisor.registry_names = ["launch.json"]
+    client = _client(supervisor.identity)
+    threads = []
+
+    def connect(*args, **kwargs):
+        local, remote = socket.socketpair()
+        thread = threading.Thread(target=supervisor.connection, args=(remote,))
+        threads.append(thread)
+        thread.start()
+        return local
+
+    monkeypatch.setattr(client, "_connect", connect)
+    try:
+        with pytest.raises(CustodyUnresolved) as error:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        cause = error.value.cleanup_failure
+        assert error.value.code == "custody_unresolved"
+        assert cause["stage"] == stage and cause["exception_type"] == "OSError"
+        assert f"injected {stage}" in cause["message"] and len(cause["message"]) <= 600
+        record = Path(supervisor.control, "cleanup-failure.json")
+        assert json.loads(record.read_bytes()) == cause == owned.cleanup_failure
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert cause["message"] in str(error.value)
+        for secret in (token, env_secret, arg_secret, "labelled-value", "private-url", "sk-abcdefghijklmnopqrstuvwx"):
+            assert secret not in record.read_text() + str(error.value)
+
+        # A later failed stop cannot replace the original stage/type/message.
+        def later_failure(*args, **kwargs):
+            raise RuntimeError("later cleanup error must not replace first cause")
+        monkeypatch.setattr(groups, "terminate_tree", later_failure)
+        with pytest.raises(CustodyUnresolved) as repeated:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        assert repeated.value.cleanup_failure == cause
+        assert json.loads(record.read_bytes()) == cause
+        assert supervisor.unresolved and supervisor.engine is owned and supervisor.commands == [owned]
+        assert owned.process is process and not supervisor.finished.is_set()
+        assert Path(supervisor.control, "session.json").read_bytes() == b"retained marker"
+        assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("fail_command", [False, True])
+def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, monkeypatch, fail_command):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    now, calls, replies = [1000.0], [], []
+
+    def owned(name):
+        def stop(deadline):
+            calls.append((name, deadline))
+            now[0] += 20
+            if fail_command and name == "second-command":
+                raise CustodyUnresolved("injected command drain failure")
+        return SimpleNamespace(stop=stop)
+
+    engine, first, second = owned("engine"), owned("first-command"), owned("second-command")
+    supervisor.engine, supervisor.commands = engine, [engine, first, second]
+    with custody._directory(supervisor.registry) as fd:
+        custody._write(fd, "launch.json", b"retained registry")
+    supervisor.registry_names = ["launch.json"]
+    # Socket objects are hashable; use a real socket as the connection identity.
+    with socket.socket() as channel:
+        monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(custody, "_receive", lambda *args: {
+            "identity": supervisor.identity, "operation": "stop", "payload": {}, "remaining_seconds": 120})
+        monkeypatch.setattr(custody, "_send", lambda channel, value, deadline: replies.append((value, deadline)))
+        supervisor.connection(channel)
+    assert calls[:2] == [("first-command", 1120.0), ("second-command", 1120.0)]
+    if fail_command:
+        assert replies[0][0]["error"] == "custody_unresolved"
+        assert supervisor.engine is engine and supervisor.commands == [engine, second]
+        assert supervisor.unresolved and not supervisor.finished.is_set()
+        assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
+    else:
+        assert calls[2] == ("engine", 1120.0)
+        assert replies == [({"identity": supervisor.identity, "result": {"stopped": True}}, 1120.0)]
+        assert supervisor.finished.is_set() and supervisor.commands == [] and supervisor.engine is None
+        assert not Path(supervisor.registry, "launch.json").exists()
+
+
+@pytest.mark.parametrize("outcome", ["normal", "timeout", "disconnect", "explicit_stop"])
+def test_command_drain_uses_request_or_pending_stop_deadline_and_only_implicit_fallback(tmp_path, monkeypatch, outcome):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    output = SimpleNamespace(text=lambda: "", truncated=lambda: False)
+    owned = SimpleNamespace(live=lambda: outcome != "normal", process=SimpleNamespace(returncode=0),
+                            stdout=output, stderr=output)
+    calls = []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(supervisor, "spawn", lambda request: owned)
+    monkeypatch.setattr(supervisor, "drain", lambda owned, deadline: calls.append(deadline))
+
+    def check(*args):
+        if outcome == "explicit_stop":
+            supervisor.stop_deadlines["pending-stop"] = 1120.0
+            supervisor.stopping.set()
+        raise EOFError if outcome == "disconnect" else DeadlineExceeded("injected cancellation")
+
+    monkeypatch.setattr(supervisor, "check", check)
+    request = {"argv": [sys.executable], "cwd": str(tmp_path), "env": {}, "max_output_bytes": 1024}
+    if outcome == "disconnect":
+        with pytest.raises(EOFError):
+            supervisor.run(request, 1030.0, None)
+    else:
+        supervisor.run(request, 1030.0, None)
+    assert calls == [{"normal": 1030.0, "timeout": 1008.0, "disconnect": 1008.0, "explicit_stop": 1120.0}[outcome]]
+
+
+def test_owned_stop_spends_one_deadline_on_tree_verification_and_both_output_drains(monkeypatch):
+    from astrid.core.execution import process_group as groups
+
+    owned = custody._Owned.__new__(custody._Owned)
+    owned.process, owned.cleanup_failure = object(), None
+    now, calls = [1000.0], []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+
+    def terminate(process, **kwargs):
+        calls.append(("terminate", kwargs["cleanup_deadline"]))
+        now[0] += 10
+
+    def verify(process, **kwargs):
+        calls.append(("verify", kwargs["deadline"]))
+        now[0] += 5
+
+    def join(name, timeout):
+        calls.append((name, timeout))
+        now[0] += 7
+
+    monkeypatch.setattr(groups, "terminate_tree", terminate)
+    monkeypatch.setattr(groups, "verify_tree_absent", verify)
+    for name in ("stdout", "stderr"):
+        setattr(owned, name, SimpleNamespace(
+            thread=SimpleNamespace(join=lambda timeout, name=name: join(name, timeout), is_alive=lambda: False),
+            stream=SimpleNamespace(close=lambda: None)))
+    owned.stop(1120.0)
+    assert calls == [("terminate", 1120.0), ("verify", 1120.0), ("stdout", 105.0), ("stderr", 98.0)]
+
+
+def test_stop_client_keeps_deadline_through_response_and_supervisor_wait(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    with custody._directory(client.control):
+        pass
+    now, calls = [1000.0], []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(client, "_connect", lambda *args, **kwargs: socket.socket())
+    monkeypatch.setattr(custody, "_send", lambda *args: None)
+
+    def receive(channel, deadline):
+        calls.append(("receive", deadline))
+        now[0] += 20
+        return {"identity": client.identity, "result": {"stopped": True}}
+
+    monkeypatch.setattr(custody, "_receive", receive)
+    client._spawned = SimpleNamespace(wait=lambda timeout: calls.append(("wait", timeout)))
+    client.stop_owned(deadline=1120.0)
+    assert calls == [("receive", 1120.0), ("wait", 100.0)]
 
 
 def test_constructor_has_no_effects(tmp_path):
@@ -340,6 +581,52 @@ def test_real_context_service_bridge_with_tiny_recipe_fixture(session, monkeypat
     assert not Path(client.control, "session.json").exists()
 
 
+def test_supervisor_publishes_socket_only_after_listen(session, monkeypatch):
+    client, _, _, root, _, _ = session
+    entered, resume = root / "listen-entered", root / "listen-resume"
+    original_argv = custody._supervisor_argv
+    gate = f'''
+import time
+import socket
+from pathlib import Path
+original_listen = socket.socket.listen
+def gated_listen(self, *args):
+ Path({str(entered)!r}).write_text('entered')
+ until = time.monotonic() + 6
+ while not Path({str(resume)!r}).exists():
+  if time.monotonic() >= until: raise RuntimeError('listen gate timed out')
+  time.sleep(0.01)
+ return original_listen(self, *args)
+socket.socket.listen = gated_listen
+'''
+
+    def argv(identity, lock_fd, token):
+        command = original_argv(identity, lock_fd, token)
+        command[2] = command[2].replace("\n_serve(", gate + "\n_serve(")
+        return command
+
+    monkeypatch.setattr(custody, "_supervisor_argv", argv)
+    results, errors = [], []
+
+    def run():
+        try:
+            results.append(client.run(_request(root, "print('ready')")))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        _wait(entered.exists)
+        assert Path(client.control, "session.json").is_file()
+        assert not Path(client.control, "control.sock").exists()
+    finally:
+        resume.write_text("resume")
+        thread.join(timeout=10)
+    assert not thread.is_alive() and not errors
+    assert len(results) == 1 and results[0].exit_code == 0 and results[0].stdout == "ready\n"
+
+
 def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry(session):
     client, payload, recipe, root, mode, started = session
     # The first finite CLI establishes BOTH supervisor and engine, then exits.
@@ -427,7 +714,13 @@ def cpu_h3_install(session, monkeypatch, request):
         # The outer profile replaces this one-model resolver inventory with
         # H3's complete inventory; attested model roots reject unlisted files.
         model_path.unlink()
+        pinned_models = {m.destination: m for m in engine_recipe.load_model_lock(original.models_lock).models}
         original, model_lock, model_results = prepare_outer_service(original, root, started)
+        # Keep the selected source declaration with each synthetic model. H3
+        # validates those pins before resolving the local, hash-checked bytes.
+        for model in model_lock["models"]:
+            pinned = pinned_models[model["destination"]]
+            model.update(repository=pinned.repository, revision=pinned.revision, path=pinned.path, url=pinned.url)
     model_bytes = _json(model_lock).encode()
     (fixture / "models.json").write_bytes(model_bytes)
     source = root / "runtime/vibecomfy"
@@ -597,7 +890,7 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     from contextlib import contextmanager
     from astrid.core import action_cli
     from tests.core.test_action_cli_clip_rehearsal import _last_json_document, _probe
-    from tests.helpers.h3_native_engine import install_hook, observe_requests
+    from tests.helpers.h3_native_engine import observe_requests
 
     client, payload, recipe, root, started, bootstrap = cpu_h3_install
     monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(root))
@@ -641,7 +934,20 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     baseline = healthy_identity()
     assert recipe.start.bind_host == "127.0.0.1"
     assert (registry / "url").read_text().strip() == f"http://127.0.0.1:{recipe.start.port}"
-    hook = install_hook(bootstrap, operations)
+    # Carry the synthetic recipe through a task-local sitecustomize hook. A
+    # .pth file under sysconfig's purelib would modify the shared acceptance
+    # interpreter; PYTHONPATH loads this isolated hook in only these children.
+    hook_root = tmp_path / "native-h3-python-hook"
+    hook_root.mkdir()
+    hook = hook_root / "sitecustomize.py"
+    helper_root = Path(__file__).resolve().parents[3]
+    hook.write_text(
+        f"import sys; sys.path.insert(0, {str(helper_root)!r}); "
+        "import tests.helpers.h3_native_engine as _native_h3; "
+        f"_native_h3.activate({str(bootstrap)!r}, {str(operations)!r})\n",
+        encoding="utf-8")
+    prior_pythonpath = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", str(hook_root) + (os.pathsep + prior_pythonpath if prior_pythonpath else ""))
     runs = []
     real_runtime = action_cli.ephemeral_runtime
 
@@ -967,6 +1273,21 @@ def test_stale_session_marker_cannot_signal_a_live_unrelated_pid(tmp_path):
     finally:
         outside.terminate()
         outside.wait(timeout=5)
+
+
+def test_different_helper_is_refused_before_contacting_owned_supervisor(session, monkeypatch):
+    owner, payload, _, _, _, _ = session
+    _call(owner, payload, "probe")
+    other = _client({**owner.identity, "helper_sha256": "0" * 64})
+    marker = Path(owner.control, "session.json").read_bytes()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(custody, "_send", lambda *args: pytest.fail("cross-identity request sent"))
+        with pytest.raises(EngineReinstallRequired):
+            other.call("probe", payload, deadline=time.monotonic() + 5)
+        with pytest.raises(EngineReinstallRequired):
+            other.stop_owned(deadline=time.monotonic() + 5)
+    assert Path(owner.control, "session.json").read_bytes() == marker
+    assert _call(owner, payload, "probe")["state"] == "absent"
 
 
 def test_original_native_owner_loss_refuses_replacement(tmp_path):
@@ -1296,3 +1617,116 @@ def test_original_prepared_owner_records_installed_engine_without_allocation(ins
             )
     assert json.loads(claim_path.read_bytes()) == saved
     assert len(started.read_text().splitlines()) == 1
+
+
+def test_release_runs_in_live_supervisor_against_owned_child(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    result = client._request("release", {}, time.monotonic() + 8, start=False)
+    assert result == {"status": "completed", "models_unloaded": True,
+                      "vram_total_bytes": 24000, "vram_free_before_bytes": 20000,
+                      "vram_free_after_bytes": 20000}
+    assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
+    from astrid.core.generation import preflight, engine_recipe
+    from astrid.sdk.client import AstridClient
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+        "owner": "astrid", "root": str(root), "endpoint": f"http://127.0.0.1:{recipe.start.port}"})
+    monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: recipe)
+    result = AstridClient(remote=object()).release_generation(engine="comfyui", target="managed")
+    assert result["released"] and result["models_unloaded"] and result["queue_idle"]
+    assert result["vram_total_bytes"] == 24000 and result["vram_free_after_bytes"] == 20000
+    assert (root / "release-posts").read_text().splitlines() == ["/api/free", "/api/free"]
+
+
+def test_stale_registration_foreign_listener_receives_no_release(session, monkeypatch):
+    from tests.sdk.test_release_generation_client import _FakeComfy
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    pid = int(started.read_text().strip())
+    os.kill(pid, 9)
+    _wait(lambda: not _alive(pid))
+    from http.server import ThreadingHTTPServer
+    fake = _FakeComfy()
+    fake.server.server_close()
+    fake.server = ThreadingHTTPServer(("127.0.0.1", recipe.start.port), fake.server.RequestHandlerClass)
+    fake.thread = threading.Thread(target=fake.server.serve_forever, daemon=True)
+    with fake:
+        with pytest.raises((EndpointOwnershipError, CustodyUnresolved, DeadlineExceeded)):
+            client._request("release", {}, time.monotonic() + 4, start=False)
+        from astrid.core.generation import preflight, engine_recipe
+        from astrid.sdk.client import AstridClient
+        monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+            "owner": "astrid", "root": str(root), "endpoint": f"http://127.0.0.1:{recipe.start.port}"})
+        monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: recipe)
+        with pytest.raises(Exception) as error:
+            AstridClient(remote=object()).release_generation(engine="comfyui", target="managed")
+        assert "release_not_proven" in str(error.value) or "could not be proven" in str(error.value)
+        assert fake.posts == []
+
+
+def test_stop_racing_release_cancels_before_replacement(session):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text("releasewait")
+    errors = []
+    def release():
+        try:
+            client._request("release", {}, time.monotonic() + 8, start=False)
+        except Exception as exc:
+            errors.append(exc)
+    thread = threading.Thread(target=release)
+    thread.start()
+    _wait(lambda: (root / "queue-entered").exists())
+    client.stop_owned(deadline=time.monotonic() + 8)
+    thread.join(timeout=8)
+    assert not thread.is_alive() and errors
+    assert not (root / "release-posts").exists()
+    from tests.sdk.test_release_generation_client import _FakeComfy
+    from http.server import ThreadingHTTPServer
+    fake = _FakeComfy()
+    fake.server.server_close()
+    fake.server = ThreadingHTTPServer(("127.0.0.1", recipe.start.port), fake.server.RequestHandlerClass)
+    fake.thread = threading.Thread(target=fake.server.serve_forever, daemon=True)
+    with fake:
+        assert client._request("release", {}, time.monotonic() + 2, start=False) is None
+        assert fake.posts == []
+
+
+def test_connected_peer_must_be_owned_even_if_listener_check_passes(monkeypatch):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(3)
+    port = listener.getsockname()[1]
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+    received = []
+    def foreign():
+        peer, _ = listener.accept()
+        with peer:
+            peer.settimeout(3)
+            received.append(peer.recv(4096))
+    thread = threading.Thread(target=foreign)
+    thread.start()
+    monkeypatch.setattr(custody, "_listener_owned", lambda process, port: True)
+    owned = SimpleNamespace(process=child, live=lambda: child.poll() is None)
+    try:
+        with pytest.raises(DeadlineExceeded):
+            custody._get_json(port, "/api/free", 1024, time.monotonic() + 0.5,
+                              lambda: None, owned=owned, payload={"unload_models": True})
+        thread.join(timeout=4)
+        assert not thread.is_alive() and received == [b""]
+    finally:
+        listener.close()
+        child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("setting, expected", [("busy", "busy"), ("freefails", "failed")])
+def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting, expected):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text(setting)
+    result = client.release_owned(deadline=time.monotonic() + 8)
+    assert result["status"] == expected
+    assert result.get("models_unloaded") is not True
+    assert not (root / "release-posts").exists()

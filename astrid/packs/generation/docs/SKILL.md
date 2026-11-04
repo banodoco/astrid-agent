@@ -25,6 +25,15 @@ Use the runtime-backed SDK generation facade. Successful managed calls return
 runtime artifact references (digest, media type, size, and name); the runtime
 owns durable storage and task/run state.
 
+The synchronous `astrid generate image` CLI also delivers verified media to the
+caller. Use `--out image.png` for a file or `--out outputs/` for a directory;
+without `--out`, files land in `./outputs/<task-id>/`. JSON `image_paths` and
+`run_dir` identify these local files. For multiple results, a file destination
+receives the first result and numbered siblings receive the rest. Delivery
+uses `media open` and checks SHA-256 against the generation manifest. A delivery
+failure returns a nonzero exit with the completed task ID; `--no-wait` returns
+the admission without downloading files.
+
 ### Image
 
 ```python

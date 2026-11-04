@@ -28,6 +28,14 @@ from astrid.core.generation.model_root import canonical_model_inventory_digest
 RUNTIME_A = "c3d4e5f6-a7b8-49cd-8e01-23456789abcd"
 
 
+def _approved_projection():
+    from vibecomfy.testing.canonical import canonical_digest
+    from vibecomfy.workflow_bundle import ApprovedProjectionRecord
+
+    api = {"1": {"class_type": "SaveImage", "inputs": {}}}
+    return ApprovedProjectionRecord("revision-1", None, {}, api, {}, canonical_digest(api))
+
+
 class _Workflow:
     def __init__(self) -> None:
         self.metadata: dict[str, object] = {"unbound_inputs": {}}
@@ -278,7 +286,9 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         json.dumps(
             {
                 "comfy_outputs": {"9": {"images": [
-                    {"filename": "remote.png", "subfolder": "", "type": "output"}
+                    {"filename": "remote.png", "subfolder": "", "type": "output",
+                     "metadata": {"kind": "image", "width": 512, "height": 512},
+                     "future": "ignored for routing"}
                 ]}}}
         ),
         encoding="utf-8",
@@ -318,7 +328,7 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         [{"filename": "../escape.png", "subfolder": "", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "../escape", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "", "type": "input"}],
-        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x"}],
+        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x" * 65536}],
     ],
 )
 def test_remote_output_custody_rejects_empty_or_malformed_descriptors(
@@ -748,7 +758,7 @@ def test_run_compiled_workflow_uses_bundle_and_private_output_custody(
 
     def compile(**kwargs: object) -> object:
         compile_observations.append((dict(kwargs), os.environ.get("VIBECOMFY_MODELS_ROOT")))
-        return object()
+        return _approved_projection()
 
     bundle.compile.side_effect = compile
     monkeypatch.setenv("VIBECOMFY_MODELS_ROOT", "prior-model-root")
@@ -756,7 +766,9 @@ def test_run_compiled_workflow_uses_bundle_and_private_output_custody(
     adapter._run_workflow = Mock(return_value=SimpleNamespace(metadata_path=metadata_path))  # type: ignore[method-assign]
     generated = adapter.run_compiled_workflow(workflow, output_root / "task-1")
     bundle.require_canonical_authority.assert_called_once_with("checkout_server execution")
-    select_schema.assert_called_once_with(server_url=adapter._origin)
+    select_schema.assert_called_once_with(
+        server_url=adapter._origin, auxiliary_model_custody="target", target_model_assets=ANY
+    )
     target_schema.refresh.assert_called_once_with()
     bundle.compile.assert_called_once_with(
         schema_provider=target_schema, models_root=str(tmp_path / "models")
@@ -802,7 +814,9 @@ def test_run_rejects_target_schema_failure_before_generation(
 
     with pytest.raises(ValueError, match="target schema"):
         adapter.run_compiled_workflow(workflow, tmp_path / "outputs" / "task-1")
-    select_schema.assert_called_once_with(server_url=adapter._origin)
+    select_schema.assert_called_once_with(
+        server_url=adapter._origin, auxiliary_model_custody="target", target_model_assets=ANY
+    )
     target_schema.refresh.assert_called_once_with()
     if failure_at == "refresh":
         bundle.compile.assert_not_called()
@@ -850,7 +864,7 @@ def test_run_compiled_workflow_augments_workflow_config_with_host_identity(
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     monkeypatch.setattr(workflow_bundle, "load_bundle", lambda _: bundle)
     metadata_path = tmp_path / "run-metadata.json"
     metadata_path.write_text(
@@ -912,7 +926,7 @@ def test_run_compiled_workflow_rejects_conflicting_environment_output_before_war
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     monkeypatch.setattr(workflow_bundle, "load_bundle", lambda _: bundle)
     adapter.warm_session = Mock()  # type: ignore[method-assign]
     monkeypatch.setenv(
@@ -959,7 +973,7 @@ def test_run_compiled_workflow_accepts_canonical_bundle_loader_result(
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     metadata_path = tmp_path / "run-metadata.json"
     metadata_path.write_text(
         json.dumps(
@@ -1013,3 +1027,74 @@ def test_run_compiled_workflow_rejects_registry_mutation_after_binding(
     with pytest.raises(ValueError, match="registry identity changed"):
         adapter.run_compiled_workflow(workflow, tmp_path / "outputs" / "task-1")
     adapter._run_workflow.assert_not_called()
+
+
+@pytest.mark.parametrize('change', ['match', 'sha256', 'size', 'target_bytes'])
+def test_checkout_passes_verified_selected_inventory_into_real_approval(tmp_path, monkeypatch, change):
+    from vibecomfy.schema import provider as provider_module
+    from vibecomfy.porting.object_info import get_class
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import WorkflowBundleError, emit_bundle
+
+    profile = _hc03_profile(tmp_path)
+    asset_path = tmp_path / 'models/auxiliary/fixture.safetensors'
+    asset_path.parent.mkdir()
+    (tmp_path / 'models/fixture.safetensors').rename(asset_path)
+    model_root = profile['launch']['model_root']
+    model_root['inventory'][0]['subdir'] = 'auxiliary'
+    model_root['inventory_digest'] = canonical_model_inventory_digest(model_root['inventory'])
+    monkeypatch.setattr(backend_module, '_verify_owned_vibe_session', lambda *_: None)
+    _patch_remote_open(monkeypatch)
+    adapter = CheckoutServerAdapter.from_host_session(
+        hc03_profile=profile, model_id='auxiliary-contract', template_id='auxiliary-contract',
+        invocation_identity='task-asset',
+    )
+    asset = {'name': asset_path.name, 'url': 'https://fixture.invalid/fixture.safetensors',
+             'subdir': 'auxiliary',
+             'sha256': hashlib.sha256(asset_path.read_bytes()).hexdigest(),
+             'size_bytes': asset_path.stat().st_size}
+    if change == 'sha256':
+        asset['sha256'] = '0' * 64
+    elif change == 'size':
+        asset['size_bytes'] += 1
+    elif change == 'target_bytes':
+        asset_path.write_bytes(b'x' * asset_path.stat().st_size)
+    workflow = VibeWorkflow('auxiliary-contract', WorkflowSource('auxiliary-contract'))
+    workflow.add_node('PrimitiveInt', uid='one', value=7)
+    workflow.metadata['model_assets'] = [asset]
+    # Match ReadyMetadata's model declaration without importing unrelated template assets.
+    workflow.requirements.models = [asset]
+    bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
+    definition = get_class('PrimitiveInt')
+    assert definition is not None
+    info = {'PrimitiveInt': {'input': definition['inputs'], 'input_order': definition['input_order'],
+                       'output': [row['type'] for row in definition['outputs']]}}
+    captured = []
+
+    def selected_schema(**kwargs):
+        # Real provider and approval; only the target's schema HTTP edge is fake.
+        schema = provider_module.TargetSchemaProvider.from_object_info(
+            info, refresh_object_info=lambda: info, **kwargs)
+        captured.append(schema)
+        return schema
+
+    import vibecomfy.schema
+    monkeypatch.setattr(vibecomfy.schema, 'get_target_schema_provider', selected_schema)
+
+    class ApprovalReached(Exception):
+        pass
+
+    def stop_before_execution(pair, **kwargs):
+        approved, admitted = pair
+        assert approved.api_digest and admitted is bundle
+        assert captured[0].auxiliary_model_custody == 'target'
+        assert captured[0].target_model_asset(asset['name'], asset['subdir'])['sha256'] == hashlib.sha256(asset_path.read_bytes()).hexdigest()
+        raise ApprovalReached('stopped before target execution')
+
+    monkeypatch.setattr(adapter, '_run_workflow', stop_before_execution)
+    expected = ApprovalReached if change == 'match' else ValueError if change == 'target_bytes' else WorkflowBundleError
+    message = 'stopped before target execution' if change == 'match' else 'model-root' if change == 'target_bytes' else 'identity mismatch'
+    with pytest.raises(expected, match=message):
+        adapter.run_compiled_workflow(bundle, tmp_path / 'outputs/attempt', task_identity='task-asset')
+    if change == 'target_bytes':
+        assert captured == []  # Target bytes are verified before constructing authority.

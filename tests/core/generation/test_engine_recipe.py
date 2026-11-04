@@ -113,7 +113,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "2967033970cbb5884651c9565265778482d3b44e"
+        assert bindings[0].pin.revision == "d8918c172502d31d077383d68b58145ec6d89d97"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
@@ -130,7 +130,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].pin == pins["vibecomfy-h3"]
     assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "2967033970cbb5884651c9565265778482d3b44e"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "d8918c172502d31d077383d68b58145ec6d89d97"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
     }
@@ -273,3 +273,16 @@ def test_duplicate_requirements_source_paths_are_rejected(monkeypatch, tmp_path)
     _recipe_workspace(tmp_path, monkeypatch, duplicate)
     with pytest.raises(RecipeValidationError, match="duplicate requirements source path"):
         recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+
+
+def test_packaged_pin_refresh_composes_all_indexed_engines():
+    for entry in recipes.load_recipe_index().entries:
+        recipe = recipes.load_recipe(entry.engine, entry.platform)
+        assert recipes.load_pin_set(recipe.pins)
+    environment = json.loads(
+        (recipes._ROOT / "packs/vibecomfy/environment.windows-nvidia.json").read_text()
+    )
+    windows = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    assert recipes.load_pin_set(DataRef(**environment["pins"]))["vibecomfy"] == (
+        recipes.load_pin_set(windows.pins)["vibecomfy"]
+    )

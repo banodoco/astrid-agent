@@ -701,14 +701,17 @@ def _verify_tree_absent(process: subprocess.Popen, *, deadline: float | None = N
 # over a second, and a 1 s floor turned Ctrl+C into a CustodyError.
 _CLEANUP_FLOOR_SECONDS = 5.0
 
-def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
+def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0,
+                   cleanup_deadline: float | None = None) -> None:
     """Stop a birth/ancestry-fenced tree, descendants before the leader.
 
     Unlike group cleanup this never signals a containing/inherited group.
     Ownership is remembered during execution, not recovered by name/path after
     a parent exits. Success certifies observed identities absent.
     """
-    deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
+    deadline = cleanup_deadline
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
     try:
         _terminate_tree(process, grace_seconds=grace_seconds, cleanup_deadline=deadline)
     except BaseException as exc:
@@ -825,8 +828,12 @@ def _terminate_tree(process: subprocess.Popen, *, grace_seconds: float,
     while time.monotonic() < cleanup_deadline:
         process.poll()  # reap our direct child before its absence check
         live = observe_tree(process, **observation_options)
-        if not live:
+        if not live and process.poll() is not None:
             break
+        if process.pid not in live and process.poll() is None and isinstance(custody, ProcessCustody):
+            # A zombie leader task can still have live threads; use its retained capability.
+            custody.signal(process.pid, known[process.pid], platform.KILL,
+                           cleanup_deadline=cleanup_deadline)
         _signal_valid_tree_members(process, live, platform.KILL,
                                   strict=True, cleanup_deadline=cleanup_deadline)
         time.sleep(0.02)

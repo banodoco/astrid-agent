@@ -248,6 +248,14 @@ def test_unacknowledged_success_retains_spool_without_publishing_failure(host_ca
     assert not case.runtime.failures
     assert case.root.exists()
     assert case.host.last_cleanup_receipt["intended_disposition"] == "retained"
+    owner = case.host._reconciliation_owners["attempt-result"]
+    assert owner.is_alive()
+    assert case.host._handoff_active_attempts == 1
+    # End the retained owner's custody explicitly; a spool is not resolution.
+    case.task["task"]["status"] = "cancelled"
+    owner.join(timeout=3)
+    assert not owner.is_alive()
+    assert case.host._handoff_active_attempts == 0
 
 
 # Reuse the real host fixture for the publication-retention regression above.

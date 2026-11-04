@@ -326,6 +326,23 @@ def test_host_status_names_each_warm_hold_and_when_it_expires(tmp_path, monkeypa
     host._settle_session_hold(host._hold_session_slot())
     assert read_evidence_status(host.evidence_status_path)["warm_holds"] == [
         {"holding": "wan2gp.generate_video", "on_idle": "child process ended", "leases": 0,
-         "idle_seconds": 600.0, "expires_at": "1970-01-01T00:10:00+00:00"}]
+         "idle_seconds": 1800.0, "expires_at": "1970-01-01T00:30:00+00:00"}]
     timers.fire()
     assert read_evidence_status(host.evidence_status_path)["warm_holds"] == []
+
+
+def test_reused_holder_updates_its_own_expiry_callback_and_refuses_foreign_lock():
+    timers, (lock, stops, stop) = Timers(), holder()
+    holds = WarmHolds(timer=timers)
+    first = holds.lease("owner", stop=stop, lock=lock)
+    holds.release(first, holding="snapshot-1", idle_seconds=1800)
+    old = timers.live()
+    next_stops = []
+    second = holds.lease("owner", stop=lambda: next_stops.append(True), lock=lock)
+    holds.release(second, holding="snapshot-2", idle_seconds=1800)
+    old.callback()
+    assert not stops and not next_stops
+    with pytest.raises(ValueError, match="another owner lock"):
+        holds.lease("owner", stop=lambda: None, lock=threading.RLock())
+    timers.fire()
+    assert next_stops == [True] and stops == []

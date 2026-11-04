@@ -218,8 +218,14 @@ def _canonical_bundle_value(resolved: Any) -> Any:
 def _workflow_content_digest(source: Path) -> str:
     """Bind execution identity to the exact admitted input member bytes."""
     members = [source]
+    source_evidence_absent = False
     if source.suffix.lower() == ".py":
-        members.extend((source.with_suffix(".vibe.json"), source.with_name("source.json")))
+        members.append(source.with_suffix(".vibe.json"))
+        source_evidence = source.with_name("source.json")
+        if source_evidence.exists():
+            members.append(source_evidence)
+        else:
+            source_evidence_absent = True
     digest = hashlib.sha256()
     for member in members:
         try:
@@ -230,6 +236,8 @@ def _workflow_content_digest(source: Path) -> str:
             ) from exc
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
+    if source_evidence_absent:
+        digest.update(b"\0source.json:absent\0")
     return "sha256:" + digest.hexdigest()
 
 

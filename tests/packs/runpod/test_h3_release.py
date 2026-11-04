@@ -481,10 +481,10 @@ def test_real_lock_and_recipe_pins():
     from astrid.core.generation.gpu_environment import _description
 
     _, windows = _description("vibecomfy")
-    assert VIBECOMFY_ENGINE_REVISION == "2967033970cbb5884651c9565265778482d3b44e"
+    assert VIBECOMFY_ENGINE_REVISION == "b2123edfbe7b950848b5c98d575fd9554302fc73"
     assert inputs["recipe"]["vibecomfy_source"] == {
         "repository": "https://github.com/banodoco/VibeComfy.git",
-        "revision": "2967033970cbb5884651c9565265778482d3b44e",
+        "revision": "b2123edfbe7b950848b5c98d575fd9554302fc73",
     }
     assert windows["vibecomfy_source"] == {
         "repository": "https://github.com/banodoco/VibeComfy.git",
