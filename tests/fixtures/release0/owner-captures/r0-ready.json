@@ -1,0 +1,165 @@
+{
+  "files": {
+    "runtime/bootstrap.lock": {
+      "device": 2049,
+      "inode": 9481785,
+      "mode": "0o100600",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "uid": 1002
+    },
+    "runtime/discovery.json": {
+      "contents": "{\n  \"active_realm\": \"7a3366ab-83e5-47ad-b2ce-0333d543a980\",\n  \"advertised_at\": 1793683261.704263,\n  \"capability_digest\": \"\",\n  \"coordinator_epoch\": \"9f487dcc39404ad59a2e99b8b8e5a380\",\n  \"credential_file\": \"/var/tmp/lifecycle-41583190581-1-ESO3xD/data/credentials/astrid.json\",\n  \"door_endpoint\": \"http://127.0.0.1:17340\",\n  \"door_origin\": \"https://astrid.haus\",\n  \"endpoint\": \"http://127.0.0.1:34067\",\n  \"pid\": 3602,\n  \"process_birth_id\": \"proc-start-ticks:12436\",\n  \"protocol_version\": \"workspace.v1\",\n  \"realm_root\": \"/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980\",\n  \"runtime_instance_id\": \"9f487dcc39404ad59a2e99b8b8e5a380\",\n  \"schema_version\": \"workspace-schema-v1\",\n  \"version\": 1,\n  \"worker_actor\": \"astrid-pack-host\",\n  \"worker_credential_file\": \"/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/credentials/astrid-pack-host.token\",\n  \"worker_credential_pending\": false,\n  \"worker_scopes\": [\n    \"handshake\",\n    \"worker:register\",\n    \"worker:execute\",\n    \"projects:read\",\n    \"tasks:read\",\n    \"objects:read\",\n    \"objects:write\"\n  ]\n}\n",
+      "device": 2049,
+      "inode": 9481804,
+      "mode": "0o100600",
+      "sha256": "da3a7cc53f49dfca7606bd0e24ca8c6e15544c4a5caf7163fcbb5f8cd6283cc3",
+      "size": 1102,
+      "uid": 1002
+    },
+    "runtime/instance.lock": {
+      "contents": "{\n  \"pid\": 3602,\n  \"process_birth_id\": \"proc-start-ticks:12436\",\n  \"realm_id\": \"7a3366ab-83e5-47ad-b2ce-0333d543a980\",\n  \"realm_root\": \"/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980\",\n  \"runtime_instance_id\": \"9f487dcc39404ad59a2e99b8b8e5a380\"\n}\n",
+      "device": 2049,
+      "inode": 9481832,
+      "mode": "0o100600",
+      "sha256": "64e762ce3d1500951386c164547f74a9ca0a61bbf0d09b47cd7df6c427fb917b",
+      "size": 297,
+      "uid": 1002
+    }
+  },
+  "installer_lock": {
+    "device": 2049,
+    "inode": 9198850,
+    "mode": "0o100600",
+    "uid": 1002
+  },
+  "locks": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "1: POSIX  ADVISORY  READ 3602 08:01:9481801 128 128\n2: POSIX  ADVISORY  READ 3602 08:01:9481799 1073741826 1073742335\n3: FLOCK  ADVISORY  WRITE 3602 08:01:9481795 0 EOF\n4: FLOCK  ADVISORY  READ 2173 08:01:8913499 0 EOF\n5: FLOCK  ADVISORY  READ 2143 08:01:8913497 0 EOF\n6: FLOCK  ADVISORY  WRITE 1304 08:01:4279942 0 EOF\n7: FLOCK  ADVISORY  READ 2173 08:01:8918998 0 EOF\n8: FLOCK  ADVISORY  READ 2173 08:01:8918997 0 EOF\n9: FLOCK  ADVISORY  READ 2173 08:01:8913506 0 EOF\n10: FLOCK  ADVISORY  READ 2173 08:01:8913505 0 EOF\n11: FLOCK  ADVISORY  WRITE 1304 08:01:4279958 0 EOF\n12: FLOCK  ADVISORY  WRITE 1150 00:1d:1272 0 EOF\n13: FLOCK  ADVISORY  WRITE 1150 08:01:4279933 0 EOF\n14: FLOCK  ADVISORY  WRITE 1107 00:1d:1195 0 EOF\n15: POSIX  ADVISORY  WRITE 227 00:1d:168 0 EOF\n16: FLOCK  ADVISORY  WRITE 1304 08:01:4279965 0 EOF\n17: FLOCK  ADVISORY  WRITE 1304 08:01:4279963 0 EOF\n18: FLOCK  ADVISORY  WRITE 1304 08:01:4279962 0 EOF\n19: FLOCK  ADVISORY  WRITE 1304 08:01:4279961 0 EOF\n20: FLOCK  ADVISORY  WRITE 1304 08:01:4279966 0 EOF\n"
+  },
+  "monotonic": 142.466970931,
+  "processes": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "   3164       1    3164      94 Ss   /usr/lib/systemd/systemd --user\n   3166    3164    3164      94 S    (sd-pam)\n   3200    3199    2080      94 S    python3 /var/tmp/lifecycle-41583190581-1-ESO3xD/driver.py\n   3602    3164    3602      18 Ssl  /var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python -X utf8 -I -c import json,os,sys from pathlib import Path path=Path('/var/tmp/lifecycle-41583190581-1-ESO3xD/program/service-env.json') settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {} if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):     raise ValueError('Invalid Astrid service-env.json; use the documented string settings.') os.environ.update(settings) from astrid_runtime.cli import main sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/var/tmp/lifecycle-41583190581-1-ESO3xD/data', '--source-manifest', '/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/profile.json']))\n   3608    3602    3608      17 Ssl  /var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python -X utf8 -m astrid.core.execution.generic_host --service --source-checkout /var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/lib/python3.11/site-packages --support-root /var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime\n   3609    3602    3609      17 Ssl  /var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/bun/bun-linux-x64/bun /var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/lib/python3.11/site-packages/astrid/chat/service.mjs\n   3751    3200    2080       0 R    ps -ww -u 1002 -o pid=,ppid=,sid=,etimes=,stat=,args=\n"
+  },
+  "selected_process_sample": {
+    "boot_id": "ee594ed3-dce7-45cc-a8c2-b3b04fcb419e",
+    "cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/astrid.service\n",
+    "fds": {
+      "0": {
+        "device": 7,
+        "inode": 5,
+        "target": "/dev/null"
+      },
+      "1": {
+        "device": 10,
+        "inode": 20005,
+        "target": "socket:[20005]"
+      },
+      "10": {
+        "device": 2049,
+        "inode": 9481801,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980/realm.sqlite3-shm"
+      },
+      "11": {
+        "device": 10,
+        "inode": 21036,
+        "target": "socket:[21036]"
+      },
+      "12": {
+        "device": 2049,
+        "inode": 9259505,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.local/state/astrid-runtime/logs/service-pack-host.log"
+      },
+      "13": {
+        "device": 2049,
+        "inode": 9481784,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime"
+      },
+      "15": {
+        "device": 2049,
+        "inode": 9259506,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.local/state/astrid-runtime/logs/service-chat.log"
+      },
+      "17": {
+        "device": 16,
+        "inode": 19127,
+        "target": "pipe:[19127]"
+      },
+      "18": {
+        "device": 16,
+        "inode": 19128,
+        "target": "pipe:[19128]"
+      },
+      "19": {
+        "device": 2049,
+        "inode": 9481799,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980/realm.sqlite3"
+      },
+      "2": {
+        "device": 10,
+        "inode": 20005,
+        "target": "socket:[20005]"
+      },
+      "23": {
+        "device": 16,
+        "inode": 20008,
+        "target": "pipe:[20008]"
+      },
+      "24": {
+        "device": 16,
+        "inode": 20009,
+        "target": "pipe:[20009]"
+      },
+      "3": {
+        "device": 7,
+        "inode": 10,
+        "target": "/dev/urandom"
+      },
+      "4": {
+        "device": 2049,
+        "inode": 9259503,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.local/state/astrid-runtime/logs/runtime.log"
+      },
+      "6": {
+        "device": 10,
+        "inode": 21033,
+        "target": "socket:[21033]"
+      },
+      "7": {
+        "device": 2049,
+        "inode": 9481795,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980/owner.lock"
+      },
+      "8": {
+        "device": 2049,
+        "inode": 9481799,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980/realm.sqlite3"
+      },
+      "9": {
+        "device": 2049,
+        "inode": 9481800,
+        "target": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980/realm.sqlite3-wal"
+      }
+    },
+    "pid": 3602,
+    "pidns_inode": 4026531836,
+    "ppid": 3164,
+    "start_ticks": "12436",
+    "state": "S",
+    "uid": 1002
+  },
+  "uid": 1002,
+  "unit": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Restart=always\nMainPID=3602\nExecStart={ path=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python ; argv[]=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python -X utf8 -I -c import json,os,sys\nfrom pathlib import Path\npath=Path('/var/tmp/lifecycle-41583190581-1-ESO3xD/program/service-env.json')\nsettings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\nif (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):\n    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\nos.environ.update(settings)\nfrom astrid_runtime.cli import main\nsys.exit(main(['run', '--profile', 'astrid', '--data-root', '/var/tmp/lifecycle-41583190581-1-ESO3xD/data', '--source-manifest', '/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/profile.json'])) ; ignore_errors=no ; start_time=[Tue 2026-11-03 05:21:01 UTC] ; stop_time=[n/a] ; pid=3602 ; code=(null) ; status=0/0 }\nControlGroup=/user.slice/user-1002.slice/user@1002.service/app.slice/astrid.service\nLoadState=loaded\nActiveState=active\nSubState=running\nFragmentPath=/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.config/systemd/user/astrid.service\nUnitFileState=enabled\n"
+  },
+  "unit_definition": {
+    "contents": "[Unit]\nDescription=Astrid Runtime\n\n[Service]\nExecStart=\"/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python\" \"-X\" \"utf8\" \"-I\" \"-c\" \"import json,os,sys\\nfrom pathlib import Path\\npath=Path('/var/tmp/lifecycle-41583190581-1-ESO3xD/program/service-env.json')\\nsettings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\\nif (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):\\n    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\\nos.environ.update(settings)\\nfrom astrid_runtime.cli import main\\nsys.exit(main(['run', '--profile', 'astrid', '--data-root', '/var/tmp/lifecycle-41583190581-1-ESO3xD/data', '--source-manifest', '/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/profile.json']))\"\nEnvironment=\"ASTRID_BUN_EXECUTABLE=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/bun/bun-linux-x64/bun\"\nEnvironment=\"ASTRID_CAPABILITY_MATRIX_PATH=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/config/astrid-beta-capabilities.json\"\nEnvironment=\"ASTRID_FFMPEG_EXECUTABLE=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffmpeg\"\nEnvironment=\"ASTRID_FFPROBE_EXECUTABLE=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffprobe\"\nEnvironment=\"ASTRID_HOST_EXECUTION_PROFILE=installed\"\nEnvironment=\"ASTRID_INSTALL_FFMPEG_SOURCE=download\"\nEnvironment=\"ASTRID_INSTALL_FFMPEG_VERSION=7.0.2-static\"\nEnvironment=\"ASTRID_INSTALL_FFPROBE_VERSION=7.0.2-static\"\nEnvironment=\"ASTRID_INSTALL_OMP_COMMIT=78f0e0960f471c2c62b943272a48c33366f239fe\"\nEnvironment=\"ASTRID_INSTALL_OMP_SOURCE=fork\"\nEnvironment=\"ASTRID_INSTALL_OMP_VERSION=18.12.6\"\nEnvironment=\"ASTRID_NODE_EXECUTABLE=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/node/node-v20.19.4-linux-x64/bin/node\"\nEnvironment=\"ASTRID_REMOTION_PROJECT_DIR=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/remotion\"\nEnvironment=\"ASTRID_RUNTIME_DATA_ROOT=/var/tmp/lifecycle-41583190581-1-ESO3xD/data\"\nEnvironment=\"ASTRID_RUNTIME_DOOR_PORT=17340\"\nEnvironment=\"ASTRID_SOURCE_PROVENANCE_ROOT=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a\"\nEnvironment=\"ASTRID_TIMELINE_SCHEMA_PYTHONPATH=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/remotion/node_modules/@banodoco/timeline-schema/python\"\nEnvironment=\"BUN_INSTALL=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp\"\nEnvironment=\"BUN_INSTALL_BIN=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp/bin\"\nEnvironment=\"PATH=/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/bun/bun-linux-x64:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/node/node-v20.19.4-linux-x64/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static:/usr/bin:/bin:/usr/sbin:/sbin\"\nEnvironment=\"PYTHONIOENCODING=utf-8\"\nRestart=always\nRestartSec=5\nKillMode=mixed\nTimeoutStopSec=90\nStandardOutput=\"append:/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.local/state/astrid-runtime/logs/runtime-service.log\"\nStandardError=\"append:/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.local/state/astrid-runtime/logs/runtime-service.log\"\n\n[Install]\nWantedBy=default.target\n",
+    "sha256": "536d29dd31131855e9f674e0a243825987c593ec322855249545e2b7a1eb932d"
+  },
+  "wall_time": 1793683279.6102004
+}

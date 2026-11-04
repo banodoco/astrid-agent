@@ -20,6 +20,7 @@ from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
+from .birth_identity import birth_matches_live_owner
 from .core import (
     BackupSpaceError,
     RuntimeOperationError,
@@ -438,8 +439,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity could not be observed; refusing to change it.") from exc
         if identity is None:
             return "stale"  # Proven absent; Runtime startup owns reconciliation.
-        if identity.get("pid") != pid or platform.process_birth_matches(
-                birth, str(identity.get("birth_id") or "")) is not True:
+        if not birth_matches_live_owner(birth, identity, pid=pid):
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 

@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape
 from runtime_protocol import platform
 
 from ..core.execution.platform_helpers import owned_by_current_user
+from .birth_identity import birth_matches_live_owner
 from .core import (
     Version,
     absolute,
@@ -937,16 +938,28 @@ class Service:
         identity = platform.process_identity(pid)
         if identity is None:
             return
-        if identity.get("pid") != pid or identity.get("birth_id") != birth:
+        if not birth_matches_live_owner(birth, identity, pid=pid):
             raise ValueError("The foreground process identity changed; refusing to signal it.")
         if identity.get("uid") != platform.current_user():
             raise ValueError("The foreground process user changed; refusing to signal it.")
+        # The bridge re-observes birth, but does not bind UID. Re-observe all
+        # signal fields and the retained selection immediately before handing
+        # the scoped native identity to Runtime's incarnation-pinned signaler.
+        fresh = platform.process_identity(pid)
+        if (fresh is None or any(fresh.get(key) != identity.get(key)
+                                 for key in ("pid", "uid", "birth_id"))
+                or self.recorded().get("foreground") != expected):
+            raise ValueError("The foreground process identity changed; refusing to signal it.")
+        identity = fresh
         platform.signal_process(identity, platform.TERM)
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             observed = platform.process_identity(pid)
-            if observed is None or observed.get("birth_id") != birth:
+            if observed is None:
                 return
+            if (not birth_matches_live_owner(birth, observed, pid=pid)
+                    or observed.get("uid") != identity.get("uid")):
+                raise ValueError("The foreground process identity changed while waiting for stop.")
             time.sleep(0.1)
         raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
@@ -969,11 +982,17 @@ class Service:
             raise RuntimeError("The Astrid sign-in task did not stop.")
         foreground = self.recorded().get("foreground")
         if foreground:
+            pid, birth = foreground.get("pid"), foreground.get("birth_id")
+            if type(pid) is not int or pid <= 0 or not isinstance(birth, str) or not birth:
+                raise ValueError("The foreground process identity is incomplete.")
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
-                identity = platform.process_identity(int(foreground["pid"]))
-                if identity is None or identity.get("birth_id") != foreground["birth_id"]:
+                identity = platform.process_identity(pid)
+                if identity is None:
                     return
+                if (not birth_matches_live_owner(birth, identity, pid=pid)
+                        or identity.get("uid") != platform.current_user()):
+                    raise ValueError("The foreground process identity changed while waiting for stop.")
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 

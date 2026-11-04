@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, NoReturn
 from runtime_protocol import platform
 
 from . import tools
+from .birth_identity import birth_matches_live_owner
 from .core import TERMINAL_STEPS, current, pending_transaction
 
 if TYPE_CHECKING:
@@ -917,10 +918,10 @@ def _prove_recovery_owner(data_root: Path, expected_identity: dict, expected_rea
             or discovery.get("active_realm") != expected_realm["realm_id"]
             or absolute(discovery.get("realm_root", "")) != realm_root):
         raise ValueError("Runtime owner records do not match the transaction realm.")
-    actual_birth = LocalRuntimeBoundary.process_birth_identity(pid)
-    if actual_birth is None:
+    observed = platform.process_identity(pid)
+    if observed is None:
         state = "stopped"  # The exact advertised process incarnation is positively absent.
-    elif actual_birth != expected_birth:
+    elif not birth_matches_live_owner(expected_birth, observed, pid=pid):
         raise ValueError("The Runtime owner PID was reused; the recorded incarnation is unresolved.")
     else:
         endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")

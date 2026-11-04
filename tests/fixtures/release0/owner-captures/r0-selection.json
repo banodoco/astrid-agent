@@ -1,0 +1,65 @@
+{
+  "discovery": {
+    "active_realm": "7a3366ab-83e5-47ad-b2ce-0333d543a980",
+    "advertised_at": 1793683261.704263,
+    "capability_digest": "",
+    "coordinator_epoch": "9f487dcc39404ad59a2e99b8b8e5a380",
+    "credential_file": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/credentials/astrid.json",
+    "door_endpoint": "http://127.0.0.1:17340",
+    "door_origin": "https://astrid.haus",
+    "endpoint": "http://127.0.0.1:34067",
+    "pid": 3602,
+    "process_birth_id": "proc-start-ticks:12436",
+    "protocol_version": "workspace.v1",
+    "realm_root": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/realms/7a3366ab-83e5-47ad-b2ce-0333d543a980",
+    "runtime_instance_id": "9f487dcc39404ad59a2e99b8b8e5a380",
+    "schema_version": "workspace-schema-v1",
+    "version": 1,
+    "worker_actor": "astrid-pack-host",
+    "worker_credential_file": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data/runtime/credentials/astrid-pack-host.token",
+    "worker_credential_pending": false,
+    "worker_scopes": [
+      "handshake",
+      "worker:register",
+      "worker:execute",
+      "projects:read",
+      "tasks:read",
+      "objects:read",
+      "objects:write"
+    ]
+  },
+  "service": {
+    "foreground_fallback": false,
+    "manager": "systemd-user",
+    "service_path": "/var/tmp/lifecycle-41583190581-1-ESO3xD/home/.config/systemd/user/astrid.service"
+  },
+  "version": {
+    "env": {
+      "ASTRID_BUN_EXECUTABLE": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/bun/bun-linux-x64/bun",
+      "ASTRID_CAPABILITY_MATRIX_PATH": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/config/astrid-beta-capabilities.json",
+      "ASTRID_FFMPEG_EXECUTABLE": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffmpeg",
+      "ASTRID_FFPROBE_EXECUTABLE": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffprobe",
+      "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+      "ASTRID_INSTALL_FFMPEG_SOURCE": "download",
+      "ASTRID_INSTALL_FFMPEG_VERSION": "7.0.2-static",
+      "ASTRID_INSTALL_FFPROBE_VERSION": "7.0.2-static",
+      "ASTRID_INSTALL_OMP_COMMIT": "78f0e0960f471c2c62b943272a48c33366f239fe",
+      "ASTRID_INSTALL_OMP_SOURCE": "fork",
+      "ASTRID_INSTALL_OMP_VERSION": "18.12.6",
+      "ASTRID_NODE_EXECUTABLE": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/node/node-v20.19.4-linux-x64/bin/node",
+      "ASTRID_REMOTION_PROJECT_DIR": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/remotion",
+      "ASTRID_RUNTIME_DATA_ROOT": "/var/tmp/lifecycle-41583190581-1-ESO3xD/data",
+      "ASTRID_RUNTIME_DOOR_PORT": "17340",
+      "ASTRID_SOURCE_PROVENANCE_ROOT": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a",
+      "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/a/remotion/node_modules/@banodoco/timeline-schema/python",
+      "BUN_INSTALL": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp",
+      "BUN_INSTALL_BIN": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp/bin",
+      "PATH": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/omp/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/bun/bun-linux-x64:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/node/node-v20.19.4-linux-x64/bin:/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/tools/ffmpeg/ffmpeg-7.0.2-amd64-static:/usr/bin:/bin:/usr/sbin:/sbin",
+      "PYTHONIOENCODING": "utf-8"
+    },
+    "profile": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/profile.json",
+    "python": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/py/bin/python",
+    "root": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd"
+  },
+  "version_path": "/var/tmp/lifecycle-41583190581-1-ESO3xD/program/versions/3204bb00-6d53a190-d45a95bd/version.json"
+}

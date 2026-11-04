@@ -127,8 +127,7 @@ def test_matching_unfinished_recovery_returns_i3_and_ends_this_update_request(tm
     journal = _unfinished_journal(previous)
     _mark_unresolved(root, previous, journal, descriptor)
     _write_owner_records(data)
-    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
-    monkeypatch.setattr(LocalRuntimeBoundary, "process_birth_identity", lambda _pid: None)
+    monkeypatch.setattr(update_job.platform, "process_identity", lambda _pid: None)
 
     class Adapter:
         def is_active(self, value):
@@ -526,7 +525,8 @@ def test_live_runtime_must_match_transaction_before_recovery(tmp_path, monkeypat
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     monkeypatch.setattr("astrid.installer.backend.Backend", Backend)
     monkeypatch.setattr("astrid.installer.core.Installer._recover_update", recover_update)
-    monkeypatch.setattr(LocalRuntimeBoundary, "process_birth_identity", lambda _pid: "birth-123")
+    monkeypatch.setattr(update_job.platform, "process_identity",
+                        lambda pid: {"pid": pid, "birth_id": "birth-123"})
     monkeypatch.setattr(LocalRuntimeBoundary, "validate_owner", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(update_job, "_probe_identity",
                         lambda *_args: ("live-instance", {"release": 7 if identity_matches else 8,

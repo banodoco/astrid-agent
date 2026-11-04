@@ -1,0 +1,12 @@
+{
+  "evidence_root": "docs/merge-plan/evidence/actions",
+  "sources": {
+    "r0-ready.json": "41583190581/merge-suite-output-41583190581-1/running/evidence/r0-ready.json",
+    "r0-selection.json": "41583190581/merge-suite-output-41583190581-1/running/evidence/r0-selection.json",
+    "systemd.service": "41625801442/journey-receipt-direct-linux/before-cleanup/unit-file-before-cleanup.txt",
+    "launchd.plist": "41625801442/journey-receipt-direct-macos/before-cleanup/unit-file-before-cleanup.txt"
+  },
+  "r0_agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+  "r0_runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+  "windows": "41625801442 task definition unavailable; use the separately registered, checksum-verified ../services/task.xml fixture"
+}

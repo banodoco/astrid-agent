@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import plistlib
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -113,6 +114,51 @@ def test_release0_posix_service_is_adopted_and_freshly_registered(tmp_path, monk
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "astrid.service"],
         ]
+
+
+@pytest.mark.parametrize("system", ["darwin", "linux"])
+@pytest.mark.parametrize("tamper", [False, True])
+def test_literal_hosted_release0_service_adoption(tmp_path, monkeypatch, system, tamper):
+    """Run 41625801442 bytes, with only disposable path prefixes rebound."""
+    manager, version, data, _legacy, settings = _posix_service(tmp_path, monkeypatch, system)
+    captures = FIXTURES.parent / "owner-captures"
+    name = "launchd.plist" if system == "darwin" else "systemd.service"
+    expected = dict(row.split(maxsplit=1)[::-1]
+                    for row in (captures / "SHA256SUMS").read_text().splitlines())
+    raw = (captures / name).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == expected[name]
+    if system == "darwin":
+        document = plistlib.loads(raw)
+        old_version = str(Path(document["ProgramArguments"][0]).parent.parent.parent)
+        old_data = document["EnvironmentVariables"]["ASTRID_RUNTIME_DATA_ROOT"]
+        old_log = document["StandardOutPath"]
+    else:
+        # These are the literal paths in the checked fixture, not generated definitions.
+        old_version = "/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-a813c6d5"
+        old_data = "/home/runner/work/_temp/astrid-r1-direct-linux/data"
+        old_log = "/home/runner/work/_temp/astrid-r1-direct-linux/home/.local/state/astrid-runtime/logs/runtime-service.log"
+    old_program = str(Path(old_version).parent.parent)
+    rebound = (raw.replace(old_version.encode(), str(version.root).encode())
+               .replace(old_program.encode(), str(manager.root).encode())
+               .replace(old_data.encode(), str(data).encode())
+               .replace(old_log.encode(), str(manager.log).encode()))
+    # Both hosted POSIX captures used the program-root settings sidecar.
+    (manager.root / "service-env.json").write_bytes(settings)
+    (version.root / "service-env.json").unlink()
+    if tamper:
+        rebound = rebound.replace(str(version.python).encode(), b"/foreign-python", 1)
+    manager.path.write_bytes(rebound)
+    if tamper:
+        with pytest.raises(ValueError, match="unknown or changed action/owner"):
+            manager.publish_launch_admission(version, data)
+        assert manager.path.read_bytes() == rebound
+        manager.run.assert_not_called()
+    else:
+        manager.publish_launch_admission(version, data)
+        assert manager.path.read_bytes() != rebound
+        manager.register(version, data)
+        assert manager.path.read_text() == render(system, version, data, manager.log,
+                                                  env_file=manager.env_file)
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])
