@@ -637,6 +637,7 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     calls = []
     monkeypatch.setenv("PSModulePath", "hosted-pwsh-modules")
     monkeypatch.setenv("JOURNEY_KEEP_ENV", "preserved")
+    monkeypatch.setenv("UV_LINK_MODE", "hardlink")
     monkeypatch.setattr(journey.sys, "platform", system)
     monkeypatch.setattr(journey, "run", lambda argv, log, **kwargs: calls.append(
         ([str(part) for part in argv], kwargs)))
@@ -648,6 +649,7 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     assert "--update" in argv
     assert kwargs["env"]["JOURNEY_KEEP_ENV"] == "preserved"
     assert ("PSModulePath" in kwargs["env"]) == (system != "win32")
+    assert kwargs["env"]["UV_LINK_MODE"] == ("copy" if system == "win32" else "hardlink")
 
 
 @pytest.mark.posix_native

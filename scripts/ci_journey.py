@@ -1355,6 +1355,10 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
     if sys.platform == "win32":
         # Avoid passing hosted pwsh's module paths to Windows PowerShell 5.1.
         env = {key: value for key, value in env.items() if key.casefold() != "psmodulepath"}
+        # uv hard-links cached wheels on Windows by default, which also carries
+        # the cache file's ACL into the protected installed version. Copy into
+        # the destination so installed files inherit the version directory ACL.
+        env["UV_LINK_MODE"] = "copy"
         run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", app / "public" / "install.ps1", *flags], evidence / f"{mode}-bootstrap.log",
             env=env)
