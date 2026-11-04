@@ -1,29 +1,48 @@
-name: WS06 launchd state audit
+name: WS06 task service diagnostics
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  audit:
+  inspect:
     runs-on: [self-hosted, macOS, astrid-mac]
     timeout-minutes: 5
     steps:
-      - name: Read only runner launchd state
+      - name: Inspect task service and process identity without mutation
         shell: bash
         run: |
           /usr/bin/python3 - <<'PYCODE'
-          import json, os, re, subprocess
+          import hashlib,json,os,plistlib,pwd,re,subprocess
+          from pathlib import Path
           if os.getuid()!=503 or os.environ.get('RUNNER_NAME')!='hannah-mac': raise SystemExit('Unexpected runner')
-          q=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,timeout=20,check=True)
-          if 'disabled services' not in q.stdout: raise SystemExit('Disabled state unverified')
-          results={}
+          home=Path(pwd.getpwuid(503).pw_dir); base=home/'.astrid-r1fix-stopped'; task=base/'task.mgm16apc'
+          if base.is_symlink() or task.is_symlink() or base.resolve()!=base or task.resolve()!=task or task.stat().st_uid!=503: raise SystemExit('Unsafe task root')
+          script=task/'diagnostic.py'
+          if script.is_symlink() or hashlib.sha256(script.read_bytes()).hexdigest()!='80a78e41dfb878da5232185494be86827378bafb2f414db41bd04a399648c01d': raise SystemExit('Task identity differs')
+          states=subprocess.run(['/bin/launchctl','print-disabled','gui/503'],capture_output=True,text=True,check=True,timeout=20)
+          if 'disabled services' not in states.stdout: raise SystemExit('Disabled state unavailable')
+          result={'task_provenance':'matched','labels':{}}
           for label in ('haus.astrid.runtime','haus.astrid.runtime.r1'):
-              m=re.search(r'(?m)^\s*"'+re.escape(label)+r'"\s*=>\s*(\w+)\s*$',q.stdout)
-              value=m.group(1) if m else 'not-listed'
-              service=subprocess.run(['/bin/launchctl','print','gui/503/'+label],capture_output=True,text=True,timeout=20)
+              match=re.search(r'(?m)^\s*"'+re.escape(label)+r'"\s*=>\s*(\w+)\s*$',states.stdout)
+              item={'disabled_state':match.group(1) if match else 'not-listed'}
+              p=subprocess.run(['/bin/launchctl','print','gui/503/'+label],capture_output=True,text=True,timeout=20)
               missing=f'Could not find service "{label}" in domain for user gui: 503'
-              absent=service.returncode==113 and service.stderr.strip().replace('\r\n','\n') in (missing,'Bad request.\n'+missing)
-              results[label]={'state':value,'absent':absent}
-          print(json.dumps(results))
-          if any(v['state'] not in ('enabled','false','not-listed') or not v['absent'] for v in results.values()): raise SystemExit('Launchd state requires review')
+              if p.returncode==113 and p.stderr.strip().replace('\r\n','\n') in (missing,'Bad request.\n'+missing): item['loaded']='absent'
+              elif p.returncode!=0: item['loaded']='unverified'
+              else:
+                  plist=task/'run/home/Library/LaunchAgents'/(label+'.plist')
+                  if plist.is_symlink() or not plist.is_file() or not plist.resolve().is_relative_to(task): raise SystemExit('Plist unavailable')
+                  spec=plistlib.loads(plist.read_bytes()); args=spec.get('ProgramArguments') or []
+                  head,sep,rest=p.stdout.partition('\targuments = {\n'); paths=re.findall(r'(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$',head)
+                  expected=''.join('\t\t'+x+'\n' for x in args)+'\t}\n'
+                  item['loaded']='present'; item['plist_and_arguments_match']=bool(spec.get('Label')==label and paths==[str(plist)] and sep and rest.startswith(expected) and all(isinstance(x,str) for x in args) and any(str(task) in x for x in args))
+                  state=re.search(r'(?m)^\s*state\s*=\s*(.+?)\s*$',p.stdout); item['state']=state.group(1) if state else 'unavailable'
+                  pid=re.search(r'(?m)^\s*pid\s*=\s*(\d+)\s*$',p.stdout)
+                  if pid:
+                      item['pid']=int(pid.group(1)); ps=subprocess.run(['/bin/ps','-ww','-p',pid.group(1),'-o','uid=,lstart=,command='],capture_output=True,text=True,timeout=20)
+                      item['pid_visible']=ps.returncode==0; item['uid_503']=ps.stdout.strip().startswith('503 '); item['command_references_task']=str(task) in ps.stdout
+              result['labels'][label]=item
+          ps=subprocess.run(['/bin/ps','-ww','-u','503','-o','pid=,command='],capture_output=True,text=True,check=True,timeout=20)
+          result['task_processes']=[int(m.group(1)) for line in ps.stdout.splitlines() if (m:=re.match(r'^\s*(\d+)\s+(.*)$',line)) and str(task) in m.group(2)]
+          print(json.dumps(result,sort_keys=True))
           PYCODE
