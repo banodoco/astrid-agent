@@ -64,7 +64,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
-    "runtime-owner-processes.json", "runtime-owner-selection.json",
+    "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
@@ -1280,6 +1280,33 @@ def _windows_r0_pair(rows: list[dict], discovery: dict, version_path: Path) -> b
         return False
 
 
+def _capture_windows_r0_selection_context(discovery: dict, version_path: Path, evidence: Path) -> None:
+    """Record the remaining inputs to the selection predicate, without changing it."""
+    venv = version_path.parent / "py"
+    paths = {"version_dir": version_path.parent, "venv": venv, "scripts": venv / "Scripts",
+             "launcher": venv / "Scripts" / "pythonw.exe", "config": venv / "pyvenv.cfg"}
+    context = {"version_path": str(version_path),
+               "discovery": {key: discovery.get(key) for key in ("pid", "process_birth_id")},
+               "paths": {}}
+    for name, path in paths.items():
+        item = {"path": str(path)}
+        context["paths"][name] = item
+        try:
+            info = path.stat()
+            item.update(is_symlink=path.is_symlink(), is_file=path.is_file(),
+                        file_attributes=getattr(info, "st_file_attributes", 0))
+            safe_paths = all(not entry.get("error") and not entry.get("is_symlink")
+                             and not entry.get("file_attributes", 0) & 0x400
+                             for entry in context["paths"].values())
+            if name == "config" and item["is_file"] and safe_paths:
+                # Only the home entries participate in identity selection.
+                lines = path.read_text(encoding="utf-8").splitlines()
+                item["home_lines"] = [line for line in lines if re.match(r"\s*home\s*=", line, re.IGNORECASE)]
+        except (OSError, UnicodeError) as exc:
+            item["error"] = f"{type(exc).__name__}: {exc}"
+    write_json(evidence / "runtime-owner-selection-context.json", context)
+
+
 def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> None:
     """R0 selection permits one verified Windows venv launcher/owner pair."""
     if sys.platform != "win32":
@@ -1295,6 +1322,11 @@ def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> N
             "runtime-owner-selection.json", show=False, timeout=30))
     finally:
         windows.EVIDENCE = previous_evidence
+    try:
+        _capture_windows_r0_selection_context(discovery, version_path, evidence)
+    except Exception as exc:
+        print(f"Journey R0 selection context capture failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
     rows = rows if isinstance(rows, list) else [rows]
     owners = [int(row["ProcessId"]) for row in rows if _runtime_owner_command(str(row.get("CommandLine") or ""))]
     if owners != [int(discovery["pid"])] and not _windows_r0_pair(rows, discovery, version_path):

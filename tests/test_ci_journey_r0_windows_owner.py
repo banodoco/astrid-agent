@@ -119,3 +119,55 @@ def test_ordinary_windows_census_keeps_existing_powershell_call(r0_pair, monkeyp
         return json.dumps(rows)
     monkeypatch.setattr(journey.windows, "powershell", census)
     assert journey.runtime_processes(version.parent) == [8068, 4032]
+
+
+def test_failed_selection_evidence_survives_both_failure_snapshots(r0_pair, tmp_path, monkeypatch):
+    version, rows, discovery = r0_pair
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    # The requested R0 run failed before a task definition was available.
+    unit = journey.ROOT / "tests/fixtures/windows-r0-failed-capture/unit-file-before-cleanup.txt"
+    assert hashlib.sha256(unit.read_bytes()).hexdigest() == "43455756c8329d444713a668423f71131e89d7b19ca4bac3c5c9f68e5ef0f127"
+    assert unit.read_bytes() == b"Task Scheduler definition unavailable\r\n"
+    (evidence / unit.name).write_bytes(unit.read_bytes())
+    journey.write_json(evidence / "journey-result.json", {"scenario": "release0-to-release1", "status": "fail"})
+    rows[1]["ParentProcessId"] = 999  # two independent owners must still fail
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "healthy", lambda _: discovery)
+    def census(command, filename, **kwargs):
+        value = json.dumps(rows)
+        (journey.windows.EVIDENCE / filename).write_text(value, encoding="utf-8")
+        return value
+    monkeypatch.setattr(journey.windows, "powershell", census)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *args: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: None)
+    with pytest.raises(RuntimeError, match=r"found \[8068, 4032\]"):
+        journey.assert_release0_runtime(run_root / "data", version, evidence)
+    context = journey.read_json(evidence / "runtime-owner-selection-context.json")
+    assert context["discovery"] == discovery
+    assert context["paths"]["config"]["home_lines"] == [r"home = C:\Python311"]
+    assert context["paths"]["launcher"]["is_file"]
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    (version.parent / "py" / "pyvenv.cfg").unlink()
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = run_root / "evidence-upload" / phase
+        assert json.loads((staged / "runtime-owner-selection.json").read_text(encoding="utf-8")) == rows
+        assert journey.read_json(staged / "runtime-owner-selection-context.json") == context
+        assert (staged / unit.name).read_bytes() == unit.read_bytes()
+        assert (staged / "journey-result.json").is_file()
+
+
+def test_context_capture_failure_does_not_change_owner_decision(r0_pair, monkeypatch):
+    version, rows, discovery = r0_pair
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "healthy", lambda _: discovery)
+    monkeypatch.setattr(journey.windows, "powershell", lambda *args, **kwargs: json.dumps(rows))
+    def fail_capture(*args):
+        raise OSError("capture failed")
+    monkeypatch.setattr(journey, "_capture_windows_r0_selection_context", fail_capture)
+    journey.assert_release0_runtime(version.parent, version, version.parent / "evidence")
+    rows[1]["ParentProcessId"] = 999
+    with pytest.raises(RuntimeError, match="Expected exactly the selected Runtime owner"):
+        journey.assert_release0_runtime(version.parent, version, version.parent / "evidence")
