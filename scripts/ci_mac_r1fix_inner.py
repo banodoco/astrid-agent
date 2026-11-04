@@ -1,4 +1,4 @@
-import fcntl, hashlib, json, os, plistlib, re, subprocess, sys, time, traceback, uuid
+import fcntl, hashlib, json, os, plistlib, re, sqlite3, subprocess, sys, time, traceback, uuid
 from pathlib import Path
 base=Path(sys.argv[1]); driver=base/'driver'; app=base/'candidate-app'; run=base/'run'; data=run/'data'; home=run/'home'; root=home/'.local/share/astrid'; evidence=base/'evidence'; evidence.mkdir()
 sys.path.insert(0,str(driver/'scripts'))
@@ -59,8 +59,7 @@ try:
   if v.installed_release(old)!=0: raise RuntimeError('Installed release is not R0')
   prove_owned(); done('r0-service-identity')
   keys=v.direct_workspace(root,old,data,evidence/'seed','seed',{'project':'ws02-r0-workspace','generation':'release0','task_id':None,'create_project':True}); done('seed')
-  health=j.healthy(data); realm_id=str(health['realm_id']); realm=j.workspace_root(data)
-  if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',realm_id): raise RuntimeError('Unexpected realm id')
+  realm=j.workspace_root(data)
   prove_owned()
   query=subprocess.run(['/bin/launchctl','print-disabled',f'gui/{os.getuid()}'],capture_output=True,text=True,check=True,timeout=30)
   if 'disabled services' not in query.stdout: raise RuntimeError('LaunchAgent disabled state not inspectable')
@@ -69,6 +68,12 @@ try:
   disabled_by_us=True
   subprocess.run(['/bin/launchctl','disable',f'gui/{os.getuid()}/haus.astrid.runtime'],check=True,timeout=30); done('launchagent-disable')
   stop_owned(); done('r0-stopped-and-lock-free')
+  database=realm/'realm.sqlite3'
+  if database.is_symlink() or not database.is_file() or not database.resolve().is_relative_to(data): raise RuntimeError('R0 database identity unsafe')
+  with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as connection:
+   rows=connection.execute('SELECT id FROM realm').fetchall()
+  if len(rows)!=1 or not isinstance(rows[0][0],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',rows[0][0]): raise RuntimeError('R0 realm identity ambiguous')
+  realm_id=rows[0][0]; done('r0-realm-identity')
   venv=base/'r1-venv'; py=Path(sys.executable); j.run([py,'-m','venv',venv],evidence/'venv.log',timeout=300); interp=venv/'bin/python'
   j.run([interp,'-m','pip','install','-e',base/'runtime','-e',base/'runtime/packages/python','-e',base/'agent'],evidence/'r1-install.log',timeout=1200); done('r1-runtime-install')
   profile=base/'r1-profile.json'; profile.write_text(json.dumps({'profile':'astrid','runtime_checkout':str(base/'runtime'),'source_checkout':str(base/'agent'),'runtime_environment':str(venv)}))
