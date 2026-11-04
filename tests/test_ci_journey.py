@@ -872,6 +872,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
                WORKFLOW_REPOSITORY="banodoco/astrid-agent",
                OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
+               DIAGNOSTIC_KEEP_GOING="false", DIAGNOSTIC_LEG="release0-to-release1",
                STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
                M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
