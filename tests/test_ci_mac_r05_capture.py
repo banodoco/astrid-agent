@@ -98,7 +98,7 @@ def test_refused_host_does_not_create_private_temp_root(tmp_path, monkeypatch):
     monkeypatch.setenv('RUNNER_TEMP', str(runner_temp))
     monkeypatch.setenv('GITHUB_ENV', str(github_env))
     monkeypatch.setattr(capture.shutil, 'disk_usage', lambda _: SimpleNamespace(free=20_000_000_000))
-    monkeypatch.setattr(capture, 'port_free', lambda: True)
+    monkeypatch.setattr(capture, 'port_free', lambda *_: True)
     monkeypatch.setattr(capture, 'service_absent', lambda: False)
     monkeypatch.setattr(capture.tempfile, 'mkdtemp', lambda **kw: pytest.fail('capture root must not be created'))
     with pytest.raises(SystemExit):
@@ -115,15 +115,15 @@ def test_error_reporting_does_not_leak_unknown_exception_text():
 def test_global_guard_is_rechecked_just_before_driver():
     import inspect
     source = inspect.getsource(capture.main)
-    assert source.count('guard_host(home)') == 2
-    assert source.rindex('guard_host(home)') < source.index('inner.write_text(')
+    assert source.count('guard_host(home,port)') == 2
+    assert source.rindex('guard_host(home,port)') < source.index('inner.write_text(')
     assert 'host_owners_exist()' in inspect.getsource(capture.guard_host)
-    assert 'port_free()' in inspect.getsource(capture.guard_host)
+    assert 'port_free(port)' in inspect.getsource(capture.guard_host)
 
 
 def test_guard_checks_lsof_before_launchd_and_refuses_unknown(monkeypatch, tmp_path):
     events = []
-    monkeypatch.setattr(capture, 'port_free', lambda: events.append('lsof') or False)
+    monkeypatch.setattr(capture, 'port_free', lambda *_: events.append('lsof') or False)
     monkeypatch.setattr(capture, 'service_absent', lambda: events.append('launchctl') or True)
     with pytest.raises(RuntimeError, match='port'):
         capture.guard_host(tmp_path)
