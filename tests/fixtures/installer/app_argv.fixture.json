@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "install_line": "curl -fsSL https://astrid.haus/install | sh -s --",
+  "cases": [
+    {
+      "id": "untouched",
+      "argv": [
+        "--yes"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "already-set-up",
+      "argv": [
+        "--yes"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-autostart-off",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-command-off",
+      "argv": [
+        "--yes",
+        "--command",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-skills-off",
+      "argv": [
+        "--yes",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-skill-copies-on",
+      "argv": [
+        "--yes",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    }
+  ]
+}
