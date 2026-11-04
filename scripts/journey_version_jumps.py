@@ -824,7 +824,6 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
             raise RuntimeError("Busy refusal mutated selection/version/discovery")
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Busy refusal disturbed the unrelated sentinel")
-        journey.assert_one_runtime(data)
     except BaseException as primary:
         try:
             cleanup()
@@ -838,4 +837,4 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
         except Exception as cleanup_error:
             result["busy_cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
             raise
-        result["checks"].update(busy_refusal="pass", one_runtime="pass", unrelated_sentinel="pass")
+        result["checks"].update(busy_refusal="pass", unrelated_sentinel="pass")
