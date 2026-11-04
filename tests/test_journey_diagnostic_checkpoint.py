@@ -124,7 +124,7 @@ def test_diagnostic_checkpoint_accepts_only_unchanged_preseed_realm_and_keeps_cu
     monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: actions.append("verify"))
     monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
 
-    def workspace(_root, _version, _data, _evidence, action, request):
+    def workspace(_root, _data, _evidence, action, request):
         actions.append(action)
         if action == "seed":
             assert request == {
@@ -137,7 +137,7 @@ def test_diagnostic_checkpoint_accepts_only_unchanged_preseed_realm_and_keeps_cu
         assert request == {"project": "tst-m4-3b-release0", "task_id": "task-1"}
         return {"snapshot": "preseed preserved"}
 
-    monkeypatch.setattr(jumps, "direct_workspace", workspace)
+    monkeypatch.setattr(jumps, "live_workspace", workspace)
     result = jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
 
     assert custody == ["owner", "health", "one-runtime"]
@@ -159,7 +159,7 @@ def test_diagnostic_checkpoint_refuses_each_changed_retained_realm_before_seed(
         (realm / "preferences.json").write_text('{"theme":"changed"}\n', encoding="utf-8")
 
     workspace_calls = []
-    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: workspace_calls.append(unused))
+    monkeypatch.setattr(jumps, "live_workspace", lambda *unused: workspace_calls.append(unused))
     with pytest.raises(RuntimeError, match="workspace changed after its pre-seed checkpoint"):
         jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
 

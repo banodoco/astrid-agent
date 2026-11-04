@@ -1,0 +1,12 @@
+{
+  "runtime_commit": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+  "source_schema": 31,
+  "document": {
+    "id": "timeline:legacy-film",
+    "project_id": "e80bf439033742e19b9e28bd330c4e47",
+    "kind": "timeline.composition",
+    "content_json": "{\"config\":{\"clips\":[],\"metadata\":{\"user_note\":\"legacy R0 data\"},\"tracks\":[]},\"name\":\"Legacy user edit\",\"registry\":{\"assets\":{\"example\":{\"label\":\"retained\"}}},\"slug\":\"legacy-film\"}",
+    "version": 1
+  },
+  "database_sha256": "9c42584e7e682ec76c3f0ef2e17323ed563a3f3ccb4197d0e4a5b688d79847ce"
+}
