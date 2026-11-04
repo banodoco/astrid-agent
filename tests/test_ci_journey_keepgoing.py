@@ -44,7 +44,8 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     monkeypatch.setattr(journey, "installation", installation)
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a: calls.append("ownership"))
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda *a, **_kwargs: calls.append("ownership"))
     monkeypatch.setattr(journey, "assert_one_runtime", lambda *a: calls.append("one"))
     def verify(mode, *args, **kwargs):
         calls.append("verify-" + mode)

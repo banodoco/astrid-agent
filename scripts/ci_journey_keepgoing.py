@@ -179,7 +179,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             if selected_data != data or jumps.installed_release(version) != 1:
                 raise RuntimeError("Fresh install did not select release 1 and the requested data root")
             journey.selected_tuple(state["manifest"], version)
-            journey.assert_direct_service_ownership(root, data)
+            journey.assert_direct_service_ownership(root, data, release=1)
             state.update(version=version, version_path=path)
         def fresh_sentinel():
             if not journey.sentinel_observation(sentinel, birth)["alive"]:
@@ -253,7 +253,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not retain data and activate release 1")
         jumps.selected_candidate(state["manifest"], version, state["old_tuple"])
-        journey.assert_direct_service_ownership(root, data)
+        journey.assert_direct_service_ownership(root, data, release=1)
         health = journey.healthy(data)
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
