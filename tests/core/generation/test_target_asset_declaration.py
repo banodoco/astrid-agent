@@ -131,12 +131,26 @@ def test_engine_model_locks_leave_foley_assets_in_the_workflow_declaration():
     fields = ('name', 'subdir', 'url', 'hf_revision', 'sha256', 'size_bytes')
     assert [{key: asset[key] for key in fields} for asset in declared] == [
         {key: asset[key] for key in fields} for asset in assets]
-    # Engine locks are mandatory for every start, including unrelated workflows.
+    # Foley is part of the H3/RunPod engine closure; keep it out of unrelated locks.
     for path in (engine_recipe._ROOT / 'packs').glob('*/models.lock.json'):
-        assert 'hunyuan_foley' not in path.read_text(), path
+        assert ('hunyuan_foley' in path.read_text()) == (path.parent.name == 'runpod'), path
     for engine in ('comfyui', 'vibecomfy-h3'):
         models = engine_recipe.load_recipe_model_lock(engine, 'linux-x86_64-cu130').models
-        assert not any(model.destination.startswith('hunyuan_foley/') for model in models)
+        foley_models = [model for model in models
+                        if model.destination.startswith('hunyuan_foley/')]
+        if engine == 'vibecomfy-h3':
+            assert len(foley_models) == len(assets) == 10
+            assert {
+                (model.destination, model.repository, model.revision,
+                 model.bytes, model.sha256)
+                for model in foley_models
+            } == {
+                (f"{asset['subdir']}/{asset['name']}", asset['repository'],
+                 asset['hf_revision'], asset['size_bytes'], asset['sha256'])
+                for asset in assets
+            }
+        else:
+            assert not foley_models
 
 
 def test_target_source_and_manifest_pins_use_the_current_custody_provider():

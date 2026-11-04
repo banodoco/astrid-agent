@@ -23,6 +23,58 @@ from astrid.core.generation.preflight import GenerationReadinessError, generatio
 DATA = b'locked CPU fake model bytes'
 
 
+def _locked_model_rows(monkeypatch, rows_by_lock):
+    indexed = tuple(SimpleNamespace(engine=f'engine-{i}', platform='test')
+                    for i in range(len(rows_by_lock)))
+    monkeypatch.setattr(alignment, 'load_recipe_index',
+                        lambda: SimpleNamespace(entries=indexed))
+    monkeypatch.setattr(alignment, 'load_recipe',
+                        lambda engine, _platform: SimpleNamespace(
+                            models_lock=f'lock-{engine.removeprefix("engine-")}'))
+    monkeypatch.setattr(alignment, 'load_model_lock',
+                        lambda lock: SimpleNamespace(models=rows_by_lock[lock]))
+
+
+def _artifact(name='qwen-a', **changes):
+    facts = {
+        'name': name,
+        'repository': 'Comfy-Org/Qwen-Image-2.1',
+        'revision': 'a' * 40,
+        'path': 'diffusion_models/qwen.safetensors',
+        'url': None,
+        'destination': 'diffusion_models/qwen.safetensors',
+        'bytes': 123,
+        'sha256': 'b' * 64,
+    }
+    facts.update(changes)
+    return ModelSpec(**facts)
+
+
+def test_packaged_model_locks_deduplicate_same_artifact_with_different_names(monkeypatch):
+    first = _artifact(name='qwen_image_2.1_turbo_int8_convrot')
+    alias = _artifact(name='qwen-image-edit-diffusion-models-qwen-image-2-1-turbo-int8-convrot')
+    _locked_model_rows(monkeypatch, {'lock-0': (first,), 'lock-1': (alias,)})
+
+    assert alignment._locked_models()[first.destination] == alias
+
+
+@pytest.mark.parametrize('field,value', [
+    ('repository', 'other/repository'),
+    ('revision', 'c' * 40),
+    ('path', 'other/path.safetensors'),
+    ('url', 'https://models.invalid/other'),
+    ('bytes', 124),
+    ('sha256', 'd' * 64),
+])
+def test_packaged_model_locks_still_reject_different_artifact_facts(monkeypatch, field, value):
+    first = _artifact()
+    conflicting = _artifact(name='alias', **{field: value})
+    _locked_model_rows(monkeypatch, {'lock-0': (first,), 'lock-1': (conflicting,)})
+
+    with pytest.raises(IntegrityError, match='conflicting packaged model locks'):
+        alignment._locked_models()
+
+
 class Workflow:
     def compile(self, _format):
         return {'1': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'fake.safetensors'}}}

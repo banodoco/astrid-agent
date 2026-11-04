@@ -162,10 +162,31 @@ def _locked_models() -> dict[str, ModelSpec]:
         recipe = load_recipe(indexed.engine, indexed.platform)
         for model in load_model_lock(recipe.models_lock).models:
             previous = result.get(model.destination)
-            if previous is not None and previous != model:
+            if previous is not None and not _same_artifact_identity(previous, model):
                 raise IntegrityError(f'conflicting packaged model locks: {model.destination}')
             result[model.destination] = model
     return result
+
+
+def _same_artifact_identity(left: ModelSpec, right: ModelSpec) -> bool:
+    """Compare locked artifact facts, excluding the per-lock display name."""
+    return (
+        left.repository,
+        left.revision,
+        left.path,
+        left.url,
+        left.destination,
+        left.bytes,
+        left.sha256,
+    ) == (
+        right.repository,
+        right.revision,
+        right.path,
+        right.url,
+        right.destination,
+        right.bytes,
+        right.sha256,
+    )
 
 
 def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
