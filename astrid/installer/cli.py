@@ -61,6 +61,48 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
     return path
 
 
+def _retained_r0_roots(service) -> list[Path]:
+    from .r0_stop import _marker_path
+
+    intent = read_json(absolute(_marker_path(service)))
+    return [absolute(intent[key]) for key in ("program_root", "data_root")] if intent else []
+
+
+def _provisional_roots(root: Path, requested_data: Path | None, service, mode: str) -> list[Path]:
+    """Read candidate selections only; authoritative selection stays under the lock."""
+    from runtime_protocol import platform
+
+    recorded = service.recorded()
+    programs = [root]
+    if recorded.get("program_root") and (not recorded.get("uninstalled") or mode == "uninstall"):
+        programs.append(absolute(recorded["program_root"]))
+    protected = programs.copy()
+    # Include owned marker data even when the per-user selection has changed.
+    for program in programs:
+        marker = read_json(program / "install.json")
+        if marker.get("owner") == LABEL and marker.get("data_root"):
+            protected.append(absolute(marker["data_root"]))
+    protected.append(absolute(recorded.get("data_root") or requested_data or platform.data_root()))
+    return protected + _retained_r0_roots(service)
+
+
+def _check_installer_state(lock_path: Path, *protected: Path) -> None:
+    """Refuse before creating/chmodding the state directory or opening the lock."""
+    lock_path = absolute(lock_path)
+    state = lock_path.parent
+    for root in protected:
+        # On POSIX the default program directory is a child of the broad
+        # per-user state parent. Only the parent's own mutation must be outside
+        # the roots. Windows reserves its dedicated installer directory too.
+        if state.is_relative_to(root) or (sys.platform == "win32" and root.is_relative_to(state)):
+            raise ValueError(
+                "The recovery marker must be outside the R0 roots. "
+                f"The selected directory contains protected installer state at {state}; choose a separate directory."
+            )
+    if lock_path.exists() and (not lock_path.is_file() or lock_path.stat().st_nlink != 1):
+        raise ValueError("The installer lock is not a private regular file.")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
@@ -180,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
                     update_pinokio(root, backend, manifest, force=args.update)
                 return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
+        _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
             locked = False
@@ -204,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise
                 locked = True
             try:
+                # Re-read after acquiring the same installer lock, before any
+                # manager operation, diagnostic preparation or selection write.
+                _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))
                 # The single per-user selection is also the Pinokio pointer.
                 # Inspect it under the installer lock before claiming any root.
                 recorded = backend.service.recorded()
@@ -261,11 +307,8 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
                 data = absolute(recorded.get("data_root") or args.data_root or platform.data_root())
-                if sys.platform == "win32":
-                    for name, path in (("program directory", root), ("workspace", data)):
-                        managed, installer_state = path.resolve(), lock_path.parent.resolve()
-                        if managed.is_relative_to(installer_state) or installer_state.is_relative_to(managed):
-                            raise ValueError(f"The {name} contains protected installer state at {lock_path.parent}; choose a separate directory.")
+                protected = [root, data, *_retained_r0_roots(backend.service)]
+                _check_installer_state(lock_path, *protected)
                 if not separate_roots(root, data):
                     raise ValueError("Keep program files and the workspace in separate directories.")
                 if sys.platform == "win32" and len(str(root)) > 90:
@@ -278,13 +321,6 @@ def main(argv: list[str] | None = None) -> int:
                 # No installer diagnostic writes are allowed until selection is
                 # resolved. Include the retained source of an interrupted stop:
                 # recovery can precede validating the current data selection.
-                protected = [root, data]
-                if mode in {"install", "update"} and managed_by != "pinokio":
-                    from .r0_stop import _marker_path
-
-                    intent = read_json(_marker_path(backend.service))
-                    if intent:
-                        protected.extend(absolute(intent[key]) for key in ("program_root", "data_root"))
                 log = _prepare_log(log_path, *protected)
                 backend.console_diagnostics = log is None
                 if log is not None:

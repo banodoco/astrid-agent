@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from runtime_protocol import platform
@@ -20,7 +21,7 @@ from runtime_protocol import platform
 from astrid.installer import cli, r0_stop
 from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, Version, current, write_json
-from astrid.installer.service import LABEL, Service
+from astrid.installer.service import LABEL, Service, installer_lock_path
 from tests.test_installer_r0_stop import FIXTURES, setup_case, snapshot
 
 
@@ -134,6 +135,166 @@ def move_selected_tree(root, data, service, destination, *, program=False):
 
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux executable manager simulation")
+
+
+@pytest.mark.parametrize("program", [False, True], ids=["data", "program"])
+@pytest.mark.parametrize("explicit_root", [False, True], ids=["recorded-root", "explicit-root"])
+@pytest.mark.parametrize("existing_lock", [False, True], ids=["0755-missing-lock", "0555-existing-lock"])
+def test_public_cli_installer_state_overlap_preserves_roots(
+    tmp_path, monkeypatch, program, explicit_root, existing_lock,
+):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    lock = installer_lock_path(Path.home(), "linux")
+    # The selection is already in this directory. Move the selected contents
+    # alongside it, preserving the coherent catalog and real owner.lock.
+    source = root if program else data
+    for child in source.iterdir():
+        shutil.move(str(child), lock.parent / child.name)
+    source.rmdir()
+    if program:
+        root = lock.parent
+    else:
+        data = lock.parent
+    realm = data / "runtime" / "realms" / "r0"
+    catalog(data, realm)
+    if program:
+        folder = root / "versions" / "release0"
+        write_json(folder / "version.json", Version(
+            folder, folder / "py" / "bin" / "python", folder / "profile.json", {}, release=0,
+        ).document())
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    selected = json.loads(service.selection.read_text())
+    write_json(service.selection, {**selected, "program_root": str(root),
+                                  "data_root": str(data), "realm_root": str(realm)})
+    if existing_lock:
+        lock.write_bytes(b"retained installer lock")
+    lock.parent.chmod(0o555 if existing_lock else 0o755)
+    fd = os.open(realm / "owner.lock", os.O_RDONLY)
+    platform.lock_file(fd, blocking=False)
+    before = snapshot(root), snapshot(data)
+    try:
+        command = [sys.executable, "-m", "astrid", "install"]
+        if explicit_root:
+            command.extend(["--root", str(root)])
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "recovery marker must be outside" in result.stdout
+        assert state(manager)["enabled"] and state(manager)["running"]
+        assert state(manager)["calls"] == []
+        assert (snapshot(root), snapshot(data)) == before
+    finally:
+        platform.unlock_file(fd)
+        os.close(fd)
+        lock.parent.chmod(0o755)
+
+
+@pytest.mark.parametrize("system", ["darwin", "win32"])
+def test_cli_refuses_installer_state_overlap_for_other_platform_layouts(tmp_path, monkeypatch, system):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    # Exercise each CLI state layout and the common early guard on Linux. The
+    # real Linux Service fixture remains; no native manager call is expected.
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(platform=system))
+    lock = installer_lock_path(Path.home(), system)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    for child in data.iterdir():
+        shutil.move(str(child), lock.parent / child.name)
+    data.rmdir()
+    data = lock.parent
+    realm = data / "runtime" / "realms" / "r0"
+    catalog(data, realm)
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    selected = json.loads(service.selection.read_text())
+    write_json(service.selection, {**selected, "data_root": str(data), "realm_root": str(realm)})
+    data.chmod(0o555)
+    before = snapshot(root), snapshot(data)
+    try:
+        assert cli.main(["--root", str(root)]) == 1
+        assert state(manager)["calls"] == []
+        assert (snapshot(root), snapshot(data)) == before
+    finally:
+        data.chmod(0o755)
+
+
+def test_public_cli_marker_data_is_protected_without_selection(tmp_path, monkeypatch):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    service.selection.unlink()
+    # Keep the actual source in place and put installer state inside it using
+    # the supported XDG_DATA_HOME selection, with no per-user record to help.
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    before = snapshot(root), snapshot(data)
+    result = invoke(root)
+    assert result.returncode == 1
+    assert "protected installer state" in result.stdout
+    assert state(manager)["calls"] == []
+    assert (snapshot(root), snapshot(data)) == before
+
+
+@pytest.mark.parametrize("key", ["program_root", "data_root"])
+def test_public_cli_retained_stop_roots_protect_installer_state(tmp_path, monkeypatch, key):
+    root, data, realm, service, manager = public_case(tmp_path, monkeypatch)
+    backend = Backend(root, service.home / "log", Path(sys.executable))
+    r0_stop.stop_r0_and_wait(backend.service, realm, data_root=data)
+    intent_path = r0_stop._marker_path(service)
+    intent = json.loads(intent_path.read_text())
+    # An older/changed layout can leave intent naming a source that now
+    # contains installer state, even though current selections are disjoint.
+    write_json(intent_path, {**intent, key: str(intent_path.parent)})
+    state(manager, calls=[])
+    intent_path.parent.chmod(0o555)
+    before = snapshot(root), snapshot(data), snapshot(intent_path.parent)
+    try:
+        result = invoke(root)
+        assert result.returncode == 1
+        assert "protected installer state" in result.stdout
+        assert intent_path.exists()
+        assert state(manager)["calls"] == []
+        assert not state(manager)["enabled"]  # intent retained for safe recovery
+        assert (snapshot(root), snapshot(data), snapshot(intent_path.parent)) == before
+    finally:
+        intent_path.parent.chmod(0o755)
+
+
+@pytest.mark.parametrize("changed", ["selection", "intent"])
+def test_cli_rechecks_roots_under_installer_lock_before_manager_calls(tmp_path, monkeypatch, changed):
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    lock_path = installer_lock_path(Path.home(), "linux")
+    acquire = platform.lock_file
+    under_lock = []
+
+    def change_after_acquisition(fd, **options):
+        acquire(fd, **options)
+        if changed == "selection":
+            selected = json.loads(service.selection.read_text())
+            write_json(service.selection, {**selected, "data_root": str(lock_path.parent)})
+        else:
+            write_json(r0_stop._marker_path(service), {
+                "program_root": str(root), "data_root": str(lock_path.parent),
+            })
+        under_lock.append(snapshot(lock_path.parent))
+
+    monkeypatch.setattr(platform, "lock_file", change_after_acquisition)
+    before = snapshot(root), snapshot(data)
+    assert cli.main(["--root", str(root)]) == 1
+    assert len(under_lock) == 1
+    assert snapshot(lock_path.parent) == under_lock[0]
+    assert state(manager)["calls"] == []
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert (snapshot(root), snapshot(data)) == before
+
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_public_cli_installer_lock_alias_preserves_source(tmp_path, monkeypatch, alias):
+    root, data, realm, _, manager = public_case(tmp_path, monkeypatch)
+    lock = installer_lock_path(Path.home(), "linux")
+    if alias == "symlink":
+        lock.symlink_to(realm / "owner.lock")
+    else:
+        os.link(realm / "owner.lock", lock)
+    before = snapshot(root), snapshot(data), snapshot(lock.parent)
+    result = invoke(root)
+    assert result.returncode == 1
+    assert state(manager)["calls"] == []
+    assert (snapshot(root), snapshot(data), snapshot(lock.parent)) == before
 
 
 @pytest.mark.parametrize("program", [False, True], ids=["data", "program"])
