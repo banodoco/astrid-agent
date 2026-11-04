@@ -1,6 +1,7 @@
 """Service contracts and native command boundaries, exercised without OS services."""
 import io
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -405,6 +406,15 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     assert version.env['ASTRID_INSTALL_RELEASE'] == '23'
     assert version.env['ASTRID_INSTALL_MANAGED_BY'] == (managed_by or '')
     assert Version.load(read_json(version.root / 'version.json')) == version
+    if managed_by is None and sys.platform != 'win32':
+        # The registration interface uses the executable supplied by real
+        # staging, with the candidate interpreter and immutable profile.
+        runtime_launcher = version.root / 'bin/runtime'
+        assert runtime_launcher.is_file() and os.access(runtime_launcher, os.X_OK)
+        runner = (version.root / 'bin/runtime.py').read_text()
+        assert str(version.python) in runtime_launcher.read_text()
+        assert str(version.profile) in runner
+        assert version.env['ASTRID_BUN_EXECUTABLE'] in runner
     profile = json.loads(version.profile.read_text(encoding='utf-8'))
     assert Path(profile['source_checkout']) == installed_root(version.python, version.env)
     assert digest_roots == [Path(profile['source_checkout'])]

@@ -527,6 +527,12 @@ class Installer:
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
+        if self.managed_by != "pinokio":
+            from .r0_stop import refuse_unintegrated_r1_handoff
+
+            service = getattr(self.backend, "service", None)
+            if service is not None:
+                refuse_unintegrated_r1_handoff(self.root, service)
         if (self.managed_by == "pinokio" and mode in {"install", "update"}
                 and current(self.root) is not None):
             from .app_update import update_pinokio
@@ -534,11 +540,7 @@ class Installer:
             return update_pinokio(self.root, self.backend, manifest, say=self.say,
                                   force=mode == "update")
         if self.managed_by != "pinokio" and mode in {"install", "update"}:
-            from .r0_stop import R0StopError, is_r0_installation, refuse_unintegrated_r1_handoff
-
-            service = getattr(self.backend, "service", None)
-            if service is not None:
-                refuse_unintegrated_r1_handoff(self.root, service)
+            from .r0_stop import R0StopError, is_r0_installation
             if is_r0_installation(self.root):
                 # Public CLI performs Piece A under the per-user installer
                 # lock. Programmatic callers cannot bypass that boundary or

@@ -1,224 +1,349 @@
-"""Manager fakes exercise the R0/R1 boundary without touching host services."""
+"""B through real Backend/CLI and persistent simulated systemd, with real locks.
+
+No native service, data adoption, wheel, venv, or download is used by these tests.
+"""
+from __future__ import annotations
+
+import json
 import os
-import plistlib
+import signal
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from runtime_protocol import platform
 
-from astrid.installer.boundary_registration import (
-    BoundaryRegistration, R0_LINUX, R1_LINUX, R0_MAC, R1_MAC, R0_WINDOWS, R1_WINDOWS,
-)
+from astrid.installer import boundary_registration as registration
+from astrid.installer import r0_stop
+from astrid.installer.backend import Backend
+from astrid.installer.core import Installer, Version, read_json, write_json
+from tests.test_installer_r0_entry import invoke, public_case, state
+from tests.test_installer_r0_stop import snapshot
 
-FIXTURES = Path(__file__).parent / "fixtures" / "boundary_r0"
-
-
-class Manager:
-    def __init__(self):
-        self.calls = []
-        self.fail = None
-        self.enabled = {"r0": False, "r1": False}
-        self.running = {"r0": False, "r1": False}
-
-    def __call__(self, argv):
-        text = " ".join(map(str, argv))
-        self.calls.append(text)
-        if self.fail and self.fail in text:
-            raise subprocess.CalledProcessError(1, argv)
-        if "systemctl" in text:
-            if "enable --now " in text:
-                key = "r1" if R1_LINUX in text else "r0"
-                self.enabled[key] = self.running[key] = True
-            elif "disable --now " in text:
-                self.enabled["r1"] = self.running["r1"] = False
-        elif "launchctl" in text:
-            key = "r1" if R1_MAC in text else "r0"
-            if " enable " in text: self.enabled[key] = True
-            if " disable " in text: self.enabled[key] = False
-            if " bootstrap " in text: self.running[key] = True
-            if " bootout " in text: self.running[key] = False
-        elif "Register-ScheduledTask" in text:
-            self.enabled["r1"] = self.running["r1"] = True
-        elif "Disable-ScheduledTask" in text:
-            self.enabled["r1"] = self.running["r1"] = False
-        elif "Enable-ScheduledTask" in text:
-            self.enabled["r0"] = self.running["r0"] = True
-        return ""
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="persistent systemctl simulation")
 
 
-@pytest.fixture(params=["linux", "darwin", "win32"])
-def scenario(tmp_path, request):
-    system = request.param
-    root, home = tmp_path / "program", tmp_path / "home"
-    old, new = tmp_path / "data", tmp_path / "adopted-r1"
-    old.mkdir(); new.mkdir()
-    (old / "state").write_text("R0 original")
-    (new / "state").write_text("R1 accepted work")
-    exe = root / "versions" / "v1" / "bin" / ("runtime.exe" if system == "win32" else "runtime")
-    exe.parent.mkdir(parents=True)
-    exe.write_text("#!/bin/sh\nprintf '%s\\n' v1 \"$@\"\n")
-    exe.chmod(0o755)
-    (root / "current").write_text("v1\n")
-    manager = Manager()
-    service = BoundaryRegistration(root, home, system, manager, uid="501")
-    if system != "win32":
-        service.r0_path.parent.mkdir(parents=True, exist_ok=True)
-        fixture = "linux.service" if system == "linux" else "macos.plist"
-        service.r0_path.write_bytes((FIXTURES / fixture).read_bytes())
-        original = service.r0_path.read_bytes()
+@pytest.fixture
+def case(tmp_path, monkeypatch):
+    root, data, realm, service, manager = public_case(tmp_path, monkeypatch)
+    shim = tmp_path / "commands/systemctl"
+    body = shim.read_text().replace('print("FragmentPath=" + state["unit"])',
+        'print("FragmentPath=" + state["unit"])\n'
+        '    print("ActiveState=" + ("active" if state["running"] else "inactive"))\n'
+        '    print("UnitFileState=" + ("enabled" if state["enabled"] else "disabled"))')
+    body = body.replace('print("LoadState=loaded\\nActiveState=" + state["r1"])',
+        'print("LoadState=loaded\\nActiveState=" + state["r1"])\n'
+        f'    print("FragmentPath=" + state.get("r1_fragment", {str(service.path.with_name(registration.R1_LINUX))!r}))\n'
+        '    print("DropInPaths=" + state.get("dropins", ""))\n'
+        '    print("UnitFileState=" + ("enabled" if state.get("r1_enabled") else "disabled"))')
+    body = body.replace('else:\n    raise SystemExit("unexpected manager mutation: " + repr(args))', f'''
+elif args == ["--user", "daemon-reload"]:
+    exists = Path({str(service.path.with_name(registration.R1_LINUX))!r}).exists()
+    if exists and state["r1"] == "absent":
+        state["r1"] = "inactive"
+    if not exists:
+        state["r1"] = "absent"
+    path.write_text(json.dumps(state))
+    if state.get("kill_reload"):
+        os.kill(os.getppid(), signal.SIGKILL)
+elif args == ["--user", "disable", "--now", "astrid-r1.service"]:
+    if state.get("fail_r1_stop"):
+        raise SystemExit("injected R1 stop failure")
+    state.update(r1="inactive", r1_enabled=False)
+    path.write_text(json.dumps(state))
+else:
+    raise SystemExit("unexpected manager mutation: " + repr(args))
+''')
+    shim.write_text(body)
+    backend = Backend(root, service.home / "install.log", Path(sys.executable))
+    backend.console_diagnostics = True
+    destination = Path(str(data) + "-r1")
+    adopted = destination / "runtime/realms/r0"
+    adopted.mkdir(parents=True)
+    (adopted / "owner.lock").write_bytes(b"R1 lock retained")
+    (adopted / "realm.sqlite3").write_bytes(b"R1 accepted data retained")
+    # A's pre-existing destination gate is not adoption authority for B. Stop
+    # before creating destination in the real C ordering; here move it aside.
+    pending = tmp_path / "pending-adopted"
+    destination.rename(pending)
+    r0_stop.stop_r0_and_wait(backend.service, realm, data_root=data)
+    pending.rename(destination)
+    folder = root / "versions/release1"
+    folder.mkdir()
+    version = Version(folder, Path(sys.executable), folder / "profile.json", {
+        "TEST_VERSION_ENV": "version one", "ASTRID_RUNTIME_DATA_ROOT": str(data),
+        "ASTRID_RUNTIME_DOOR_PORT": "17340",
+    }, release=1)
+    version.profile.write_text('{}')
+    write_json(folder / "version.json", version.document())
+    registration.stage_runtime_launcher(version)
+    state(manager, calls=[])
+    return backend, version, data, realm, destination, manager
+
+
+def prepare(case):
+    backend, version, data, realm, *_ = case
+    return backend.prepare_r1_registration(version, data, "r0", realm)
+
+
+def test_backend_publishes_disabled_distinct_service_then_cli_recovers(case):
+    backend, _, data, _, destination, manager = case
+    before = snapshot(data), snapshot(destination), backend.service.path.read_bytes()
+    journal = prepare(case)
+    value = read_json(journal)
+    assert value["phase"] == "disabled"
+    tx = registration.BoundaryRegistration(backend.service)
+    unit = tx.r1_path.read_text()
+    assert str(tx.launcher) in unit and str(destination) in unit
+    assert str(data) + '"' not in unit
+    assert (backend.root / "current").read_text() == "release0\n"
+    assert not state(manager)["enabled"] and not state(manager).get("r1_enabled")
+    # A registered disabled R1 can still have been started by an interrupted
+    # later activation. Recovery must stop it before restarting R0.
+    state(manager, r1="active", r1_enabled=True, calls=[])
+    result = invoke(backend.root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Recovered the interrupted R1 registration" in result.stdout
+    calls = state(manager)["calls"]
+    assert calls.index(["--user", "disable", "--now", "astrid-r1.service"]) < calls.index(
+        ["--user", "enable", "--now", "astrid.service"])
+    assert state(manager)["enabled"] and state(manager)["running"]
+    assert state(manager)["r1"] == "absent"
+    assert not journal.exists() and not r0_stop._marker_path(backend.service).exists()
+    assert not tx.launcher.exists() and not tx.r1_path.exists()
+    assert (snapshot(data), snapshot(destination), backend.service.path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("publication", ["launcher", "definition", "disabled-journal"])
+@pytest.mark.parametrize("after", [False, True])
+def test_interrupted_publication_is_recovered_by_real_cli(case, monkeypatch, publication, after):
+    backend, _, data, _, destination, manager = case
+    before = snapshot(data), snapshot(destination)
+    tx = registration.BoundaryRegistration(backend.service)
+    publish = registration._publish
+    class Interrupted(BaseException):
+        pass
+    def interrupt(path, content, **options):
+        selected = ((publication == "launcher" and path == tx.launcher)
+                    or (publication == "definition" and path == tx.r1_path)
+                    or (publication == "disabled-journal" and path == tx.journal and not options.get("exclusive")))
+        if selected and not after:
+            raise Interrupted()
+        publish(path, content, **options)
+        if selected and after:
+            raise Interrupted()
+    monkeypatch.setattr(registration, "_publish", interrupt)
+    with pytest.raises(Interrupted):
+        prepare(case)
+    assert tx.journal.exists()
+    monkeypatch.setattr(registration, "_publish", publish)
+    result = invoke(backend.root)
+    assert result.returncode == 1 and "Recovered the interrupted R1 registration" in result.stdout
+    assert state(manager)["enabled"] and not tx.journal.exists()
+    assert (snapshot(data), snapshot(destination)) == before
+
+
+def test_sigkill_inside_manager_reload_then_cli_replay(case):
+    backend, *_rest, manager = case
+    prepare(case)
+    state(manager, r1="active", r1_enabled=True, kill_reload=True, calls=[])
+    killed = invoke(backend.root)
+    assert killed.returncode == -signal.SIGKILL
+    assert registration.journal_path(backend.service).exists()
+    assert not state(manager)["enabled"]
+    state(manager, kill_reload=False)
+    recovered = invoke(backend.root)
+    assert "Recovered the interrupted R1 registration" in recovered.stdout
+    assert state(manager)["enabled"]
+
+
+@pytest.mark.parametrize("problem", ["definition", "launcher", "dropins", "fragment", "unknown", "stop", "lock", "r0-unit", "pointer", "selection"])
+def test_uncertain_recovery_retains_intent_and_data_without_restarting_r0(case, monkeypatch, problem):
+    backend, _, data, _, destination, manager = case
+    prepare(case)
+    tx = registration.BoundaryRegistration(backend.service)
+    state(manager, r1="active", r1_enabled=True, calls=[])
+    fd = None
+    if problem == "definition":
+        tx.r1_path.write_text("foreign unit")
+    elif problem == "launcher":
+        tx.launcher.write_text("foreign launcher")
+    elif problem == "dropins":
+        state(manager, dropins="/foreign/override.conf")
+    elif problem == "fragment":
+        state(manager, r1_fragment="/foreign/astrid-r1.service")
+    elif problem == "unknown":
+        state(manager, r1="unknown")
+    elif problem == "stop":
+        state(manager, fail_r1_stop=True)
+    elif problem == "lock":
+        fd = os.open(destination / "runtime/realms/r0/owner.lock", os.O_RDONLY)
+        platform.lock_file(fd, blocking=False)
+        wait = r0_stop._wait_for_owner_lock
+        monkeypatch.setattr(r0_stop, "_wait_for_owner_lock", lambda path, *_: wait(path, 0, .2))
+    elif problem == "r0-unit":
+        backend.service.path.write_text("changed R0 unit")
+    elif problem == "pointer":
+        (backend.root / "current").write_text("release1\n")
     else:
-        # This is the actual evidence, not a fabricated Task Scheduler export.
-        original = (FIXTURES / "windows.txt").read_bytes()
-        assert b"definition unavailable" in original
-    return service, manager, old, new, original
+        selected = read_json(backend.service.selection)
+        write_json(backend.service.selection, {**selected, "r1_data_root": str(destination)})
+    before = snapshot(data), snapshot(destination)
+    try:
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            backend.recover_r1_registration()
+    finally:
+        if fd is not None:
+            platform.unlock_file(fd)
+            os.close(fd)
+    assert tx.journal.exists() and not state(manager)["enabled"]
+    assert ["--user", "enable", "--now", "astrid.service"] not in state(manager)["calls"]
+    if problem == "r0-unit":
+        assert ["--user", "disable", "--now", "astrid-r1.service"] in state(manager)["calls"]
+    assert (snapshot(data), snapshot(destination)) == before
 
 
-def test_registration_and_rollback_keep_r0_and_both_data_roots(scenario, tmp_path):
-    service, manager, old, new, original = scenario
-    service.register(old, new, tmp_path / "runtime.log", user="S-1-5-21")
-    assert manager.enabled == {"r0": False, "r1": True}
-    assert manager.running == {"r0": False, "r1": True}
-    definition = service.r1_path.read_text()
-    assert str(new) in definition
-    assert str(old) not in definition
-    assert str(service.launcher) in definition
-    if service.system == "linux":
-        assert R1_LINUX in manager.calls[-1] and R0_LINUX not in manager.calls[-1]
-    elif service.system == "darwin":
-        plist = plistlib.loads(service.r1_path.read_bytes())
-        assert plist["Label"] == R1_MAC
-        assert plist["ProgramArguments"][0] == str(service.launcher)
+@pytest.mark.parametrize("point", ["after-definition-removal", "after-r0-restored"])
+def test_recovery_replays_after_cleanup_interruption(case, monkeypatch, point):
+    backend, *_rest, manager = case
+    prepare(case)
+    recover = r0_stop.recover_r0
+    class Interrupted(BaseException):
+        pass
+    def interrupt(service):
+        if point == "after-r0-restored":
+            recover(service)
+        raise Interrupted()
+    monkeypatch.setattr(r0_stop, "recover_r0", interrupt)
+    with pytest.raises(Interrupted):
+        backend.recover_r1_registration()
+    monkeypatch.setattr(r0_stop, "recover_r0", recover)
+    result = invoke(backend.root)
+    assert "Recovered the interrupted R1 registration" in result.stdout
+    assert state(manager)["enabled"]
+    assert not registration.journal_path(backend.service).exists()
+
+
+def test_b_does_not_accept_bare_destination_as_launch_authority(case):
+    backend, _, _, _, destination, manager = case
+    prepare(case)
+    tx = registration.BoundaryRegistration(backend.service)
+    # Even manual start following a manual pointer switch is fenced without
+    # C's committed install/selection records. No Runtime module is imported.
+    (backend.root / "current").write_text("release1\n")
+    result = subprocess.run([tx.launcher, "run", "--profile", "astrid", "--data-root", destination],
+                            capture_output=True, text=True)
+    assert result.returncode != 0 and "not been committed" in result.stderr
+    assert not state(manager).get("r1_enabled")
+
+
+@pytest.mark.parametrize("pointer", ["../escape", " leading", "v1 ", "-v1", "v" * 65])
+def test_fixed_launcher_rejects_invalid_current(case, pointer):
+    backend, *_ = case
+    prepare(case)
+    (backend.root / "current").write_text(pointer + "\n")
+    result = subprocess.run([backend.root / "bin/runtime"], capture_output=True)
+    assert result.returncode != 0
+
+
+def test_fixed_launcher_tracks_pointer_and_uses_staged_environment_profile_and_settings(case, monkeypatch):
+    backend, version, _, _, destination, _ = case
+    prepare(case)
+    tx = registration.BoundaryRegistration(backend.service)
+    definition = tx.r1_path.read_bytes()
+    selected = read_json(backend.service.selection)
+    # These records simulate the future C commit. This is a launcher test,
+    # never a claim of successful adoption or a production upgrade.
+    write_json(backend.service.selection, {**selected, "r1_data_root": str(destination),
+        "service_label": registration.R1_LINUX, "realm_id": "r0", "realm_root": str(destination / "runtime/realms/r0")})
+    write_json(backend.root / "install.json", {"owner": registration.R0_MAC,
+        "data_root": selected["data_root"], "r1_data_root": str(destination)})
+    write_json(backend.root / "service-env.json", {"ASTRID_WARM_IDLE_SECONDS": "42"})
+    for index in (1, 2):
+        if index == 2:
+            folder = backend.root / "versions/release2"
+            folder.mkdir()
+            version = replace(version, root=folder, profile=folder / "profile.json",
+                              env={**version.env, "TEST_VERSION_ENV": "version two"})
+            registration.stage_runtime_launcher(version)
+        # -I excludes PYTHONPATH: install no packages; substitute only the final
+        # Runtime import in the generated script to observe its actual argv/env.
+        runner = version.root / "bin/runtime.py"
+        runner.write_text(runner.read_text().replace('from astrid_runtime.cli import main',
+            'def main(args):\n    print(json.dumps({"args":args,"env":dict(os.environ)}))\n    return 0'))
+        (backend.root / "current").write_text(version.root.name + "\n")
+        monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", "/wrong/profile")
+        monkeypatch.setenv("ASTRID_WORKSPACE_CREDENTIAL", "must-be-removed")
+        value = json.loads(subprocess.check_output([tx.launcher, "run", "--profile", "astrid", "--data-root", destination], text=True))
+        assert value["env"]["TEST_VERSION_ENV"] == ("version one" if index == 1 else "version two")
+        assert value["env"]["ASTRID_RUNTIME_DATA_ROOT"] == str(destination)
+        assert value["env"]["ASTRID_WARM_IDLE_SECONDS"] == "42"
+        assert "ASTRID_WORKSPACE_CREDENTIAL" not in value["env"]
+        assert value["args"][-2:] == ["--source-manifest", str(version.profile)]
+        assert tx.r1_path.read_bytes() == definition
+
+
+def test_programmatic_installer_cannot_bypass_registration_recovery(case):
+    backend, _, data, *_ = case
+    prepare(case)
+    with pytest.raises(ValueError, match="registration needs recovery"):
+        Installer(backend.root, data, backend).run("update", {"release": 1})
+
+
+def test_legacy_backend_registration_cannot_overwrite_r0_after_stop(case):
+    backend, version, data, *_ = case
+    before = snapshot(backend.root), backend.service.path.read_bytes()
+    with pytest.raises(ValueError, match="legacy registration is refused"):
+        backend.register(version, data)
+    assert (snapshot(backend.root), backend.service.path.read_bytes()) == before
+
+
+def test_unqualified_windows_refuses_without_mutation(case):
+    backend, *_ = case
+    backend.service.system = "win32"
+    with pytest.raises(ValueError, match="not qualified"):
+        registration.BoundaryRegistration(backend.service)
+
+
+@pytest.mark.parametrize("problem", ["running-r0", "missing-intent", "wrong-realm", "existing-unit"])
+def test_registration_requires_bound_stop_and_realm_before_any_publication(case, problem):
+    backend, version, data, realm, _, manager = case
+    tx = registration.BoundaryRegistration(backend.service)
+    if problem == "running-r0":
+        state(manager, enabled=True, running=True)
+    elif problem == "missing-intent":
+        r0_stop._marker_path(backend.service).unlink()
+    elif problem == "wrong-realm":
+        write_json(data / "runtime/catalog.json", {"version": 1, "selected_realm_id": "foreign", "realms": []})
     else:
-        assert R1_WINDOWS in manager.calls[-1]
-        assert "-Force" not in manager.calls[-1]
-        assert R0_WINDOWS + "'" not in manager.calls[-1]
-    manager.calls.clear()
-    def wait():
-        assert len(manager.calls) == (2 if service.system == "darwin" else 1)
-        manager.calls.append("lock free")
-    service.rollback(wait, lambda: None, lambda: None)
-    assert manager.enabled == {"r0": True, "r1": False}
-    assert manager.running == {"r0": True, "r1": False}
-    calls = "\n".join(manager.calls)
-    assert calls.index("lock free") < calls.rindex("enable" if service.system != "win32" else "Enable-ScheduledTask")
-    assert (old / "state").read_text() == "R0 original"
-    assert (new / "state").read_text() == "R1 accepted work"
-    if service.r0_path:
-        assert service.r0_path.read_bytes() == original
+        tx.r1_path.write_text("unrelated entry")
+    before = snapshot(data), snapshot(backend.root)
+    with pytest.raises((ValueError, FileNotFoundError, FileExistsError)):
+        backend.prepare_r1_registration(version, data, "r0", realm)
+    assert not tx.journal.exists() and not tx.launcher.exists()
+    assert (snapshot(data), snapshot(backend.root)) == before
+    assert not any("disable" in call or "enable" in call for call in state(manager)["calls"])
 
 
-def test_rollback_does_not_enable_r0_if_stop_or_lock_wait_fails(scenario):
-    service, manager, *_ = scenario
-    manager.fail = {"linux": "disable --now", "darwin": "bootout", "win32": "Stop-ScheduledTask"}[service.system]
-    with pytest.raises(subprocess.CalledProcessError):
-        service.rollback(lambda: None, lambda: None, lambda: None)
-    assert not any((R0_LINUX in s or R0_MAC in s and R1_MAC not in s or
-                    "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in s) for s in manager.calls)
-    manager.calls.clear(); manager.fail = None
-    def busy():
-        raise TimeoutError("R1 still owns its lock")
-    with pytest.raises(TimeoutError):
-        service.rollback(busy, lambda: None, lambda: None)
-    assert not any((R0_LINUX in s or R0_MAC in s and R1_MAC not in s or
-                    "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in s) for s in manager.calls)
+@pytest.mark.parametrize("mode", ["--uninstall", "--doctor"])
+def test_other_cli_operations_refuse_pending_registration(case, mode):
+    backend, *_rest, manager = case
+    prepare(case)
+    state(manager, calls=[])
+    result = subprocess.run([sys.executable, "-m", "astrid", "install", "--root", str(backend.root), mode],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1 and "registration needs recovery" in result.stdout
+    assert not state(manager)["calls"]
+    assert registration.journal_path(backend.service).exists()
 
 
-def test_refuses_unadopted_or_existing_r1(scenario, tmp_path):
-    service, manager, old, new, _ = scenario
-    with pytest.raises(ValueError):
-        service.register(old, old, tmp_path / "log", user="sid")
-    assert not manager.calls
-    service.register(old, new, tmp_path / "log", user="sid")
-    before = service.r1_path.read_bytes()
-    with pytest.raises(FileExistsError):
-        service.register(old, new, tmp_path / "log", user="sid")
-    assert service.r1_path.read_bytes() == before
-
-
-def test_posix_fixed_launcher_tracks_current_without_registration_rewrite(scenario, tmp_path):
-    service, _, old, new, _ = scenario
-    if service.system == "win32":
-        service.register(old, new, tmp_path / "log", user="sid")
-        wrapper = service.launcher.read_text()
-        assert "current" in wrapper and "versions/" in wrapper and "runtime.exe" in wrapper
-        return
-    service.register(old, new, tmp_path / "log", user="sid")
-    service_before = service.r1_path.read_bytes()
-    one = subprocess.check_output([str(service.launcher), "argument with spaces"], text=True).splitlines()
-    second = service.root / "versions/v2/bin/runtime"
-    second.parent.mkdir(parents=True)
-    second.write_text("#!/bin/sh\nprintf '%s\\n' v2 \"$@\"\n")
-    second.chmod(0o755)
-    (service.root / "current").write_text("v2\n")
-    two = subprocess.check_output([str(service.launcher), "argument with spaces"], text=True).splitlines()
-    assert one == ["v1", "argument with spaces"]
-    assert two == ["v2", "argument with spaces"]
-    assert service.r1_path.read_bytes() == service_before
-    (service.root / "current").write_text("../escape\n")
-    assert subprocess.run([str(service.launcher)], check=False).returncode != 0
-
-
-def test_refuses_service_or_log_inside_r0(scenario):
-    service, manager, old, new, _ = scenario
-    with pytest.raises(ValueError, match="outside R0"):
-        service.register(old, new, old / "runtime.log", user="sid")
-    assert not manager.calls
-    assert not service.launcher.exists()
-
-
-def test_rejects_missing_version_launcher_before_service_changes(scenario, tmp_path):
-    service, manager, old, new, _ = scenario
-    (service.root / "current").write_text("not-installed\n")
-    with pytest.raises(ValueError, match="no Runtime launcher"):
-        service.register(old, new, tmp_path / "log", user="sid")
-    assert not manager.calls
-    assert not service.r1_path.exists()
-
-
-def test_rollback_stops_r1_before_refusing_changed_r0(scenario):
-    service, manager, *_ = scenario
-    events = []
-    def validate():
-        events.append("validate R0")
-        assert manager.calls
-        assert events == ["validate R1", "lock free", "validate R0"]
-        raise ValueError("R0 entry changed")
-    with pytest.raises(ValueError, match="changed"):
-        service.rollback(lambda: events.append("lock free"), validate,
-                         lambda: events.append("validate R1"))
-    assert not any("enable --now astrid.service" in c or
-                   "enable gui/501/haus.astrid.runtime" in c or
-                   "Enable-ScheduledTask -TaskName 'Astrid Runtime'" in c
-                   for c in manager.calls)
-
-
-def test_rollback_never_touches_unvalidated_r1(scenario):
-    service, manager, *_ = scenario
-
-    def foreign_entry():
-        raise ValueError("R1 entry changed")
-
-    with pytest.raises(ValueError, match="R1 entry changed"):
-        service.rollback(lambda: pytest.fail("must not wait"),
-                         lambda: pytest.fail("must not validate R0"), foreign_entry)
-    assert not manager.calls
-
-
-@pytest.mark.parametrize("pointer", [" leading", "v1 ", "-v1", "v" * 65])
-def test_pointer_must_match_installer_format(scenario, tmp_path, pointer):
-    service, manager, old, new, _ = scenario
-    (service.root / "current").write_text(pointer + "\n")
-    with pytest.raises(ValueError):
-        service.register(old, new, tmp_path / "log", user="sid")
-    assert not manager.calls
-    assert not service.launcher.exists()
-
-
-def test_existing_definition_does_not_create_launcher(scenario, tmp_path):
-    service, manager, old, new, _ = scenario
-    service.r1_path.parent.mkdir(parents=True, exist_ok=True)
-    service.r1_path.write_text("existing")
-    with pytest.raises(FileExistsError):
-        service.register(old, new, tmp_path / "log", user="sid")
-    assert not service.launcher.exists()
-    assert not manager.calls
+@pytest.mark.parametrize("mode", ["doctor", "uninstall"])
+def test_programmatic_operations_refuse_completed_selection_without_c(case, mode):
+    backend, _, data, _, destination, manager = case
+    selected = read_json(backend.service.selection)
+    write_json(backend.service.selection, {**selected, "r1_data_root": str(destination)})
+    with pytest.raises(ValueError, match="handoff is already present"):
+        Installer(backend.root, data, backend).run(mode, {})
+    assert not state(manager)["calls"]

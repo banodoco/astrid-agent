@@ -1,50 +1,75 @@
-"""R1 service registration at the R0 boundary.
+"""Disabled R1 registration and durable rollback at the frozen R0 boundary.
 
-The caller must stop R0 and complete adoption before calling register. This
-module intentionally does not inspect R0 data or implement the stop protocol.
+The public installer replays this journal before Piece A's stop recovery. C must
+supply adoption and selection/activation commit; this module never enables R1.
+All calls require the per-user installer lock, just like r0_stop.
 """
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import re
+import shlex
+import stat
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
-from xml.sax.saxutils import escape
 
-from .core import version_id
-from .service import systemd_quote
+from . import r0_stop
+from .core import Version, absolute, current, read_json, separate_roots, version_id
+from .service import SERVICE_SETTINGS, install_selection, systemd_quote
 
 R0_LINUX = "astrid.service"
-R1_LINUX = "astrid-r1.service"
+R1_LINUX = r0_stop.R1_UNIT
 R0_MAC = "haus.astrid.runtime"
-R1_MAC = "haus.astrid.runtime.r1"
+R1_MAC = r0_stop.R1_LABEL
 R0_WINDOWS = "Astrid Runtime"
 R1_WINDOWS = "Astrid Runtime R1"
 
 
-def _ps(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+def journal_path(service):
+    return r0_stop._marker_path(service).with_name("astrid-r1-registration.json")
 
 
-def _create(path: Path, content: str, mode: int = 0o600) -> None:
+def retained_roots(service):
+    value = read_json(absolute(journal_path(service)))
+    return [absolute(value[k]) for k in ("program_root", "r0_data_root", "r1_data_root")] if value else []
+
+
+def _regular(path):
+    path = absolute(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError(f"Expected a private regular file: {path}")
+    return path
+
+
+def _publish(path, content, *, exclusive=True, mode=0o600):
+    """Publish complete bytes, including directory durability, never partial files."""
+    path = absolute(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Never replace an existing entry, even one claiming to be ours.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
+    fd, name = tempfile.mkstemp(prefix=".astrid-r1-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if exclusive:
+            os.link(temporary, path, follow_symlinks=False)
+        else:
+            _regular(path)
+            os.replace(temporary, path)
+        r0_stop._sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+        r0_stop._sync_directory(path.parent)
 
 
-def _wrapper(system: str) -> str:
-    if system == "win32":
-        return ("$ErrorActionPreference = 'Stop'\n"
-                "$root = Split-Path -Parent $PSScriptRoot\n"
-                "$version = [IO.File]::ReadAllText((Join-Path $root 'current')).TrimEnd([char[]]@([char]10,[char]13))\n"
-                "if ($version -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { exit 2 }\n"
-                "$target = Join-Path $root ('versions/' + $version + '/bin/runtime.exe')\n"
-                "& $target @args\nexit $LASTEXITCODE\n")
+def _wrapper():
     return ('#!/bin/sh\nset -eu\n'
             'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)\n'
             'version=$(cat "$root/current")\n'
@@ -53,116 +78,266 @@ def _wrapper(system: str) -> str:
             'exec "$root/versions/$version/bin/runtime" "$@"\n')
 
 
+def stage_runtime_launcher(version: Version):
+    """Materialize the executable selected by the fixed launcher, in real staging."""
+    if version.release < 1 or version.managed_by is not None or os.name == "nt":
+        return  # Windows adoption/extensionless launcher is not qualified.
+    program = absolute(version.root).parent.parent
+    script = f'''import json, os, re, sys
+from pathlib import Path
+root = Path({str(program)!r})
+version = {version.document()!r}
+args = sys.argv[1:]
+selection = json.loads(Path({str(install_selection(Path.home(), sys.platform))!r}).read_text(encoding="utf-8"))
+marker = json.loads((root / "install.json").read_text(encoding="utf-8"))
+data = selection.get("r1_data_root")
+if (selection.get("owner") != "haus.astrid.runtime" or selection.get("program_root") != str(root)
+        or not isinstance(data, str) or not Path(data).is_absolute()
+        or not isinstance(selection.get("data_root"), str) or data != selection["data_root"] + "-r1"
+        or marker.get("owner") != "haus.astrid.runtime"
+        or marker.get("data_root") != selection["data_root"]
+        or marker.get("r1_data_root") != data
+        or not isinstance(selection.get("realm_id"), str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}", selection["realm_id"])
+        or selection.get("realm_root") != str(Path(data) / "runtime/realms" / selection["realm_id"])
+        or selection.get("service_label") != {R1_LINUX if sys.platform == 'linux' else R1_MAC!r}
+        or args != ["run", "--profile", "astrid", "--data-root", data]
+        or (root / "current").read_text(encoding="utf-8").rstrip("\\n") != Path(version["root"]).name):
+    raise SystemExit("R1 adoption and selection have not been committed; run the install line again.")
+settings_path = root / "service-env.json"
+settings = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {{}}
+if (not isinstance(settings, dict) or set(settings) - set({sorted(SERVICE_SETTINGS)!r})
+        or any(not isinstance(v, str) for v in settings.values())):
+    raise SystemExit("Invalid Astrid service-env.json.")
+for key in ("PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT", "ASTRID_WORKSPACE_CREDENTIAL",
+            "ASTRID_RUNTIME_SOURCE_MANIFEST", "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH",
+            "ASTRID_INSTALLER_OPERATION_ID", "ASTRID_TIMELINE_SCHEMA_PYTHONPATH"):
+    os.environ.pop(key, None)
+os.environ.update(version["env"])
+os.environ.update(settings)
+os.environ["ASTRID_RUNTIME_DATA_ROOT"] = data
+os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] = version["profile"]
+os.environ["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
+from astrid_runtime.cli import main
+raise SystemExit(main([*args, "--source-manifest", version["profile"]]))
+'''
+    _publish(version.root / "bin/runtime.py", script)
+    launcher = ('#!/bin/sh\nset -eu\nexec ' + shlex.quote(str(version.python))
+                + ' -X utf8 -I ' + shlex.quote(str(version.root / "bin/runtime.py")) + ' "$@"\n')
+    _publish(version.root / "bin/runtime", launcher, mode=0o755)
+
+
 class BoundaryRegistration:
-    """Fresh R1 entry and rollback; manager operations raise on any failure.
+    def __init__(self, service):
+        self.service = service
+        self.root = absolute(service.root)
+        self.system = service.system
+        if self.system not in {"linux", "darwin"}:
+            raise ValueError("R1 boundary registration is not qualified on this platform.")
+        self.uid = r0_stop._launchd_uid() if self.system == "darwin" else None
+        self.r1_path = absolute(service.path.with_name(
+            R1_LINUX if self.system == "linux" else R1_MAC + ".plist"))
+        self.launcher = self.root / "bin/runtime"
+        self.journal = absolute(journal_path(service))
 
-    ``run`` accepts argv and returns stdout. ``wait_r1_unlocked`` must raise
-    unless the R1 owner lock is free after the service has been stopped. The
-    rollback validators must bind both manager entries to their retained intent.
-    """
-
-    def __init__(self, root: Path, home: Path, system: str, run, *, uid: str = "",
-                 config_home: Path | None = None):
-        if system not in {"linux", "darwin", "win32"}:
-            raise ValueError("Unsupported service manager")
-        self.root, self.home, self.system, self.run, self.uid = root.absolute(), home.absolute(), system, run, uid
-        if system == "linux":
-            self.r0_path = (config_home or home / ".config") / "systemd/user" / R0_LINUX
-            self.r1_path = self.r0_path.with_name(R1_LINUX)
-        elif system == "darwin":
-            self.r0_path = home / "Library/LaunchAgents" / (R0_MAC + ".plist")
-            self.r1_path = self.r0_path.with_name(R1_MAC + ".plist")
-            if not re.fullmatch(r"[0-9]+", uid):
-                raise ValueError("A numeric launchd user ID is required")
-        else:
-            self.r0_path = None  # Task Scheduler owns the R0 definition.
-            self.r1_path = self.root / "task-r1.xml"
-        self.launcher = self.root / "bin" / ("runtime.ps1" if system == "win32" else "runtime")
-
-    def powershell(self, script: str) -> str:
-        exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-        return self.run([str(exe), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                         "-Command", "$ErrorActionPreference='Stop'; " + script])
-
-    def register(self, r0_data: Path, r1_data: Path, log: Path, *, user: str = "") -> None:
-        """Register and start R1 after the caller has stopped R0 and adopted data."""
-        r0_data, r1_data = r0_data.resolve(), r1_data.resolve()
-        if (r0_data == r1_data or r0_data in r1_data.parents or r1_data in r0_data.parents
-                or not r1_data.is_dir()):
-            raise ValueError("R1 needs a separate, existing adopted data root")
-        for target in (self.root, self.r1_path, log):
-            resolved = target.resolve()
-            if resolved == r0_data or r0_data in resolved.parents:
-                raise ValueError("R1 service files and logs must be outside R0 data")
-        # Match the installer pointer format and shell command substitution:
-        # trailing newlines are ignored, but spaces are never normalized.
-        name = version_id((self.root / "current").read_text(encoding="utf-8").rstrip("\n"))
-        selected = self.root / "versions" / name / "bin" / ("runtime.exe" if self.system == "win32" else "runtime")
-        if not selected.is_file():
-            raise ValueError("Selected version has no Runtime launcher")
-        args = [str(self.launcher), "run", "--profile", "astrid", "--data-root", str(r1_data)]
-        if self.system == "linux":
-            action = " ".join(systemd_quote(x).replace("$", "$$") for x in args)
-            output = systemd_quote("append:" + str(log.absolute()))
-            definition = ("[Unit]\nDescription=Astrid Runtime R1\n\n[Service]\n"
-                          f"ExecStart={action}\nRestart=on-failure\nRestartSec=5\nKillMode=mixed\n"
-                          f"TimeoutStopSec=90\nStandardOutput={output}\nStandardError={output}\n"
-                          "\n[Install]\nWantedBy=default.target\n")
-        elif self.system == "darwin":
-            definition = plistlib.dumps({"Label": R1_MAC, "ProgramArguments": args,
+    def _definition(self, data, log):
+        args = [str(self.launcher), "run", "--profile", "astrid", "--data-root", str(data)]
+        if self.system == "darwin":
+            return plistlib.dumps({"Label": R1_MAC, "ProgramArguments": args,
                 "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ExitTimeOut": 90,
-                "StandardOutPath": str(log.absolute()), "StandardErrorPath": str(log.absolute())}).decode()
-        else:
-            if not user:
-                raise ValueError("A Windows user SID is required")
-            cmd = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
-            arguments = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-File", *args])
-            definition = ('<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
-                '<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' + escape(user) + '</UserId></LogonTrigger></Triggers>'
-                '<Principals><Principal id="Owner"><UserId>' + escape(user) + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>'
-                '<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
-                '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'
-                '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>'
-                '<Actions Context="Owner"><Exec><Command>' + escape(cmd) + '</Command><Arguments>' + escape(arguments) + '</Arguments></Exec></Actions></Task>')
-        # Do not leave a new launcher behind when an existing service definition
-        # already makes registration impossible. O_EXCL remains authoritative.
-        if os.path.lexists(self.r1_path):
-            raise FileExistsError(self.r1_path)
-        _create(self.launcher, _wrapper(self.system), 0o755)
-        _create(self.r1_path, definition)
-        if self.system == "linux":
-            self.run(["systemctl", "--user", "daemon-reload"])
-            self.run(["systemctl", "--user", "enable", "--now", R1_LINUX])
-        elif self.system == "darwin":
-            self.run(["launchctl", "enable", f"gui/{self.uid}/{R1_MAC}"])
-            self.run(["launchctl", "bootstrap", f"gui/{self.uid}", str(self.r1_path)])
-        else:
-            self.powershell(f"if (Get-ScheduledTask | Where-Object {{ $_.TaskName -eq {_ps(R1_WINDOWS)} -and $_.TaskPath -eq '\\' }}) {{ throw 'R1 task already exists' }}; "
-                            f"Register-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' -Xml ([IO.File]::ReadAllText({_ps(str(self.r1_path))})) | Out-Null; "
-                            f"Start-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
+                "StandardOutPath": str(log), "StandardErrorPath": str(log)}).decode()
+        action = " ".join(systemd_quote(x).replace("$", "$$") for x in args)
+        output = systemd_quote("append:" + str(log))
+        return ("[Unit]\nDescription=Astrid Runtime R1\n\n[Service]\n"
+                f"ExecStart={action}\nRestart=on-failure\nRestartSec=5\nKillMode=mixed\n"
+                f"TimeoutStopSec=90\nStandardOutput={output}\nStandardError={output}\n"
+                "\n[Install]\nWantedBy=default.target\n")
 
-    def rollback(self, wait_r1_unlocked, validate_r0, validate_r1) -> None:
-        """Validate and disable R1, wait for its lock, then validate and enable R0."""
-        if not all(callable(fn) for fn in (wait_r1_unlocked, validate_r0, validate_r1)):
-            raise ValueError("R1 and R0 service validation and R1 owner-lock wait are required")
-        # Never disable an unrelated manager entry just because it uses our
-        # label. The caller must bind the loaded entry to durable R1 intent.
-        validate_r1()
+    def _run(self, argv):
+        return r0_stop._run(self.service, argv)
+
+    def _save(self, value, *, first=False):
+        _publish(self.journal, json.dumps(value, sort_keys=True) + "\n", exclusive=first)
+
+    def _check_files(self, value):
+        expected = {self.launcher: _wrapper(), self.r1_path: self._definition(
+            Path(value["r1_data_root"]), absolute(value["log"]))}
+        for path, content in expected.items():
+            if os.path.lexists(path) and _regular(path).read_text(encoding="utf-8") != content:
+                raise ValueError(f"R1 registration file changed; recovery intent retained: {path}")
+        return expected
+
+    def _linux_state(self):
+        argv = ["systemctl", "--user", "show", R1_LINUX, "--property=LoadState",
+                "--property=ActiveState", "--property=FragmentPath", "--property=DropInPaths",
+                "--property=UnitFileState"]
+        try:
+            output = self._run(argv)
+        except subprocess.CalledProcessError as exc:
+            output = str(exc.output or "")
+        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if fields.get("LoadState") == "not-found" and fields.get("ActiveState") == "inactive":
+            return None
+        if (fields.get("LoadState") != "loaded" or fields.get("FragmentPath") != str(self.r1_path)
+                or fields.get("DropInPaths") != "" or not self.r1_path.is_file()):
+            raise ValueError("R1 manager entry is unknown or changed; recovery intent retained.")
+        return fields
+
+    def _mac_state(self, value):
+        target = f"gui/{self.uid}/{R1_MAC}"
+        output = r0_stop._launchd_print(self.service, target)
+        if output is None:
+            return False
+        args = plistlib.loads(self._definition(Path(value["r1_data_root"]), Path(value["log"])).encode())["ProgramArguments"]
+        head, sep, rest = output.partition("\targuments = {\n")
+        paths = re.findall(r"(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$", head)
+        expected = "".join("\t\t" + arg + "\n" for arg in args) + "\t}\n"
+        if (not output.startswith(target + " = {\n") or paths != [str(self.r1_path)]
+                or not sep or not rest.startswith(expected) or not self.r1_path.is_file()):
+            raise ValueError("R1 launchd action changed; recovery intent retained.")
+        return True
+
+    def prepare(self, version: Version, r0_data: Path, realm_id: str, r0_realm: Path):
+        """Publish a disabled registration. This is never adoption or launch authority."""
+        data, realm = absolute(r0_data), absolute(r0_realm)
+        destination = absolute(str(data) + "-r1")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", realm_id):
+            raise ValueError("Invalid realm identifier.")
+        adopted_realm = destination / "runtime/realms" / realm_id
+        for target in (self.root, self.r1_path, self.journal, self.service.log):
+            if not separate_roots(data, absolute(target)) or not separate_roots(destination, absolute(target)):
+                raise ValueError("R1 registration files must be outside both data roots.")
+        if not realm.is_relative_to(data):
+            raise ValueError("R0 realm is outside its data root.")
+        if r0_stop._selected_realm(data) != (realm_id, realm):
+            raise ValueError("Registration does not match R0's selected realm.")
+        old = current(self.root)
+        if old is None or old.release != 0 or version.release < 1 or version.managed_by is not None:
+            raise ValueError("An R0 selection and staged direct R1 candidate are required.")
+        if (absolute(version.root).parent != self.root / "versions"
+                or Version.load(read_json(version.root / "version.json")) != version
+                or not _regular(version.root / "bin/runtime").is_file()):
+            raise ValueError("The staged R1 launcher is missing or changed.")
+        intent = read_json(_regular(r0_stop._marker_path(self.service)))
+        if any(intent.get(k) != v for k, v in {
+                "version": 1, "system": self.system, "program_root": str(self.root),
+                "data_root": str(data), "unit": str(self.service.path),
+                "unit_sha256": r0_stop._unit_digest(self.service)}.items()):
+            raise ValueError("R0 stop intent does not bind this registration.")
+        # A marker records intent before stop. Prove the stop actually finished.
         if self.system == "linux":
-            self.run(["systemctl", "--user", "disable", "--now", R1_LINUX])
-        elif self.system == "darwin":
-            self.run(["launchctl", "disable", f"gui/{self.uid}/{R1_MAC}"])
-            self.run(["launchctl", "bootout", f"gui/{self.uid}/{R1_MAC}"])
+            fields = self._run(["systemctl", "--user", "show", R0_LINUX,
+                                "--property=ActiveState", "--property=UnitFileState"])
+            values = dict(line.split("=", 1) for line in fields.splitlines() if "=" in line)
+            if values.get("ActiveState") not in {"inactive", "failed"} or values.get("UnitFileState") != "disabled":
+                raise ValueError("R0 must be disabled and stopped before R1 registration.")
         else:
-            self.powershell(f"Disable-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\' | Out-Null; Stop-ScheduledTask -TaskName {_ps(R1_WINDOWS)} -TaskPath '\\'")
-        wait_r1_unlocked()
-        # A changed R0 entry must not prevent us from stopping R1. Validate it
-        # only after R1 is disabled and unlocked, immediately before enabling.
-        validate_r0()
+            if r0_stop._launchd_print(self.service, f"gui/{self.uid}/{R0_MAC}") is not None:
+                raise ValueError("R0 must be unloaded before R1 registration.")
+            disabled = self._run(["launchctl", "print-disabled", f"gui/{self.uid}"])
+            if not re.search(r'"haus\.astrid\.runtime"\s*=>\s*true', disabled):
+                raise ValueError("R0 must be disabled before R1 registration.")
+        r0_stop._wait_for_owner_lock(realm, 0, .2)
+        r0_stop._wait_for_owner_lock(adopted_realm, 0, .2)
+        r0_stop._require_no_r1(self.service)
+        for path in (self.journal, self.launcher, self.r1_path):
+            if os.path.lexists(path):
+                raise FileExistsError(path)
+        value = {"version": 1, "phase": "registering", "system": self.system,
+                 "program_root": str(self.root), "r0_data_root": str(data),
+                 "r1_data_root": str(destination), "r0_realm": str(realm), "realm_id": realm_id,
+                 "log": str(absolute(self.service.log)), "r0_intent": intent,
+                 "old_pointer": (self.root / "current").read_text(encoding="utf-8"),
+                 "candidate": version.document()}
+        self._save(value, first=True)  # Must precede every service/file mutation.
+        if self.system == "darwin":
+            # Disable before publishing a plist launchd could load at next login.
+            self._run(["launchctl", "disable", f"gui/{self.uid}/{R1_MAC}"])
+        _publish(self.launcher, _wrapper(), mode=0o755)
+        _publish(self.r1_path, self._definition(destination, Path(value["log"])))
         if self.system == "linux":
-            self.run(["systemctl", "--user", "enable", "--now", R0_LINUX])
-        elif self.system == "darwin":
-            self.run(["launchctl", "enable", f"gui/{self.uid}/{R0_MAC}"])
-            self.run(["launchctl", "bootstrap", f"gui/{self.uid}", str(self.r0_path)])
+            self._run(["systemctl", "--user", "daemon-reload"])
+            self._linux_state()
+            self._run(["systemctl", "--user", "disable", "--now", R1_LINUX])
+            state = self._linux_state()
+            if state is None or state.get("UnitFileState") != "disabled" or state.get("ActiveState") not in {"inactive", "failed"}:
+                raise ValueError("R1 did not remain disabled; recovery intent retained.")
+        value["phase"] = "disabled"
+        self._save(value)
+        return self.journal
+
+    def recover(self):
+        """Disable owned R1, wait for its lock, remove owned files, restore R0."""
+        if not os.path.lexists(self.journal):
+            return False
+        value = read_json(_regular(self.journal))
+        if (value.get("version") != 1 or value.get("system") != self.system
+                or value.get("program_root") != str(self.root)
+                or value.get("phase") not in {"registering", "disabled", "restoring_r0"}):
+            raise ValueError("R1 registration intent does not match this installer.")
+        data = absolute(value["r0_data_root"])
+        destination = absolute(value["r1_data_root"])
+        if destination != Path(str(data) + "-r1"):
+            raise ValueError("R1 destination does not match the retained source.")
+        version_id(value["realm_id"])
+        intent = value.get("r0_intent")
+        if (not absolute(value["r0_realm"]).is_relative_to(data) or not isinstance(intent, dict)
+                or any(intent.get(k) != v for k, v in {
+                    "version": 1, "system": self.system, "program_root": str(self.root),
+                    "data_root": str(data), "unit": str(self.service.path)}.items())
+                or not re.fullmatch(r"[0-9a-f]{64}", str(intent.get("unit_sha256", "")))):
+            raise ValueError("R1 registration has no bound R0 recovery intent.")
+        for path in (self.journal, self.root, self.launcher, self.r1_path, absolute(value["log"])):
+            if not separate_roots(data, path) or not separate_roots(destination, path):
+                raise ValueError("R1 recovery files overlap retained data.")
+        expected = self._check_files(value)  # No mutation of a changed definition.
+        if self.system == "linux":
+            self._run(["systemctl", "--user", "daemon-reload"])
+            if self._linux_state() is not None:
+                self._run(["systemctl", "--user", "disable", "--now", R1_LINUX])
+                state = self._linux_state()
+                if state is None or state.get("UnitFileState") != "disabled" or state.get("ActiveState") not in {"inactive", "failed"}:
+                    raise ValueError("R1 stop is uncertain; R0 was not restarted.")
         else:
-            self.powershell(f"Enable-ScheduledTask -TaskName {_ps(R0_WINDOWS)} -TaskPath '\\' | Out-Null; Start-ScheduledTask -TaskName {_ps(R0_WINDOWS)} -TaskPath '\\'")
+            loaded = self._mac_state(value)
+            if loaded or self.r1_path.exists():
+                target = f"gui/{self.uid}/{R1_MAC}"
+                self._run(["launchctl", "disable", target])
+                if loaded:
+                    self._run(["launchctl", "bootout", target])
+                if self._mac_state(value):
+                    raise ValueError("R1 remained loaded; R0 was not restarted.")
+        r0_stop._wait_for_owner_lock(destination / "runtime/realms" / value["realm_id"], 90, .2)
+        # C must extend the commit protocol before changing pointer/selection.
+        # Until then, an unexpected switch cannot authorize R0 restart.
+        if (self.root / "current").read_text(encoding="utf-8") != value["old_pointer"]:
+            raise ValueError("Version pointer changed; preserve both roots for handoff recovery.")
+        selection = read_json(self.service.selection)
+        marker = read_json(self.root / "install.json")
+        if selection.get("r1_data_root") or marker.get("r1_data_root"):
+            raise ValueError("R1 selection was committed; use the adoption handoff recovery.")
+        self._check_files(value)
+        for path in expected:
+            if os.path.lexists(path):
+                path.unlink()
+                r0_stop._sync_directory(path.parent)
+        if self.system == "linux":
+            self._run(["systemctl", "--user", "daemon-reload"])
+        r0_stop._require_no_r1(self.service)
+        intent_path = r0_stop._marker_path(self.service)
+        if os.path.lexists(intent_path):
+            if read_json(_regular(intent_path)) != value["r0_intent"]:
+                raise ValueError("R0 recovery intent changed; R0 was not restarted.")
+            value["phase"] = "restoring_r0"
+            self._save(value)
+            r0_stop.recover_r0(self.service)  # Revalidates R0 bytes and manager.
+        elif value["phase"] != "restoring_r0":
+            raise ValueError("R0 recovery intent is missing; preserve both roots.")
+        else:
+            # Crash after A removed its intent but before B removed its journal.
+            if r0_stop._unit_digest(self.service) != value["r0_intent"]["unit_sha256"]:
+                raise ValueError("R0 service changed after recovery.")
+            r0_stop._validate_manager(self.service, self.uid)
+        self.journal.unlink()
+        r0_stop._sync_directory(self.journal.parent)
+        return True

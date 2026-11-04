@@ -1010,6 +1010,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                              "runtime_environment": str(environment),
                              "source_digest": digest, "service_declaration": str(services_path)})
         persist_install_identity(version, root)
+        from .boundary_registration import stage_runtime_launcher
+
+        stage_runtime_launcher(version)
         return version
 
     def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
@@ -1123,7 +1126,30 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # install flag before the candidate is started by the service.
             self._write_process_control(data)
 
+    def prepare_r1_registration(self, version: Version, data: Path, realm_id: str, realm: Path) -> Path:
+        """C's disabled service registration interface, under the installer lock.
+
+        This does not adopt, select, switch current, or authorize activation.
+        The public installer can already recover any interrupted publication.
+        """
+        from .boundary_registration import BoundaryRegistration
+
+        return BoundaryRegistration(self.service).prepare(version, data, realm_id, realm)
+
+    def recover_r1_registration(self) -> bool:
+        from .boundary_registration import BoundaryRegistration, journal_path
+
+        if not os.path.lexists(journal_path(self.service)):
+            return False
+        return BoundaryRegistration(self.service).recover()
+
     def register(self, version: Version, data: Path) -> None:
+        if self.managed_by != "pinokio":
+            from .boundary_registration import journal_path
+            from .r0_stop import R0StopError, _marker_path
+
+            if any(os.path.lexists(path) for path in (_marker_path(self.service), journal_path(self.service))):
+                raise R0StopError("A stopped R0 requires disabled R1 registration and the adoption handoff; legacy registration is refused.")
         if version.managed_by != self.managed_by:
             # The current install context is authoritative for hand-built or
             # legacy Version objects that predate the identity field.
