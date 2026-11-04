@@ -321,11 +321,27 @@ def test_user_editing_retry_probes_once_and_remains_pending_until_release(monkey
 @pytest.fixture
 def saved_user_editing(editing_case, monkeypatch):
     """A real HTTP refusal and its durable flight, observed at the wire edge."""
+    from contextlib import contextmanager
+
     from astrid.sdk.timeline.sync import CommitRefused
 
     _, client, project, timeline = editing_case
-    timeline.session.user_editing_timeout = 0.25
-    timeline.session.user_editing_interval = 0.005
+    # These cases assert a known real HTTP refusal. Give the live POST the
+    # normal generous budget, then advance virtual time only during backoff so
+    # expiry cannot cause a deadline-capped resend to become an unknown outcome.
+    # Expiry/unknown-outcome behavior is covered by deterministic sync tests.
+    import time as real_time
+    from types import SimpleNamespace
+
+    import astrid.sdk.timeline.sync as sync_module
+
+    timeline.session.user_editing_timeout = 15.0
+    timeline.session.user_editing_interval = 30.0
+    virtual_offset = [0.0]
+    deadline_clock = SimpleNamespace(
+        monotonic=lambda: real_time.monotonic() + virtual_offset[0],
+        sleep=lambda delay: virtual_offset.__setitem__(0, virtual_offset[0] + delay),
+    )
     generated = client._remote._transport._generated
     raw_request = generated._request
     path = timeline.session.outbox.path
@@ -347,6 +363,15 @@ def saved_user_editing(editing_case, monkeypatch):
         )
         return generated._json(payload)["data"]
 
+    @contextmanager
+    def known_refusal_clock():
+        # Scope virtual expiry to requests expected to receive an HTTP refusal.
+        # Restoring the module clock keeps cancellation, timeout, and accepted
+        # retry paths on real time.
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(sync_module, "time", deadline_clock)
+            yield
+
     def edit(t):
         evaluations.append(True)
         t.bundle["parent"]["custom"] = {"agent": "café saved flight"}
@@ -354,8 +379,9 @@ def saved_user_editing(editing_case, monkeypatch):
     def save(origin="function", key="original-wire-key"):
         commands = timeline.commit(edit, label="Saved flight", reads=[], dry_run=True)["data"]["commands"]
         assert lease(1)["active"]
-        with pytest.raises(CommitRefused) as caught:
-            timeline.commit(edit if origin == "function" else commands, label="Saved flight", key=key, reads=[])
+        with known_refusal_clock():
+            with pytest.raises(CommitRefused) as caught:
+                timeline.commit(edit if origin == "function" else commands, label="Saved flight", key=key, reads=[])
         pending_id = caught.value.pending_id
         record = timeline.pending_show(pending_id)
         assert record["failure"]["details"]["reason"] == "user_editing"
@@ -366,7 +392,8 @@ def saved_user_editing(editing_case, monkeypatch):
 
     return SimpleNamespace(timeline=timeline, client=client, project=project, path=path,
                            generated=generated, raw_request=raw_request, posts=posts,
-                           evaluations=evaluations, edit=edit, lease=lease, save=save)
+                           evaluations=evaluations, edit=edit, lease=lease, save=save,
+                           known_refusal_clock=known_refusal_clock)
 
 
 @pytest.mark.parametrize("origin", ["list", "function"])
@@ -463,8 +490,9 @@ def test_user_editing_pending_repeated_refusal_keeps_wire_identity(saved_user_ed
     _, record = case.save()
     review = case.timeline.retry(record["id"])
     evaluations = len(case.evaluations)
-    with pytest.raises(CommitRefused) as caught:
-        case.timeline.commit(review)
+    with case.known_refusal_clock():
+        with pytest.raises(CommitRefused) as caught:
+            case.timeline.commit(review)
     assert caught.value.pending_id == record["id"]
     updated = case.timeline.pending_show(record["id"])
     assert updated["attempts"] == record["attempts"] + 1
