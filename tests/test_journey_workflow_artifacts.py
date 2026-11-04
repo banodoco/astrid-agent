@@ -68,3 +68,8 @@ def test_live_snapshot_failure_upload_uses_producer_schema_and_size_limit():
                      "$allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code",
                      "$allowedFunctions -cnotcontains $frame.function"):
         assert required in guard
+
+    # ConvertFrom-Json can represent integral JSON values as Int64 (PowerShell
+    # [long]); accept that alongside Int32 while still rejecting nonintegers.
+    assert "($diagnostic.http_status -isnot [int] -and $diagnostic.http_status -isnot [long])" in guard
+    assert "($frame.line -isnot [int] -and $frame.line -isnot [long])" in guard
