@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import secrets
 import stat
 import sys
 import time
@@ -302,6 +303,16 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
     journey.write_json(request_path, request)
+    if action == "busy":
+        # Persist the recovery identity before the helper can commit a fixture.
+        with request_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            directory = os.open(evidence, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
     output = journey.run([version["python"], "-I", journey.ROOT / "scripts/journey_workspace.py",
@@ -790,11 +801,13 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
                  old_pid, old_birth, sentinel, birth, result):
     realm = journey.workspace_root(data)
     identity = journey_workspace.realm_identity(realm)
-    keys = workspace(old, data, evidence / "busy", "busy", {"realm_identity": identity}, realm=realm)
+    operation = {"id": secrets.token_hex(32), "lease_token": secrets.token_hex(32)}
     def cleanup():
         workspace(old, data, evidence / "busy-release", "release",
-                  {"keys": keys, "realm_identity": identity}, realm=realm)
+                  {"operation": operation, "realm_identity": identity}, realm=realm)
     try:
+        keys = workspace(old, data, evidence / "busy", "busy",
+                         {"operation": operation, "realm_identity": identity}, realm=realm)
         protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
                                                          data / "runtime/discovery.json")}
         try:

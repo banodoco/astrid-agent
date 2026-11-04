@@ -104,19 +104,61 @@ def snapshot(service, keys: dict) -> dict:
     return result
 
 
-def busy(service) -> dict:
-    """Claim a harmless test-only task through real lease APIs, without a worker."""
+def busy(service, operation: dict | None = None) -> dict:
+    """Atomically claim a fixture without starting a Runtime session."""
     store = service.store
-    capability, executor, token = "tst.c1.busy", "tst-c1-executor", secrets.token_hex(32)
-    epoch = store._current_runtime_epoch()
-    store.upsert_executor(executor, [capability], runtime_epoch=epoch)
-    task = store.create_task(capability, {"note": "C1 controlled busy admission"})["task"]
-    claimed = store._claim_task(task["id"], executor, token, runtime_epoch=epoch)["task"]
-    if claimed["status"] != "running":
-        raise ValueError("Test busy task was not claimed")
-    store.heartbeat_task(task["id"], token, fence=claimed["lease_fence"], lease_seconds=7200)
+    if operation is None:
+        operation = {"id": secrets.token_hex(32), "lease_token": secrets.token_hex(32)}
+    validate_operation(operation)
+    capability, executor, token = "tst.c1.busy", "tst-c1-" + operation["id"], operation["lease_token"]
+    spec = {"note": "C1 controlled busy admission", "operation_id": operation["id"]}
+    with store._mutex, store._transaction():
+        if any(store._spec(row) == spec for row in store.conn.execute(
+                "SELECT * FROM tasks WHERE capability=?", (capability,))):
+            raise ValueError("Busy fixture operation already exists")
+        epoch = store._current_runtime_epoch()
+        store.upsert_executor(executor, [capability], runtime_epoch=epoch)
+        task = store.create_task(capability, spec)["task"]
+        # Exact fixture claiming must not reap or contain unrelated leases.
+        # The store's generic claim normally performs global maintenance first.
+        reap = store._reap_expired_leases
+        store._reap_expired_leases = lambda: None
+        try:
+            claimed = store._claim_task(task["id"], executor, token, runtime_epoch=epoch)["task"]
+        finally:
+            store._reap_expired_leases = reap
+        if claimed["status"] != "running":
+            raise ValueError("Test busy task was not claimed")
+        store.heartbeat_task(task["id"], token, fence=claimed["lease_fence"], lease_seconds=7200)
     return {"task_id": task["id"], "lease_token": token,
-            "fence": claimed["lease_fence"], "attempt_id": claimed["attempt_id"]}
+            "fence": claimed["lease_fence"], "attempt_id": claimed["attempt_id"],
+            "operation_id": operation["id"]}
+
+
+def validate_operation(operation: dict) -> None:
+    if (not isinstance(operation, dict) or set(operation) != {"id", "lease_token"}
+            or any(not isinstance(value, str) or len(value) != 64
+                   or any(char not in "0123456789abcdef" for char in value)
+                   for value in operation.values())):
+        raise ValueError("Invalid busy fixture operation")
+
+
+def reconcile(service, operation: dict) -> dict:
+    """Find only the run-bound fixture, even if its result was never delivered."""
+    validate_operation(operation)
+    store = service.store
+    with store._mutex, store._transaction():
+        spec = {"note": "C1 controlled busy admission", "operation_id": operation["id"]}
+        matches = [row for row in store.conn.execute("SELECT * FROM tasks WHERE capability=?", ("tst.c1.busy",))
+                   if store._spec(row) == spec]
+        if not matches:
+            return {"released": False, "absent": True}
+        if len(matches) != 1:
+            raise ValueError("Busy fixture operation is ambiguous")
+        task = matches[0]
+        return release(service, {"task_id": task["id"], "lease_token": operation["lease_token"],
+                                 "fence": task["lease_fence"], "attempt_id": task["attempt_id"],
+                                 "operation_id": operation["id"]})
 
 
 def release(service, keys: dict) -> dict:
@@ -130,7 +172,7 @@ def release(service, keys: dict) -> dict:
                 or task["attempt_id"] != keys["attempt_id"]
                 or task["lease_token"] != keys["lease_token"]
                 or task["lease_fence"] != keys["fence"]
-                or store._spec(task) != {"note": "C1 controlled busy admission"}
+                or store._spec(task) != {"note": "C1 controlled busy admission", "operation_id": keys.get("operation_id")}
                 or store.conn.execute("SELECT count(*) FROM tasks WHERE run_id=?", (task["run_id"],)).fetchone()[0] != 1
                 or store.conn.execute("SELECT 1 FROM task_dependencies WHERE predecessor_task_id=?", (task["id"],)).fetchone()
                 or store.delegated_children(task["id"])):
@@ -157,7 +199,7 @@ def main(argv=None) -> int:
     if args.action in {"busy", "release"}:
         if realm_identity(realm) != request["realm_identity"]:
             raise ValueError("Busy fixture realm identity changed")
-    if args.action == "release":
+    if args.action in {"busy", "release"}:
         from runtime_protocol.store import RealmStore
         from runtime_protocol import platform
         from types import SimpleNamespace
@@ -176,7 +218,13 @@ def main(argv=None) -> int:
             store = RealmStore(realm, _admission_fd=descriptor)
             if realm_identity(realm) != request["realm_identity"] or store.realm["id"] != request["realm_identity"]["realm_id"]:
                 raise ValueError("Busy fixture realm identity changed during admission")
-            result = release(SimpleNamespace(store=store), request["keys"])
+            service = SimpleNamespace(store=store)
+            if args.action == "busy":
+                result = busy(service, request["operation"])
+            elif "operation" in request:
+                result = reconcile(service, request["operation"])
+            else:
+                result = release(service, request["keys"])
             print(json.dumps(result, sort_keys=True))
         finally:
             try:
@@ -196,10 +244,6 @@ def main(argv=None) -> int:
             result = seed(service, **request)
         elif args.action == "snapshot":
             result = snapshot(service, request)
-        elif args.action == "busy":
-            if realm_identity(realm) != request["realm_identity"] or service.store.realm["id"] != request["realm_identity"]["realm_id"]:
-                raise ValueError("Busy fixture realm identity changed during admission")
-            result = busy(service)
         print(json.dumps(result, sort_keys=True))
     finally:
         service.close()

@@ -39,7 +39,9 @@ def call(action, payload):
     return subprocess.run([sys.executable,'-I','-c',bootstrap,sys.argv[1],sys.argv[2],action,
                            '--run-root',str(root),'--realm',str(realm),'--request',str(request)],
                           capture_output=True,text=True,timeout=30)
-created=call('busy',{'realm_identity':identity}); assert created.returncode == 0, created.stderr
+operation={'id':'c'*64,'lease_token':'d'*64}
+created=call('busy',{'realm_identity':identity,'operation':operation}); assert created.returncode == 0, created.stderr
+assert call('busy',{'realm_identity':identity,'operation':operation}).returncode != 0
 keys=json.loads(created.stdout)
 s=RealmStore(realm)
 epoch=s._current_runtime_epoch()
@@ -78,10 +80,14 @@ assert p.returncode != 0 and status()==('running','running',epoch)
 s=RealmStore(realm); s.conn.execute('DELETE FROM task_dependencies WHERE predecessor_task_id=?',(keys['task_id'],)); s.close()
 # Another owner must cause a closed failure rather than bypassing admission.
 s=RealmStore(realm)
+p=call('busy',{'realm_identity':identity, 'operation':{'id':'a'*64,'lease_token':'b'*64}})
+assert p.returncode != 0
 p=call('release',{'realm_identity':identity,'keys':keys})
 assert p.returncode != 0
 s.close(); assert status()==('running','running',epoch)
-p=call('release',{'realm_identity':identity,'keys':keys})
+p=call('release',{'realm_identity':identity,'operation':{**operation,'lease_token':'e'*64}})
+assert p.returncode != 0 and status()==('running','running',epoch)
+p=call('release',{'realm_identity':identity,'operation':operation})
 assert p.returncode == 0, p.stderr
 assert json.loads(p.stdout)=={'released':True}
 assert status()==('failed','running',epoch) and upload.read_bytes()==b'keep'

@@ -27,7 +27,7 @@ def busy_case(tmp_path, monkeypatch):
         calls.append(action)
         if action == "busy":
             return keys
-        assert action == "release" and request == {"keys": keys, "realm_identity": identity}
+        assert action == "release" and request["realm_identity"] == identity and "operation" in request
         return {}
 
     def refusal(*_args):
