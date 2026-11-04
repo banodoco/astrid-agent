@@ -439,7 +439,38 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                           'problems': problems}
 
 
+def observation_data_root(version_path, requested_data_root):
+    """Use the R1 copy location recorded by install.json when one is selected.
+
+    The original data_root remains the install's R0 provenance. Accept either
+    that path or the recorded R1 path from callers, and keep legacy/fresh
+    installs on their existing root.
+    """
+    requested = Path(requested_data_root)
+    version_path = Path(version_path)
+    program_root = version_path.resolve().parents[2]
+    marker_path = program_root / 'install.json'
+    if marker_path.is_symlink():
+        raise ValueError('install.json cannot be a symlink')
+    if not marker_path.is_file():
+        return requested
+    marker = read(marker_path)
+    recorded = Path(marker['data_root'])
+    if not recorded.is_absolute():
+        raise ValueError('install.json data_root must be absolute')
+    r1_value = marker.get('r1_data_root')
+    if r1_value is None:
+        if requested != recorded:
+            raise ValueError('requested data root does not match install.json')
+        return recorded
+    r1 = Path(r1_value)
+    if not r1.is_absolute() or r1 == recorded or requested not in (recorded, r1):
+        raise ValueError('requested data root does not match install.json R1 selection')
+    return r1
+
+
 def observe(version_path, data_root):
+    data_root = observation_data_root(version_path, data_root)
     observations = {}
     details = {}
     def check(name, fn):

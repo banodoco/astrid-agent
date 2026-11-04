@@ -323,7 +323,8 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 
 def live_workspace(root: Path, data: Path, evidence: Path, action: str, request: dict) -> dict:
     """Observe or seed through the selected live owner without releasing it."""
-    journey.assert_direct_service_ownership(root, data)
+    owner_data = selected_data_root(root, data, allow_r1=False)
+    journey.assert_direct_service_ownership(root, owner_data)
     discovery = journey.healthy(data)
     selection = live.selection_for(data, root, discovery)
     # The old offline path imposed this gate; also ensure its second discovery
@@ -333,8 +334,8 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
     live.check_selection(data, root, selection)
     evidence.mkdir(parents=True, exist_ok=True)
     if action == "snapshot":
-        _, selected_data, version = journey.installation(root, data)
-        if selected_data != data:
+        _, selected_data, version = journey.installation(root, owner_data)
+        if selected_data != owner_data:
             raise RuntimeError("Selected Runtime data root differs from this journey")
         manifest = journey.read_json(Path(version["root"]) / "manifest.json")
         runtime = manifest.get("runtime")
@@ -359,8 +360,36 @@ def live_workspace(root: Path, data: Path, evidence: Path, action: str, request:
         live.check_selection(data, root, selection)
         raise
     live.check_selection(data, root, selection)
-    journey.assert_direct_service_ownership(root, data)
+    journey.assert_direct_service_ownership(root, owner_data)
     return json.loads(output)
+
+
+def selected_data_root(root: Path, data: Path, *, allow_r1: bool = True) -> Path:
+    """Resolve the active R1 copy root while keeping R0 as install provenance."""
+    marker_path = Path(root) / "install.json"
+    if marker_path.is_symlink():
+        raise RuntimeError("Install marker cannot be a symlink")
+    if not marker_path.is_file():
+        return Path(data)
+    marker = journey.read_json(marker_path)
+    recorded = Path(marker.get("data_root", ""))
+    r1_value = marker.get("r1_data_root")
+    if not recorded.is_absolute():
+        raise RuntimeError("Install marker has an invalid data root")
+    if r1_value is None:
+        if recorded != Path(data):
+            raise RuntimeError("Selected data root is outside this journey")
+        return recorded
+    r1 = Path(r1_value)
+    if not r1.is_absolute() or r1 == recorded:
+        raise RuntimeError("Install marker has an invalid R1 data root")
+    if Path(data) == r1:
+        return r1 if allow_r1 else recorded
+    if Path(data) != recorded:
+        raise RuntimeError("Selected data root is outside this journey")
+    if not allow_r1:
+        return recorded
+    return r1
 
 
 def assert_preserved(before: dict, after: dict) -> None:
@@ -514,10 +543,12 @@ def start_direct_runtime(evidence: Path) -> None:
 def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
                      action: str, request: dict) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
-    service = journey.assert_direct_service_ownership(root, data)
-    journey.healthy(data)
+    owner_data = selected_data_root(root, data, allow_r1=False)
+    active_data = selected_data_root(root, data)
+    service = journey.assert_direct_service_ownership(root, owner_data)
+    journey.healthy(active_data)
     # Shutdown can remove discovery.json, so resolve and validate its realm while live.
-    realm = journey.workspace_root(data)
+    realm = journey.workspace_root(active_data)
     evidence.mkdir(parents=True, exist_ok=True)
     manager = service["manager"]
     if manager == "systemd-user":
@@ -538,11 +569,11 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         else:
             journey.run(stop, evidence / f"{action}-stop-service.log", timeout=120)
         deadline = time.monotonic() + 120
-        while journey.runtime_processes(data):
+        while journey.runtime_processes(active_data):
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
-        return workspace(version, data, evidence, action, request, realm=realm)
+        return workspace(version, active_data, evidence, action, request, realm=realm)
     finally:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
@@ -551,8 +582,8 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
                                        f"{action}-start-service.log", show=False, timeout=30)
         else:
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
-        journey.wait_ready(data)
-        journey.assert_direct_service_ownership(root, data)
+        journey.wait_ready(selected_data_root(root, data))
+        journey.assert_direct_service_ownership(root, owner_data)
 
 
 def installed_release(version: dict) -> int:
@@ -625,7 +656,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
         bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
         start_direct_runtime(evidence / "release0")
-        journey.wait_ready(data)
+        journey.wait_ready(selected_data_root(root, data))
         old_path, old_data, old = journey.installation(root, data)
         if old_data != data or installed_release(old) != 0:
             # Release 0 predates identity-bearing version records; only its
@@ -651,7 +682,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_health = journey.healthy(data)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
-        journey.wait_ready(data)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
@@ -659,7 +691,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
         new_service = journey.assert_direct_service_ownership(root, data)
-        new_health = journey.healthy(data)
+        new_health = journey.healthy(active_data)
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
             raise RuntimeError("Release-1 update retained the release-0 Runtime instance")
         result["release_transition"] = {"from": 0, "to": 1,
@@ -671,10 +703,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         }
         result["checks"].update(release="pass", service="pass", health="pass")
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
-        journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
-        journey.verify("install", version_path, data, evidence)
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("install", version_path, active_data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = live_workspace(root, data, evidence / "release1-api-observe", "snapshot", keys)
+        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         before_sha = semantic_digest({k: before[k] for k in semantic_keys})
@@ -737,10 +769,11 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         # Exported scripts and manifest are from the resolved historical release.
         old_manifest_path = exported / "install-manifest.json"
         journey.bootstrap(exported, old_manifest_path, args.shell, "install", evidence / "initial", root, data)
-        journey.wait_ready(data)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
         old_path, _, old = journey.installation(root, data)
         before_tuple = journey.selected_tuple(journey.read_json(old_manifest_path), old)
-        old_owner = journey.healthy(data)
+        old_owner = journey.healthy(active_data)
         old_pid = old_owner["pid"]
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
@@ -766,23 +799,24 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
                              "runtime": manifest["runtime"]}
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence, root, data)
-        journey.wait_ready(data)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
         version_path, _, version = journey.installation(root, data)
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"],
                                      **selected_candidate(manifest, version, before_tuple)}
-        if version_path == old_path or journey.healthy(data)["runtime_instance_id"] == old_owner["runtime_instance_id"]:
+        if version_path == old_path or journey.healthy(active_data)["runtime_instance_id"] == old_owner["runtime_instance_id"]:
             raise RuntimeError("The update did not activate a new version and Runtime instance")
         if journey.process_birth(old_pid) == old_birth:
             raise RuntimeError("The real historical Runtime survived the candidate update")
         result["checks"]["version_changed"] = "pass"
         result["checks"]["old_runtime_stopped"] = "pass"
-        journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
         # C1 needs fully healthy candidate/chat observations, including stale declarations.
-        journey.verify("install", version_path, data, evidence)
+        journey.verify("install", version_path, active_data, evidence)
         result["import_origins"] = journey.read_json(evidence / "verify-install.json")["details"].get("origin.imports")
         result["service_action"] = service_action(root, data, version, old)
         result["checks"]["service_action"] = "pass"
-        after = workspace(version, data, evidence / "after-update", "snapshot", keys)
+        after = workspace(version, active_data, evidence / "after-update", "snapshot", keys)
         assert_preserved(before, after)
         result["schema"] = schema_summary(before, after)
         result["checks"]["workspace_content"] = result["checks"]["schema_migrated"] = "pass"
@@ -804,24 +838,26 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
 
 def rerun(args, root, data, evidence, app, manifest_path, manifest, version, old_keys):
     evidence.mkdir(parents=True, exist_ok=True)
+    active_data = selected_data_root(root, data)
     journey.task(version, evidence, "tst-c1-fresh-user-changes")
     task_id = journey.read_json(evidence / "task-settled.json")["data"]["task_id"]
-    keys = workspace(version, data, evidence, "seed", {"project": "tst-c1-fresh-user-changes",
+    keys = workspace(version, active_data, evidence, "seed", {"project": "tst-c1-fresh-user-changes",
                                                       "generation": "fresh", "task_id": task_id})
     # Preferences are shared user content: capture both sets after the new edit.
-    before_old = workspace(version, data, evidence / "before-old", "snapshot", old_keys)
-    before_fresh = workspace(version, data, evidence / "before-fresh", "snapshot", keys)
+    before_old = workspace(version, active_data, evidence / "before-old", "snapshot", old_keys)
+    before_fresh = workspace(version, active_data, evidence / "before-fresh", "snapshot", keys)
     selected_path, _, _ = journey.installation(root, data)
     journey.bootstrap(app, manifest_path, args.shell, "install", evidence, root, data)
-    journey.wait_ready(data)
+    active_data = selected_data_root(root, data)
+    journey.wait_ready(active_data)
     after_path, _, after = journey.installation(root, data)
     if after_path != selected_path or after.get("identity") != version.get("identity"):
         raise RuntimeError("Same-release rerun unexpectedly changed selected version")
     journey.selected_tuple(manifest, after)
-    journey.verify("install", after_path, data, evidence)
+    journey.verify("install", after_path, active_data, evidence)
     service_action(root, data, after)
-    assert_preserved(before_old, workspace(after, data, evidence / "after-old", "snapshot", old_keys))
-    assert_preserved(before_fresh, workspace(after, data, evidence / "after-fresh", "snapshot", keys))
+    assert_preserved(before_old, workspace(after, active_data, evidence / "after-old", "snapshot", old_keys))
+    assert_preserved(before_fresh, workspace(after, active_data, evidence / "after-fresh", "snapshot", keys))
     journey.task(after, evidence / "settlement", "tst-c1-rerun-after")
 
 
