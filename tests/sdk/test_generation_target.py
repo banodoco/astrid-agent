@@ -396,25 +396,48 @@ def test_attached_dry_run_resolves_and_approves_without_destination_or_admission
 
 
 def test_auto_probes_attached_before_managed_readiness(monkeypatch):
+    import platform
+
     events = []
+
+    # This fixture exercises the indexed local Linux ComfyUI recovery recipe.
+    # Pin the supported host premise so the test behaves the same on Darwin.
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
 
     def unavailable(self, path, **kwargs):
         events.append(path)
         raise OSError("offline")
 
     monkeypatch.setattr(ComfyTargetClient, "request_json", unavailable)
-    monkeypatch.setattr(preflight, "_module_available", lambda name: events.append(name) or True)
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: events.append("managed") or False)
+    module_probe = Mock(side_effect=AssertionError("legacy module probe used"))
+    runtime_probe = Mock(side_effect=AssertionError("legacy runtime probe used"))
+    monkeypatch.setattr(preflight, "_module_available", module_probe)
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", runtime_probe)
+
+    def registered_managed_engine():
+        events.append("registered-managed")
+        return None
+
+    monkeypatch.setattr(preflight, "_registered_managed_engine", registered_managed_engine)
+    workflow_admission = Mock(side_effect=AssertionError("workflow admission used"))
+    monkeypatch.setattr(GenerationFacade, "workflow", workflow_admission)
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target="auto", prompt="one boat", project="demo")
     assert raised.value.code == "engine_not_found"
+    fixes = raised.value.to_envelope()['fixes']
     import shlex
-    assert "--target http://127.0.0.1:8188" in shlex.join(
-        raised.value.to_envelope()['fixes'][1]['argv'])
-    assert raised.value.fix.startswith('astrid engines install vibecomfy-h3 ')
-    assert raised.value.to_envelope()['fixes'][1]['argv'] == [
+    assert "--target http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
+    assert raised.value.fix == 'astrid engines install comfyui --platform linux-x86_64-cu130 --placement local'
+    assert fixes[0]['argv'] == [
+        'astrid', 'engines', 'install', 'comfyui', '--platform',
+        'linux-x86_64-cu130', '--placement', 'local']
+    assert fixes[1]['argv'] == [
         'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
-    assert events == ["/system_stats", "vibecomfy", "managed"]
+    assert events == ["/system_stats", "registered-managed"]
+    module_probe.assert_not_called()
+    runtime_probe.assert_not_called()
+    workflow_admission.assert_not_called()
 
 
 def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
