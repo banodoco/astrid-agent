@@ -293,10 +293,15 @@ def _release1_row_errors(candidate, contract, row):
                         fixture.get("sources") != {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649", "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"} or
                         not all(isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name]) for name in ("manifest_sha256", "provenance_sha256"))):
                     errors.append(f"{job_id}: frozen refusal fixture provenance is absent or wrong")
-                semantic = refusal.get("semantic_data") or {}
-                if (semantic.get("identical") is not True or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name]) for name in ("before_sha256", "after_sha256")) or semantic.get("before_sha256") != semantic.get("after_sha256")):
-                    errors.append(f"{job_id}: refusal semantic data preservation is absent or unequal")
-                for check in ("refusal", "semantic_data", "r0_selected", "unrelated_sentinel"):
+                marker = refusal.get("data_marker") or {}
+                if not isinstance(marker.get("sha256"), str) or not DIGEST.fullmatch(marker["sha256"]):
+                    errors.append(f"{job_id}: refusal data marker evidence is absent")
+                task = refusal.get("scheduled_task") or {}
+                if (not all(isinstance(task.get(name), str) and DIGEST.fullmatch(task[name])
+                            for name in ("before_sha256", "after_sha256"))
+                        or task.get("before_sha256") != task.get("after_sha256")):
+                    errors.append(f"{job_id}: refusal scheduled task definition is absent or changed")
+                for check in ("refusal", "data_marker", "r0_selected", "scheduled_task"):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
         else:

@@ -759,6 +759,10 @@ jobs:
               $fresh | Add-Member -NotePropertyName windows_upgrade_refusal -NotePropertyValue $refusal
               [IO.File]::WriteAllText($freshReceipt, ($fresh | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
             } else { $refusalExit = 1 }
+            foreach ($name in @('refusal-update-bootstrap.log', 'scheduled-task-before.xml', 'scheduled-task-after.xml')) {
+              $source = Join-Path (Split-Path $refusalReceipt) $name
+              if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Split-Path $freshReceipt) }
+            }
             if ($refusalExit -ne 0) { exit $refusalExit }
           }
           if ($freshExit -ne 0) { exit $freshExit }
@@ -793,7 +797,8 @@ jobs:
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
-            'preflight-scheduled-task.txt',
+            'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
+            'scheduled-task-before.xml', 'scheduled-task-after.xml',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-workspace.json',
             'runtime-owner-selection-context.json', 'runtime-service-runtime.log', 'runtime-service-native.log',

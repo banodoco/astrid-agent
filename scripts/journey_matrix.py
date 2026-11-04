@@ -116,9 +116,10 @@ END_STATE_INVENTORY: Final = (
             "id": ("windows-r0-upgrade-refusal:direct-windows" if row["job_id"] == "direct-windows"
                    else f"populated-r0-update:{row['job_id']}"), "phase": "populated-r0-update",
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"], "owner": "M-QUAL",
-            "route": "journey_version_jumps.py:execute_release0_to_release1",
+            "route": ("journey_version_jumps.py:execute_windows_refusal" if row["job_id"] == "direct-windows"
+                      else "journey_version_jumps.py:execute_release0_to_release1"),
             "route_state": "execution-capable", "dependency": "authentic hosted exact-tuple receipt",
-            "predicate": ("frozen R0 provenance, refusal and preserved seeded data; Windows upgrade deferred to R1.1"
+            "predicate": ("frozen R0 provenance, refusal, preserved data marker and unchanged scheduled task; Windows upgrade deferred to R1.1"
                           if row["job_id"] == "direct-windows" else
                           "frozen R0 provenance, seeded semantic data, R1 identity, native service, health, task and cleanup"),
             "source": "check_journey_evidence.py:evaluate_release1_matrix", "evidence_kind": "release1",

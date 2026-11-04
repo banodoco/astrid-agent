@@ -1,4 +1,4 @@
-"""The Windows refusal is a separate seeded lifecycle, never a swallowed failure."""
+"""The Windows refusal is a separate, deliberately narrow lifecycle."""
 import copy
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,11 +14,13 @@ from tests.test_journey_evidence import release1_receipts
     (1, jumps.WINDOWS_REFUSAL, None, True),
     (0, jumps.WINDOWS_REFUSAL, None, False),
     (1, "unrelated error", None, False),
-    (1, jumps.WINDOWS_REFUSAL, "task", False),
+    (1, "prefix " + jumps.WINDOWS_REFUSAL, None, False),
+    (1, jumps.WINDOWS_REFUSAL, "marker", False),
     (1, jumps.WINDOWS_REFUSAL, "missing", False),
+    (1, jumps.WINDOWS_REFUSAL, "task", False),
     (1, jumps.WINDOWS_REFUSAL, "selection", False),
 ])
-def test_seeded_refusal_requires_message_nonzero_and_preserved_data(tmp_path, monkeypatch, exit_code, message, change, ok):
+def test_narrow_refusal_requires_message_and_preserved_evidence(tmp_path, monkeypatch, exit_code, message, change, ok):
     root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
     args = SimpleNamespace(job_id="direct-windows", leg="windows-upgrade-refusal", mode="direct", shell="powershell.exe",
                            candidate_checkouts={}, service_manager_prerequisite={}, app_checkout=tmp_path, candidate=tmp_path / "candidate")
@@ -29,11 +31,7 @@ def test_seeded_refusal_requires_message_nonzero_and_preserved_data(tmp_path, mo
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *a: manifest)
     monkeypatch.setattr(jumps.journey, "runner_identity", lambda: {})
     monkeypatch.setattr(jumps.platform, "platform", lambda: "Windows-test")
-    monkeypatch.setattr(jumps.journey, "sentinel_observation", lambda *a: {"alive": True})
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: None)
-    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a, **kw: None)
-    monkeypatch.setattr(jumps.journey, "wait_ready", lambda *a, **kw: None)
-    monkeypatch.setattr(jumps, "selected_data_root", lambda *a: data)
     calls = []
     def installation(*args):
         calls.append(True)
@@ -42,32 +40,39 @@ def test_seeded_refusal_requires_message_nonzero_and_preserved_data(tmp_path, mo
     monkeypatch.setattr(jumps.journey, "installation", installation)
     monkeypatch.setattr(jumps, "installed_release", lambda v: v["release"])
     monkeypatch.setattr(jumps.journey, "selected_tuple", lambda *a: {})
-    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", lambda *a, **kw: {})
-    monkeypatch.setattr(jumps.journey, "verify", lambda *a, **kw: None)
-    monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task-id")
-    snapshot = {"project": "p", "timeline": "t", "preferences": "prefs", "task": "task", "cas_sha256": "cas", "schema_version": 1, "target_schema_version": 1}
-    def live(root, data, evidence, action, request):
-        if action == "seed":
-            return {"project": "p"}
-        value = copy.deepcopy(snapshot)
-        if evidence.name == "release0-after-refusal":
-            if change == "task": value["task"] = "changed"
-            if change == "missing": del value["cas_sha256"]
-        return value
-    monkeypatch.setattr(jumps, "live_workspace", live)
+    monkeypatch.setattr(jumps, "windows_task_definition", lambda evidence, phase: "b" * 64 if change == "task" and phase == "after" else "a" * 64)
+    def forbidden(*args, **kwargs):
+        pytest.fail("Refusal must not start, seed, snapshot, wait for, or inspect the R0 owner")
+    for name in ("start_direct_runtime", "live_workspace", "task_after_update"):
+        monkeypatch.setattr(jumps, name, forbidden)
+    for name in ("wait_ready", "assert_direct_service_ownership", "verify", "sentinel_observation"):
+        monkeypatch.setattr(jumps.journey, name, forbidden)
     def run(*args, **kwargs):
+        marker = data / "tst-windows-refusal-marker.txt"
+        if change == "marker": marker.write_text("changed")
+        if change == "missing": marker.unlink()
         kwargs["stdout"].write(message)
         return SimpleNamespace(returncode=exit_code)
     monkeypatch.setattr(jumps.subprocess, "run", run)
     if ok:
-        result = jumps.execute_windows_refusal(args, root, data, evidence, SimpleNamespace(pid=1), "birth")
+        result = jumps.execute_windows_refusal(args, root, data, evidence, None, None)
         assert result["status"] == "pass"
-        assert result["semantic_data"]["before_sha256"] == result["semantic_data"]["after_sha256"]
+        assert result["scheduled_task"]["before_sha256"] == result["scheduled_task"]["after_sha256"]
     else:
         with pytest.raises(RuntimeError):
-            jumps.execute_windows_refusal(args, root, data, evidence, SimpleNamespace(pid=1), "birth")
+            jumps.execute_windows_refusal(args, root, data, evidence, None, None)
         import json
         assert json.loads((evidence / "journey-result.json").read_text())["status"] == "fail"
+
+
+def test_task_evidence_exports_definition_only(tmp_path, monkeypatch):
+    calls = []
+    def powershell(command, *args, **kwargs):
+        calls.append(command)
+        return "<Task/>"
+    monkeypatch.setattr(jumps.journey.windows, "powershell", powershell)
+    assert jumps.windows_task_definition(tmp_path, "before") == jumps.windows_task_definition(tmp_path, "after")
+    assert all("Export-ScheduledTask" in command and "Start-ScheduledTask" not in command for command in calls)
 
 
 def test_aggregate_requires_both_windows_proofs(tmp_path):
@@ -82,8 +87,10 @@ def test_aggregate_requires_both_windows_proofs(tmp_path):
         lambda r: r["windows_upgrade_refusal"].update(status="fail"),
         lambda r: r["windows_upgrade_refusal"]["refusal"].update(exit_code=0),
         lambda r: r["windows_upgrade_refusal"]["refusal"].update(message="other failure"),
-        lambda r: r["windows_upgrade_refusal"]["checks"].update(semantic_data="not-run"),
-        lambda r: r["windows_upgrade_refusal"]["semantic_data"].update(after_sha256="c" * 64),
+        lambda r: r["windows_upgrade_refusal"]["checks"].update(data_marker="not-run"),
+        lambda r: r["windows_upgrade_refusal"]["scheduled_task"].update(after_sha256="d" * 64),
+        lambda r: r["windows_upgrade_refusal"].pop("data_marker"),
+        lambda r: r["windows_upgrade_refusal"]["checks"].update(scheduled_task="not-run"),
         lambda r: r["windows_upgrade_refusal"].update(final_cleanup="fail"),
         lambda r: r["windows_upgrade_refusal"].update(candidate_checkouts={}),
         lambda r: r["windows_upgrade_refusal"].update(receipt_kind="diagnostic-only"),
@@ -129,3 +136,37 @@ def test_workflow_runs_both_windows_checks_and_keeps_artifacts_separate():
     assert 'windows_upgrade_refusal -NotePropertyValue $refusal' in text
     download = text.split('- name: Download every per-job receipt', 1)[1].split('- name: Aggregate the exact Release-1', 1)[0]
     assert 'merge-multiple: false' in download
+
+
+def test_refusal_driver_avoids_process_checks_even_during_cleanup(tmp_path, monkeypatch):
+    import argparse
+    import json
+    from scripts import ci_journey as journey
+
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="windows-upgrade-refusal", mode="direct", shell="powershell.exe")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(journey, "runner_identity", lambda: {})
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda *_: None)
+    calls = []
+    monkeypatch.setattr(journey, "assert_host_available", lambda leg, *a, **kw: calls.append((leg, kw)))
+    def forbidden(*args, **kwargs):
+        pytest.fail("Refusal wrapper must not inspect runtime processes or take diagnostics snapshots")
+    for name in ("sentinel_process", "sentinel_observation", "runtime_processes", "snapshot_failure_evidence"):
+        monkeypatch.setattr(journey, name, forbidden)
+    def execute(args, root, data, evidence, sentinel, birth):
+        assert sentinel is None and birth is None
+        root.mkdir()
+        (root / "current").write_text("r0")
+        journey.write_json(evidence / "journey-result.json", {"status": "pass"})
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", execute)
+    monkeypatch.setattr(journey, "installation", lambda *a: (root / "version.json", data, {}))
+    monkeypatch.setattr(journey, "installed_cli", lambda *a, **kw: (root / "current").unlink())
+    assert journey.execute(args)["final_cleanup"] == "pass"
+    final = run_root / "evidence-upload" / "after-cleanup" / "journey-result.json"
+    assert json.loads(final.read_text())["final_cleanup"] == "pass"
+    assert calls == [("fresh-install", {"skip_process_check": True}),
+                     ("cleanup", {"skip_process_check": True})]
