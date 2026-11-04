@@ -21,7 +21,6 @@ from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
-    BackupSpaceError,
     RuntimeOperationError,
     VerificationError,
     Version,
@@ -35,6 +34,7 @@ from .core import (
     read_json,
     write_json,
 )
+from .copy_update import data_fields, selected_data
 from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
@@ -234,7 +234,7 @@ class Backend:
     def reinstallable(self, data: Path) -> bool:
         record = self.service.recorded()
         return (record.get("owner") == "haus.astrid.runtime"
-                and record.get("data_root") == str(data)
+                and selected_data(record) == str(data)
                 and (data / "runtime" / "catalog.json").is_file())
 
     @staticmethod
@@ -263,8 +263,11 @@ class Backend:
 
     def _selected_chat_settings(self, old: Version | None, data: Path) -> tuple[Path, dict[str, str]]:
         record = self.service.recorded()
-        retained = record.get("chat_settings") if record.get("data_root") == str(data) else None
+        retained = record.get("chat_settings") if selected_data(record) == str(data) else None
         chat_cwd, chat_options = self._prior_chat_settings(old, retained)
+        legacy = record.get("data_root")
+        if chat_cwd is not None and legacy and data != Path(legacy) and chat_cwd.is_relative_to(Path(legacy)):
+            chat_cwd = data / chat_cwd.relative_to(Path(legacy))
         if chat_cwd is None:
             chat_cwd = Path(os.environ.get("ASTRID_ACP_CWD") or data / "chat")
         return chat_cwd, chat_options
@@ -519,46 +522,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         details = getattr(exc, "details", None)
         return RuntimeOperationError(str(exc), details={"cause_details": details})
 
-    def _pending_restore_selection(self, data: Path):
-        """Supply Runtime's narrow context for replaying an interrupted restore."""
-        journal_path = self.root / "update-transaction.json"
-        active = getattr(self, "_update_transaction", None)
-        transaction = active[0] if isinstance(active, tuple) and len(active) == 2 else None
-        recovering = bool(isinstance(active, tuple) and len(active) == 2 and active[1])
-        if not os.path.lexists(journal_path):
-            if recovering:
-                raise ValueError("The pending restore journal disappeared before stop admission.")
-            return None
-        if linked(journal_path) or not journal_path.is_file():
-            raise ValueError("The pending restore journal must be a regular, unlinked file.")
-        try:
-            on_disk = read_json(journal_path)
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise ValueError("The pending restore journal is unreadable or malformed.") from exc
-        if recovering and on_disk != transaction:
-            raise ValueError("The on-disk restore journal changed before stop admission.")
-        if not recovering or on_disk.get("step") != "recovering":
-            return None
-        if (not isinstance(on_disk, dict)
-                or on_disk.get("format") != "astrid-install-update/v1"
-                or on_disk.get("step") != "recovering"
-                or absolute(on_disk.get("data_root", "")) != absolute(data)):
-            raise ValueError("The pending restore journal does not match this recovery.")
-        if on_disk.get("transaction_kind") not in (None, "migration"):
-            return None
-        backup = on_disk.get("backup")
-        if backup is None:
-            return None
-        realm = on_disk.get("realm")
-        if (not isinstance(backup, dict) or not backup.get("root")
-                or not isinstance(realm, dict) or not isinstance(realm.get("realm_root"), str)
-                or not isinstance(realm.get("realm_id"), str)
-                ):
-            raise ValueError("The pending restore journal has incomplete recovery identity.")
-        from astrid_runtime.bootstrap import RestoreSelection
-
-        return RestoreSelection(journal_path=journal_path, selection_path=self.service.selection)
-
     def preflight_stop(self, data: Path) -> None:
         """Read-only C1 admission before installer preparation or writes."""
         try:
@@ -566,12 +529,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             from astrid_runtime.paths import RuntimePaths
 
             paths = RuntimePaths.current(data_root=data)
-            restore_selection = self._pending_restore_selection(data)
-            if restore_selection is not None and (self.service.recorded() or {}).get("foreground") is not None:
-                raise ValueError("Restore recovery refuses a retained foreground process record.")
-            if restore_selection is None and not paths.runtime_support.exists():
+            if not paths.runtime_support.exists():
                 return
-            preflight_stop(paths, restore_selection=restore_selection)
+            preflight_stop(paths)
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
@@ -586,7 +546,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         if self.managed_by != "pinokio" or custody is None:
             return False
         custody.check()
-        if self._pending_restore_selection(data) is not None:
+        if None is not None:
             return False  # Restore gaps retain C1's final selection fence.
         from astrid_runtime.paths import RuntimePaths
 
@@ -620,7 +580,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             record = self.service.recorded()
             if record and (record.get("owner") != LABEL
                            or record.get("program_root") != str(self.root)
-                           or record.get("data_root") != str(data)):
+                           or selected_data(record) != str(data)):
                 raise ValueError("The service record does not match the selected installation.")
             paths = RuntimePaths.current(data_root=data)
             if (self.managed_by != "pinokio" and self.service.system == "linux"
@@ -638,12 +598,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # The pinned Runtime's C1 fence proves matching stale publications
             # before cleanup and refuses inconsistent or uncertain identities.
             # It never signals the process that reused the recorded PID.
-            restore_selection = self._pending_restore_selection(data)
             foreground = (record or {}).get("foreground")
             if foreground is not None and not isinstance(foreground, dict):
                 raise ValueError("The selected foreground process record is malformed.")
-            if restore_selection is not None and foreground is not None:
-                raise ValueError("Restore recovery refuses a retained foreground process record.")
             # CLI entry already preflighted; down takes fresh C1 admission for
             # every stop, including recovery and rollback.
             discovery = read_json(paths.discovery_path)
@@ -666,7 +623,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
                                        or current_record.get("program_root") != str(self.root)
-                                       or current_record.get("data_root") != str(data)):
+                                       or selected_data(current_record) != str(data)):
                     raise ValueError("The service record changed before manager stop.")
                 if ((current_record or {}).get("foreground") != foreground
                         or (record and not current_record)):
@@ -696,15 +653,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 current_record = self.service.recorded()
                 if ((current_record or {}).get("owner") != LABEL
                         or (current_record or {}).get("program_root") != str(self.root)
-                        or (current_record or {}).get("data_root") != str(data)
+                        or selected_data(current_record or {}) != str(data)
                         or (current_record or {}).get("foreground") != foreground):
                     raise ValueError("The foreground selection changed before signal; refusing to stop it.")
                 self.service.stop_foreground(expected=foreground)
 
             result = down(paths, boundary, stop_manager=stop_selected_manager,
                           stop_foreground=(stop_selected_foreground
-                                           if restore_selection is None and isinstance(foreground, dict) else None),
-                          restore_selection=restore_selection)
+                                           if isinstance(foreground, dict) else None))
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
@@ -725,181 +681,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except Exception as exc:
             raise self._downstream_stop_failure(exc) from exc
         return result
-
-    @staticmethod
-    def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:
-        ignored = set()
-        if support and parent == source:
-            ignored.add("logs")
-        if support and parent == source / "runtime":
-            ignored.update({"realms", "discovery.json", "instance.lock", "bootstrap.lock"})
-        for name in set(names) - ignored:
-            entry = parent / name
-            if linked(entry):
-                raise ValueError(f"Backup refused a linked entry: {entry}")
-        return ignored.intersection(names)
-
-    def _backup_size(self, source: Path, *, support=False) -> int:
-        """Measure the same entries admitted by the support/clone copy."""
-        def failed(error):
-            raise error
-
-        size = 0
-        for folder, directories, files in os.walk(source, onerror=failed):
-            parent = Path(folder)
-            ignored = self._backup_ignored(source, parent, directories + files, support=support)
-            directories[:] = [name for name in directories if name not in ignored]
-            size += sum((parent / name).stat().st_size for name in files if name not in ignored)
-        return size
-
-    def _copy(self, source: Path, destination: Path, *, clone=False, support=False) -> None:
-        from runtime_protocol.fsclone import clone_or_copy_file
-
-        def copy_file(src, dst):
-            src, dst = Path(src), Path(dst)
-            if linked(src):
-                raise ValueError(f"Backup refused a linked entry: {src}")
-            if clone:
-                clone_or_copy_file(src, dst)
-            else:
-                shutil.copy2(src, dst)
-            return str(dst)
-
-        def ignore(folder, names):
-            return self._backup_ignored(source, Path(folder), names, support=support)
-
-        shutil.copytree(source, destination, copy_function=copy_file, ignore=ignore)
-
-    def backup(self, version: Version, data: Path, realm: dict) -> dict:
-        from runtime_protocol import platform
-        destination = self.root / "backups" / uuid.uuid4().hex[:12]
-        kind = "clone" if self.service.system == "darwin" else "runtime"
-        realm_root = absolute(realm["realm_root"])
-        if kind != "clone":
-            size = self._backup_size(realm_root) + self._backup_size(data, support=True)
-            margin = max(256 * 1024 * 1024, size // 10)
-            platform.private_directory(destination.parent)
-            if shutil.disk_usage(self.root).free < size + margin:
-                raise BackupSpaceError("There is not enough free disk space to back up your workspace.")
-        try:
-            platform.private_directory(destination)
-            if kind == "clone":
-                self._copy(realm_root, destination / "realm", clone=True)
-            else:
-                # The backup CLI uses authenticated RPC. Start only the neutral
-                # daemon (no foreground service supervisor and no browser door).
-                try:
-                    self.runtime(version, data, "up", "--hosted-origin", "off", profile=True)
-                    self.runtime(version, data, "backup", "--destination", str(destination / "realm"))
-                finally:
-                    self.stop(version, data)
-            self._copy(data, destination / "support", clone=kind == "clone", support=True)
-            result = {"root": str(destination), "kind": kind}
-            write_json(destination / "backup.json", result)
-            return result
-        except BaseException:
-            if destination.exists():
-                shutil.rmtree(destination)
-            raise
-
-    def restore(self, old: Version, data: Path, realm: dict, backup: dict) -> None:
-        if platform.sys.platform == "win32":
-            platform.private_directory(data)
-        destination = Path(backup["root"])
-        realm_root = absolute(realm["realm_root"])
-        restored = realm_root.with_name(realm_root.name + ".restore-" + uuid.uuid4().hex[:8])
-        if backup["kind"] == "clone":
-            self._copy(destination / "realm", restored, clone=True)
-        else:
-            # The offline restore API is the same authenticated implementation
-            # behind `astrid-runtime restore`, without starting a damaged schema.
-            script = ("from pathlib import Path; from runtime_protocol.backup import restore_backup; import sys; "
-                      "key=Path(sys.argv[3]); "
-                      "restore_backup(sys.argv[1],sys.argv[2],**({'key_path':key} if key.is_file() else {}))")
-            retained_key = destination / "support" / "runtime" / "backup-auth.key"
-            self.run([old.python, "-X", "utf8", "-I", "-c", script, destination / "realm", restored, retained_key],
-                     extra_env=old.env)
-        failed = realm_root.with_name(realm_root.name + ".failed-" + uuid.uuid4().hex[:8])
-        # Recovery may replay after a process was killed between the two
-        # renames. In that state the original is already absent and restoring
-        # the retained backup is the required idempotent continuation.
-        if realm_root.exists():
-            platform.replace_path(realm_root, failed)
-        try:
-            platform.replace_path(restored, realm_root)
-        except BaseException:
-            if failed.exists() and not realm_root.exists():
-                platform.replace_path(failed, realm_root)
-            raise
-        for failed_copy in sorted(path for path in realm_root.parent.glob(realm_root.name + ".failed-*")
-                                  if path.is_dir() and not path.is_symlink()):
-            self.say(f"The failed update's workspace copy is kept at {failed_copy}. You can delete it once Astrid works.")
-        # Restore all support metadata, preserving unselected realms and extras.
-        def copy_support(source: Path, target: Path) -> None:
-            if source.is_dir():
-                # copytree recreates inherited, unprotected Windows DACLs.
-                platform.private_directory(target)
-                for entry in source.iterdir():
-                    copy_support(entry, target / entry.name)
-                shutil.copystat(source, target)
-            else:
-                # A killed support restore must leave each file absent or
-                # complete. A truncated catalog would block Runtime admission
-                # before the retained realm could be restored on the next run.
-                if source.name == "catalog.json" and target.parent.name == "runtime":
-                    from astrid_runtime.bootstrap import _read_catalog
-                    from astrid_runtime.io import atomic_write_json
-                    from astrid_runtime.paths import RuntimePaths
-
-                    support_root = source.parent.parent
-                    retained_paths = RuntimePaths.current(data_root=support_root)
-                    catalog = _read_catalog(replace(retained_paths, catalog_path=source))
-                    realm_id = str(catalog.get("selected_realm_id") or "")
-                    selected = next((row for row in catalog.get("realms", [])
-                                     if str(row.get("realm_id")) == realm_id), None)
-                    expected_realm = str(realm.get("realm_id") or "")
-                    expected_root = absolute(realm.get("realm_root", ""))
-                    if (selected is None or realm_id != expected_realm
-                            or absolute(selected.get("data_root", "")) != expected_root):
-                        raise ValueError("The retained Runtime catalog does not match the restore realm.")
-                    atomic_write_json(target, catalog)
-                    return
-                descriptor, temporary_name = platform.private_temporary(target.parent, ".restore-")
-                os.close(descriptor)
-                temporary = Path(temporary_name)
-                try:
-                    shutil.copy2(source, temporary)
-                    if platform.sys.platform == "win32":
-                        platform.owner_only(temporary)
-                    with temporary.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    platform.durable_replace(temporary, target)
-                finally:
-                    temporary.unlink(missing_ok=True)
-
-        snapshot = destination / "support"
-        for item in snapshot.iterdir():
-            if item.name == "logs":
-                continue  # Also preserve logs when restoring an older snapshot.
-            target = data / item.name
-            if item.name == "runtime":
-                platform.private_directory(target)
-                for entry in target.iterdir():
-                    # Keep a readable selected catalog until the retained
-                    # snapshot replaces it atomically below. A process kill
-                    # during restore must not recreate the legacy gap.
-                    if entry.name not in {"realms", "catalog.json"}:
-                        if entry.is_dir():
-                            shutil.rmtree(entry)
-                        else:
-                            entry.unlink()
-                copy_support(item, target)
-            else:
-                if target.is_dir():
-                    shutil.rmtree(target)
-                elif target.exists():
-                    target.unlink()
-                copy_support(item, target)
 
     def stage(self, manifest: dict, root: Path, data: Path) -> Version:
         install_release(manifest)
@@ -1089,28 +870,62 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         reveal_bundle(bundle)
         return bundle
 
-    def upgrade(self, version: Version, data: Path) -> None:
-        self.runtime(version, data, "upgrade", profile=True)
+    def source_workspace(self, data: Path) -> dict:
+        from .copy_update import source_workspace
+        return source_workspace(self, data)
+
+    def require_stopped_source(self, data: Path, realm: dict) -> None:
+        from .copy_update import stopped_source
+        with stopped_source(self, data, realm):
+            pass
+
+    def adopt(self, candidate: Version, new_data: Path, old_data: Path, realm: dict) -> dict:
+        """Require Runtime's explicit immutable-source contract; never fall back."""
+        self.require_stopped_source(old_data, realm)
+        result = self.runtime(candidate, new_data, "workspace", "adopt", "--from", str(old_data),
+                              "--realm-id", realm["realm_id"], "--read-only-source", "--no-start",
+                              profile=True)
+        expected = new_data / "runtime" / "realms" / realm["realm_id"]
+        if (result.get("ok") is not True or result.get("source_unchanged") is not True
+                or result.get("started") is not False
+                or result.get("realm_id") != realm["realm_id"]
+                or result.get("source") != realm["realm_root"]
+                or result.get("destination") != str(expected)):
+            raise RuntimeOperationError("Runtime did not establish safe read-only workspace adoption.")
         if self.process_control:
-            # Runtime upgrade preserves support metadata. Apply the latest
-            # install flag before the candidate is started by the service.
-            self._write_process_control(data)
+            self._write_process_control(new_data)
+        return {"realm_id": realm["realm_id"], "realm_root": str(expected)}
 
     def register(self, version: Version, data: Path) -> None:
         if version.managed_by != self.managed_by:
             # The current install context is authoritative for hand-built or
             # legacy Version objects that predate the identity field.
             version = replace(version, managed_by=self.managed_by)
-        self.persist_identity(version)
+        # Stamp immutable candidate metadata only. The complete active
+        # selection is published atomically before any manager can start it.
+        persist_install_identity(version, self.root)
         chat_cwd, chat_options = self._prior_chat_settings(version)
         if chat_cwd == data / "chat":
             platform.private_directory(chat_cwd)
         if self.managed_by == "pinokio":
             persist_install_identity(version, self.root, selection=self.service.selection, fields={
                 "owner": "haus.astrid.runtime", "program_root": str(self.root),
-                "data_root": str(data), "managed_by": "pinokio",
+                **data_fields(self.service.recorded(), data), "managed_by": "pinokio",
             })
         else:
+            # launchd bootstrap can start immediately. Publish the candidate's
+            # full identity before any manager can run it, so failure cleanup
+            # can still use the usual identity-checked stop path.
+            realm = self.workspace(version, data)
+            record = dict(self.service.recorded())
+            record.pop("uninstalled", None)
+            marker = read_json(self.root / "install.json")
+            if not record.get("data_root") and marker.get("data_root"):
+                record["data_root"] = marker["data_root"]
+            write_json(self.service.selection, {**record,
+                       "owner": LABEL, "program_root": str(self.root),
+                       **data_fields(record, data), "realm_id": realm["realm_id"],
+                       "realm_root": realm["realm_root"], "identity": version.document()["identity"]})
             self.service.register(version, data)
         realm = self.workspace(version, data)
         record = self.service.recorded()
@@ -1278,23 +1093,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
 
-    def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
-        # Keep the immediately previous program and backup. Failures cleaning an
-        # older locked version are residue, not grounds to roll back a good update.
-        keep = {candidate.root, old.root if old else candidate.root}
-        for path in (self.root / "versions").iterdir():
-            if path not in keep:
-                try:
-                    shutil.rmtree(path)
-                except OSError:
-                    pass
-        if backup:
-            for path in (self.root / "backups").iterdir():
-                if path != Path(backup["root"]):
-                    try:
-                        shutil.rmtree(path)
-                    except OSError:
-                        pass
+    def finish(self, old: Version | None, candidate: Version) -> None:
+        # Retain prior programs and both workspace roots. A failed or interrupted
+        # copy is evidence, never something cleanup is allowed to overwrite.
+        pass
 
     def unregister(self) -> None:
         record = self.service.recorded()
@@ -1302,7 +1104,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             kept = dict(record)
             version = current(self.root)
             if "chat_settings" not in kept and version is not None:
-                chat_cwd, options = self._selected_chat_settings(version, Path(record["data_root"]))
+                chat_cwd, options = self._selected_chat_settings(version, Path(selected_data(record)))
                 kept["chat_settings"] = {"ASTRID_ACP_CWD": str(chat_cwd), **options}
             write_json(self.service.selection, {**kept, "uninstalled": True})
         if self.managed_by != "pinokio":
@@ -1354,7 +1156,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         marker = read_json(root / "install.json")
         record = read_json(self.service.selection)
         kept = (record.get("owner") == "haus.astrid.runtime" and record.get("program_root") == str(root)
-                and record.get("data_root") == str(data) and record.get("uninstalled") is True)
+                and selected_data(record) == str(data) and record.get("uninstalled") is True)
         bootstrap_only = not root.exists() or all(path.name == "bootstrap" for path in root.iterdir())
         if marker.get("owner") != "haus.astrid.runtime" and not (kept and bootstrap_only):
             raise ValueError("Refusing to remove an unowned installation directory.")
@@ -1383,7 +1185,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             try:
                 root.rmdir()
             except OSError:
-                retained_marker = {**marker, "owner": "haus.astrid.runtime", "data_root": str(data)}
+                retained_marker = {**marker, "owner": "haus.astrid.runtime", **data_fields(marker, data)}
                 if record.get("managed_by") == "pinokio":
                     retained_marker["managed_by"] = "pinokio"
                 write_json(root / "install.json", retained_marker)

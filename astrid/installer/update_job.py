@@ -164,7 +164,7 @@ def _confirmed_route_disposition(root: Path, job: dict, state: str, message: str
     if not isinstance(transaction_id, str) or not re.fullmatch(r"[0-9a-f]{32}", transaction_id):
         _busy("The confirmed update result has no valid transaction binding.")
     try:
-        journal_sha256 = hashlib.sha256((root / "update-transaction.json").read_bytes()).hexdigest()
+        journal_sha256 = hashlib.sha256((root / "update-journal.r1.json").read_bytes()).hexdigest()
         selection_sha256 = hashlib.sha256(_selection_path().read_bytes()).hexdigest()
     except OSError as failure:
         raise _BusyRefusal("The confirmed update evidence cannot be retained.") from failure
@@ -496,9 +496,9 @@ def _validate_request(request: dict, root: Path) -> dict:
     selected = read_json(selection_path)
     if (marker.get("owner") != LABEL or selected.get("owner") != LABEL
             or marker.get("managed_by") is not None or selected.get("managed_by") is not None
-            or absolute(marker.get("data_root", "")) != data_root
+            or absolute((marker.get("r1_data_root") or marker.get("data_root", ""))) != data_root
             or absolute(selected.get("program_root", "")) != root
-            or absolute(selected.get("data_root", "")) != data_root
+            or absolute((selected.get("r1_data_root") or selected.get("data_root", ""))) != data_root
             or selected.get("uninstalled")):
         raise ValueError("The selected installer ownership does not match the update request.")
     old = current(root)
@@ -593,9 +593,9 @@ def _reconcile_request_binding(request: dict, root: Path, job: dict) -> Path:
         if (marker.get("owner") != LABEL or marker.get("managed_by") is not None
                 or selected.get("owner") != LABEL or selected.get("managed_by") is not None
                 or marker.get("uninstalled") or selected.get("uninstalled")
-                or absolute(marker.get("data_root", "")) != data_root
+                or absolute((marker.get("r1_data_root") or marker.get("data_root", ""))) != data_root
                 or absolute(selected.get("program_root", "")) != root
-                or absolute(selected.get("data_root", "")) != data_root
+                or absolute((selected.get("r1_data_root") or selected.get("data_root", ""))) != data_root
                 or data_root != absolute(job.get("data_root", ""))):
             _busy("The selected installer ownership does not match the unresolved update.")
         return data_root
@@ -1022,7 +1022,7 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
         Installer(root, data_root, backend, say=lambda _line: None)._recover_update()
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The matching update transaction could not be safely recovered.") from failure
-    result_journal = read_json(root / "update-transaction.json")
+    result_journal = read_json(root / "update-journal.r1.json")
     if (not isinstance(result_journal, dict) or result_journal.get("step") not in TERMINAL_STEPS
             or not _matching_journal(job, result_journal)):
         _busy("The update transaction did not reach a verified terminal phase.")
@@ -1047,7 +1047,7 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
     try:
         api = _platform_api()
         data_root, _descriptor = _validate_reconcile_job(root, job, request, api)
-        journal_path = root / "update-transaction.json"
+        journal_path = root / "update-journal.r1.json"
         if journal_path.is_symlink():
             _busy("The unresolved update journal path cannot be trusted.")
         journal = read_json(journal_path) if journal_path.exists() else None
@@ -1112,7 +1112,7 @@ def accept(request: dict) -> dict:
             _busy("The prior update operation is unreadable or has an unknown state.")
         unresolved = (isinstance(prior, dict) and prior.get("state") in
                       {"accepted", "launching", "active", "recovery-needed"})
-        pending_path = root / "update-transaction.json"
+        pending_path = root / "update-journal.r1.json"
         if pending_path.is_symlink():
             if unresolved:
                 _busy("The unresolved update journal path cannot be trusted.")
@@ -1264,11 +1264,11 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     marker = read_json(root / "install.json")
     selected = read_json(_selection_path())
     if (marker.get("owner") != LABEL or marker.get("managed_by") is not None
-            or absolute(marker.get("data_root", "")) != absolute(job["data_root"])
+            or absolute((marker.get("r1_data_root") or marker.get("data_root", ""))) != absolute(job["data_root"])
             or selected.get("owner") != LABEL or selected.get("managed_by") is not None
             or selected.get("uninstalled")
             or absolute(selected.get("program_root", "")) != root
-            or absolute(selected.get("data_root", "")) != absolute(job["data_root"])):
+            or absolute((selected.get("r1_data_root") or selected.get("data_root", ""))) != absolute(job["data_root"])):
         raise ValueError("The selected installation ownership changed.")
     old = current(root)
     if old is None or old.document() != job.get("old_version"):
@@ -1678,7 +1678,7 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
                 if active:
                     results.append(job)
                 elif state in {"launching", "active"}:
-                    journal = read_json(root / "update-transaction.json")
+                    journal = read_json(root / "update-journal.r1.json")
                     binding = journal.get("update_job") if isinstance(journal, dict) else None
                     transaction_started = (isinstance(binding, dict)
                                            and binding.get("operation_id") == job["operation_id"])
@@ -1776,7 +1776,7 @@ def _safe_failure_line(failure: BaseException) -> str:
 
 def record_success(root: Path, data: Path, backend: Backend, job: dict) -> None:
     saved_job = _read_job(root, job["operation_id"])
-    journal = read_json(root / "update-transaction.json")
+    journal = read_json(root / "update-journal.r1.json")
     binding = journal.get("update_job") if isinstance(journal, dict) else None
     if (journal.get("step") != "complete" or not isinstance(binding, dict)
             or binding.get("operation_id") != job["operation_id"]
@@ -1807,7 +1807,7 @@ def record_success(root: Path, data: Path, backend: Backend, job: dict) -> None:
 
 def record_failure(root: Path, data: Path, backend: Backend, job: dict,
                    accepted_old: Version, failure: BaseException) -> None:
-    journal = read_json(root / "update-transaction.json")
+    journal = read_json(root / "update-journal.r1.json")
     saved_job = _read_job(root, job["operation_id"])
     binding = journal.get("update_job") if isinstance(journal, dict) else None
     linked = (isinstance(binding, dict) and binding.get("operation_id") == job["operation_id"]
@@ -1987,7 +1987,7 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
         if stream is not None:
             failed = None
             with contextlib.suppress(Exception):
-                journal = read_json(root / "update-transaction.json")
+                journal = read_json(root / "update-journal.r1.json")
                 state = ("recovery-needed" if journal and journal.get("step") not in TERMINAL_STEPS
                          else "failed")
                 message = ("Recovery needed. Run the install line to recover the interrupted update."
