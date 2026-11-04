@@ -1468,6 +1468,23 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
             "service_manager": service}
 
 
+def stop_release1_service_for_cleanup(service: dict, data: Path, evidence: Path) -> None:
+    """Stop the retained R1 service after checking the upgrade uninstall refusal."""
+    manager = service.get("manager")
+    if manager == "systemd-user":
+        command = ["systemctl", "--user", "stop", "astrid-r1.service"]
+    elif manager == "launchd":
+        command = ["launchctl", "bootout", f"gui/{os.getuid()}/haus.astrid.runtime.r1"]
+    else:
+        raise RuntimeError(f"Unsupported Release-1 cleanup service manager: {manager}")
+    run(command, evidence / "release1-service-stop.log", timeout=120)
+    deadline = time.monotonic() + 120
+    while runtime_processes(data):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Release-1 Runtime did not stop after uninstall refusal")
+        time.sleep(1)
+
+
 def valid_sdk_capture_status(value: object) -> bool:
     return (isinstance(value, dict) and set(value) == {
         "schema", "exit_condition", "response_size", "json_object", "ok", "task_refs"
@@ -2017,6 +2034,8 @@ def execute(args: argparse.Namespace) -> dict:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                 if is_linux_macos_upgrade and release == 1:
                                     refusal = assert_release1_upgrade_uninstall_refusal(installed, root, data, evidence)
+                                    stop_release1_service_for_cleanup(
+                                        refusal["service_manager"], data, evidence)
                                     expected_upgrade_refusal = True
                                     if result_path.is_file():
                                         recorded = read_json(result_path)

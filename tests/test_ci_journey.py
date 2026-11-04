@@ -564,6 +564,37 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
     assert data.is_dir() and r1_data.is_dir()
 
 
+@pytest.mark.parametrize(("platform", "manager", "command"), [
+    ("linux", "systemd-user", ["systemctl", "--user", "stop", "astrid-r1.service"]),
+    ("darwin", "launchd", ["launchctl", "bootout", "gui/501/haus.astrid.runtime.r1"]),
+])
+def test_release1_refusal_cleanup_stops_owned_service_and_waits_for_runtime(
+        tmp_path, monkeypatch, platform, manager, command):
+    calls = []
+    polls = iter(([123], []))
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(journey, "run", lambda argv, log, **kwargs: calls.append((argv, log, kwargs)))
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: next(polls))
+    monkeypatch.setattr(journey.time, "sleep", lambda _seconds: None)
+
+    journey.stop_release1_service_for_cleanup(
+        {"manager": manager}, tmp_path / "data", tmp_path / "evidence")
+
+    assert calls == [(
+        command,
+        tmp_path / "evidence" / "release1-service-stop.log",
+        {"timeout": 120},
+    )]
+
+
+def test_release1_refusal_cleanup_rejects_unsupported_service_manager(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "run", lambda *args, **kwargs: pytest.fail("must fail closed"))
+    with pytest.raises(RuntimeError, match="Unsupported Release-1 cleanup service manager"):
+        journey.stop_release1_service_for_cleanup(
+            {"manager": "task-scheduler"}, tmp_path / "data", tmp_path / "evidence")
+
+
 def test_tst_b1_cli_requires_owned_roots_before_any_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "bootstrap", lambda *unused: (_ for _ in ()).throw(
         AssertionError("bootstrap must not run")))
