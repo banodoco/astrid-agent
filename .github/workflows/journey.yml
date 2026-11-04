@@ -788,7 +788,8 @@ jobs:
                     $allowedErrorTypes -cnotcontains $diagnostic.error_type -or
                     $diagnostic.frames -isnot [array] -or $diagnostic.frames.Count -gt 10 -or
                     ($null -ne $diagnostic.http_status -and
-                      ($diagnostic.http_status -isnot [int] -or $diagnostic.http_status -lt 100 -or $diagnostic.http_status -gt 599)) -or
+                      (($diagnostic.http_status -isnot [int] -and $diagnostic.http_status -isnot [long]) -or
+                        $diagnostic.http_status -lt 100 -or $diagnostic.http_status -gt 599)) -or
                     ($null -ne $diagnostic.runtime_code -and
                       ($diagnostic.runtime_code -isnot [string] -or $allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code))) {
                   throw "Invalid live workspace failure values: $relative"
@@ -798,7 +799,8 @@ jobs:
                   if ($frame -isnot [PSCustomObject] -or $frameKeys.Count -ne 2 -or
                       $frameKeys -cnotcontains 'function' -or $frameKeys -cnotcontains 'line' -or
                       $frame.function -isnot [string] -or $allowedFunctions -cnotcontains $frame.function -or
-                      $frame.line -isnot [int] -or $frame.line -le 0 -or $frame.line -ge 10000) {
+                      ($frame.line -isnot [int] -and $frame.line -isnot [long]) -or
+                      $frame.line -le 0 -or $frame.line -ge 10000) {
                     throw "Invalid live workspace failure frame: $relative"
                   }
                 }
