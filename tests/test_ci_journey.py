@@ -451,6 +451,40 @@ def test_darwin_manager_state_classifies_only_expected_cleanup_absence(
     assert ("Journey manager-state capture" in capsys.readouterr().err) is not absent
 
 
+@pytest.mark.parametrize(("platform", "relative", "expected_command"), [
+    ("linux", Path("home/.config/systemd/user/astrid-r1.service"),
+     ["systemctl", "--user", "show", "astrid-r1.service",
+      "--property=LoadState,FragmentPath,ActiveState,SubState"]),
+    ("darwin", Path("home/Library/LaunchAgents/haus.astrid.runtime.r1.plist"),
+     ["launchctl", "print", "gui/501/haus.astrid.runtime.r1"]),
+])
+def test_manager_state_captures_r1_service_when_present(
+        tmp_path, monkeypatch, platform, relative, expected_command):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="LoadState=loaded\n", stderr="")
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    data, evidence = tmp_path / "run" / "data", tmp_path / "evidence"
+    unit = data.parent / relative
+    unit.parent.mkdir(parents=True)
+    unit.write_text("R1 unit definition\n", encoding="utf-8")
+
+    journey.capture_manager_state(evidence, data, "before-cleanup")
+
+    assert calls == [(expected_command, {
+        "capture_output": True, "text": True, "timeout": 30, "check": False,
+    })]
+    manager = journey.read_json(evidence / "manager-state-before-cleanup.json")
+    assert manager["command"] == expected_command
+    assert manager["unit_file"] == str(unit)
+    assert (evidence / "unit-file-before-cleanup.txt").read_text() == "R1 unit definition\n"
+
+
 def test_tst_b1_final_cleanup_uses_exact_owned_roots_and_rechecks_manager(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     root, data = run_root / "program", run_root / "data"
