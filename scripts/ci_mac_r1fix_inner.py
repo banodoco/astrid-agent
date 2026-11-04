@@ -67,7 +67,9 @@ try:
   status['installed_manifest_sha256']=hashlib.sha256(manifest_bytes).hexdigest()
   def tree(path,depth=0):
    rows=[]
-   for item in sorted(path.iterdir()):
+   entries=sorted(path.iterdir())
+   if len(entries)>2000: raise RuntimeError('Program tree exceeds evidence bound')
+   for item in entries:
     row={'name':item.name,'kind':'symlink' if item.is_symlink() else 'directory' if item.is_dir() else 'file' if item.is_file() else 'other'}
     if row['kind']=='directory' and depth<1: row['children']=tree(item,depth+1)
     rows.append(row)
@@ -114,7 +116,12 @@ try:
     result={}; rootcas=path/'cas/sha256'
     for item in rootcas.rglob('*') if rootcas.exists() else ():
      if item.is_symlink(): raise RuntimeError('CAS contains symlink')
-     if item.is_file(): result[item.relative_to(rootcas).as_posix()]=hashlib.sha256(item.read_bytes()).hexdigest()
+     if item.is_file():
+      digest=hashlib.sha256()
+      with item.open('rb') as stream:
+       for chunk in iter(lambda:stream.read(1024*1024),b''): digest.update(chunk)
+      result[item.relative_to(rootcas).as_posix()]=digest.hexdigest()
+      if len(result)>1000: raise RuntimeError('CAS inventory exceeds evidence bound')
     return result
    before=cas_map(realm); after=cas_map(target); status['cas']={'source_count':len(before),'target_count':len(after),'identical':before==after,'source_sha256':before,'target_sha256':after}; save()
   else: status['stages']['inspect']='not-run-target-missing'; status['cas']='not-run-target-missing'
