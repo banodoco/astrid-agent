@@ -187,6 +187,12 @@ def main(argv: list[str] | None = None) -> int:
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
         backend.console_diagnostics = True
+        if mode == "uninstall":
+            # This read-only gate precedes installer lock/log creation and all
+            # service or selection work. lexists also refuses partial journals.
+            from .boundary_handoff import refuse_handoff_uninstall
+
+            refuse_handoff_uninstall(backend.service, root)
         marker = read_json(root / "install.json")
         if args.update_job and marker.get("managed_by") is not None:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
@@ -336,11 +342,12 @@ def main(argv: list[str] | None = None) -> int:
                 if log is not None:
                     backend.log = log
                 if mode == "uninstall" and managed_by != "pinokio":
-                    from .boundary_handoff import journal_path as handoff_journal, uninstall_complete
+                    from .boundary_handoff import refuse_handoff_uninstall
 
-                    if os.path.lexists(handoff_journal(backend.service)):
-                        uninstall_complete(backend, data, delete_data=args.delete_data)
-                        return 0
+                    # Recheck under the installer lock before any operational
+                    # preflight. The early gate above avoids all file changes
+                    # for an already-published completed handoff.
+                    refuse_handoff_uninstall(backend.service, root)
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
                     from .boundary_handoff import handle
 
