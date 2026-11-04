@@ -18,6 +18,10 @@ from astrid_runtime.paths import RuntimePaths
 
 
 def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
+    # This fixture models interruption tables, not a canonical realm. Schema
+    # admission has separate coverage; these tests exercise the busy fence.
+    monkeypatch.setattr('astrid.installer.core.inspect_schema',
+                        lambda *_args, **_kwargs: {'identity': {'version': 29}, 'target': 33})
     root, data = tmp_path / 'program', tmp_path / 'data'
     value = Backend(root, tmp_path / 'install.log', tmp_path / 'uv')
     value.service.selection = tmp_path / 'selection.json'
