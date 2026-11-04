@@ -11,17 +11,19 @@ import os
 from pathlib import Path
 import platform
 import re
+import secrets
 import stat
 import sys
 import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
-    from . import ci_journey as journey, upgrade_release
+    from . import ci_journey as journey, upgrade_release, journey_workspace
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import upgrade_release
+    import journey_workspace
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
@@ -301,6 +303,16 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
     journey.write_json(request_path, request)
+    if action == "busy":
+        # Persist the recovery identity before the helper can commit a fixture.
+        with request_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            directory = os.open(evidence, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
     output = journey.run([version["python"], "-I", journey.ROOT / "scripts/journey_workspace.py",
@@ -787,10 +799,17 @@ def rerun(args, root, data, evidence, app, manifest_path, manifest, version, old
 
 def busy_refusal(args, root, data, evidence, manifest_path, old,
                  old_pid, old_birth, sentinel, birth, result):
-    keys = workspace(old, data, evidence / "busy", "busy", {})
-    protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
-                                                     data / "runtime/discovery.json")}
+    realm = journey.workspace_root(data)
+    identity = journey_workspace.realm_identity(realm)
+    operation = {"id": secrets.token_hex(32), "lease_token": secrets.token_hex(32)}
+    def cleanup():
+        workspace(old, data, evidence / "busy-release", "release",
+                  {"operation": operation, "realm_identity": identity}, realm=realm)
     try:
+        keys = workspace(old, data, evidence / "busy", "busy",
+                         {"operation": operation, "realm_identity": identity}, realm=realm)
+        protected = {path: path.read_bytes() for path in (root / "current", Path(old["root"]) / "version.json",
+                                                         data / "runtime/discovery.json")}
         try:
             journey.bootstrap(args.app_checkout, manifest_path, args.shell, "update", evidence / "busy", root, data)
         except RuntimeError:
@@ -806,6 +825,17 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Busy refusal disturbed the unrelated sentinel")
         journey.assert_one_runtime(data)
+    except BaseException as primary:
+        try:
+            cleanup()
+        except Exception as cleanup_error:
+            result["busy_cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            raise primary from cleanup_error
+        raise
+    else:
+        try:
+            cleanup()
+        except Exception as cleanup_error:
+            result["busy_cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            raise
         result["checks"].update(busy_refusal="pass", one_runtime="pass", unrelated_sentinel="pass")
-    finally:
-        workspace(old, data, evidence / "busy-release", "release", keys)
