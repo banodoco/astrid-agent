@@ -599,6 +599,16 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # Version-jump starts write the census beneath the release directory.
+    # Preserve the first failing census using the existing artifact name.
+    target = destination / "runtime-owner-processes.json"
+    if not target.exists():
+        for release in ("release0", "release1"):
+            source = evidence / release / "runtime-owner-processes.json"
+            if source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, target)
+                break
+
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
     # Numbering follows sorted relative paths so distinct invocations survive.

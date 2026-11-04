@@ -1213,6 +1213,17 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
 
 
+def test_nested_release_owner_census_is_retained(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    for release in ("release0", "release1"):
+        directory = evidence / release
+        directory.mkdir(parents=True)
+        (directory / "runtime-owner-processes.json").write_text(release)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert (staged / "runtime-owner-processes.json").read_text() == "release0"
+
+
 def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
     from scripts import journey_version_jumps
 
