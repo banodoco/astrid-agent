@@ -16,7 +16,7 @@ from pathlib import Path
 
 UID = 503
 AGENT = '1f63ae926346118083417eaffb4e9bb7712e1d3f'
-RUNTIME = 'e9667efafd4d05ed93458b40b85b556bb3a1f425'
+RUNTIME = '22b3dc98244fe3cbe8ff65a7b40190758c44e799'
 
 
 def idle_port(port):
@@ -149,7 +149,7 @@ def main():
            'PYTEST_ADDOPTS': '--basetemp=' + str(scratch / 'pytest')}
     status = {'status': 'not-run', 'suite': suite, 'runner': 'hannah-mac', 'uid': UID,
               'agent_sha': AGENT, 'runtime_sha': RUNTIME, 'stages': {},
-              'pytest_command': 'python -m pytest -q tests/test_db_final_r1_rework.py -k backup', 'pytest_scope': 'targeted backup tests', 'macos_version': platform.mac_ver()[0], 'os_build': platform.platform(),
+              'pytest_command': 'python -m pytest -q tests/test_db_final_r1_rework.py -k backup tests/test_backup_pinned_sqlite.py', 'pytest_scope': 'targeted backup tests', 'macos_version': platform.mac_ver()[0], 'os_build': platform.platform(),
               'python_source': 'runner-owned Astral Python 3.11.18', 'node': 'runner-owned bundled Node' if node else 'unavailable'}
     try:
         for port in (17340, 5180, 42000):
@@ -186,7 +186,7 @@ def main():
         if result['exit'] != 0 or result['disk_threshold_crossed']: raise RuntimeError('Requested editable install failed')
         for port in (17340, 5180, 42000):
             if not idle_port(port): raise RuntimeError('Required shared port occupied or unverified: ' + str(port))
-        status['stages']['pytest'] = run_stage([str(py), '-m', 'pytest', '-q', 'tests/test_db_final_r1_rework.py', '-k', 'backup'], cwd, env, logs / 'pytest.log', task, home, pytest=True)
+        status['stages']['pytest'] = run_stage([str(py), '-m', 'pytest', '-q', 'tests/test_db_final_r1_rework.py', '-k', 'backup', 'tests/test_backup_pinned_sqlite.py'], cwd, env, logs / 'pytest.log', task, home, pytest=True)
         status['status'] = 'completed'
     except Exception as exc:
         allowed = ('Required shared port occupied or unverified:', 'Source checkout failed:', 'Source checkout SHA differs', 'Runner Python identity differs', 'Venv creation failed', 'Requested editable install failed', 'Insufficient disk before stage', 'Test launcher')
