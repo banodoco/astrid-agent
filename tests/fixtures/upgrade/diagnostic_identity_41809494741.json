@@ -1,0 +1,84 @@
+{
+  "classification": "diagnostic-only-not-a-reviewed-candidate",
+  "run_id": 41809494741,
+  "source_receipt": "journey-receipt-direct-linux-fresh-install/before-cleanup/verify-install.json",
+  "missing_candidate_inputs": [
+    "canonical installed manifest bytes",
+    "exact App manifest publishing commit",
+    "retained installed program tree with current and bin/runtime"
+  ],
+  "runtime_identity": {
+    "mode": "identity-aware",
+    "live": {
+      "managed_by": null,
+      "release": 1
+    },
+    "discovery": {
+      "managed_by": null,
+      "release": 1
+    },
+    "version": {
+      "managed_by": null,
+      "release": 1
+    },
+    "health_runtime_instance_id": "77b8062a4cbb4a5c9a26416def370536",
+    "discovery_runtime_instance_id": "77b8062a4cbb4a5c9a26416def370536",
+    "health_protocol": "workspace.v1",
+    "health_schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+    "health_runtime_epoch": 1,
+    "health_runtime_session_id": "033439ee44ce4d92be0b185ccad2cbe2",
+    "manifest_sha256": "9d9a51c5daf90156ba87a6efbf073c0bc374fe0f677a86bd712333124427a6d3",
+    "manifest_agent_sha": "30761f4a3916ce6e5822669dd5865f65a4e6654a",
+    "manifest_runtime_sha": "8965214df2bcaa74fbc0389ac314a60bfa506d5f",
+    "runtime_contract": {
+      "protocol": "workspace.v1",
+      "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+      "workspace_schema_version": 33
+    },
+    "version_record_fields": [
+      "env",
+      "identity",
+      "profile",
+      "python",
+      "root"
+    ],
+    "version_root": "/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/30761f4a-8965214d-70ad1cfe",
+    "version_python": "/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/30761f4a-8965214d-70ad1cfe/py/bin/python",
+    "version_profile": "/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/30761f4a-8965214d-70ad1cfe/profile.json",
+    "version_env_fields": [
+      "ASTRID_BUN_EXECUTABLE",
+      "ASTRID_CAPABILITY_MATRIX_PATH",
+      "ASTRID_FFMPEG_EXECUTABLE",
+      "ASTRID_FFPROBE_EXECUTABLE",
+      "ASTRID_HOST_EXECUTION_PROFILE",
+      "ASTRID_INSTALL_FFMPEG_SOURCE",
+      "ASTRID_INSTALL_FFMPEG_VERSION",
+      "ASTRID_INSTALL_FFPROBE_VERSION",
+      "ASTRID_INSTALL_MANAGED_BY",
+      "ASTRID_INSTALL_OMP_COMMIT",
+      "ASTRID_INSTALL_OMP_SOURCE",
+      "ASTRID_INSTALL_OMP_VERSION",
+      "ASTRID_INSTALL_RELEASE",
+      "ASTRID_INSTALL_UV",
+      "ASTRID_NODE_EXECUTABLE",
+      "ASTRID_REMOTION_PROJECT_DIR",
+      "ASTRID_RUNTIME_DATA_ROOT",
+      "ASTRID_RUNTIME_DOOR_PORT",
+      "ASTRID_SOURCE_PROVENANCE_ROOT",
+      "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
+      "BUN_INSTALL",
+      "BUN_INSTALL_BIN",
+      "PATH",
+      "PYTHONIOENCODING"
+    ],
+    "problems": [
+      "version directory provenance does not match reviewed schema",
+      "installed manifest content does not match reviewed schema",
+      "Runtime schema digest does not match reviewed schema",
+      "workspace schema version does not match reviewed schema",
+      "health schema digest does not match reviewed schema",
+      "manifest agent source does not match reviewed schema",
+      "manifest runtime source does not match reviewed schema"
+    ]
+  }
+}

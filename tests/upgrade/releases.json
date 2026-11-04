@@ -45,7 +45,7 @@
     "reason": "Initial review of workspace schema, upgrade journal, and version record formats.",
     "supported_runtime_schemas": [
       {
-        "id": "app-fcf33d8-release1-v31-version-identity",
+        "id": "r1-identity-aware-installed-tree",
         "mode": "identity-aware-version-record",
         "reviewed_source_refs": {
           "app_manifest": "fcf33d82234183d54dd537ad7752ec71b9e9f819",
@@ -59,7 +59,12 @@
         "protocol": "workspace.v1",
         "schema_digest": "sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194",
         "workspace_schema_version": 31,
-        "version_id_prefix": "e8d04151-d8704b7a-",
+        "installed_layout": {
+          "version_root": "versions/<current>",
+          "current_file": "current",
+          "launcher": "bin/runtime",
+          "launcher_target": "inside-selected-version"
+        },
         "version_record_keys": ["env", "identity", "profile", "python", "root"],
         "health_identity_emitted": true,
         "discovery_identity_emitted": true

@@ -170,19 +170,38 @@ def installed_runtime_contract(python, root, env, data_root):
     return value
 
 
-def _version_provenance_problems(version, manifest, version_path):
+def _version_provenance_problems(version, manifest, version_path, *, r1_layout=False):
     problems = []
     version_root = Path(version.get('root', '')).resolve()
     record_root = Path(version_path).resolve().parent
     if version_root != record_root:
         problems.append('version root does not match selected version record')
     program_root = Path(version_path).resolve().parent.parent.parent
+    versions_root = (program_root / 'versions').resolve()
+    if r1_layout:
+        try:
+            version_root.relative_to(versions_root)
+        except ValueError:
+            problems.append('version root is outside program versions directory')
     try:
         selected = (program_root / 'current').read_text(encoding='utf-8').strip()
     except OSError:
         selected = None
-    if selected != version_root.name:
+    if r1_layout and (not selected or selected in ('.', '..') or Path(selected).name != selected
+                      or (versions_root / selected).resolve() != version_root
+                      or selected != version_root.name):
         problems.append('current selection does not match version record')
+    elif not r1_layout and selected != version_root.name:
+        problems.append('current selection does not match version record')
+    if r1_layout:
+        launcher = program_root / 'bin' / 'runtime'
+        try:
+            launcher_target = launcher.resolve(strict=True)
+            launcher_target.relative_to(version_root)
+            if not launcher.is_file():
+                raise ValueError('launcher is not a file')
+        except (OSError, ValueError):
+            problems.append('fixed runtime launcher does not resolve inside selected version')
     profile = Path(version.get('profile', '')).absolute()
     python = Path(version.get('python', '')).absolute()
     if (not profile.is_relative_to(Path(version_root).absolute()) or not profile.is_file()
@@ -253,10 +272,11 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
     problems = []
     if not isinstance(schema, dict):
         return ['no unique reviewed Runtime schema declaration']
-    version_root = Path(version.get('root', '')).resolve()
-    version_id_prefix = schema.get('version_id_prefix')
-    if not isinstance(version_id_prefix, str) or not version_root.name.startswith(version_id_prefix):
-        problems.append('version directory provenance does not match reviewed schema')
+    if mode == 'identity-aware-version-record':
+        expected_layout = {'version_root': 'versions/<current>', 'current_file': 'current',
+                           'launcher': 'bin/runtime', 'launcher_target': 'inside-selected-version'}
+        if schema.get('installed_layout') != expected_layout:
+            problems.append('installed version layout does not match reviewed R1 contract')
     checks = {
         'schema mode': (schema.get('mode'), mode),
         'install manifest schema': (manifest.get('schema_version'), schema.get('install_manifest_schema_version')),
@@ -325,7 +345,7 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
         if (not expected_digest or health.get('schema_digest') != expected_digest
                 or runtime_contract.get('schema_digest') != expected_digest):
             problems.append('health/installed Runtime schema digest does not match manifest')
-        problems.extend(_version_provenance_problems(version, manifest, version_path))
+        problems.extend(_version_provenance_problems(version, manifest, version_path, r1_layout=True))
         instance = health.get('runtime_instance_id')
         discovered_instance = discovery.get('runtime_instance_id')
         if not isinstance(instance, str) or not instance.strip() or instance != discovered_instance:
