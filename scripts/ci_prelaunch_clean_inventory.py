@@ -143,7 +143,11 @@ def main():
         else:
             roots = child_roots(parent, pattern)
         for p in sorted(roots, key=lambda x: x.name): inventory[label + "/" + p.name] = measure(p)
-    result = {"schema": "prelaunch-clean-inventory/v1", "uid": UID, "runner": "hannah-mac",
+    children = {}
+    for label, parent in (("cache", home / ".astrid-mac-bundle-cache"), ("checkout", home / "actions-runner/_work/astrid-agent"), ("prelaunch_audits", home / ".astrid-prelaunch-clean-audits"), ("r1fix_audits", home / ".astrid-r1fix-clean-audits")):
+        if parent.is_dir() and not parent.is_symlink() and parent.stat().st_uid==UID:
+            children[label] = {p.name: measure(p) for p in sorted(parent.iterdir())}
+    result = {"children": children, "schema": "prelaunch-clean-inventory/v1", "uid": UID, "runner": "hannah-mac",
               "read_only": True, "paths": inventory, "task_processes": task_processes(),
               "notes": ["Sizes are logical bytes, deduplicated per path; symlinks, mount points and foreign-owned directories are not followed.",
                         "A truncated or inaccessible count is incomplete; process observations are a point-in-time sample."]}
