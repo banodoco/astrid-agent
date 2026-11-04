@@ -58,6 +58,18 @@ that bound record. File publication uses complete fsynced temporary files,
 exclusive linking and directory fsync; phase replacement is atomic and fsynced.
 An unrelated or changed file is never overwritten or removed.
 
+New journals also retain a random `publication_id` before publishing the fixed
+launcher or definition. Each exclusive publication, including the initial
+journal, reserves an exact sibling alias named from the final filename and
+that identity. If interruption leaves two links, recovery removes only that
+alias after checking the same device/inode, exactly two links, the current
+owner, publication permissions and exact expected bytes. This completes the
+publisher's cleanup before the usual private-file check and manager recovery.
+Recovery never searches a temporary-name prefix or removes an unknown link.
+An interruption after alias removal is replayable as a single-link file.
+Older journals with single-link files still recover; an older two-link state
+without retained publication identity remains uncertain and is refused.
+
 | Phase | Durable before | Allowed replay |
 | --- | --- | --- |
 | `registering` | Any R1 service/launcher write or manager mutation | Roll back a missing, partial or complete publication |

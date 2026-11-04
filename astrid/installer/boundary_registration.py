@@ -10,6 +10,7 @@ import json
 import os
 import plistlib
 import re
+import secrets
 import shlex
 import stat
 import subprocess
@@ -46,12 +47,47 @@ def _regular(path):
     return path
 
 
-def _publish(path, content, *, exclusive=True, mode=0o600):
+def _publication_alias(path, value):
+    token = value.get("publication_id")
+    if token is None:  # Older journals still require private, single-link files.
+        return None
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("Invalid R1 publication identity; recovery intent retained.")
+    return path.with_name(f".{path.name}.astrid-r1-{token}")
+
+
+def _finish_publication(path, value, content, *, mode=0o600):
+    """Unlink only the journal-bound publisher alias after an interrupted link.
+
+    A name/prefix or matching bytes alone is not ownership evidence. There must
+    be exactly two links to this inode, at the final name and the exact alias
+    reserved by this transaction, with the publisher's owner/mode and bytes.
+    """
+    info = path.lstat()
+    if stat.S_ISREG(info.st_mode) and info.st_nlink == 2:
+        alias = _publication_alias(path, value)
+        peer = alias.lstat() if alias is not None and os.path.lexists(alias) else None
+        if (peer is not None and stat.S_ISREG(peer.st_mode)
+                and (peer.st_dev, peer.st_ino, peer.st_nlink) == (info.st_dev, info.st_ino, 2)
+                and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == mode
+                and path.read_text(encoding="utf-8") == content):
+            alias.unlink()
+            r0_stop._sync_directory(path.parent)
+    return _regular(path)  # Unknown aliases, extra links and changed files refuse.
+
+
+def _publish(path, content, *, exclusive=True, mode=0o600, alias=None):
     """Publish complete bytes, including directory durability, never partial files."""
     path = absolute(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=".astrid-r1-", dir=path.parent)
-    temporary = Path(name)
+    if alias is None:
+        fd, name = tempfile.mkstemp(prefix=".astrid-r1-", dir=path.parent)
+        temporary = Path(name)
+    else:
+        temporary = absolute(alias)
+        if not exclusive or temporary.parent != path.parent:
+            raise ValueError("Publication alias must be an exclusive sibling.")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             os.fchmod(stream.fileno(), mode)
@@ -157,13 +193,17 @@ class BoundaryRegistration:
         return r0_stop._run(self.service, argv)
 
     def _save(self, value, *, first=False):
-        _publish(self.journal, json.dumps(value, sort_keys=True) + "\n", exclusive=first)
+        _publish(self.journal, json.dumps(value, sort_keys=True) + "\n", exclusive=first,
+                 alias=_publication_alias(self.journal, value) if first else None)
 
     def _check_files(self, value):
         expected = {self.launcher: _wrapper(), self.r1_path: self._definition(
             Path(value["r1_data_root"]), absolute(value["log"]))}
         for path, content in expected.items():
-            if os.path.lexists(path) and _regular(path).read_text(encoding="utf-8") != content:
+            if not os.path.lexists(path):
+                continue
+            mode = 0o755 if path == self.launcher else 0o600
+            if _finish_publication(path, value, content, mode=mode).read_text(encoding="utf-8") != content:
                 raise ValueError(f"R1 registration file changed; recovery intent retained: {path}")
         return expected
 
@@ -244,6 +284,7 @@ class BoundaryRegistration:
             if os.path.lexists(path):
                 raise FileExistsError(path)
         value = {"version": 1, "phase": "registering", "system": self.system,
+                 "publication_id": secrets.token_hex(16),
                  "program_root": str(self.root), "r0_data_root": str(data),
                  "r1_data_root": str(destination), "r0_realm": str(realm), "realm_id": realm_id,
                  "log": str(absolute(self.service.log)), "r0_intent": intent,
@@ -253,8 +294,10 @@ class BoundaryRegistration:
         if self.system == "darwin":
             # Disable before publishing a plist launchd could load at next login.
             self._run(["launchctl", "disable", f"gui/{self.uid}/{R1_MAC}"])
-        _publish(self.launcher, _wrapper(), mode=0o755)
-        _publish(self.r1_path, self._definition(destination, Path(value["log"])))
+        _publish(self.launcher, _wrapper(), mode=0o755,
+                 alias=_publication_alias(self.launcher, value))
+        _publish(self.r1_path, self._definition(destination, Path(value["log"])),
+                 alias=_publication_alias(self.r1_path, value))
         if self.system == "linux":
             self._run(["systemctl", "--user", "daemon-reload"])
             self._linux_state()
@@ -270,7 +313,12 @@ class BoundaryRegistration:
         """Disable owned R1, wait for its lock, remove owned files, restore R0."""
         if not os.path.lexists(self.journal):
             return False
-        value = read_json(_regular(self.journal))
+        # Parse a two-link journal provisionally: it binds its own alias. Full
+        # intent/alias validation below must precede every recovery mutation.
+        info = self.journal.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink not in {1, 2}:
+            _regular(self.journal)
+        value = read_json(self.journal)
         if (value.get("version") != 1 or value.get("system") != self.system
                 or value.get("program_root") != str(self.root)
                 or value.get("phase") not in {"registering", "disabled", "restoring_r0"}):
@@ -290,6 +338,8 @@ class BoundaryRegistration:
         for path in (self.journal, self.root, self.launcher, self.r1_path, absolute(value["log"])):
             if not separate_roots(data, path) or not separate_roots(destination, path):
                 raise ValueError("R1 recovery files overlap retained data.")
+        _publication_alias(self.journal, value)  # Validate even a single-link journal.
+        _finish_publication(self.journal, value, json.dumps(value, sort_keys=True) + "\n")
         expected = self._check_files(value)  # No mutation of a changed definition.
         if self.system == "linux":
             self._run(["systemctl", "--user", "daemon-reload"])

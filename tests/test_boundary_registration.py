@@ -19,6 +19,7 @@ from astrid.installer import boundary_registration as registration
 from astrid.installer import r0_stop
 from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, Version, read_json, write_json
+from astrid.installer.service import installer_lock_path
 from tests.test_installer_r0_entry import invoke, public_case, state
 from tests.test_installer_r0_stop import snapshot
 
@@ -143,6 +144,155 @@ def test_interrupted_publication_is_recovered_by_real_cli(case, monkeypatch, pub
     assert result.returncode == 1 and "Recovered the interrupted R1 registration" in result.stdout
     assert state(manager)["enabled"] and not tx.journal.exists()
     assert (snapshot(data), snapshot(destination)) == before
+
+
+def kill_after_publication_link(case, publication):
+    backend, *_ = case
+    tx = registration.BoundaryRegistration(backend.service)
+    target = {"journal": tx.journal, "launcher": tx.launcher, "definition": tx.r1_path}[publication]
+    child = os.fork()
+    if child == 0:
+        link = registration.os.link
+        def interrupt(source, destination, **options):
+            link(source, destination, **options)
+            if destination == target:
+                os.kill(os.getpid(), signal.SIGKILL)
+        registration.os.link = interrupt
+        try:
+            prepare(case)
+        finally:
+            os._exit(99)
+    _, status = os.waitpid(child, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+    assert target.lstat().st_nlink == 2
+    alias = registration._publication_alias(target, read_json(tx.journal))
+    assert alias.samefile(target)
+    return tx, target, alias
+
+
+@pytest.mark.parametrize("publication", ["journal", "launcher", "definition"])
+@pytest.mark.parametrize("interrupt_cleanup", [False, True])
+def test_sigkill_after_link_publication_recovers_on_public_retries(case, publication, interrupt_cleanup):
+    backend, _, data, _, destination, manager = case
+    before = snapshot(data), snapshot(destination), backend.service.path.read_bytes()
+    tx, target, alias = kill_after_publication_link(case, publication)
+    assert not state(manager)["enabled"] and not state(manager)["running"]
+    if interrupt_cleanup:
+        child = os.fork()
+        if child == 0:
+            unlink = Path.unlink
+            def interrupt(path, *args, **options):
+                unlink(path, *args, **options)
+                if path == alias:
+                    os.kill(os.getpid(), signal.SIGKILL)
+            Path.unlink = interrupt
+            try:
+                backend.recover_r1_registration()
+            finally:
+                os._exit(99)
+        _, status = os.waitpid(child, 0)
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+        assert target.lstat().st_nlink == 1 and not alias.exists()
+        assert not state(manager)["enabled"] and tx.journal.exists()
+    state(manager, calls=[])
+    for attempt in range(2):
+        result = invoke(backend.root)
+        assert result.returncode == 1, result.stdout + result.stderr
+        if attempt == 0:
+            assert "Recovered the interrupted R1 registration" in result.stdout
+            calls = state(manager)["calls"]
+            if publication == "definition":
+                assert calls.index(["--user", "disable", "--now", registration.R1_LINUX]) < calls.index(
+                    ["--user", "enable", "--now", registration.R0_LINUX])
+        assert state(manager)["enabled"] and state(manager)["running"]
+        assert state(manager)["r1"] == "absent" and not state(manager).get("r1_enabled")
+        assert not any(path.exists() for path in (tx.journal, tx.launcher, tx.r1_path, alias,
+                                                 r0_stop._marker_path(backend.service)))
+        assert (snapshot(data), snapshot(destination), backend.service.path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("publication", ["journal", "launcher", "definition"])
+@pytest.mark.parametrize("problem", ["foreign-alias", "extra-link", "different-inode", "symlink-alias",
+                                    "changed-bytes", "changed-mode", "missing-identity", "invalid-identity"])
+def test_interrupted_publication_refuses_unproven_aliases_without_mutation(case, publication, problem):
+    backend, _, data, _, destination, manager = case
+    tx, target, alias = kill_after_publication_link(case, publication)
+    foreign = alias.with_name(".astrid-r1-foreign-link")
+    if problem == "foreign-alias":
+        alias.rename(foreign)  # Even the old publisher prefix is not authority.
+    elif problem == "extra-link":
+        os.link(target, foreign)
+    elif problem == "different-inode":
+        content = alias.read_bytes()
+        alias.unlink()
+        alias.write_bytes(content)
+        os.link(target, foreign)
+    elif problem == "symlink-alias":
+        alias.rename(foreign)
+        alias.symlink_to(target)
+    elif problem == "changed-bytes":
+        if publication == "journal":
+            value = read_json(target)
+            value["program_root"] = str(backend.root / "foreign")
+            target.write_text(json.dumps(value, sort_keys=True) + "\n")
+        else:
+            target.write_text("foreign content\n")
+    elif problem == "changed-mode":
+        target.chmod(0o644)
+    else:
+        value = read_json(tx.journal)
+        if problem == "missing-identity":
+            del value["publication_id"]
+        else:
+            value["publication_id"] = "../foreign"
+        tx.journal.write_text(json.dumps(value, sort_keys=True) + "\n")
+    # Provision the ordinary CLI lock before recording the installer-state
+    # manifest, so its first creation is not mistaken for recovery mutation.
+    lock = installer_lock_path(backend.service.home, backend.service.system)
+    platform.private_directory(lock.parent)
+    lock.touch()
+    state(manager, calls=[])
+    before = snapshot(data), snapshot(destination), snapshot(backend.root), snapshot(tx.journal.parent), snapshot(tx.r1_path.parent)
+    links = {path: path.lstat().st_nlink for path in (target, alias, foreign) if os.path.lexists(path)}
+    for _ in range(2):
+        result = invoke(backend.root)
+        assert result.returncode == 1 and "Recovered the interrupted R1 registration" not in result.stdout
+        assert not state(manager)["enabled"] and not state(manager)["running"]
+        assert not state(manager)["calls"]
+        assert tx.journal.exists() and r0_stop._marker_path(backend.service).exists()
+        assert (snapshot(data), snapshot(destination), snapshot(backend.root), snapshot(tx.journal.parent), snapshot(tx.r1_path.parent)) == before
+        assert {path: path.lstat().st_nlink for path in links} == links
+
+
+@pytest.mark.parametrize("publication", ["journal", "launcher", "definition"])
+def test_completed_registration_refuses_foreign_hard_links(case, publication):
+    backend, _, data, _, destination, manager = case
+    prepare(case)
+    tx = registration.BoundaryRegistration(backend.service)
+    target = {"journal": tx.journal, "launcher": tx.launcher, "definition": tx.r1_path}[publication]
+    foreign = backend.root / "foreign-link"
+    os.link(target, foreign)
+    state(manager, r1="active", r1_enabled=True, calls=[])
+    before = snapshot(data), snapshot(destination), snapshot(backend.root), tx.journal.read_bytes()
+    for _ in range(2):
+        result = invoke(backend.root)
+        assert result.returncode == 1 and "Expected a private regular file" in result.stdout
+        assert target.samefile(foreign) and target.stat().st_nlink == 2
+        assert not state(manager)["enabled"] and state(manager)["r1"] == "active"
+        assert not state(manager)["calls"] and r0_stop._marker_path(backend.service).exists()
+        assert (snapshot(data), snapshot(destination), snapshot(backend.root), tx.journal.read_bytes()) == before
+
+
+def test_old_single_link_journal_still_recovers(case):
+    backend, *_rest, manager = case
+    prepare(case)
+    tx = registration.BoundaryRegistration(backend.service)
+    value = read_json(tx.journal)
+    del value["publication_id"]
+    tx.journal.write_text(json.dumps(value, sort_keys=True) + "\n")
+    result = invoke(backend.root)
+    assert "Recovered the interrupted R1 registration" in result.stdout
+    assert state(manager)["enabled"] and not tx.journal.exists()
 
 
 def test_sigkill_inside_manager_reload_then_cli_replay(case):

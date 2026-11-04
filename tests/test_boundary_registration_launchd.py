@@ -1,5 +1,7 @@
 """launchd registration/rollback using the captured real R0 plist and a manager fake."""
+import os
 import plistlib
+import signal
 import subprocess
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import pytest
 
 from astrid.installer import boundary_registration as registration
 from astrid.installer import r0_stop
-from astrid.installer.core import Version, write_json
+from astrid.installer.core import Version, read_json, write_json
 from tests.test_installer_r0_entry import catalog
 from tests.test_installer_r0_stop import setup_case, snapshot
 
@@ -118,3 +120,36 @@ def test_launchd_changed_r0_does_not_prevent_r1_stop(mac_case):
     with pytest.raises(ValueError, match="safely restore R0"):
         tx.recover()
     assert not manager.r1_loaded and not manager.enabled and tx.journal.exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX SIGKILL publication cut")
+@pytest.mark.parametrize("publication", ["journal", "launcher", "definition"])
+def test_launchd_sigkill_after_publication_link_replays(mac_case, publication):
+    manager, tx, version, realm, destination = mac_case
+    before = snapshot(realm.parent), snapshot(destination), manager.path.read_bytes()
+    target = {"journal": tx.journal, "launcher": tx.launcher, "definition": tx.r1_path}[publication]
+    child = os.fork()
+    if child == 0:
+        link = registration.os.link
+        def interrupt(source, dest, **options):
+            link(source, dest, **options)
+            if dest == target:
+                os.kill(os.getpid(), signal.SIGKILL)
+        registration.os.link = interrupt
+        try:
+            tx.prepare(version, realm.parent, "r0", realm)
+        finally:
+            os._exit(99)
+    _, status = os.waitpid(child, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+    assert target.lstat().st_nlink == 2
+    alias = registration._publication_alias(target, read_json(tx.journal))
+    manager.calls.clear()
+    assert tx.recover() and not tx.recover()
+    assert manager.enabled and manager.loaded and not manager.r1_loaded
+    assert not any(path.exists() for path in (tx.journal, tx.launcher, tx.r1_path, alias,
+                                             r0_stop._marker_path(manager)))
+    if publication == "definition":
+        assert manager.calls.index(["launchctl", "disable", "gui/501/haus.astrid.runtime.r1"]) < manager.calls.index(
+            ["launchctl", "enable", "gui/501/haus.astrid.runtime"])
+    assert (snapshot(realm.parent), snapshot(destination), manager.path.read_bytes()) == before
