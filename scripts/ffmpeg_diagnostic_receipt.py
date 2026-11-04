@@ -94,7 +94,11 @@ def capture(journey, gate, args, root, data, state, evidence):
                 raise ValueError(f"{name} executable path is unavailable")
             path = Path(executable)
             expected = version_root / "tools" / "ffmpeg"
-            if not path.is_relative_to(expected) or not path.resolve(strict=True).is_relative_to(expected.resolve(strict=True)) or not path.is_file() or not os.access(path, os.X_OK):
+            resolved_expected = expected.resolve(strict=True)
+            if (not path.is_relative_to(expected)
+                    or not resolved_expected.is_relative_to(version_root)
+                    or not path.resolve(strict=True).is_relative_to(resolved_expected)
+                    or not path.is_file() or not os.access(path, os.X_OK)):
                 raise ValueError(f"{name} executable is not within the selected version's tools/ffmpeg")
         receipt.update(status="observed-download", reason=None)
     except Exception as exc:

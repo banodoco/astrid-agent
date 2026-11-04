@@ -79,6 +79,71 @@ def test_installed_doctor_is_invoked_and_bound_to_candidate(installed, monkeypat
     assert result["bootstrap_log"]["sha256"] == hashlib.sha256(i.log.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("component", ["tools", "ffmpeg"])
+def test_tool_directory_symlink_outside_version_is_inconclusive(installed, tmp_path, component):
+    i = installed
+    tools = i.version / "tools"
+    ffmpeg_dir = tools / "ffmpeg"
+    external = tmp_path / "external"
+    if component == "tools":
+        tools.rename(external)
+        tools.symlink_to(external, target_is_directory=True)
+    else:
+        ffmpeg_dir.rename(external)
+        ffmpeg_dir.symlink_to(external, target_is_directory=True)
+    with pytest.raises(RuntimeError):
+        capture(i)
+    result = json.loads((i.evidence / receipt.RECEIPT).read_text())
+    assert result["status"] == "inconclusive"
+    assert result["reason"]
+
+
+@pytest.mark.parametrize("name", ["ffmpeg", "ffprobe"])
+@pytest.mark.parametrize("problem", ["outside", "dangling", "loop"])
+def test_executable_symlink_errors_are_inconclusive(installed, tmp_path, name, problem):
+    i = installed
+    binary = Path(i.selected[name]["executable"])
+    binary.unlink()
+    target = tmp_path / "external"
+    if problem == "outside":
+        target.write_text("x")
+        target.chmod(0o755)
+    elif problem == "loop":
+        target = binary
+    binary.symlink_to(target)
+    with pytest.raises(RuntimeError):
+        capture(i)
+    result = json.loads((i.evidence / receipt.RECEIPT).read_text())
+    assert result["status"] == "inconclusive" and result["reason"]
+
+
+def test_tool_directory_symlink_within_version_is_accepted(installed):
+    i = installed
+    tools = i.version / "tools"
+    ffmpeg_dir = tools / "ffmpeg"
+    internal = i.version / "downloaded-ffmpeg"
+    ffmpeg_dir.rename(internal)
+    ffmpeg_dir.symlink_to(internal, target_is_directory=True)
+    assert capture(i)["status"] == "observed-download"
+
+
+def test_resolution_error_is_inconclusive(installed, monkeypatch):
+    i = installed
+    expected = i.version / "tools/ffmpeg"
+    resolve = Path.resolve
+
+    def fail_resolve(path, *args, **kwargs):
+        if path == expected:
+            raise OSError("cannot resolve tools directory")
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(RuntimeError, match="cannot resolve tools directory"):
+        capture(i)
+    result = json.loads((i.evidence / receipt.RECEIPT).read_text())
+    assert result["status"] == "inconclusive" and "cannot resolve" in result["reason"]
+
+
 @pytest.mark.parametrize("problem", ["path", "outside", "symlink", "missing", "module", "manifest", "bootstrap", "no-log"])
 def test_unavailable_or_wrong_selection_never_counts_as_download(installed, problem, tmp_path):
     i = installed
