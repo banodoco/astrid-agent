@@ -14,7 +14,7 @@ from pathlib import Path
 UID = 503
 
 
-def measure(path, max_entries=200000, max_seconds=12):
+def measure(path, max_entries=1000000, max_seconds=120):
     result = {"present": False, "owner_uid": None, "kind": None, "bytes": 0,
               "files": 0, "directories": 0, "symlinks": 0, "foreign_entries": 0,
               "inaccessible": 0, "mounts_skipped": 0, "truncated": False}
@@ -122,8 +122,13 @@ def main():
              "runner_tool_python_31118": home / "actions-runner/_work/_tool/Python/3.11.18",
              "runner_prereqs": home / ".astrid-runner-prereqs-v1",
              "runner_restart_helpers": home / ".astrid-runner-restart",
-             "smoke_bundle_cache": home / ".astrid-mac-bundle-cache"}
-    groups = (("r18", home / ".astrid-r18", r"[0-9]+-[0-9]+"),
+             "smoke_bundle_cache": home / ".astrid-mac-bundle-cache",
+             "r1fix_tasks": home / ".astrid-r1fix-stopped",
+             "r1fix_audits": home / ".astrid-r1fix-clean-audits",
+             "prelaunch_audits": home / ".astrid-prelaunch-clean-audits",
+             "stop_audits": home / ".astrid-prelaunch-stop-audits"}
+    groups = (("r1fix", home / ".astrid-r1fix-stopped", r"task\.[A-Za-z0-9_]+"),
+              ("r18", home / ".astrid-r18", r"[0-9]+-[0-9]+"),
               ("r25", home / "r25-option-b-runs", r"run\.[A-Za-z0-9]+"),
               ("r0_capture", Path("/private/tmp"), r"astrid-r0-capture-src\.[A-Za-z0-9_]+"))
     inventory = {label: measure(path) for label, path in fixed.items()}
