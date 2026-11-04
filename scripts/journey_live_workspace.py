@@ -158,23 +158,33 @@ SELECTION_FIELDS = ("endpoint", "realm_root", "active_realm", "runtime_instance_
 
 def selection_for(data, root, discovery):
     data, root = Path(data), Path(root)
+    marker_path = root / "install.json"
+    if marker_path.is_symlink():
+        raise ValueError("Live workspace install marker cannot be a symlink")
+    if marker_path.is_file():
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        recorded_data = Path(marker["data_root"])
+        active_data = Path(marker.get("r1_data_root", marker["data_root"]))
+    else:
+        recorded_data = active_data = data
     if (not data.is_absolute() or data != data.resolve(strict=True)
             or not root.is_absolute() or root != root.resolve(strict=True)
-            or root != data.parent / "program" or data != data.parent / "data"):
+            or not recorded_data.is_absolute() or recorded_data != recorded_data.resolve(strict=True)
+            or data != active_data or root != recorded_data.parent / "program"):
         raise ValueError("Live workspace requires the owned program and data roots")
-    owner_path = data.parent / "tst-b1-owner.json"
+    owner_path = recorded_data.parent / "tst-b1-owner.json"
     if owner_path.is_symlink():
         raise ValueError("Live workspace ownership record cannot be a symlink")
     owner = json.loads(owner_path.read_text(encoding="utf-8"))
     if (owner.get("schema_version") != 1
             or not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", "")))
-            or owner.get("root") != str(root) or owner.get("data_root") != str(data)):
+            or owner.get("root") != str(root) or owner.get("data_root") != str(recorded_data)):
         raise ValueError("Live workspace ownership record does not match the run")
     selection = {field: discovery.get(field) for field in SELECTION_FIELDS}
     if any(not selection[field] for field in SELECTION_FIELDS):
         raise ValueError("Runtime discovery lacks selected owner identity")
     realm = Path(selection["realm_root"])
-    if not realm.is_absolute() or not realm.is_dir() or realm != realm.resolve() or not realm.is_relative_to(data.parent):
+    if not realm.is_absolute() or not realm.is_dir() or realm != realm.resolve() or not realm.is_relative_to(data):
         raise ValueError("Selected workspace is missing or outside the owned run")
     credential = Path(selection["credential_file"])
     if (not credential.is_absolute() or credential.is_symlink()
