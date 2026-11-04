@@ -712,6 +712,7 @@ jobs:
             'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
+            'sdk-invocation.json',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
