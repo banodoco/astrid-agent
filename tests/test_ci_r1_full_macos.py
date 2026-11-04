@@ -54,5 +54,5 @@ def test_requested_install_commands_are_exact_and_test_scope_unfiltered():
     source = Path(full.__file__).read_text()
     assert "'install', '-e', '.[dev]'" in source
     assert "'install', '-e', '../astrid-agent', '-e', '.[test]'" in source
-    assert "[str(py), '-m', 'pytest', '-q', 'tests/test_db_final_r1_rework.py', '-k', 'backup', 'tests/test_backup_pinned_sqlite.py']" in source
+    assert "[str(py), '-m', 'pytest', '-q', 'tests/test_backup_pinned_sqlite.py', 'tests/test_db_final_r1_rework.py', '-k', 'backup']" in source
     assert '--basetemp=' in source and 'PYTEST_ADDOPTS' in source
