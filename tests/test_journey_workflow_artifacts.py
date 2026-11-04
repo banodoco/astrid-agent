@@ -44,6 +44,7 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert "release0-bootstrap.log" in staged_names
     assert "live-seed-failure.json" in staged_names
     assert "live-snapshot-failure.json" in staged_names
+    assert "windows-schema-acl.json" in staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
     assert {"runtime-owner-selection.json", "runtime-owner-selection-context.json"} <= collector_names
