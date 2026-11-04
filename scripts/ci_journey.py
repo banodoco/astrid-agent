@@ -699,10 +699,8 @@ def capture_windows_schema_acl(evidence: Path, run_root: Path) -> None:
         for schema in schemas:
             for path in (schema, *schema.parents):
                 stream.write(f"\n--- {path} ---\n")
-                env = os.environ.copy()
-                env["ASTRID_ACL_DIAGNOSTIC_PARENT"] = str(path.parent)
                 # Listing the parent gives the owner of this entry, including directories.
-                capture(["cmd.exe", "/d", "/c", 'dir /q /a "%ASTRID_ACL_DIAGNOSTIC_PARENT%"'], env)
+                capture(["cmd.exe", "/d", "/c", "dir", "/q", "/a", str(path.parent)])
                 capture(["icacls", str(path)])
                 saved_acl = evidence / "schema-acl-saved.txt"
                 capture(["icacls", str(path), "/save", str(saved_acl)])
