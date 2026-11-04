@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import time
 SCHEMA = Path('astrid/core/timeline/schema/timeline-config.schema.json')
 MAX_MATCHES = 32
 MAX_CACHE_DIRECTORIES = 10000
+MAX_CACHE_ENTRIES = 100000
 MAX_OBSERVED_PATHS = 256
 OBSERVATION_SECONDS = 90
 
@@ -95,26 +97,64 @@ def is_reparse(path: Path):
         return True
 
 
-def cache_schemas(root: Path):
+def cache_schemas(root: Path, deadline: float):
+    """Scan incrementally; a blocked filesystem call cannot be preempted."""
     matches, errors = [], []
-    if not root.is_dir():
-        return matches, ['cache root not present']
-    if is_reparse(root):
-        return matches, ['cache root is a reparse point; traversal skipped']
-    def onerror(error):
-        errors.append(f'{type(error).__name__}: {error}')
-    # Never follow directory links out of the cache or around a cycle.
-    for index, (directory, dirs, files) in enumerate(os.walk(root, followlinks=False, onerror=onerror)):
-        if index >= MAX_CACHE_DIRECTORIES:
-            errors.append(f'directory limit reached ({MAX_CACHE_DIRECTORIES}); results may be incomplete')
-            break
-        dirs[:] = sorted(d for d in dirs if not is_reparse(Path(directory) / d))
-        if SCHEMA.name in files and not is_reparse(Path(directory) / SCHEMA.name):
-            matches.append(Path(directory) / SCHEMA.name)
-            if len(matches) >= MAX_MATCHES:
-                errors.append(f'match limit reached ({MAX_MATCHES}); results may be incomplete')
-                break
-    return matches, errors
+    if time.monotonic() >= deadline:
+        return matches, errors, 'cache scan observation time limit reached'
+    try:
+        root_stat = root.lstat()
+    except FileNotFoundError:
+        return matches, ['cache root not present'], None
+    except OSError as exc:
+        return matches, [f'{type(exc).__name__}: errno={exc.errno} at {root}'], None
+    if stat.S_ISLNK(root_stat.st_mode) or getattr(root_stat, 'st_file_attributes', 0) & 0x400:
+        return matches, ['cache root is a reparse point; traversal skipped'], None
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return matches, ['cache root not present'], None
+
+    pending = [root]
+    directories = entries = 0
+    while pending:
+        if time.monotonic() >= deadline:
+            return matches, errors, 'cache scan observation time limit reached'
+        if directories >= MAX_CACHE_DIRECTORIES:
+            return matches, errors, f'cache scan directory limit reached ({MAX_CACHE_DIRECTORIES})'
+        directory = pending.pop()
+        directories += 1
+        children = []
+        try:
+            with os.scandir(directory) as iterator:
+                while True:
+                    if time.monotonic() >= deadline:
+                        return matches, errors, 'cache scan observation time limit reached'
+                    if entries >= MAX_CACHE_ENTRIES:
+                        return matches, errors, f'cache scan entry limit reached ({MAX_CACHE_ENTRIES})'
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        break
+                    entries += 1
+                    if time.monotonic() >= deadline:
+                        return matches, errors, 'cache scan observation time limit reached'
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        errors.append(f'{type(exc).__name__}: errno={exc.errno} at {directory / entry.name}')
+                        continue
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                        continue
+                    if stat.S_ISDIR(info.st_mode):
+                        children.append(directory / entry.name)
+                    elif entry.name == SCHEMA.name:
+                        matches.append(directory / entry.name)
+                        if len(matches) >= MAX_MATCHES:
+                            return matches, errors, f'cache scan match limit reached ({MAX_MATCHES})'
+        except OSError as exc:
+            errors.append(f'{type(exc).__name__}: errno={exc.errno} at {directory}')
+        # Keep the prior sorted depth-first directory order without following links.
+        pending.extend(sorted(children, reverse=True))
+    return matches, errors, None
 
 
 def native_observation(path: Path):
@@ -227,15 +267,19 @@ def collect(root: Path, phase: str):
         groups.extend([('staged', version / 'a' / SCHEMA, version),
                        ('installed', version / 'py' / 'Lib' / 'site-packages' / SCHEMA, version)])
     if cache:
-        matches, errors = cache_schemas(cache)
+        matches, errors, truncated = cache_schemas(cache, deadline)
         result['uv'].update(root='<uv-cache>', matches=len(matches), scan_errors=[sanitize(e) for e in errors])
+        if truncated:
+            result['uv']['scan_truncated'] = truncated
+            result['truncated'] = truncated
         groups.append(('cache-root', cache, cache))
         groups.extend(('cache', p, cache) for p in matches)
     seen = set()
     for kind, leaf, boundary in groups:
         for path in ancestors(leaf, boundary):
             if len(result['paths']) >= MAX_OBSERVED_PATHS or time.monotonic() >= deadline:
-                result['truncated'] = 'path count or observation time limit reached'
+                result['paths_truncated'] = 'path count or observation time limit reached'
+                result.setdefault('truncated', result['paths_truncated'])
                 return result
             key = (kind, str(path))
             if key in seen:

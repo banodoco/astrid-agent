@@ -145,8 +145,89 @@ def test_missing_cache_and_reparse_are_reported_without_following(tmp_path):
     external.mkdir()
     (external / observer.SCHEMA.name).write_text('{}')
     (cache / 'link').symlink_to(external, target_is_directory=True)
-    assert observer.cache_schemas(cache) == ([], [])
-    assert observer.cache_schemas(tmp_path / 'absent')[1] == ['cache root not present']
+    assert observer.cache_schemas(cache, float('inf')) == ([], [], None)
+    assert observer.cache_schemas(tmp_path / 'absent', float('inf'))[1] == ['cache root not present']
+
+
+def test_cache_scan_checks_deadline_during_directory_iteration(tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    for name in ('first', 'second', 'third'):
+        (cache / name).touch()
+    real_scandir = os.scandir
+    clock = [0]
+    reads = []
+
+    class SlowIterator:
+        def __init__(self, path):
+            self.iterator = real_scandir(path)
+        def __enter__(self):
+            self.iterator.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.iterator.__exit__(*args)
+        def __next__(self):
+            entry = next(self.iterator)
+            reads.append(entry.name)
+            clock[0] += 1
+            return entry
+
+    monkeypatch.setattr(observer.os, 'scandir', SlowIterator)
+    monkeypatch.setattr(observer.time, 'monotonic', lambda: clock[0])
+    matches, errors, truncated = observer.cache_schemas(cache, 2)
+    assert (matches, errors) == ([], [])
+    assert truncated == 'cache scan observation time limit reached'
+    assert len(reads) == 2
+
+
+def test_cache_entry_directory_and_match_limits_are_explicit(tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'
+    for name in ('a', 'b'):
+        directory = cache / name
+        directory.mkdir(parents=True)
+        (directory / observer.SCHEMA.name).touch()
+    monkeypatch.setattr(observer, 'MAX_CACHE_ENTRIES', 1)
+    assert 'entry limit' in observer.cache_schemas(cache, float('inf'))[2]
+    monkeypatch.setattr(observer, 'MAX_CACHE_ENTRIES', 100)
+    monkeypatch.setattr(observer, 'MAX_CACHE_DIRECTORIES', 1)
+    assert 'directory limit' in observer.cache_schemas(cache, float('inf'))[2]
+    monkeypatch.setattr(observer, 'MAX_CACHE_DIRECTORIES', 100)
+    monkeypatch.setattr(observer, 'MAX_MATCHES', 1)
+    matches, errors, truncated = observer.cache_schemas(cache, float('inf'))
+    assert matches == [cache / 'a' / observer.SCHEMA.name]
+    assert not errors and 'match limit' in truncated
+
+
+def test_collect_reports_sanitized_scan_error_and_truncation(tmp_path, monkeypatch):
+    cache = tmp_path / 'private-cache'
+    (cache / 'a-denied').mkdir(parents=True)
+    (cache / 'b-other').mkdir()
+    real_scandir = os.scandir
+    def scandir(path):
+        if Path(path).name == 'a-denied':
+            raise PermissionError(13, 'sensitive text', str(path))
+        return real_scandir(path)
+    monkeypatch.setattr(observer.os, 'scandir', scandir)
+    monkeypatch.setattr(observer, 'MAX_CACHE_DIRECTORIES', 2)
+    monkeypatch.setattr(observer, 'MAX_OBSERVED_PATHS', 0)
+    monkeypatch.setattr(observer.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=str(cache), stderr=''))
+    monkeypatch.setattr(observer, 'native_observation', lambda path: {})
+    result = observer.collect(tmp_path / 'program', 'before-install')
+    assert [error.replace('\\', '/') for error in result['uv']['scan_errors']] == [
+        'PermissionError: errno=13 at <uv-cache>/a-denied']
+    assert 'directory limit' in result['uv']['scan_truncated']
+    assert result['truncated'] == result['uv']['scan_truncated']
+    assert result['paths_truncated'] == 'path count or observation time limit reached'
+    assert str(tmp_path) not in json.dumps(result)
+    assert 'sensitive text' not in json.dumps(result)
+
+
+def test_expired_cache_scan_does_not_touch_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(observer.time, 'monotonic', lambda: 10)
+    monkeypatch.setattr(Path, 'lstat', lambda self: pytest.fail('expired scan touched filesystem'))
+    assert observer.cache_schemas(tmp_path, 10) == (
+        [], [], 'cache scan observation time limit reached')
 
 
 def test_bootstrap_uv_and_unavailable_cache_are_explicit(tmp_path, monkeypatch):
