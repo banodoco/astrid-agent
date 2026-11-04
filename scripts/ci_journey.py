@@ -1439,7 +1439,8 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
                                   "--data-root", str(data)], evidence,
                       "final-uninstall.log", timeout=1800)
     except RuntimeError as exc:
-        if not re.search(r"final-uninstall\.log: exit [1-9][0-9]*; see ", str(exc)):
+        refused = re.search(r"final-uninstall\.log: exit ([1-9][0-9]*); see ", str(exc))
+        if not refused:
             raise RuntimeError("Release-1 uninstall did not exit with a refusal") from exc
     else:
         raise RuntimeError("Release-1 uninstall unexpectedly succeeded")
@@ -1462,7 +1463,7 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
     if not isinstance(r1_data, str) or not Path(r1_data).is_dir() or not data.is_dir():
         raise RuntimeError("Release-1 uninstall refusal did not retain both data folders")
     service = assert_direct_service_ownership(root, data, release=1)
-    return {"exit_code": 1, "message": UPGRADE_UNINSTALL_REFUSAL,
+    return {"exit_code": int(refused.group(1)), "message": UPGRADE_UNINSTALL_REFUSAL,
             "r0_data_root": str(data), "r1_data_root": r1_data,
             "service_manager": service}
 
@@ -2002,12 +2003,16 @@ def execute(args: argparse.Namespace) -> dict:
                             expected_upgrade_refusal = False
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
+                                is_linux_macos_upgrade = (
+                                    args.leg == "release0-to-release1" and sys.platform in {"linux", "darwin"}
+                                )
+                                release = None
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                     assert_direct_service_ownership(root, data, release=release)
-                                release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
-                                if (args.leg == "release0-to-release1" and sys.platform in {"linux", "darwin"}
-                                        and release == 1):
+                                elif is_linux_macos_upgrade:
+                                    release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
+                                if is_linux_macos_upgrade and release == 1:
                                     refusal = assert_release1_upgrade_uninstall_refusal(installed, root, data, evidence)
                                     expected_upgrade_refusal = True
                                     if result_path.is_file():

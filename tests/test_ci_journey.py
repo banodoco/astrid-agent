@@ -526,6 +526,8 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
     version_root.mkdir(parents=True)
     data.mkdir()
     r1_data.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
     (root / "current").write_text("v1\n")
     journey.write_json(root / "install.json", {"data_root": str(data), "r1_data_root": str(r1_data)})
     journey.write_json(version_root / "manifest.json", {"release": 1})
@@ -539,12 +541,13 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
 
     monkeypatch.setattr(journey, "installed_cli", refuse)
     if accepted:
-        result = journey.assert_release1_upgrade_uninstall_refusal(version, root, data, tmp_path / "evidence")
+        result = journey.assert_release1_upgrade_uninstall_refusal(version, root, data, evidence)
+        assert result["exit_code"] == 1
         assert result["message"] == journey.UPGRADE_UNINSTALL_REFUSAL
         assert result["r1_data_root"] == str(r1_data)
     else:
         with pytest.raises(RuntimeError, match="required upgrade refusal"):
-            journey.assert_release1_upgrade_uninstall_refusal(version, root, data, tmp_path / "evidence")
+            journey.assert_release1_upgrade_uninstall_refusal(version, root, data, evidence)
     assert (root / "current").read_text() == "v1\n"
     assert data.is_dir() and r1_data.is_dir()
 
@@ -1219,12 +1222,16 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
-    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": sys.executable}))
+    version_root = root / "versions" / "v0"
+    monkeypatch.setattr(journey, "installation", lambda *unused: (
+        version_root / "version.json", data, {"root": str(version_root), "python": sys.executable}))
     monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
     evidence = run_root / "evidence" / args.leg
     payload = {"project": "seed ü", "generation": "before", "task_id": None}
     def run_owned(*unused):
         root.mkdir()
+        version_root.mkdir(parents=True)
+        journey.write_json(version_root / "manifest.json", {"release": 0})
         (root / "current").write_text("v0")
         journey.write_json(evidence / "journey-result.json", {"status": "pass"})
         result = journey_version_jumps.workspace(
@@ -1440,10 +1447,12 @@ def test_windows_fresh_bootstrap_capture_precedes_snapshot_and_cleanup(tmp_path,
     monkeypatch.setattr(journey, 'runner_identity', lambda: {})
     monkeypatch.setattr(journey, 'assert_runner_identity', lambda *_: None)
     monkeypatch.setattr(journey, 'assert_host_available', lambda *a: calls.append('cleanup') if a[0] == 'cleanup' else None)
+    monkeypatch.setattr(journey, 'runtime_processes', lambda *a: [])
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (tmp_path / 'manifest', {}))
     monkeypatch.setattr(journey, 'git_source', lambda *_: {'sha': 'x'})
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
     monkeypatch.setattr(journey, 'snapshot_failure_evidence', lambda *a: calls.append(a[-1]))
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *a: None)
     @contextmanager
     def sentinel(*_):
         yield SimpleNamespace(pid=1), 'birth'
