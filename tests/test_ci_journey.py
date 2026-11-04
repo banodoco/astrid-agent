@@ -953,8 +953,8 @@ def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatc
     assert "before-cleanup" in receipt["failure_diagnostics"]
 
 
-def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp_path):
-    """Run the checked-in config program and require direct-only to retain the full gate."""
+def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path):
+    """Run the checked-in config program; the strict gate is the five direct rows."""
     import subprocess
     import sys
     import textwrap
@@ -987,24 +987,21 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
         return json.loads(values["matrix"])["include"]
 
     unrestricted = matrix("false")
-    assert len(unrestricted) == 9
-    assert {row["job_id"] for row in unrestricted} == {
-        f"{mode}-{os_name}" for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
-        for os_name in ("macos", "linux", "windows")
-    }
     expected_direct = {
         ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
         ("direct-macos", "direct", "macos-15", "release0-to-release1"),
         ("direct-windows", "direct", "windows-2022", "fresh-install"),
+        ("direct-linux-fresh", "direct", "ubuntu-24.04", "fresh-install"),
+        ("direct-macos-fresh", "direct", "macos-15", "fresh-install"),
     }
-    assert {(row["job_id"], row["mode"], row["runner"], row["leg"])
-            for row in unrestricted if row["mode"] == "direct"} == expected_direct
+    assert len(unrestricted) == 5
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in unrestricted} == expected_direct
     gate = workflow.split("      - name: Aggregate the exact Release-1 receipt matrix\n", 1)[1].split("      - name:", 1)[0]
     assert "if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'" in gate
     assert "--aggregate-release1" in gate
 
     rows = matrix("true")
-    assert len(rows) == 3
+    assert len(rows) == 5
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
@@ -1013,8 +1010,11 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert [row["job_id"] for row in selected] == ["direct-windows"]
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert values["wait_timeout"] == "180"
+    for fresh_row in ("direct-linux-fresh", "direct-macos-fresh"):
+        selected = matrix("false", JOURNEY_ROW=fresh_row)
+        assert [(row["job_id"], row["leg"]) for row in selected] == [(fresh_row, "fresh-install")]
     all_direct = matrix("false", JOURNEY_ROW="direct")
-    assert {row["job_id"] for row in all_direct} == {"direct-linux", "direct-macos", "direct-windows"}
+    assert {row["job_id"] for row in all_direct} == {job_id for job_id, *_ in expected_direct}
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert values["wait_timeout"] == "900"
 

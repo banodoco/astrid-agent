@@ -1,7 +1,8 @@
 """The fixed Release-1 installed-lifecycle receipt contract.
 
 This is deliberately a small data-only module so the driver, evidence checker and
-workflow tests share the same nine required jobs.  A mode name is an ownership
+workflow tests share the same five required direct jobs.  The six Pinokio rows
+are deferred to Release 1.1 and kept separately below.  A mode name is an ownership
 statement, not permission for a direct installer journey to fall back to an
 unmanaged foreground process.
 """
@@ -18,10 +19,23 @@ else:
     except ModuleNotFoundError:
         from scripts.journey_release2 import RELEASE2_SCENARIOS
 
-RELEASE1_MATRIX: Final = (
+_RELEASE1_DIRECT_LEGACY: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
     {"job_id": "direct-windows", "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "fresh-install"},
+)
+# Fresh install is the main Release-1 path, so Linux and macOS each have a
+# distinct strict fresh-install row beside their release-0 upgrade row.
+RELEASE1_DIRECT_FRESH_MATRIX: Final = (
+    {"job_id": "direct-macos-fresh", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install"},
+    {"job_id": "direct-linux-fresh", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install"},
+)
+RELEASE1_DIRECT_FRESH_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_DIRECT_FRESH_MATRIX)
+RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
+
+# Deferred to Release 1.1: not part of the Release-1 strict matrix or aggregate.
+# The driver still admits these jobs so the Pinokio code paths stay runnable.
+RELEASE1_1_DEFERRED_PINOKIO_MATRIX: Final = (
     {"job_id": "pinokio-backend-macos", "mode": "pinokio-backend", "runner": "macos-15", "shell": "sh", "os": "macos"},
     {"job_id": "pinokio-backend-linux", "mode": "pinokio-backend", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-backend-windows", "mode": "pinokio-backend", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
@@ -29,9 +43,10 @@ RELEASE1_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-linux", "mode": "pinokio-fully-local", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
 )
+_ADMITTED_JOBS: Final = (*RELEASE1_MATRIX, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX)
 
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
-RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in RELEASE1_MATRIX}))
+RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in _ADMITTED_JOBS}))
 
 # M4-4a is deliberately a narrower contract than the Release-1 matrix. Keep
 # all of its immutable receipt vocabulary here so the driver and checker cannot
@@ -62,7 +77,7 @@ M4_4A_REQUIRED_EVENTS: Final = (
 )
 M4_4A_BACKEND_MATRIX: Final = tuple(
     {**row, "leg": row.get("leg", "fresh-install")}
-    for row in RELEASE1_MATRIX if row["mode"] == "pinokio-backend"
+    for row in RELEASE1_1_DEFERRED_PINOKIO_MATRIX if row["mode"] == "pinokio-backend"
 )
 M4_4A_BACKEND_JOB_IDS: Final = tuple(row["job_id"] for row in M4_4A_BACKEND_MATRIX)
 
@@ -78,11 +93,12 @@ M4_4B_LOCAL_SMOKE: Final = {
 }
 
 # M4-5 rows are keyed by scenario_id because the two direct channels share a
-# job_id for each OS.  M4-6 reuses the nine Release-1 ownership/OS tuples.
+# job_id for each OS.  M4-6 keeps the nine ownership/OS tuples (three direct,
+# six deferred Pinokio); the direct fresh rows add no new failure-mode slot.
 M4_5_MATRIX: Final = RELEASE2_SCENARIOS
 M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
-M4_6_MATRIX: Final = RELEASE1_MATRIX
-M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
+M4_6_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_1_DEFERRED_PINOKIO_MATRIX)
+M4_6_SLOT_IDS: Final = tuple(row["job_id"] for row in M4_6_MATRIX)
 
 # Release end-state inventory.  These are obligations rather than receipts:
 # route availability never promotes an obligation to a passed release gate.
@@ -100,16 +116,14 @@ END_STATE_INVENTORY: Final = (
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"],
             "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
             "route": "ci_journey.py --leg fresh-install",
-            # The current direct receipt is intentionally an authentic R0->R1
-            # journey, not a substitute for a distinct fresh-R1 direct row.
-            "route_state": "execution-capable" if row["mode"] != "direct" or row["job_id"] == "direct-windows" else "unimplemented",
-            "dependency": ("authenticated Pinokio adapter and hosted receipt" if row["mode"] != "direct"
+            "route_state": "execution-capable",
+            "dependency": ("authenticated Pinokio adapter and hosted receipt (deferred to R1.1)" if row["mode"] != "direct"
                            else "hosted Windows fresh and refusal receipt" if row["job_id"] == "direct-windows"
-                           else "distinct direct fresh-R1 receipt identity"),
+                           else "hosted direct fresh-R1 receipt"),
             "predicate": "installed candidate, owned service, health, settled task, one Runtime, sentinel and cleanup",
             "source": "check_journey_evidence.py:evaluate_release1_matrix",
-            "evidence_kind": "release1" if row["mode"] != "direct" or row["job_id"] == "direct-windows" else "unsupported",
-        } for row in RELEASE1_MATRIX
+            "evidence_kind": "release1",
+        } for row in _ADMITTED_JOBS if row.get("leg", "fresh-install") == "fresh-install"
     ),
     *(
         {
@@ -123,7 +137,7 @@ END_STATE_INVENTORY: Final = (
                           if row["job_id"] == "direct-windows" else
                           "frozen R0 provenance, seeded semantic data, R1 identity, native service, health, task and cleanup"),
             "source": "check_journey_evidence.py:evaluate_release1_matrix", "evidence_kind": "release1",
-        } for row in RELEASE1_MATRIX if row["mode"] == "direct"
+        } for row in _RELEASE1_DIRECT_LEGACY
     ),
     {
         "id": "populated-v31-to-v33-backup-restore", "phase": "populated-r0-update",
@@ -206,8 +220,12 @@ def validate_m4_4a_backend_job(job_id: str, mode: str) -> dict:
 
 
 def release1_job(job_id: str) -> dict:
-    """Return a copy so callers cannot mutate the checked-in matrix."""
-    for row in RELEASE1_MATRIX:
+    """Return a copy so callers cannot mutate the checked-in matrix.
+
+    Deferred R1.1 Pinokio jobs stay admitted for the driver, but are not part
+    of RELEASE1_MATRIX or its aggregate.
+    """
+    for row in _ADMITTED_JOBS:
         if row["job_id"] == job_id:
             return dict(row)
     raise ValueError(f"Unknown Release-1 journey job: {job_id}")

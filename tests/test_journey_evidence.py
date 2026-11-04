@@ -53,8 +53,9 @@ def release1_receipts(tmp_path):
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
-        if contract["job_id"] == "direct-windows":
+        if contract["leg"] == "fresh-install":
             row["checks"]["workspace_content"] = "pass"
+        if contract["job_id"] == "direct-windows":
             row["windows_upgrade_refusal"] = {
                 "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
                 "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
@@ -177,11 +178,11 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     assert any("direct-linux: missing receipt" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
     candidate = release1_receipts(tmp_path)
-    skipped = tmp_path / "pinokio-backend-linux" / "journey-result.json"
+    skipped = tmp_path / "direct-linux-fresh" / "journey-result.json"
     data = json.loads(skipped.read_text())
     data["status"] = "skipped"
     skipped.write_text(json.dumps(data), encoding="utf-8")
-    assert any("pinokio-backend-linux: status 'skipped'" in error
+    assert any("direct-linux-fresh: status 'skipped'" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
     candidate = release1_receipts(tmp_path)
     direct = tmp_path / "direct-macos" / "journey-result.json"
@@ -223,7 +224,7 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
 def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
     candidate = release1_receipts(tmp_path)
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)
-    for job_id in ('direct-macos', 'pinokio-backend-macos', 'pinokio-fully-local-macos'):
+    for job_id in ('direct-macos', 'direct-macos-fresh'):
         receipt = tmp_path / job_id / 'journey-result.json'
         original = json.loads(receipt.read_text())
         for field, value, message in (
@@ -246,15 +247,23 @@ def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
 
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
-    matrix_text = workflow.split('          matrix = [\n', 1)[1].split('          ]', 1)[0]
-    workflow_rows = [json.loads(line.strip().rstrip(',')) for line in matrix_text.splitlines()]
-    contract_rows = [{**row, 'leg': row.get('leg', 'fresh-install')} for row in gate.RELEASE1_MATRIX]
-    assert len(contract_rows) == len({row['job_id'] for row in contract_rows}) == 9
-    assert workflow_rows == contract_rows
+    assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]" in workflow
+    contract_rows = {(row["job_id"], row["mode"], row["os"], row["leg"]) for row in gate.RELEASE1_MATRIX}
+    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 5
+    assert contract_rows == {
+        ("direct-linux", "direct", "linux", "release0-to-release1"),
+        ("direct-macos", "direct", "macos", "release0-to-release1"),
+        ("direct-windows", "direct", "windows", "fresh-install"),
+        ("direct-linux-fresh", "direct", "linux", "fresh-install"),
+        ("direct-macos-fresh", "direct", "macos", "fresh-install"),
+    }
+    assert not any(row["mode"] != "direct" for row in gate.RELEASE1_MATRIX)
+    assert {row["mode"] for row in gate.RELEASE1_1_DEFERRED_PINOKIO_MATRIX} == {"pinokio-backend", "pinokio-fully-local"}
     assert "--aggregate-release1" in workflow
     assert "journey-receipt-${{ matrix.job_id }}" in workflow
+    assert 'run_root="$RUNNER_TEMP/astrid-r1-$JOB_ID"' in workflow
+    assert "if: matrix.mode == 'direct' && matrix.os == 'linux'" in workflow
     assert "candidate-agent" in workflow and "pinokio" in workflow
-    assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
 
 
@@ -307,3 +316,61 @@ def test_direct_receipts_require_observed_checks_without_pid_count(tmp_path):
         path.write_text(json.dumps(bad))
         assert any(f"direct-linux: {check} assertion did not pass" in error
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+def test_release1_aggregate_requires_exactly_the_five_direct_rows(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert {path.parent.name for path in tmp_path.rglob("journey-result.json")} == set(gate.RELEASE1_JOB_IDS)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for job_id in gate.RELEASE1_JOB_IDS:
+        receipt = tmp_path / job_id / "journey-result.json"
+        original = receipt.read_bytes()
+        receipt.unlink()
+        assert f"{job_id}: missing receipt" in gate.evaluate_release1_matrix(candidate, tmp_path)
+        receipt.write_bytes(original)
+    duplicate = tmp_path / "copy" / "journey-result.json"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes((tmp_path / "direct-linux-fresh" / "journey-result.json").read_bytes())
+    assert any("duplicate receipt for direct-linux-fresh" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    duplicate.unlink()
+    deferred = json.loads((tmp_path / "direct-linux-fresh" / "journey-result.json").read_text())
+    deferred.update(job_id="pinokio-backend-linux", mode="pinokio-backend")
+    duplicate.write_text(json.dumps(deferred), encoding="utf-8")
+    assert any("unknown or absent Release-1 job id" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    for job_id in ("direct-linux-fresh", "direct-macos-fresh"):
+        path = tmp_path / job_id / "journey-result.json"
+        row = json.loads(path.read_text())
+        for key in ("release_transition", "release0_fixture", "semantic_data"):
+            row.pop(key)
+        row["checks"] = {name: "pass" for name in ("task_settled", "workspace_content", "unrelated_sentinel")}
+        path.write_text(json.dumps(row), encoding="utf-8")
+        assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+        for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
+            bad = copy.deepcopy(row)
+            bad["checks"][check] = "not-run"
+            path.write_text(json.dumps(bad), encoding="utf-8")
+            assert f"{job_id}: fresh {check} assertion did not pass" in gate.evaluate_release1_matrix(candidate, tmp_path)
+        for field, value, message in (
+            ("scenario", "release0-to-release1", "scenario does not match the required matrix leg"),
+            ("service_manager", {"foreground_fallback": True}, "direct service ownership"),
+        ):
+            bad = dict(row, **{field: value})
+            path.write_text(json.dumps(bad), encoding="utf-8")
+            assert any(message in error for error in gate.evaluate_release1_matrix(candidate, tmp_path)), field
+        path.write_text(json.dumps(row), encoding="utf-8")
+    upgrade = tmp_path / "direct-linux" / "journey-result.json"
+    row = json.loads(upgrade.read_text())
+    fresh_shaped = dict(row, scenario="fresh-install")
+    for key in ("release_transition", "release0_fixture", "semantic_data"):
+        fresh_shaped.pop(key)
+    upgrade.write_text(json.dumps(fresh_shaped), encoding="utf-8")
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert "direct-linux: scenario does not match the required matrix leg" in errors
+    assert "direct-linux: direct receipt did not run the authentic release-0 to release-1 leg" in errors
+    assert "direct-linux: release-0 to release-1 transition is absent or wrong" in errors

@@ -56,8 +56,10 @@ def test_strict_direct_matrix_preserves_original_leg_and_artifact_names(tmp_path
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
     assert {(row['job_id'], row['leg']) for row in rows} == {
-        (f'direct-{platform}', 'release0-to-release1')
-        for platform in ('linux', 'macos', 'windows')}
+        ('direct-linux', 'release0-to-release1'), ('direct-macos', 'release0-to-release1'),
+        ('direct-windows', 'fresh-install'),
+        ('direct-linux-fresh', 'fresh-install'), ('direct-macos-fresh', 'fresh-install')}
+    assert len(rows) == 5
     suffix = "${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}"
     assert 'name: journey-receipt-${{ matrix.job_id }}' + suffix in WORKFLOW
     assert 'name: journey-manager-${{ matrix.job_id }}' + suffix in WORKFLOW
