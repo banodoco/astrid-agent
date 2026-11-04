@@ -498,15 +498,19 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
     unit_content = None
     try:
         if sys.platform == "linux":
-            unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
-            command = ["systemctl", "--user", "show", "astrid.service",
+            unit_dir = data.parent / "home" / ".config" / "systemd" / "user"
+            r1_unit = unit_dir / "astrid-r1.service"
+            unit = r1_unit if r1_unit.is_file() else unit_dir / "astrid.service"
+            command = ["systemctl", "--user", "show", unit.name,
                        "--property=LoadState,FragmentPath,ActiveState,SubState"]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
             manager.update(command=command, returncode=completed.returncode,
                            stdout=completed.stdout, stderr=completed.stderr)
         elif sys.platform == "darwin":
-            unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
-            command = ["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"]
+            unit_dir = data.parent / "home" / "Library" / "LaunchAgents"
+            r1_unit = unit_dir / "haus.astrid.runtime.r1.plist"
+            unit = r1_unit if r1_unit.is_file() else unit_dir / "haus.astrid.runtime.plist"
+            command = ["launchctl", "print", f"gui/{os.getuid()}/{unit.stem}"]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
             manager.update(command=command, returncode=completed.returncode,
                            stdout=completed.stdout, stderr=completed.stderr)
@@ -537,7 +541,7 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
             missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
                                and completed.returncode == 113
                                and completed.stderr.strip() ==
-                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+                               f'Could not find service "{unit.stem}" in domain for user gui: {os.getuid()}')
             if missing_service:
                 manager["service_state"] = "absent"
             else:
@@ -549,10 +553,18 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
         print(f"Journey evidence capture ({phase}) failed: {message}", file=sys.stderr, flush=True)
         manager["error"] = message
         possible_unit = {
-            "linux": data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service",
-            "darwin": data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist",
+            "linux": data.parent / "home" / ".config" / "systemd" / "user",
+            "darwin": data.parent / "home" / "Library" / "LaunchAgents",
         }.get(sys.platform)
         try:
+            if possible_unit is not None:
+                if sys.platform == "linux":
+                    r1_name, r0_name = "astrid-r1.service", "astrid.service"
+                else:
+                    r1_name = "haus.astrid.runtime.r1.plist"
+                    r0_name = "haus.astrid.runtime.plist"
+                r1 = possible_unit / r1_name
+                possible_unit = r1 if r1.is_file() else possible_unit / r0_name
             if possible_unit is not None and possible_unit.is_file() and not possible_unit.is_symlink():
                 unit_path.write_bytes(possible_unit.read_bytes())
                 manager["unit_file"] = str(possible_unit)
