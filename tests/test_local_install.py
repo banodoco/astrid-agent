@@ -1,5 +1,6 @@
 """Shared installer transactions, including every update failure boundary."""
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -20,6 +21,9 @@ def make_version(root: Path, name: str) -> Version:
 
 class FakeBackend:
     def __init__(self, root, data, *, fail=None, existing=True):
+        self.service = SimpleNamespace(system="linux", home=root / "fake-home",
+                                       path=root / "fake-service" / "astrid.service",
+                                       selection=root / "fake-service" / "selection.json")
         self.old = make_version(root, 'old') if existing else None
         if self.old:
             switch(root, self.old)

@@ -541,7 +541,7 @@ class Installer:
                                   force=mode == "update")
         if self.managed_by != "pinokio" and mode in {"install", "update"}:
             from .r0_stop import R0StopError, is_r0_installation
-            if is_r0_installation(self.root):
+            if is_r0_installation(self.root, getattr(self.backend, "service", None)):
                 # Public CLI performs Piece A under the per-user installer
                 # lock. Programmatic callers cannot bypass that boundary or
                 # create the legacy journal/launcher on R0.

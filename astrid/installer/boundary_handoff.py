@@ -288,7 +288,7 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     r0_stop.refuse_legacy_r0_recovery(root)
     if pending_transaction(root):
         return False  # Only a previously-verified R1 journal can reach this path.
-    if not r0_stop.is_r0_installation(root):
+    if not r0_stop.is_r0_installation(root, backend.service):
         return False
     if manifest_loader is None:
         raise ValueError("The copy-only upgrade requires a candidate manifest.")

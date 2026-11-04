@@ -48,6 +48,9 @@ def test_runtime_commands_do_not_inject_rejected_render_startup_overrides(tmp_pa
 class LifecycleBackend:
     def __init__(self, root: Path, data: Path, *, reinstallable: bool = True):
         self.root, self.data = root, data
+        self.service = SimpleNamespace(system="linux", home=root / "fake-home",
+                                       path=root / "fake-service" / "astrid.service",
+                                       selection=root / "fake-service" / "selection.json")
         self.old = None
         self.reinstallable_value = reinstallable
         self.calls: list[tuple] = []
@@ -190,6 +193,9 @@ def test_reinstall_without_sandbox_rewrites_setting_after_sandbox_install(tmp_pa
 
     for expected in ("sandbox", "strict"):
         backend = Backend.__new__(Backend)
+        backend.service = SimpleNamespace(system="linux", home=root / "fake-home",
+                                          path=root / "fake-service" / "astrid.service",
+                                          selection=root / "fake-service" / "selection.json")
         backend.process_control = expected
         calls = []
         version_root = root / "versions" / "candidate"
