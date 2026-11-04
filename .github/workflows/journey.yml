@@ -134,6 +134,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      diagnostic_fresh_install:
+        description: Run direct fresh-install diagnostics; never qualifies for the Release-1 gate
+        required: false
+        default: false
+        type: boolean
       row:
         description: Run one direct journey row or all three direct rows
         required: false
@@ -256,6 +261,7 @@ jobs:
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
+          DIAGNOSTIC_FRESH_INSTALL: ${{ inputs.diagnostic_fresh_install || false }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -362,6 +368,10 @@ jobs:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           if journey_row and journey_row != "direct":
               matrix = [row for row in matrix if row["job_id"] == journey_row]
+          if os.environ["DIAGNOSTIC_FRESH_INSTALL"].lower() == "true":
+              if not direct_only or backend_only or m4_5_only:
+                  raise SystemExit("fresh-install diagnostics require direct-only rows")
+              matrix = [dict(row, leg="fresh-install") for row in matrix]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
           wait_timeout = "180" if journey_row in {
