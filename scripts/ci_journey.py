@@ -1169,12 +1169,14 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
             target = f"{domain}/{label}"
             paths = re.findall(r"(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$", output)
             states = re.findall(r"(?m)^[ \t]*state = ([^\r\n]+?)[ \t]*$", output)
+            programs = re.findall(r"(?m)^[ \t]*program[ \t]*=([^\r\n]*)$", output)
             blocks = re.findall(r"(?ms)^[ \t]*arguments = \{[ \t]*\n(.*?)^[ \t]*\}[ \t]*$", output)
             expected = [str(root / "bin" / "runtime"), "run", "--profile", "astrid",
                         "--data-root", str(Path(str(data) + "-r1"))]
             arguments = [line.strip() for line in blocks[0].splitlines()] if len(blocks) == 1 else []
             if (not output.startswith(target + " = {\n") or paths != [str(plist)]
-                    or states != ["running"] or arguments != expected):
+                    or states != ["running"] or len(programs) != 1
+                    or programs[0].strip() != expected[0] or arguments != expected):
                 raise RuntimeError(f"Direct journey {label} LaunchAgent is not active from its owned plist and action")
         if release == 1:
             r0_plist = plist.with_name("haus.astrid.runtime.plist")

@@ -90,7 +90,7 @@ def setup_case(tmp_path, monkeypatch):
                 state = 'waiting' if damage == 'inactive-r1' else 'running'
                 args = [str(root / 'bin/runtime'), 'run', '--profile', 'astrid', '--data-root', str(r1)]
                 if damage == 'foreign-action': args[0] += '.foreign'
-                stdout = f'{argv[-1]} = {{\n  path = {path}\n  state = {state}\n  arguments = {{\n' + ''.join(f'    {arg}\n' for arg in args) + '  }\n}\n'
+                stdout = f'{argv[-1]} = {{\n  path = {path}\n  state = {state}\n  program = {root / "bin/runtime"}\n  arguments = {{\n' + ''.join(f'    {arg}\n' for arg in args) + '  }\n}\n'
                 if damage == 'query-error': code = 1
             else:
                 stdout = ''

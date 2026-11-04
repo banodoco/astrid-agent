@@ -98,7 +98,7 @@ def test_macos_r1_ownership_checks_r1_running_and_r0_disabled_unloaded(tmp_path,
         if argv[-1].endswith("runtime.r1"):
             target = argv[-1]
             args = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
-            output = (f"{target} = {{\n  path = {paths['r1']}\n  state = running\n  arguments = {{\n" + "".join(f"    {arg}\n" for arg in args) + "  }\n}\n")
+            output = (f"{target} = {{\n\tactive count = 1\n\tpath = {paths['r1']}\n\ttype = LaunchAgent\n\tstate = running\n\n\tprogram = {args[0]}\n\targuments = {{\n" + "".join(f"\t\t{arg}\n" for arg in args) + "\t}\n}\n")
             return SimpleNamespace(returncode=0, stdout=output, stderr="")
         return SimpleNamespace(returncode=113, stdout="",
                                stderr='Could not find service "haus.astrid.runtime"\n')
@@ -115,7 +115,7 @@ def test_macos_r1_ownership_checks_r1_running_and_r0_disabled_unloaded(tmp_path,
         if argv[-1].endswith("runtime.r1"):
             args = [str(root / "bin/runtime"), "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
             return SimpleNamespace(returncode=0, stdout=(
-                f"{argv[-1]} = {{\n  path = {paths['r1']}\n  state = running\n  arguments = {{\n" + "".join(f"    {arg}\n" for arg in args) + "  }\n}\n"), stderr="")
+                f"{argv[-1]} = {{\n  path = {paths['r1']}\n  state = running\n  program = {args[0]}\n  arguments = {{\n" + "".join(f"    {arg}\n" for arg in args) + "  }\n}\n"), stderr="")
         if argv[1] == "print-disabled":
             return SimpleNamespace(returncode=0,
                                    stdout='"haus.astrid.runtime" => false\n', stderr="")
@@ -123,4 +123,33 @@ def test_macos_r1_ownership_checks_r1_running_and_r0_disabled_unloaded(tmp_path,
 
     monkeypatch.setattr(journey.subprocess, "run", r0_active)
     with pytest.raises(RuntimeError, match="R0 LaunchAgent is not disabled and unloaded"):
+        journey.assert_direct_service_ownership(root, data, release=1)
+
+
+@pytest.mark.parametrize("program_fields", [
+    "",  # Missing, even when argv[0] names the owned launcher.
+    "\tprogram = /foreign/unrelated-worker\n",
+    "\tprogram = \n",
+    "\tprogram = {owned}\n\tprogram = {owned}\n",
+    "\tprogram = {owned}\n\tprogram = /foreign/unrelated-worker\n",
+    "\tprogram = {owned}\n\tprogram = \n",
+])
+def test_macos_r1_rejects_missing_foreign_or_ambiguous_loaded_program(tmp_path, monkeypatch, program_fields):
+    root, data, paths = _service_files(tmp_path, "darwin")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "default" / "astrid")
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501)
+    owned = str(root / "bin/runtime")
+    args = [owned, "run", "--profile", "astrid", "--data-root", str(data) + "-r1"]
+    output = (f"gui/501/haus.astrid.runtime.r1 = {{\n\tactive count = 1\n"
+              f"\tpath = {paths['r1']}\n\ttype = LaunchAgent\n\tstate = running\n\n"
+              + program_fields.format(owned=owned) + "\targuments = {\n"
+              + "".join(f"\t\t{arg}\n" for arg in args) + "\t}\n}\n")
+
+    def run(argv, **_kwargs):
+        assert argv == ["launchctl", "print", "gui/501/haus.astrid.runtime.r1"]
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="owned plist and action"):
         journey.assert_direct_service_ownership(root, data, release=1)
