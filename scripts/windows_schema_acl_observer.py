@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -15,6 +16,65 @@ MAX_MATCHES = 32
 MAX_CACHE_DIRECTORIES = 10000
 MAX_OBSERVED_PATHS = 256
 OBSERVATION_SECONDS = 90
+
+
+def _read_token_sids(adv, kernel, last_error):
+    """Read the observer process token; retain independent errors for each SID."""
+    from ctypes import wintypes as w
+    token = w.HANDLE()
+    if not adv.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+        return {'error': f'OpenProcessToken: {last_error()}'}
+    result = {}
+    try:
+        for name, information_class in (('user', 1), ('owner', 4)):
+            size = w.DWORD()
+            ok = adv.GetTokenInformation(token, information_class, None, 0, ctypes.byref(size))
+            error = last_error()
+            if ok or error != 122 or not ctypes.sizeof(ctypes.c_void_p) <= size.value <= 1024 * 1024:
+                result[name + '_error'] = f'GetTokenInformation size: {error}; size={size.value}'
+                continue
+            buffer = ctypes.create_string_buffer(size.value)
+            if not adv.GetTokenInformation(token, information_class, buffer, size.value, ctypes.byref(size)):
+                result[name + '_error'] = f'GetTokenInformation: {last_error()}'
+                continue
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            if not sid or not adv.IsValidSid(sid):
+                result[name + '_error'] = 'IsValidSid: invalid SID'
+                continue
+            text = ctypes.c_void_p()
+            if not adv.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                result[name + '_error'] = f'ConvertSidToStringSidW: {last_error()}'
+                continue
+            try:
+                result[name + '_sid'] = ctypes.wstring_at(text)
+            finally:
+                kernel.LocalFree(text)
+    finally:
+        kernel.CloseHandle(token)
+    return result
+
+
+def native_token_observation():
+    """Get actual TokenUser and TokenOwner SIDs without changing the token."""
+    from ctypes import wintypes as w
+    adv = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    ptr = ctypes.c_void_p
+    adv.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)]
+    adv.OpenProcessToken.restype = w.BOOL
+    adv.GetTokenInformation.argtypes = [w.HANDLE, ctypes.c_int, ptr, w.DWORD, ctypes.POINTER(w.DWORD)]
+    adv.GetTokenInformation.restype = w.BOOL
+    adv.IsValidSid.argtypes = [ptr]
+    adv.IsValidSid.restype = w.BOOL
+    adv.ConvertSidToStringSidW.argtypes = [ptr, ctypes.POINTER(ptr)]
+    adv.ConvertSidToStringSidW.restype = w.BOOL
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.CloseHandle.restype = w.BOOL
+    kernel.LocalFree.argtypes = [ptr]
+    kernel.LocalFree.restype = ptr
+    return _read_token_sids(adv, kernel, ctypes.get_last_error)
 
 
 def ancestors(path: Path, root: Path):
@@ -183,10 +243,19 @@ def collect(root: Path, phase: str):
             seen.add(key)
             item = {'kind': kind, 'path': sanitize(str(path)), 'exists': path.exists()}
             if item['exists']:
+                schema_leaf = path == leaf and kind in ('staged', 'installed', 'cache')
+                if schema_leaf:
+                    item['observation_started_utc'] = datetime.now(timezone.utc).isoformat()
+                    try:
+                        item['observer_process_token'] = native_token_observation()
+                    except Exception as exc:
+                        item['observer_process_token'] = {'error': type(exc).__name__}
                 try:
                     item.update(native_observation(path))
                 except Exception as exc:
                     item['native_error'] = sanitize(f'{type(exc).__name__}: {exc}')
+                if schema_leaf:
+                    item['native_observation_finished_utc'] = datetime.now(timezone.utc).isoformat()
                 try:
                     proc = subprocess.run(['icacls', str(path)], capture_output=True, text=True,
                                           errors='replace', timeout=5, check=False)
