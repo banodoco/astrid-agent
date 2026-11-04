@@ -330,7 +330,7 @@ jobs:
           if journey_row:
               direct_only = True
           diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
-          if diagnostic_leg not in {"release0-to-release1", "fresh-install"}:
+          if diagnostic_leg not in {"release0-to-release1", "fresh-install", "both"}:
               raise SystemExit("invalid diagnostic_leg")
           if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
               raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
@@ -394,6 +394,8 @@ jobs:
           if diagnostic_leg == "fresh-install":
               for row in matrix:
                   row["leg"] = diagnostic_leg
+          elif diagnostic_leg == "both":
+              matrix = matrix + [dict(row, leg="fresh-install") for row in matrix]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
           wait_timeout = "180" if journey_row in {
@@ -694,7 +696,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-manager-${{ matrix.job_id }}
+          name: journey-manager-${{ matrix.job_id }}-${{ matrix.leg }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
@@ -805,7 +807,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: journey-receipt-${{ matrix.job_id }}
+          name: journey-receipt-${{ matrix.job_id }}-${{ matrix.leg }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
