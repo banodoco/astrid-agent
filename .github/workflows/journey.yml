@@ -1030,6 +1030,16 @@ jobs:
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
           if-no-files-found: warn
           compression-level: 0
+      - name: Upload the Pinokio row's working evidence
+        if: always() && startsWith(matrix.job_id, 'pinokio-')
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 14
+          name: pinokio-work-${{ matrix.job_id }}
+          path: |
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/evidence
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/*.log
+          if-no-files-found: warn
 
   release2:
     if: needs.config.outputs.m4_5_enabled == 'true'
