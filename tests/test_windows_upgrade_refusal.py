@@ -173,5 +173,10 @@ def test_refusal_driver_avoids_process_checks_even_during_cleanup(tmp_path, monk
     assert journey.execute(args)["final_cleanup"] == "pass"
     final = run_root / "evidence-upload" / "after-cleanup" / "journey-result.json"
     assert json.loads(final.read_text())["final_cleanup"] == "pass"
-    assert calls == [("fresh-install", {"skip_process_check": True}),
+    related_selection = run_root.with_name("astrid-r1-direct-windows")
+    assert calls == [("fresh-install", {
+                         "skip_process_check": True,
+                         "related_uninstalled_selection": (related_selection / "program",
+                                                           related_selection / "data"),
+                     }),
                      ("cleanup", {"skip_process_check": True})]
