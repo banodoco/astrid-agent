@@ -187,7 +187,8 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     assert ("ready", r0) in calls and ("ready", r1) in calls
     assert ("health", r0) in calls and ("health", r1) in calls
     assert ("verify-root", "observe", r0) in calls
-    assert ("verify-root", "update", r1) in calls and ("verify-root", "install", r1) in calls
+    assert ("verify-root", "update", r1) not in calls
+    assert ("verify-root", "install", r1) in calls
     assert ("live", r1, 1) in calls
     assert ("birth", 3) in calls[calls.index("update") + 1:]
     observation = rows["release0-verify"]
@@ -208,9 +209,11 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     assert observation["failure_class"] == "real"
     assert observation["forced_continuation_used"] is False
     assert rows["release1-update"]["result"] == "pass" and "update" in calls
-    assert rows["release1-verify-update"]["result"] == "pass"
-    assert any(item["name"] == "verified0" and item["source"] == "genuine"
-               for item in rows["release1-verify-update"]["preconditions"])
+    dependent = rows["release1-verify-update"]
+    assert dependent["result"] == "not-run"
+    assert dependent["failure_class"] == "diagnostic-tainted:release0-verify"
+    assert any(item["name"] == "verified0" and item["source"] == "unavailable"
+               for item in dependent["preconditions"])
     rendered = (evidence / "keepgoing-report.md").read_text()
     assert "| stage | result | observation | forced-continuation-used | first error |" in rendered
     assert "| release0-verify | observed-failed |" in rendered

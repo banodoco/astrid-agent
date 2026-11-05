@@ -188,6 +188,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                                          "source": "genuine" if key in state else "forced-by:" + producer})
         if missing:
             row.update(result="not-run", first_error="Unsafe or unavailable prerequisites: " + ", ".join(missing))
+            tainted_by = sorted({producers[item] for item in missing
+                                 if any(previous["stage"] == producers[item]
+                                        and previous["result"] in {"fail", "observed-failed"}
+                                        for previous in report["stages"])})
+            if tainted_by:
+                row["failure_class"] = "diagnostic-tainted:" + ",".join(tainted_by)
         else:
             try:
                 outcome = action()
@@ -351,7 +357,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         failures = receipt.get("failures")
         if type(passed) is not bool or not isinstance(failures, list):
             raise RuntimeError("Release-0 observation receipt has invalid passed or failures fields")
-        state["verified0"] = True
+        if passed:
+            state["verified0"] = True
         observation = {"passed": passed, "failures": failures}
         failed_details = failed_capability_details(receipt, failures)
         if failed_details:
@@ -385,7 +392,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     stage("release1-update", ["old", "health0", "app"], update, evidence / "release1" / "update-bootstrap.log")
     stage("release1-start", ["updated"], start1, evidence / "release1")
     stage("release1-selection", ["started1", "health0"], select1, evidence / "release1")
-    stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log", forced_dependencies=(("verified0", "release0-verify"),))
+    stage("release1-verify-update", ["version", "verified0"], verify_update, evidence / "verify-update.log")
     stage("release1-verify-install", ["version"], verify_install, evidence / "verify-install.log")
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
