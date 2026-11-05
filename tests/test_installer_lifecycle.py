@@ -668,7 +668,8 @@ def test_same_release_repair_keeps_installed_version_and_never_stages(tmp_path, 
 def test_same_release_repair_applies_changed_skill_policy_without_staging(tmp_path):
     root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=10)
     backend.service = SimpleNamespace(choices={"skills": False, "skill_copies": False},
-                                      skill_policy_changed=True)
+                                      skill_policy_changed=True, home=tmp_path, system="linux",
+                                      path=tmp_path / "astrid.service", selection=tmp_path / "selection.json")
     backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
     Installer(root, data, backend, say=lambda _line: None).run("install", {"release": 10})
     names = [call[0] for call in backend.calls]
@@ -1115,7 +1116,9 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
 
     assert cli.main(["--root", str(tmp_path / "program")]) == 1
     output = capsys.readouterr()
-    assert output.out.splitlines() == [FAILURE_MESSAGE, message]
+    lines = output.out.splitlines()
+    assert lines[:2] == [FAILURE_MESSAGE, message]
+    assert "Astrid setup summary:" in lines  # the consent summary now follows a failed run
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
@@ -1165,7 +1168,9 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     assert raw not in output
     assert "private-subprocess-token" not in output
     assert str(tmp_path / "service.log") not in output
-    assert f"Details: {tmp_path / 'logs/install.log'}" in output
+    # Backend construction fails before any installer log is selected; pre-main
+    # then keeps diagnostics on the console and prints no Details path.
+    assert "Details:" not in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])

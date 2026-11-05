@@ -392,6 +392,7 @@ def _stub_cli_install(tmp_path, monkeypatch, home):
                 selection=selection,
                 recorded=lambda: read_json(selection),
                 login_service_exists=lambda: False,
+                home=home, system=sys.platform, path=tmp_path / "astrid.service",
             )
 
         def existing(self, _data):
