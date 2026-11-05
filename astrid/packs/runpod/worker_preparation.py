@@ -1131,10 +1131,16 @@ async def acquire_target(
         if max_create_attempts is not None:
             # One lifecycle launch can otherwise walk a GPU x RAM x storage
             # matrix, issuing multiple POSTs without returning to this journal.
-            storages = {name for name in [config.storage_name, *config.storage_volumes] if name}
+            # The lifecycle launch matrix has exactly one storage target when
+            # the config names an exact network volume, one named storage, or
+            # no volume at all; more than one named storage would walk it.
+            storages = {name for name in [getattr(config, "storage_name", None),
+                                          *getattr(config, "storage_volumes", ())] if name}
+            exact_volume = getattr(config, "network_volume_id", None) is not None
             if (max_create_attempts < 1 or capacity_window_seconds < 60
                     or retry_interval_seconds < 15 or len(config.gpu_type_candidates) != 1
-                    or config.ram_tiers_enabled or len(storages) != 1):
+                    or config.ram_tiers_enabled
+                    or len(storages) > 1 or (exact_volume and storages)):
                 raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
         expected_name = str(attempt.get("request_name") or "").strip()
         if not expected_name:
