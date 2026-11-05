@@ -269,10 +269,21 @@ class BoundaryHandoff:
             raise
 
 
-def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=print):
-    """Return True when the public entry is handled without any legacy path."""
+POLICY_REFUSAL = ("The R0 to R1 handoff is copy-only and cannot apply setup choice changes "
+                  "({names}). Nothing was changed; rerun without those flags, or change them after the handoff.")
+
+
+def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=print, policy_change=None):
+    """Return True when the public entry is handled without any legacy path.
+
+    The handoff never changes command, autostart or skill policy. A requested
+    change (``policy_change``) is therefore refused before any handoff work
+    instead of being silently dropped; unchanged saved policy is carried over.
+    """
     path = journal_path(backend.service)
     if os.path.lexists(path):
+        if policy_change:
+            raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
         transaction = BoundaryHandoff(backend)
         value = transaction._load()
         if value["phase"] == "complete" and not rollback:
@@ -307,6 +318,8 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
         raise ValueError(WINDOWS_UPGRADE_REFUSAL)
     if manifest_loader is None:
         raise ValueError("The copy-only upgrade requires a candidate manifest.")
+    if policy_change:
+        raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
     BoundaryHandoff(backend).run(data, manifest_loader, say=say)
     return True
 

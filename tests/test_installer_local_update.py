@@ -12,8 +12,50 @@ import pytest
 
 from astrid.installer import core
 from astrid.installer import local_update as local
+from astrid.installer.service import LABEL, install_selection
 from astrid.installer.core import RuntimeOperationError, Version, current, switch, write_json
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
+
+
+def test_local_update_backend_uses_saved_skill_policy(tmp_path, monkeypatch):
+    root = tmp_path / "program"
+    root.mkdir()
+    write_json(root / "install.json", {"owner": LABEL, "managed_by": None})
+    selection = install_selection(tmp_path, sys.platform)
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "choices": {
+        "skills": False, "skill_copies": True,
+    }})
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from runtime_protocol import platform
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    backend = local._backend(root)
+    assert backend.service.choices["skills"] is False
+    assert backend.service.choices["skill_copies"] is True
+
+
+@pytest.mark.parametrize("health,valid", [
+    ({"identity": {"release": 1, "managed_by": None}}, True),
+    ({"identity": {"release": True, "managed_by": None}}, False),
+    ({"identity": {"release": 2, "managed_by": None}}, False),
+    ({"identity": {"release": 1, "managed_by": "pinokio"}}, False),
+    ({"identity": {"release": 1, "managed_by": None, "unexpected": True}}, False),
+    ({"release": 1, "managed_by": None}, False),
+    (None, False),
+])
+def test_local_activation_validates_canonical_runtime_identity(tmp_path, monkeypatch, health, valid):
+    from astrid.installer.backend import Backend
+
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    version = Version(root / "versions/one", Path(sys.executable), root / "profile.json", {}, 1)
+    write_json(version.root / "manifest.json", _manifest(1, "a" * 40, "b" * 40))
+    backend = Backend(root, tmp_path / "log", tmp_path / "uv")
+    # Model only the Runtime subprocess response, with the real Backend parser.
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: json.dumps({"health": health}))
+    if valid:
+        local._verify_selected_identity(backend, version, data)
+    else:
+        with pytest.raises(ValueError, match="identity does not match"):
+            local._verify_selected_identity(backend, version, data)
 
 
 def _manifest(release, agent_sha, runtime_sha):
@@ -94,7 +136,7 @@ def _installed(tmp_path, monkeypatch, *, busy=False, candidate_failure=False):
         stop=stop, register=lambda version, _data: events.append("register:" + version.root.name),
         start=start, verify=verify,
         runtime=lambda version, _data, *_args, **_kwargs: {
-            "health": {"release": version.release, "managed_by": version.managed_by},
+            "health": {"identity": {"release": version.release, "managed_by": version.managed_by}},
         },
         stage=lambda *_args: events.append("stage") or candidate,
         validate_candidate=lambda *_args: events.append("validate-candidate"),

@@ -45,19 +45,27 @@ if something goes wrong, see [Get help](docs/setup/troubleshooting.md).
 
 **Want step-by-step instructions?** [Set up Astrid →](docs/getting-started.md)
 
+The recommended setup starts Astrid at sign-in, adds the `astrid` terminal
+command, installs Astrid skills, and leaves skill copies off. The four choices
+are controlled by `--autostart on|off`, `--command on|off`, `--skills on|off`,
+and `--skill-copies on|off`. Ask for consent once for a fresh install when it
+has not already been given. After consent, use one installer command with the
+approved values. An already-approved handoff needs no second consent question;
+preserve all its choices.
+
 **Testing the installer?** Follow the [tester guide](docs/testing/TESTING.md), which records a known chat-history
 gap in the currently published agent engine.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://astrid.haus/install | sh
+curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://astrid.haus/install.ps1 | iex
+& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off
 ```
 
 Astrid is used at [astrid.haus](https://astrid.haus). Do not install

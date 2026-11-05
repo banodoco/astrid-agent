@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 from astrid.core.cli_choices import RecoverableArgumentParser, add_choice_arg
+from astrid.installer.choices import resolve_choices
 from astrid.core.contracts.errors import AstridError
 
 from . import check as check_fn
 from . import doctor as doctor_fn
 from . import install as install_fn
 from . import list_state
-from . import sync as sync_fn
+from . import disable_owned, sync as sync_fn
 from . import uninstall as uninstall_fn
 from .harnesses import ADAPTERS
 
@@ -56,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--all", action="store_true", help="Install every available pack.")
     install_parser.add_argument("--developer", action="store_true", help=_DEVELOPER_HELP)
     add_choice_arg(install_parser, "--harness", values=HARNESS_CHOICES, action="append", help="One or more harnesses (default: all).")
-    add_choice_arg(install_parser, "--mechanism", values=("symlink", "external-dir"), default="symlink", help="Hermes-only mechanism (default: symlink).")
+    add_choice_arg(install_parser, "--mechanism", values=("symlink", "copy", "external-dir"), help="Skill link or managed-copy mechanism (external-dir is Hermes-only).")
+    add_choice_arg(install_parser, "--skills", values=("on", "off"))
+    add_choice_arg(install_parser, "--skill-copies", values=("on", "off"))
     install_parser.add_argument("--force", action="store_true", help="Overwrite existing non-symlink targets.")
     install_parser.add_argument("--dry-run", action="store_true")
     install_parser.add_argument("--json", action="store_true")
@@ -82,7 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("pack", nargs="?")
     sync_parser.add_argument("--skill", action="append", default=[])
-    add_choice_arg(sync_parser, "--mechanism", values=("symlink", "external-dir"), default="symlink")
+    add_choice_arg(sync_parser, "--mechanism", values=("symlink", "copy", "external-dir"))
+    add_choice_arg(sync_parser, "--skills", values=("on", "off"))
+    add_choice_arg(sync_parser, "--skill-copies", values=("on", "off"))
     sync_parser.add_argument(
         "--deep",
         action="store_true",
@@ -163,18 +170,25 @@ def _resolve_harness_arg(args: argparse.Namespace) -> list[str] | None:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
+    enabled, mechanism = _skill_policy(args)
+    if not enabled:
+        rc = _emit_report(disable_owned(dry_run=args.dry_run), args)
+        _save_explicit_skill_policy(args)
+        return rc
     pack_ids = _resolve_packs(args)
     harness_names = _resolve_harness_arg(args)
     report = install_fn(
         pack_ids=pack_ids,
         harness_names=harness_names,
-        mechanism=args.mechanism,
+        mechanism=mechanism,
         force=args.force,
         dry_run=args.dry_run,
         skill_names=args.skill, all_skills=args.all_skills,
         developer=args.developer,
     )
-    return _emit_report(report, args)
+    rc = _emit_report(report, args)
+    _save_explicit_skill_policy(args)
+    return rc
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
@@ -188,6 +202,11 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     if getattr(args, "check", False):
         report = check_fn(deep=args.deep)
         return _emit_check_report(report, args)
+    enabled, mechanism = _skill_policy(args)
+    if not enabled:
+        rc = _emit_report(disable_owned(dry_run=args.dry_run), args)
+        _save_explicit_skill_policy(args)
+        return rc
     pack = getattr(args, "pack", None)
     if args.developer and pack:
         raise AstridError(
@@ -209,7 +228,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         refresh_ids=refresh,
         refresh_selected_only=bool(pack and not skill_names),
         harness_names=_resolve_harness_arg(args),
-        mechanism=args.mechanism,
+        mechanism=mechanism,
         force=args.force,
         deep=args.deep,
         dry_run=args.dry_run,
@@ -222,8 +241,67 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         _print_warnings(report.get("warnings", []))
         for entry in broken:
             _print_broken_link(entry)
+    _save_explicit_skill_policy(args)
     # A sync that leaves a broken route in a view is not a success.
     return 1 if broken else rc
+
+
+def _skill_policy(args: argparse.Namespace) -> tuple[bool, str]:
+    """Resolve explicit skill flags over the saved installer choice."""
+    saved: dict = {}
+    try:
+        from astrid.installer.service import LABEL, install_selection
+
+        record = json.loads(install_selection(Path.home(), sys.platform).read_text(encoding="utf-8"))
+        if isinstance(record, dict) and record.get("owner") == LABEL:
+            value = record.get("choices")
+            if isinstance(value, dict):
+                saved = value
+    except (OSError, ValueError, TypeError):
+        pass
+    explicit_skills = getattr(args, "skills", None)
+    explicit_copies = getattr(args, "skill_copies", None)
+    choices = resolve_choices(
+        explicit={
+            **({"skills": explicit_skills == "on"} if explicit_skills is not None else {}),
+            **({"skill_copies": explicit_copies == "on"} if explicit_copies is not None else {}),
+        },
+        saved=saved,
+        existing_install=bool(saved),
+    )
+    enabled = True if getattr(args, "developer", False) else choices["skills"]
+    copies = choices["skill_copies"]
+    requested = getattr(args, "mechanism", None)
+    mechanism = requested or ("copy" if copies else "symlink")
+    return bool(enabled), mechanism
+
+
+def _save_explicit_skill_policy(args: argparse.Namespace) -> None:
+    """Save explicit skill flags into an existing Astrid install record."""
+    if getattr(args, "dry_run", False):
+        return
+    explicit = {}
+    for name, value in (("skills", getattr(args, "skills", None)),
+                        ("skill_copies", getattr(args, "skill_copies", None))):
+        if value is not None:
+            explicit[name] = value == "on"
+    if not explicit:
+        return
+    try:
+        from astrid.installer.service import LABEL, install_selection, read_json, write_json
+
+        path = install_selection(Path.home(), sys.platform)
+        record = read_json(path)
+        if (record.get("owner") != LABEL or not record.get("program_root")
+                or record.get("uninstalled")):
+            return
+        choices = record.get("choices")
+        choices = dict(choices) if isinstance(choices, dict) else {}
+        choices.update(explicit)
+        record["choices"] = choices
+        write_json(path, record)
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def _print_link_summary(links: dict) -> None:
@@ -310,13 +388,21 @@ def _emit_report(report: dict[str, Any], args: argparse.Namespace) -> int:
         return 0
     for action in report["actions"]:
         print(f"[{action['harness']}]")
-        for step in action["steps"]:
+        for step in action.get("steps", []):
             print(f"  {step['description']}")
+        for key in ("removed", "preserved"):
+            for path in action.get(key, []):
+                print(f"  {key}: {path}")
         for key in ("outdated", "changed"):
             if key in action:
                 print(f"  {key}: {', '.join(action[key]) or '(none)'}")
         if action.get("visibility"):
             print(f"  {action['visibility']}")
+    for row in report.get("conflicts", []):
+        print(f"  conflict [{row['harness']}]: {row.get('path', '')}: {row['reason']}")
+    for row in report.get("ambiguous", []):
+        if row not in report.get("conflicts", []):
+            print(f"  preserved [{row['harness']}]: {row.get('path', '')}: {row['reason']}")
     return 0
 
 

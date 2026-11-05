@@ -106,18 +106,20 @@ def record_install(
     *,
     target: str,
     mechanism: str,
+    source: str | None = None,
 ) -> None:
     installs = state["installs"].setdefault(harness, {})
     disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
     if pack_id in disabled:
         disabled.remove(pack_id)
     previous = installs.get(pack_id)
-    if previous and previous.get("target") == target and previous.get("mechanism") == mechanism:
+    if previous and previous.get("target") == target and previous.get("mechanism") == mechanism and previous.get("source") == source:
         return
     installs[pack_id] = {
         "target": target,
         "installed_at": now_iso(),
         "mechanism": mechanism,
+        **({"source": source} if source is not None else {}),
     }
 
 
