@@ -36,7 +36,9 @@ MARKER_TEXT = "pinokio row data marker\n"
 MARKER_NAME = "pinokio-row-marker.txt"
 # The chiptune SFX blip takes 0.1s by default. A longer duration keeps the task
 # running while Stop is requested; the pack's upper bound is not in this checkout.
-BUSY_DURATION_S = 10
+# The chiptune task renders far faster than its audio length, so a short task can
+# finish before Stop lands. Escalate the length until a task is caught running.
+BUSY_DURATIONS_S = (120, 600, 1800)
 BUSY_REFUSAL = re.compile(r"Astrid is busy \(\d+ tasks running\)")
 TERMINAL = ci_journey.TERMINAL
 
@@ -326,10 +328,15 @@ class Row:
     def busy_stop(self) -> str:
         """Stop while a task runs: accept one busy refusal or a clean stop, then prove the task outcome."""
         self.write_marker()
-        busy = ci_journey.submit_task(self.version, self.evidence, PROJECT, create_project=False,
-                                      duration_s=BUSY_DURATION_S)
-        self.task_id = busy
-        self.wait_for_state(busy, {"running"}, timeout=60)
+        for attempt, duration in enumerate(BUSY_DURATIONS_S, 1):
+            busy = ci_journey.submit_task(self.version, self.evidence, PROJECT, create_project=False,
+                                          duration_s=duration)
+            self.task_id = busy
+            if self.wait_for_state(busy, {"running", *TERMINAL}, timeout=120) == "running":
+                break
+        else:
+            raise RowError("every busy task finished before it was seen running; busy stop was not exercised")
+        caught = f" (task running, {duration}s audio, attempt {attempt})"
         try:
             self.stop_request()
         except RowError as exc:
@@ -338,10 +345,10 @@ class Row:
             self.assert_same_runtime()
             self.wait_for_state(busy, set(TERMINAL), timeout=900)
             self.stop()
-            outcome = "busy stop refused once; same Runtime; task terminal; retried stop succeeded"
+            outcome = "busy stop refused once; same Runtime; task terminal; retried stop succeeded" + caught
         else:
             self.finish_stop()
-            outcome = "busy stop completed cleanly"
+            outcome = "busy stop completed cleanly" + caught
         self.start()
         self.wait_for_state(busy, set(TERMINAL), timeout=60)
         self.verify_marker()
