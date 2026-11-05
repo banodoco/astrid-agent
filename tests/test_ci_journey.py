@@ -1783,3 +1783,76 @@ def test_windows_service_log_status_explicitly_records_missing_pack_host_and_emp
     assert receipt["failure_diagnostics"]["before-cleanup"]["windows_service_logs"] == status["logs"]
     assert not (staged / "service-pack-host.log").exists()
     assert (staged / "runtime-service-native.log").read_bytes() == b""
+
+
+@pytest.mark.parametrize("actions,runner,image_os,hosted", [
+    ("true", "windows-2022", "windows2022", True),
+    ("false", "windows-2022", "windows2022", False),
+    ("true", "self-hosted", "", False),
+])
+def test_hosted_windows_profile_is_preserved_only_on_hosted_actions_runner(
+        tmp_path, monkeypatch, actions, runner, image_os, hosted):
+    run_root = tmp_path / "run"
+    original = {
+        "HOME": "original-home", "USERPROFILE": "original-userprofile",
+        "LOCALAPPDATA": "original-localappdata", "APPDATA": "original-appdata",
+    }
+    for key, value in original.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", runner)
+    if image_os:
+        monkeypatch.setenv("ImageOS", image_os)
+    else:
+        monkeypatch.delenv("ImageOS", raising=False)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "_windows_local_application_data", lambda: tmp_path / "real-local")
+
+    with journey.isolated_environment(run_root, run_root / "program", run_root / "data"):
+        assert journey.hosted_windows_runner() is hosted
+        if hosted:
+            assert {key: os.environ[key] for key in original} == original
+        else:
+            assert os.environ["HOME"] == str(run_root / "home")
+            assert os.environ["USERPROFILE"] == str(run_root / "home")
+            assert os.environ["LOCALAPPDATA"] == str(run_root / "localappdata")
+            assert os.environ["APPDATA"] == str(run_root / "appdata")
+        assert os.environ["ASTRID_CI_PROGRAM_ROOT"] == str(run_root / "program")
+        assert os.environ["ASTRID_CI_DATA_ROOT"] == str(run_root / "data")
+    assert {key: os.environ[key] for key in original} == original
+
+
+def test_hosted_windows_captures_bounded_logs_from_real_profile_even_without_owned_task(
+        tmp_path, monkeypatch):
+    local = tmp_path / "real-local"
+    log_dir = local / "Astrid Runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    content = b"pack-host diagnostic\n" + b"x" * (journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT + 29)
+    (log_dir / "service-pack-host.log").write_bytes(content)
+    (log_dir / "runtime-service.log").write_bytes(b"runtime output")
+    (log_dir / "unrelated.txt").write_text("exclude", encoding="utf-8")
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    run_root = tmp_path / "run"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", "windows-2022")
+    monkeypatch.setenv("ImageOS", "windows2022")
+    monkeypatch.setattr(journey, "_windows_local_application_data", lambda: local)
+    monkeypatch.setattr(journey.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps({"task_found": False, "task_path": None, "action_count": 0,
+                           "actions": [], "owned_count": 0, "profile_local": str(local)}).encode(),
+    ))
+
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+
+    expected = content[-journey.EVIDENCE_LOG_LIMIT:]
+    assert (evidence / "service-pack-host.log").read_bytes() == expected
+    assert (evidence / "runtime-service-native.log").read_bytes() == b"runtime output"
+    assert (evidence / "runtime-service-service-pack-host-real-profile-before-cleanup.log").is_file()
+    assert not (evidence / "unrelated.txt").exists()
+    status = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert status["status"] == "captured"
+    assert status["probe"]["task_found"] is False
+    assert status["captured_bytes"] <= journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT
