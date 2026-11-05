@@ -275,6 +275,8 @@ def _release1_row_errors(candidate, contract, row):
             for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
                     errors.append(f"{job_id}: fresh {check} assertion did not pass")
+        if job_id in {"direct-linux-fresh", "direct-macos-fresh"}:
+            errors.extend(fresh_update_errors(job_id, row.get("update")))
         if job_id == "direct-windows":
             refusal = row.get("windows_upgrade_refusal")
             if not isinstance(refusal, dict):
@@ -353,6 +355,36 @@ def _release1_row_errors(candidate, contract, row):
           or prerequisite.get("managed_by") != "pinokio"
           or prerequisite.get("foreground_fallback") is not False):
         errors.append(f"{job_id}: Pinokio ownership prerequisite is not explicit")
+    return errors
+
+
+def fresh_update_errors(job_id, update):
+    """Require a completed, same-label R1 update for the two fresh rows."""
+    errors = []
+    if not isinstance(update, dict) or update.get("status") != "pass":
+        return [f"{job_id}: fresh update receipt is absent or did not pass"]
+    if update.get("release_from") != 1 or update.get("release_to") != 2:
+        errors.append(f"{job_id}: fresh update release transition is invalid")
+    old, new = update.get("old_version"), update.get("new_version")
+    if (not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
+                for value in (old, new)) or old == new):
+        errors.append(f"{job_id}: fresh update version transition is invalid")
+    if not DIGEST.fullmatch(str(update.get("manifest_sha256", ""))):
+        errors.append(f"{job_id}: fresh update manifest digest is invalid")
+    service = update.get("service")
+    names = update.get("service_names")
+    if (not isinstance(service, dict) or service.get("foreground_fallback") is not False
+            or not isinstance(service.get("service_path"), str)
+            or not isinstance(names, list) or not names
+            or Path(service["service_path"]).name not in names):
+        errors.append(f"{job_id}: fresh update service evidence is invalid")
+    checks = update.get("checks")
+    if not isinstance(checks, dict):
+        checks = {}
+    for check in ("new_version", "old_version_retained", "same_service", "no_boundary_handoff",
+                  "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled"):
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: fresh update {check} assertion did not pass")
     return errors
 
 

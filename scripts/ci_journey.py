@@ -1940,6 +1940,14 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if not settled_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel exited before journey settlement")
         result["checks"]["unrelated_sentinel"] = "pass"
+        if (getattr(args, "job_id", None) in {"direct-linux-fresh", "direct-macos-fresh"}
+                and args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct"):
+            if __package__:
+                from . import journey_fresh_update
+            else:
+                import journey_fresh_update
+            journey_fresh_update.execute(args, root, data, evidence, app, manifest, version_path,
+                                         version, project, marker, digest, sentinel, birth, result)
         result["status"] = "pass"
     except Exception as exc:
         result["status"] = "fail"
