@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,12 @@ def test_default_source_pin_conflict(tmp_path, monkeypatch):
     _make(root, "consumer", dependencies=("hivemind",))
     _make(root, "hivemind")
     monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    # Hivemind ships in core since the foundation chain (PK-3), so there is no
+    # built-in default source declaration any more: declare the release pin.
+    declarations = tmp_path / "declarations.json"
+    declarations.write_text(json.dumps([{"pack_id": "hivemind", "repository": "https://example.test/hivemind.git",
+                                         "revision": "0" * 40}]), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_SOURCE_DECLARATIONS", str(declarations))
     scan = loader.scan_packs(root, strict=False)
     assert "consumer" not in {pack.id for pack in scan.packs}
     assert any(record.pack_id == "consumer" and "release default pin" in record.error
