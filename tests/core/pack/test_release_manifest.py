@@ -242,3 +242,27 @@ def test_interleaved_writer_cannot_be_deleted_by_stale_release_list(
     snapshot = read_group(root)
     assert read_pin(snapshot.paths["alpha"] / "PIN")["origin"] == "user"
     assert set(snapshot.paths) == {"alpha", "shared"}
+
+
+def test_reconciled_default_removals_are_in_the_consent_preview(tmp_path: Path) -> None:
+    """LB-TXN r1 finding 4 (new): consent is shown every pack the staged change
+    deletes, including omitted defaults removed by reconciliation (which are
+    deliberately not user tombstones)."""
+    repo = Repository(tmp_path / "repository")
+    root = tmp_path / "Astrid" / "packs"
+    install_release_manifest(manifest=release(repo, "alpha", "shared"), packs_root=root,
+                             refresh=accepted_refresh)
+    before = read_group(root)
+    repo.next_revision()
+    seen: list[dict] = []
+
+    def decline(changes):
+        seen.append(dict(changes))
+        return False
+
+    with pytest.raises(PackInstallError) as refused:
+        install_release_manifest(manifest=release(repo, "shared"), packs_root=root, consent=decline)
+    assert refused.value.code == "user_cancelled"
+    assert seen and seen[0]["removed"] == ["alpha"]
+    assert seen[0]["removals"] == []
+    assert read_group(root).transaction_id == before.transaction_id

@@ -256,6 +256,8 @@ def _confirm_update(changes: dict[str, Any]) -> bool:
     for pack_id, change in changes["packs"].items():
         print(f"  {pack_id}: {change['before'] or 'not installed'} -> {change['after']}", file=sys.stderr)
         print(f"    tree: {change['before_digest'] or 'none'} -> {change['after_digest']}", file=sys.stderr)
+    if changes.get("removed"):
+        print(f"  removing: {', '.join(changes['removed'])}", file=sys.stderr)
     print(f"  preserved removals: {', '.join(changes['removals']) or 'none'}", file=sys.stderr)
     return input("Commit this validated group update? [y/N] ").strip().lower() in {"y", "yes"}
 

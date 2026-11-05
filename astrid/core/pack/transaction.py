@@ -1025,6 +1025,9 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         for pack_id in sorted(packs)
                     },
                     "removals": sorted(tombstones),
+                    # Every pack this staged change deletes: explicit removals and
+                    # omitted defaults found by reconciliation (LB-TXN r1 finding 4).
+                    "removed": sorted(remove),
                 }
                 if consent(changes) is not True:
                     raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
