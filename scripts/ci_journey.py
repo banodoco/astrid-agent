@@ -2171,8 +2171,9 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
-    """Exercise the installed SDK through a settled, materialized SFX output."""
+def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
+                duration_s: float = 0.1) -> str:
+    """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
     for name in ("project.json", "sdk-invocation.json"):
         (evidence / name).unlink(missing_ok=True)
@@ -2190,7 +2191,7 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
-               "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
+               "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     invocation = json.loads(installed_cli_with_capture(version, [json.dumps(request)], evidence,
                                           "sdk-invocation.json", module="astrid.omp_invoke",
                                           status_name="sdk-capture-status.json"))
@@ -2200,7 +2201,12 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")
-    task_id = refs[0]["task_id"]
+    return refs[0]["task_id"]
+
+
+def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
+    """Exercise the installed SDK through a settled, materialized SFX output."""
+    task_id = submit_task(version, evidence, project, create_project=create_project)
     try:
         installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                 "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
