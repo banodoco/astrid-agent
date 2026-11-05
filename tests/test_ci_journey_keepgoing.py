@@ -126,7 +126,17 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
         receipt.parent.mkdir(parents=True, exist_ok=True)
         passed = mode != "observe"
         receipt.write_text(json.dumps({"passed": passed,
-                                       "failures": [] if passed else ["capabilities.approval", "capabilities.required"]}))
+                                       "failures": [] if passed else ["capabilities.approval", "capabilities.required"],
+                                       "details": {
+                                           "capabilities.required": {
+                                               "unready": ["generation.generate_image_codex", "stream_content.distill"],
+                                               "install_root": "/private/install/root",
+                                           },
+                                           "capabilities.approval": {
+                                               "unapproved": ["video_editing.event_talks"],
+                                               "token": "must-not-be-captured",
+                                           },
+                                       }}))
         return receipt
     monkeypatch.setattr(journey, "verify", verify)
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **k: None)
@@ -185,7 +195,16 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     assert observation["observation"] == {
         "passed": False,
         "failures": ["capabilities.approval", "capabilities.required"],
+        "failed_check_details": [
+            {"check": "capabilities.required",
+             "ids": ["generation.generate_image_codex", "stream_content.distill"],
+             "omitted_count": 0},
+            {"check": "capabilities.approval", "ids": ["video_editing.event_talks"],
+             "omitted_count": 0},
+        ],
     }
+    assert "/private/install/root" not in json.dumps(observation["observation"])
+    assert "must-not-be-captured" not in json.dumps(observation["observation"])
     assert observation["failure_class"] == "real"
     assert observation["forced_continuation_used"] is False
     assert rows["release1-update"]["result"] == "pass" and "update" in calls
@@ -194,10 +213,27 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
                for item in rows["release1-verify-update"]["preconditions"])
     rendered = (evidence / "keepgoing-report.md").read_text()
     assert "| stage | result | observation | forced-continuation-used | first error |" in rendered
-    assert "| release0-verify | observed-failed | {\"failures\": [\"capabilities.approval\", \"capabilities.required\"], \"passed\": false} |" in rendered
+    assert "| release0-verify | observed-failed |" in rendered
+    assert '"failed_check_details"' in rendered
+    assert '"generation.generate_image_codex"' in rendered
     assert "REAL failures: release0-verify" in rendered
     stage_index = [row["stage"] for row in report["stages"]].index("release0-verify")
     assert f"style s{stage_index} fill:#f99" in rendered
+
+
+def test_failed_capability_detail_projection_is_allowlisted_and_bounded():
+    receipt = {"details": {
+        "capabilities.required": {"unready": [f"capability.{index:02d}" for index in range(40)]},
+        "capabilities.approval": {"unapproved": ["../private/token", "safe.capability"]},
+        "runtime.identity": {"version_root": "/private/root"},
+    }}
+    projected = keepgoing.failed_capability_details(
+        receipt, ["capabilities.required", "capabilities.approval", "runtime.identity"])
+    assert len(projected) == 2
+    assert projected[0]["ids"] == [f"capability.{index:02d}" for index in range(32)]
+    assert projected[0]["omitted_count"] == 8
+    assert projected[1] == {"check": "capabilities.approval", "ids": ["safe.capability"],
+                            "omitted_count": 0}
 
 
 def test_release0_owner_captures_service_health_and_process_identity(monkeypatch, tmp_path):
