@@ -634,15 +634,16 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
 
 
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
-    """Retain bounded tails of the run-owned Runtime and named service logs."""
+    """Retain bounded tails of Runtime logs from the active journey profile."""
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
     elif sys.platform == "win32":
-        log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+        log_dir = (_windows_local_application_data() / "Astrid Runtime" / "logs"
+                   if hosted_windows_runner() else
+                   run_root / "localappdata" / "Astrid Runtime" / "logs")
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "install.log", log_dir / "runtime.log", log_dir / "runtime-service.log",
-             *sorted(log_dir.glob("service-*.log"))]
+    paths = sorted(log_dir.glob("*.log"))
     for source in paths:
         if source.is_symlink() or not source.is_file():
             continue
@@ -735,7 +736,8 @@ try {
 } catch {
     if ($_.FullyQualifiedErrorId -eq 'CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask' -and
         $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
-        @{ task_found = $false; task_path = $null; action_count = 0; actions = @(); owned_count = 0 } | ConvertTo-Json -Depth 5 -Compress
+        @{ task_found = $false; task_path = $null; action_count = 0; actions = @(); owned_count = 0;
+           profile_local = [Environment]::GetFolderPath('LocalApplicationData') } | ConvertTo-Json -Depth 5 -Compress
         exit 0
     }
     exit 1
@@ -760,10 +762,11 @@ $bounded = @($actions | Select-Object -First 8 | ForEach-Object {
 })
 $result = @{ task_found = $true; task_path = [string]$task.TaskPath; action_count = $actions.Count;
              actions = $bounded; owned_count = $owned.Count; profile_local = $null }
-if ($owned.Count -eq 1) { $result.profile_local = [Environment]::GetFolderPath('LocalApplicationData') }
+if ($owned.Count -eq 1 -or __HOSTED__) { $result.profile_local = [Environment]::GetFolderPath('LocalApplicationData') }
 $result | ConvertTo-Json -Depth 5 -Compress
 """.replace("__RUN_ROOT__", windows._powershell_quote(expected_root)).replace(
-            "__DATA_ROOT__", windows._powershell_quote(expected_data))
+            "__DATA_ROOT__", windows._powershell_quote(expected_data)).replace(
+            "__HOSTED__", "$true" if hosted_windows_runner() else "$false")
         env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                                 capture_output=True, timeout=30, check=False, env=env)
@@ -793,7 +796,9 @@ $result | ConvertTo-Json -Depth 5 -Compress
                     "run_root_match": action["run_root_match"], "data_root_match": action["data_root_match"],
                 })
             probe_complete = True
-            profile_local = observed.get("profile_local") if observed["task_found"] and observed["owned_count"] == 1 else None
+            profile_local = (observed.get("profile_local") if hosted_windows_runner() else
+                             observed.get("profile_local") if observed["task_found"] and
+                             observed["owned_count"] == 1 else None)
             if not isinstance(profile_local, str) or not profile_local:
                 status["status"] = "not_owned"
             else:
@@ -1156,16 +1161,18 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
     local = run_root / "localappdata"
     for path in (home, local, run_root / "tmp"):
         path.mkdir(parents=True, exist_ok=True)
-    changes = {"HOME": str(home), "USERPROFILE": str(home), "LOCALAPPDATA": str(local),
-               "APPDATA": str(run_root / "appdata"), "TMP": str(run_root / "tmp"),
+    changes = {"TMP": str(run_root / "tmp"),
                "TEMP": str(run_root / "tmp"), "TMPDIR": str(run_root / "tmp"),
                "XDG_DATA_HOME": str(home / ".local" / "share"),
                "XDG_STATE_HOME": str(home / ".local" / "state"),
                "XDG_CONFIG_HOME": str(home / ".config"),
                "ASTRID_RUNTIME_DATA_ROOT": str(data),
                "ASTRID_CI_PROGRAM_ROOT": str(root), "ASTRID_CI_DATA_ROOT": str(data)}
+    if not hosted_windows_runner():
+        changes.update({"HOME": str(home), "USERPROFILE": str(home),
+                        "LOCALAPPDATA": str(local), "APPDATA": str(run_root / "appdata")})
     if sys.platform == "win32":
-        native_local = os.environ.get("LOCALAPPDATA")
+        native_local = str(_windows_local_application_data()) if hosted_windows_runner() else os.environ.get("LOCALAPPDATA")
         changes[windows.NATIVE_RUNTIME_LOG_DIR_ENV] = (
             str(Path(native_local) / "Astrid Runtime" / "logs") if native_local else "")
     prior = {key: os.environ.get(key) for key in changes}
@@ -1178,6 +1185,27 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def hosted_windows_runner() -> bool:
+    """Identify the hosted Windows Actions image; self-hosted/local stays isolated."""
+    return (sys.platform == "win32"
+            and os.environ.get("GITHUB_ACTIONS", "").casefold() == "true"
+            and os.environ.get("ASTRID_CI_EXPECTED_RUNNER") == "windows-2022"
+            and bool(os.environ.get("ImageOS")))
+
+
+def _windows_local_application_data() -> Path:
+    """Ask Windows for the current account's real LocalApplicationData folder."""
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "[Environment]::GetFolderPath('LocalApplicationData')"],
+        capture_output=True, text=True, timeout=15, check=True,
+    )
+    value = completed.stdout.strip()
+    if not value or not Path(value).is_absolute():
+        raise RuntimeError("Windows LocalApplicationData is unavailable")
+    return Path(value)
 
 
 def process_birth(pid: int) -> str | None:
