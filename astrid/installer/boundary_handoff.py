@@ -25,6 +25,12 @@ UPGRADE_UNINSTALL_REFUSAL = (
     "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. "
     "Both data folders were kept."
 )
+# Release 1 has no qualified Windows boundary registration. The journey harness
+# and evidence checker match this exact line in the installer output.
+WINDOWS_UPGRADE_REFUSAL = (
+    "Upgrading from an earlier Windows version isn't supported yet. "
+    "Your data was kept; reinstall to get the new version."
+)
 
 
 def journal_path(service):
@@ -296,6 +302,9 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
         return False  # Only a previously-verified R1 journal can reach this path.
     if not r0_stop.is_r0_installation(root, backend.service):
         return False
+    if backend.service.system == "win32":
+        # Refuse before the handoff journal, any stop, registration or copy.
+        raise ValueError(WINDOWS_UPGRADE_REFUSAL)
     if manifest_loader is None:
         raise ValueError("The copy-only upgrade requires a candidate manifest.")
     BoundaryHandoff(backend).run(data, manifest_loader, say=say)
