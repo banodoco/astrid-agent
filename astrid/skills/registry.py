@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.foundation.paths import CORE_SKILLS_DIR, REPO_ROOT
 
 from .commands import rewrite_commands
 from .discovery import SkillDescriptor, list_extras, list_skills
@@ -27,7 +27,7 @@ END_MARKER = "<!-- PACKS:END -->"
 _HEADING = "## Installed packs"
 
 # Default registry reference; constant name retained for API compatibility.
-CORE_SKILL_MD = REPO_ROOT / "astrid/packs/_core/docs/creative-work/references/packs.md"
+CORE_SKILL_MD = CORE_SKILLS_DIR / "creative-work/references/packs.md"
 
 
 def _repo_relative(path: Path, *, view_root: Path | None = None) -> Path:
@@ -37,7 +37,7 @@ def _repo_relative(path: Path, *, view_root: Path | None = None) -> Path:
         try:
             return path.relative_to(view_root)
         except ValueError:
-            pass
+            return path.resolve()
     resolved = path.resolve()
     root = REPO_ROOT.resolve()
     if root in resolved.parents:
