@@ -186,6 +186,9 @@ def test_done2_choice_does_not_return_after_repair_update_reinstall(installation
     _assert_absent(env, choice)
     # Simulate removed program selection with the retained workspace intact.
     (env.root / "current").unlink()
+    # Removing the program also removes its sign-in unit. With no current
+    # version, a surviving unit is classified as an R0 service by the handoff gate.
+    (Path(os.environ["XDG_CONFIG_HOME"]) / "systemd/user/astrid.service").unlink(missing_ok=True)
     write_json(env.data / "runtime/catalog.json", {"selected_realm_id": "selected"})
     attach = Mock(return_value={"realm_id": "selected", "realm_root": str(env.data / "realm")})
     monkeypatch.setattr(Backend, "attach_existing", attach)
@@ -195,6 +198,7 @@ def test_done2_choice_does_not_return_after_repair_update_reinstall(installation
     assert_saved()
     # Uninstall retains the selection as a receipt for the kept workspace.
     shutil.rmtree(env.root)
+    (Path(os.environ["XDG_CONFIG_HOME"]) / "systemd/user/astrid.service").unlink(missing_ok=True)  # uninstall removes the unit
     selection = install_selection(env.home, "linux")
     write_json(selection, {**read_json(selection), "uninstalled": True})
     assert cli.main(env.args + ["--yes"]) == 0
