@@ -83,7 +83,9 @@ def test_live_snapshot_failure_upload_uses_producer_schema_and_size_limit():
     assert "$name -in @('live-seed-failure.json', 'live-snapshot-failure.json', 'live-release1-snapshot-failure.json')" in guard
     assert "'project_id', 'timeline_id', 'cas_sha256', 'head_revision_id'" in guard
     for required in ("$file.Length -gt 4096", "astrid.live-workspace-failure.v1",
-                     "astrid.live-workspace-failure.v2", "missing_field", "$allowedSnapshotFields -cnotcontains",
+                     "astrid.live-workspace-failure.v2", "astrid.live-workspace-failure.v3",
+                     "snapshot_lookup", "timeline_head_revision_id", "keys_revision",
+                     "$allowedSnapshotFields -cnotcontains",
                      "Invalid live workspace failure fields", "Invalid live workspace failure frame",
                      "$allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code",
                      "$allowedFunctions -cnotcontains $frame.function"):
