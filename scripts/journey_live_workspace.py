@@ -38,10 +38,61 @@ def failure_diagnostic(exc):
     if isinstance(exc, KeyError) and len(exc.args) == 1 and isinstance(exc.args[0], str):
         if exc.args[0] in SNAPSHOT_FAILURE_FIELDS:
             missing_field = exc.args[0]
-    return {"schema": "astrid.live-workspace-failure.v2", "error_type": kind if kind in ERROR_TYPES else "other",
+    snapshot_lookup = getattr(exc, "safe_snapshot_lookup", None)
+    schema = "astrid.live-workspace-failure.v3" if snapshot_lookup is not None else "astrid.live-workspace-failure.v2"
+    diagnostic = {"schema": schema, "error_type": kind if kind in ERROR_TYPES else "other",
             "frames": frames[-10:], "http_status": exc.code if isinstance(exc, HTTPError) and type(exc.code) is int and 100 <= exc.code <= 599 else None,
             "runtime_code": getattr(exc, "safe_runtime_code", None) if isinstance(exc, HTTPError) else None,
             "missing_field": missing_field}
+    if snapshot_lookup is not None:
+        diagnostic["snapshot_lookup"] = snapshot_lookup
+    return diagnostic
+
+
+def _json_type(value):
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "boolean"
+    if type(value) in (int, float):
+        return "number"
+    if type(value) is str:
+        return "string"
+    if type(value) is dict:
+        return "object"
+    if type(value) is list:
+        return "array"
+    return "other"
+
+
+def _lookup_field(value, field):
+    present = type(value) is dict and field in value
+    return {"present": present, "type": _json_type(value[field]) if present else None}
+
+
+def snapshot_lookup_diagnostic(timeline, keys):
+    """Describe only the two lookup containers and field presence/types."""
+    return {"timeline_type": _json_type(timeline),
+            "timeline_head_revision_id": _lookup_field(timeline, "head_revision_id"),
+            "keys_type": _json_type(keys),
+            "keys_revision": _lookup_field(keys, "revision")}
+
+
+def _valid_snapshot_lookup(value):
+    def valid_field(field):
+        return (isinstance(field, dict) and set(field) == {"present", "type"}
+                and type(field["present"]) is bool
+                and (field["type"] is None or type(field["type"]) is str and field["type"] in
+                     {"null", "boolean", "number", "string", "object", "array", "other"})
+                and (field["present"] or field["type"] is None)
+                and (not field["present"] or field["type"] is not None))
+    return (isinstance(value, dict) and set(value) == {"timeline_type", "timeline_head_revision_id", "keys_type", "keys_revision"}
+            and type(value["timeline_type"]) is str
+            and value["timeline_type"] in {"null", "boolean", "number", "string", "object", "array", "other"}
+            and type(value["keys_type"]) is str
+            and value["keys_type"] in {"null", "boolean", "number", "string", "object", "array", "other"}
+            and valid_field(value["timeline_head_revision_id"])
+            and valid_field(value["keys_revision"]))
 
 
 def valid_failure_diagnostic(value):
@@ -49,10 +100,12 @@ def valid_failure_diagnostic(value):
         return False
     schema = value.get("schema")
     expected = {"schema", "error_type", "frames", "http_status", "runtime_code"}
-    if schema == "astrid.live-workspace-failure.v2":
+    if schema in {"astrid.live-workspace-failure.v2", "astrid.live-workspace-failure.v3"}:
         expected.add("missing_field")
+    if schema == "astrid.live-workspace-failure.v3":
+        expected.add("snapshot_lookup")
     return (set(value) == expected
-            and schema in {"astrid.live-workspace-failure.v1", "astrid.live-workspace-failure.v2"}
+            and schema in {"astrid.live-workspace-failure.v1", "astrid.live-workspace-failure.v2", "astrid.live-workspace-failure.v3"}
             and isinstance(value["error_type"], str) and value["error_type"] in ERROR_TYPES | {"other"}
             and isinstance(value["frames"], list) and len(value["frames"]) <= 10
             and all(isinstance(frame, dict) and set(frame) == {"function", "line"}
@@ -62,7 +115,8 @@ def valid_failure_diagnostic(value):
             and (value["runtime_code"] is None or isinstance(value["runtime_code"], str) and value["runtime_code"] in ERROR_CODES)
             and (schema == "astrid.live-workspace-failure.v1" or
                  value["missing_field"] is None or
-                 isinstance(value["missing_field"], str) and value["missing_field"] in SNAPSHOT_FAILURE_FIELDS))
+                 isinstance(value["missing_field"], str) and value["missing_field"] in SNAPSHOT_FAILURE_FIELDS)
+            and (schema != "astrid.live-workspace-failure.v3" or _valid_snapshot_lookup(value["snapshot_lookup"])))
 
 
 class LiveWorkspace:
@@ -137,8 +191,13 @@ def snapshot(client, keys):
     project = client.request("GET", path("projects", keys["project"]))
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
-    if timeline["head_revision_id"] != keys["revision"]:
-        raise ValueError("Seeded canonical composition is no longer the head")
+    lookup_diagnostic = snapshot_lookup_diagnostic(timeline, keys)
+    try:
+        if timeline["head_revision_id"] != keys["revision"]:
+            raise ValueError("Seeded canonical composition is no longer the head")
+    except (KeyError, TypeError) as exc:
+        exc.safe_snapshot_lookup = lookup_diagnostic
+        raise
     revision = client.request("GET", base + "/composition-revisions/" + quote(keys["revision"], safe=""))
     content = revision["payload"]
     generation = keys["generation"]

@@ -190,9 +190,14 @@ def test_snapshot_failure_diagnostic_retains_only_known_missing_field():
     with pytest.raises(KeyError) as caught:
         live.snapshot(Client(), {"project": "project", "timeline": "timeline"})
     diagnostic = live.failure_diagnostic(caught.value)
-    assert diagnostic["schema"] == "astrid.live-workspace-failure.v2"
+    assert diagnostic["schema"] == "astrid.live-workspace-failure.v3"
     assert diagnostic["error_type"] == "KeyError"
     assert diagnostic["missing_field"] == "head_revision_id"
+    assert diagnostic["snapshot_lookup"] == {
+        "timeline_type": "object",
+        "timeline_head_revision_id": {"present": False, "type": None},
+        "keys_type": "object",
+        "keys_revision": {"present": False, "type": None}}
     assert live.valid_failure_diagnostic(diagnostic)
 
     secret = "/private/runner/.credential/token"
@@ -200,6 +205,41 @@ def test_snapshot_failure_diagnostic_retains_only_known_missing_field():
     assert diagnostic["missing_field"] is None
     assert secret not in json.dumps(diagnostic)
     assert not live.valid_failure_diagnostic({**diagnostic, "missing_field": secret})
+
+
+@pytest.mark.parametrize(
+    ("timeline", "keys", "expected_missing", "expected_lookup"),
+    [
+        ({"head_revision_id": "revision"}, {"project": "p", "timeline": "t"}, None,
+         {"timeline_type": "object", "timeline_head_revision_id": {"present": True, "type": "string"},
+          "keys_type": "object", "keys_revision": {"present": False, "type": None}}),
+        ("private timeline response", {"project": "p", "timeline": "t", "revision": "private key"}, None,
+         {"timeline_type": "string", "timeline_head_revision_id": {"present": False, "type": None},
+          "keys_type": "object", "keys_revision": {"present": True, "type": "string"}}),
+    ],
+)
+def test_snapshot_failure_diagnostic_identifies_each_lookup_without_values(
+        timeline, keys, expected_missing, expected_lookup):
+    class Client:
+        def request(self, _method, path):
+            if path == "/v1/projects/p":
+                return {}
+            if path == "/v1/projects/p/timelines/t":
+                return timeline
+            raise AssertionError(f"unexpected request: {path}")
+
+    with pytest.raises((KeyError, TypeError)) as caught:
+        live.snapshot(Client(), keys)
+    diagnostic = live.failure_diagnostic(caught.value)
+    assert diagnostic["missing_field"] == expected_missing
+    assert diagnostic["snapshot_lookup"] == expected_lookup
+    assert "private timeline response" not in json.dumps(diagnostic)
+    assert "private key" not in json.dumps(diagnostic)
+    assert live.valid_failure_diagnostic(diagnostic)
+
+    unsafe = {**diagnostic, "snapshot_lookup": {**expected_lookup,
+              "keys_revision": {"present": [True], "type": "string"}}}
+    assert not live.valid_failure_diagnostic(unsafe)
 
 
 def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):

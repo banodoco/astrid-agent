@@ -904,6 +904,9 @@ jobs:
                 if ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v2') {
                   $expectedKeys += 'missing_field'
                 }
+                if ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v3') {
+                  $expectedKeys += @('missing_field', 'snapshot_lookup')
+                }
                 if ($diagnostic -isnot [PSCustomObject] -or $keys.Count -ne $expectedKeys.Count) {
                   throw "Invalid live workspace failure diagnostic: $relative"
                 }
@@ -920,7 +923,7 @@ jobs:
                   'metadata', 'content', 'version', 'status', 'task', 'schema_version', 'target_schema_version',
                   'project_id', 'timeline_id', 'cas_sha256', 'head_revision_id')
                 if ($diagnostic.schema -isnot [string] -or
-                    $diagnostic.schema -cnotin @('astrid.live-workspace-failure.v1', 'astrid.live-workspace-failure.v2') -or
+                    $diagnostic.schema -cnotin @('astrid.live-workspace-failure.v1', 'astrid.live-workspace-failure.v2', 'astrid.live-workspace-failure.v3') -or
                     $diagnostic.error_type -isnot [string] -or
                     $allowedErrorTypes -cnotcontains $diagnostic.error_type -or
                     $diagnostic.frames -isnot [array] -or $diagnostic.frames.Count -gt 10 -or
@@ -929,9 +932,38 @@ jobs:
                         $diagnostic.http_status -lt 100 -or $diagnostic.http_status -gt 599)) -or
                     ($null -ne $diagnostic.runtime_code -and
                       ($diagnostic.runtime_code -isnot [string] -or $allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code)) -or
-                    ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v2' -and $null -ne $diagnostic.missing_field -and
+                    ($diagnostic.schema -cin @('astrid.live-workspace-failure.v2', 'astrid.live-workspace-failure.v3') -and $null -ne $diagnostic.missing_field -and
                       ($diagnostic.missing_field -isnot [string] -or $allowedSnapshotFields -cnotcontains $diagnostic.missing_field))) {
                   throw "Invalid live workspace failure values: $relative"
+                }
+                if ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v3') {
+                  $lookup = $diagnostic.snapshot_lookup
+                  $lookupKeys = @('timeline_type', 'timeline_head_revision_id', 'keys_type', 'keys_revision')
+                  $allowedJsonTypes = @('null', 'boolean', 'number', 'string', 'object', 'array', 'other')
+                  if ($lookup -isnot [PSCustomObject] -or
+                      @($lookup.PSObject.Properties.Name).Count -ne $lookupKeys.Count) {
+                    throw "Invalid live workspace snapshot lookup: $relative"
+                  }
+                  foreach ($key in $lookupKeys) {
+                    if (@($lookup.PSObject.Properties.Name) -cnotcontains $key) {
+                      throw "Invalid live workspace snapshot lookup fields: $relative"
+                    }
+                  }
+                  if ($lookup.timeline_type -isnot [string] -or $allowedJsonTypes -cnotcontains $lookup.timeline_type -or
+                      $lookup.keys_type -isnot [string] -or $allowedJsonTypes -cnotcontains $lookup.keys_type) {
+                    throw "Invalid live workspace snapshot lookup types: $relative"
+                  }
+                  foreach ($fieldName in @('timeline_head_revision_id', 'keys_revision')) {
+                    $field = $lookup.$fieldName
+                    $fieldKeys = @($field.PSObject.Properties.Name)
+                    if ($field -isnot [PSCustomObject] -or $fieldKeys.Count -ne 2 -or
+                        $fieldKeys -cnotcontains 'present' -or $fieldKeys -cnotcontains 'type' -or
+                        $field.present -isnot [bool] -or
+                        ($null -ne $field.type -and ($field.type -isnot [string] -or $allowedJsonTypes -cnotcontains $field.type)) -or
+                        ($field.present -and $null -eq $field.type) -or (-not $field.present -and $null -ne $field.type)) {
+                      throw "Invalid live workspace snapshot lookup field: $relative"
+                    }
+                  }
                 }
                 foreach ($frame in $diagnostic.frames) {
                   $frameKeys = @($frame.PSObject.Properties.Name)
