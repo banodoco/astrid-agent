@@ -1,11 +1,14 @@
 """F03: canonical declarations and the existing read-only discovery layers."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
+
+import astrid
 
 from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest
 from astrid.core.pack.canonical import validate_canonical_pack
@@ -18,6 +21,8 @@ from astrid.core.pack.discovery import (
 
 SKILL = "---\nname: directly-authored\ndescription: Use the declared demo pack.\n---\nSee [guide](references/guide.md).\n"
 
+
+CORE_HIVEMIND_ROOT = Path(astrid.__file__).resolve().parent / "core" / "hivemind"
 
 def write_pack(parent: Path, pack_id: str = "demo", *, version: int = 3,
                files: dict[str, str] | None = None, **sections) -> Path:
@@ -123,9 +128,12 @@ def test_layer_priority_and_managed_identity_are_preserved(tmp_path: Path, monke
         return discover_packs(source.parent if root is None else root)
     rows = discover_pack_metadata(project_root=project, discover_packs_fn=scan,
                                   extra_pack_roots=(str(managed), str(extra)))
+    # The bundled core Hivemind is admitted first as a source row (PK-2, 04e74695).
+    assert (rows[0].id, rows[0].source_kind, rows[0].pack_dir) == ("hivemind", "source", CORE_HIVEMIND_ROOT)
+    rows = rows[1:]
     assert [r.source_kind for r in rows] == ["source", "local", "managed", "extra", "env"]
     assert [r.pack_dir for r in rows] == [source, local, managed, extra, env]
-    assert [r.priority_index for r in rows] == list(range(5))
+    assert [r.priority_index for r in rows] == list(range(1, 6))
     assert rows[2].source_revision == "a" * 40
     assert rows[2].source_manifest_sha256 == "b" * 64
     assert rows[2].source_tree_sha256 == "c" * 64
@@ -157,6 +165,10 @@ def test_external_broken_hidden_and_duplicate_roots_are_isolated(tmp_path: Path,
     if api is discover_pack_metadata:
         kwargs["discover_packs_fn"] = lambda *args: ()
     rows = api(**kwargs)
+    if api is discover_pack_metadata:
+        # The bundled core Hivemind is admitted first as a source row (PK-2, 04e74695).
+        assert (rows[0].id, rows[0].source_kind, rows[0].priority_index) == ("hivemind", "source", 0)
+        rows = [replace(row, priority_index=row.priority_index - 1) for row in rows[1:]]
     assert [(r.id, r.source_kind, r.priority_index) for r in rows] == [
         ("good_v2", "extra", 0), ("good_v3", "extra", 1)]
     assert [r.pack_dir for r in rows] == [good_v2, good_v3]
