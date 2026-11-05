@@ -163,6 +163,8 @@ def activation_lock_held(root: Path, version: Version, context=None, expected_lo
     """Return whether this unfinished update's activation lock is held."""
     from runtime_protocol import platform
 
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("Invalid update transaction context.")
     if isinstance(context, dict) and "activation_lock_path" in context:
         recorded = context["activation_lock_path"]
         if not isinstance(recorded, str) or not Path(recorded).is_absolute():
@@ -171,6 +173,9 @@ def activation_lock_held(root: Path, version: Version, context=None, expected_lo
         expected = root / ".app-update.lock" if version.managed_by == "pinokio" else expected_lock
         if expected is None or path != absolute(expected) or str(path) != recorded:
             raise ValueError("Invalid activation lock path.")
+    elif expected_lock is not None:
+        # A bound action must never downgrade to a lock derived from HOME.
+        raise ValueError("Missing activation lock path.")
     else:
         path = (root / ".app-update.lock" if version.managed_by == "pinokio"
                 else installer_lock_path(Path.home(), sys.platform))
@@ -238,7 +243,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False, exp
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
-        context = transaction.get("transaction_context") or {}
+        context = transaction.get("transaction_context", {})
         if not isinstance(context, dict):
             raise ValueError("Invalid update transaction context.")
         if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
@@ -713,7 +718,12 @@ class Service:
                                     previous_lock = absolute(value)
                                     previous = command(retained, data, windows=windows, log=self.log,
                                                        env_file=env_file, expected_lock=previous_lock)
-                                    if action == encode(previous):
+                                    from ._d2_launch_prelude import SOURCE as d2_prelude
+
+                                    current_prelude = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
+                                    original_d2 = [*previous[:-1], previous[-1].replace(
+                                        current_prelude, d2_prelude, 1)]
+                                    if action in (encode(previous), encode(original_d2)):
                                         return True
                         except (AttributeError, StopIteration, SyntaxError, TypeError, ValueError, OSError):
                             pass

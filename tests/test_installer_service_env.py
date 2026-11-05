@@ -411,6 +411,7 @@ def test_generated_command_pending_journal_admission_table(
             "transaction_kind": "migration", "step": step,
             "data_root": str(data), "realm": {"realm_id": "realm", "realm_root": str(data / "realm")},
             "old": versions["old"].document(), "candidate": versions["candidate"].document(),
+            "transaction_context": {"activation_lock_path": str(installer_lock_path(home, sys.platform))},
             # Historical extras cannot admit the wrong phase or version.
             "launch_intent": {"version": versions[selected].document()},
             "stop_authority": {"anything": "legacy"},
@@ -494,7 +495,7 @@ def test_generated_command_rejects_malformed_or_mismatched_journal_before_runtim
     assert not data.exists()
 
 
-@pytest.mark.parametrize("form", ["legacy", "previous-gate", "previous-home", "canonical", "unknown"])
+@pytest.mark.parametrize("form", ["legacy", "previous-gate", "previous-home", "original-d2", "canonical", "unknown"])
 def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp_path, monkeypatch, form):
     import subprocess
 
@@ -535,9 +536,13 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
         expected_lock = installer_lock_path(Path.home(), sys.platform)
         legacy = canonical[-1].replace(_launch_prelude_source(), SOURCE, 1).replace(
             f",expected_lock=Path({str(expected_lock)!r})", "", 1)
-    elif form == "previous-home":
+    elif form in {"previous-home", "original-d2"}:
         legacy = command(version, data, windows=True, log=manager.log, env_file=manager.env_file,
                          expected_lock=tmp_path / "previous-home" / "astrid-install.lock")[-1]
+        if form == "original-d2":
+            from astrid.installer._d2_launch_prelude import SOURCE
+            from astrid.installer.service import _launch_prelude_source
+            legacy = legacy.replace(_launch_prelude_source(), SOURCE, 1)
     task = ET.fromstring(render("win32", version, data, manager.log, user="test-user", env_file=manager.env_file))
     ns = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     arguments_node = task.find(".//task:Actions/task:Exec/task:Arguments", ns)
@@ -569,9 +574,9 @@ def test_windows_migrates_only_known_owned_task_action_before_pending_launch(tmp
         assert not manager.path.exists()
         return
     manager.publish_launch_admission(version, data)
-    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home"} else 0)
+    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2"} else 0)
     manager.publish_launch_admission(version, data)
-    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home"} else 0)  # Idempotent no-op.
+    assert len(writes) == (1 if form in {"legacy", "previous-gate", "previous-home", "original-d2"} else 0)  # Idempotent no-op.
     runtime = ModuleType("astrid_runtime.cli")
     runtime.main = lambda argv: pytest.fail("pending migrated launch entered Runtime")
     monkeypatch.setitem(sys.modules, "astrid_runtime.cli", runtime)
@@ -703,7 +708,8 @@ def test_previous_admission_gate_is_recognized_before_stop(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("system", ["linux", "darwin"])
-def test_prior_captured_lock_path_is_replaced_without_probing_it(tmp_path, monkeypatch, system):
+@pytest.mark.parametrize("original_d2", [False, True])
+def test_prior_captured_lock_path_is_replaced_without_probing_it(tmp_path, monkeypatch, system, original_d2):
     import plistlib
 
     from astrid.installer.service import systemd_quote
@@ -712,6 +718,10 @@ def test_prior_captured_lock_path_is_replaced_without_probing_it(tmp_path, monke
         tmp_path, monkeypatch, system, "canonical")
     prior_path = tmp_path / "previous-home" / "astrid-install.lock"
     prior = command(version, data, env_file=manager.env_file, expected_lock=prior_path)
+    if original_d2:
+        from astrid.installer._d2_launch_prelude import SOURCE
+        from astrid.installer.service import _launch_prelude_source
+        prior[-1] = prior[-1].replace(_launch_prelude_source(), SOURCE, 1)
     if system == "darwin":
         document = plistlib.loads(manager.path.read_bytes())
         document["ProgramArguments"] = prior
@@ -788,8 +798,9 @@ def test_posix_migrates_only_known_action_and_preserves_service_properties(tmp_p
     assert not data.exists()
     for step in ("switched", "rollback_selected"):
         transaction["step"] = step
-        write_json(manager.root / "update-transaction.json", transaction)
         lock_path = installer_lock_path(Path.home(), sys.platform)
+        transaction["transaction_context"] = {"activation_lock_path": str(lock_path)}
+        write_json(manager.root / "update-transaction.json", transaction)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
             platform.lock_file(lock.fileno(), blocking=False)
