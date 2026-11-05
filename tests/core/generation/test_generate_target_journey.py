@@ -519,10 +519,22 @@ def loopback_comfy(tmp_path):
         }, indent=2))
 
 
+@pytest.mark.parametrize('entry_kind', ['catalog', 'saved'])
 def test_public_image_command_registers_view_bytes_and_canonical_receipt(
-    loopback_comfy, tmp_path, monkeypatch, capsys, real_runtime,
+    loopback_comfy, tmp_path, monkeypatch, capsys, real_runtime, entry_kind,
 ):
     comfy = loopback_comfy
+    entry_id = 'image/z_image_turbo'
+    if entry_kind == 'saved':
+        from vibecomfy.entries import import_as_entry
+        from vibecomfy.registry.ready import workflow_from_ready
+        from vibecomfy.workflow_bundle import load_bundle
+        source = tmp_path / 'ready-image.json'
+        source.write_text(json.dumps(load_bundle(workflow_from_ready(entry_id)).materialize_ui()))
+        monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'entries'))
+        saved = import_as_entry(source, 'ready-image')
+        assert saved['kind'] == 'image' and 'prompt' in saved['binds']
+        entry_id = saved['id']
     daemon = real_runtime()
     client = AstridClient.open(
         endpoint=daemon.endpoint, credential=daemon.credential_path,
@@ -532,22 +544,19 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
     )
     project = client.projects.create(slug="g24", name="G24", idempotency_key="g24-project")
     assert project.ok
-    import astrid.core.execution.generic_host as host_module
     import vibecomfy
+    from vibecomfy.runtime.session import current_source_content_digest, current_source_revision
+    from astrid.core.generation import targets
 
-    # The host deliberately ignores ambient PYTHONPATH. Select the same
-    # pinned dependency tree in its documented source-selection seam, so the
-    # subprocess qualifies these sources rather than a separately installed
-    # VibeComfy. No process-custody or execution guard is replaced.
+    # Use the existing explicit candidate environment. The production owner
+    # verifies its revision and clean content; no dependency or custody
+    # function is replaced, and this does not promote the production pin.
     dependency_root = str(Path(vibecomfy.__file__).resolve().parents[1])
-    from tests.helpers.runtime import runtime_checkout
-
-    dependencies = tuple(dict.fromkeys((
-        dependency_root, str(runtime_checkout()),
-        *(root for root in sys.path if Path(root).name in {"site-packages", "dist-packages"}),
-    )))
-    monkeypatch.setattr(host_module, "_dependency_pythonpath", lambda: dependencies)
-    assert host_module._dependency_pythonpath() == dependencies
+    monkeypatch.setenv('ASTRID_VIBECOMFY_CHECKOUT', dependency_root)
+    monkeypatch.setenv('ASTRID_VIBECOMFY_CANDIDATE_KIND', 'local_snapshot')
+    monkeypatch.setenv('ASTRID_VIBECOMFY_CANDIDATE_REVISION', current_source_revision())
+    monkeypatch.setenv('ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST', current_source_content_digest())
+    targets.save_target(targets.TargetRecord(endpoint=comfy.url))
     attempt = tmp_path / "generate-attempt"
     host = GenericPackHost(
         pack_roots=[PACK], attempt_root=attempt,
@@ -572,7 +581,8 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
             try:
                 code = console.main([
                     "generate", "image", "A tiny blue lighthouse.",
-                    "--target", comfy.url, "--project", project.data["project_id"], "--json",
+                    "--entry", entry_id, "--target", "auto",
+                    "--project", project.data["project_id"], "--out", str(tmp_path / 'delivered'), "--json",
                 ])
             finally:
                 host.shutdown()
@@ -585,6 +595,10 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
         (tmp_path / "generate-task-state.json").write_text(json.dumps(tasks.data, indent=2))
         assert code == 0, captured.out + captured.err
         assert len(results) == 1 and results[0].state == "succeeded"
+        delivered = json.loads(captured.out)
+        assert delivered['image_paths']
+        assert all(Path(path).is_relative_to(tmp_path / 'delivered') for path in delivered['image_paths'])
+        assert any(Path(path).read_bytes() == comfy.image for path in delivered['image_paths'])
 
         # This is the frozen GenericPackHost receipt, not a CLI-created
         # completion file. CAS publication and its hash are independently read.

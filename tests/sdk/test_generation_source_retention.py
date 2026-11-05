@@ -29,6 +29,10 @@ def admission(monkeypatch):
     client = SimpleNamespace(media=SimpleNamespace(import_file=import_file))
     monkeypatch.setattr(preflight, '_module_available', lambda name: True)
     monkeypatch.setattr(preflight, '_comfyui_runtime_available', lambda: True)
+    # Target generation uses the registered-engine probe, while the legacy
+    # typed route still uses the package/CLI probe above. This fixture admits
+    # no engine execution; it observes source ingestion and task admission.
+    monkeypatch.setattr(preflight, '_registered_managed_engine', lambda: {'owner': 'astrid'})
     task = InvocationResult('vibecomfy.run', 'executor', 'command', True,
                             kernel_task_id='task-1', raw_result={'task': {'task_id': 'task-1'}})
     invoke = Mock(return_value=task)

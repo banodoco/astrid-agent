@@ -181,7 +181,7 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
 
 @contextmanager
 def _snapshot_generation_workflow(path: Path):
-    """Read source and canonical companions once for validation and execution."""
+    """Freeze a canonical bundle, including its declared source evidence."""
     from tempfile import TemporaryDirectory
     original = path.expanduser().resolve()
     if original.is_dir():
@@ -189,13 +189,36 @@ def _snapshot_generation_workflow(path: Path):
     with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
         snapshot = Path(scratch) / original.name
         try:
-            snapshot.write_bytes(original.read_bytes())
             if original.suffix.lower() == '.py':
-                for member in (original.with_suffix('.vibe.json'), original.with_name('source.json')):
-                    if member.exists():
-                        (snapshot.parent / member.name).write_bytes(member.read_bytes())
-        except OSError as exc:
-            raise GenerationInputError(f'workflow could not be read: {original}: {exc}') from exc
+                from vibecomfy.security.provenance import Provenance
+                from vibecomfy.workflow_bundle import load_bundle, _atomic_publish_pair
+
+                bundle = load_bundle(original, trust=Provenance.USER_CONFIRMED)
+                bundle.require_canonical_authority('snapshot generation workflow')
+                archive = original.with_name('source.json')
+                declared = None
+                if not archive.is_file():
+                    metadata = bundle.workflow.metadata
+                    declared = (metadata.get('source_workflow_path') or metadata.get('source_path')
+                                or metadata.get('source_workflow'))
+                    if declared:
+                        archive = Path(declared)
+                        if not archive.is_absolute():
+                            if archive.parts[0] == 'ready_templates':
+                                from vibecomfy.registry.ready import repo_ready_template_root
+                                archive = repo_ready_template_root().parent / archive
+                            else:
+                                archive = original.parent / archive
+                # A declared member is required evidence, not an optional
+                # adjacent convenience file.
+                members = ({snapshot.with_name('source.json'): archive.read_bytes()}
+                           if declared or archive.is_file() else {})
+                _atomic_publish_pair(snapshot, original.read_bytes(), bundle.ui_sidecar,
+                                     expected=bundle, extra_members=members)
+            else:
+                snapshot.write_bytes(original.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise GenerationInputError(f'canonical workflow bundle could not be read: {original}: {exc}') from exc
         yield snapshot
 
 
@@ -207,6 +230,11 @@ def _public_input_values(values):
         return merge_input_values(values, supplied)
     except ValueError as exc:
         raise GenerationInputError(str(exc)) from exc
+
+
+def _prompt_only_video(*, model, entry, inputs):
+    """Identify an unselected video request containing only a prompt."""
+    return model is None and entry is None and set(inputs) == {"prompt"}
 
 
 def _generation_controls(*, engine, consent, max_usd, deadline):
@@ -266,7 +294,7 @@ def _runpod_target_policy(controls, *, engine="comfyui"):
 
 def _refuse_runpod_foley():
     from astrid.core.generation.preflight import generation_error
-    raise generation_error(ValueError('Foley is not supported on RunPod; use the Fal Foley action.'),
+    raise generation_error(ValueError('Foley is not supported on RunPod.'),
         code='foley_runpod_unsupported', details={'field': 'target'}, fixes=[{
             'argv': ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley'],
             'scope': 'read_only'}])
@@ -1073,6 +1101,9 @@ class GenerationFacade:
         preferred = {
             ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
             ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
+            ("audio", "tts"): ("audio/qwen3_tts_custom_voice",),
+            ("audio", "music"): ("audio/minimax_music_3",),
+            ("audio", "sfx"): ("audio/hunyuan_video_foley",),
         }.get((modality, mode), ())
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
@@ -1131,9 +1162,12 @@ class GenerationFacade:
                 + '; '.join(f'{identifier}: {exc}' for identifier, exc in filtered),
                 code='generation_route_unqualified', recovery_command=filtered[0][1].fix)
         candidates = qualified
+        default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
+                      else candidates[0][1]['id']) if candidates else None
         target_client = (None if is_remote_target else select_generation_target(
             target, repo=controls.get("project_root"),
-            entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id')))
+            entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
+            mode=mode))
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
@@ -1219,10 +1253,10 @@ class GenerationFacade:
                     bundle.require_canonical_authority("generate on target")
                     approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
             except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
-                if (model is not None or workflow_entry is not None
+                if (model is not None or workflow_entry is not None or identifier in preferred
                         or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
-                    # Package/runtime prerequisites apply to every local
-                    # candidate; retain their existing error and guidance.
+                    # A preferred default owns its failure. Never silently
+                    # replace it with another model after preparation fails.
                     if isinstance(exc, AstridError):
                         raise generation_error(exc) from exc
                     if isinstance(exc, CapabilityValidationError):
@@ -1614,6 +1648,13 @@ class GenerationFacade:
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
                        (("request", request), ("asset_map", asset_map)) if value is not None})
+        if _prompt_only_video(model=model, entry=entry, inputs=inputs):
+            raise GenerationInputError(
+                "Prompt-only video requires a reference or an H3 request. "
+                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
+                "with a JSON object containing request and asset_map file paths. "
+                "See generate video --entry h3 --help."
+            )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         action_entry = None

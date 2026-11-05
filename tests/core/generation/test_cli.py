@@ -211,12 +211,16 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
     calls = _facade(monkeypatch)
     monkeypatch.setattr(listing, "main", lambda args: pytest.fail("generation reached listing parser"))
 
+    # Prompt-only video is refused before connecting; use a reference to
+    # continue exercising public forwarding for an admissible video form.
+    reference = ["--image-ref", "dog.png"] if modality == "video" else []
     assert _public_main(entrypoint)([
-        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json",
+        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json", *reference,
     ]) == 0
     assert calls == [{
         "model": None, "target": "http://127.0.0.1:8188", "dry_run": False,
         "prompt": "a dog", "client": "runtime-client",
+        **({"image_ref": "dog.png"} if modality == "video" else {}),
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
 
@@ -353,3 +357,15 @@ def test_audio_cli_runpod_foley_refuses_before_task_admission(monkeypatch):
         cli.main(['audio', '--mode', 'sfx', '--target', 'runpod', '--entry', 'missing'])
     assert raised.value.to_envelope()['issues'][0]['code'] == 'foley_runpod_unsupported'
     assert raised.value.to_envelope()['task_id'] is None
+
+
+@pytest.mark.parametrize('mode', ['tts', 'music', 'sfx'])
+def test_audio_cli_omitted_target_uses_auto(monkeypatch, capsys, mode):
+    calls = []
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        audio=lambda **kwargs: calls.append(kwargs) or {'status': 'preview'}))
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview connected to Runtime'))
+    assert cli.main(['audio', 'hello', '--mode', mode, '--dry-run', '--json']) == 0
+    assert calls == [{'model': None, 'mode': mode, 'target': 'auto',
+                      'prompt': 'hello', 'dry_run': True}]
+    assert json.loads(capsys.readouterr().out) == {'status': 'preview'}

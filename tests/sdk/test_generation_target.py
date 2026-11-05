@@ -92,8 +92,10 @@ def test_auto_filters_before_probe_and_preparation_preserving_qualified_order(mo
     with pytest.raises(AstridError) as caught:
         GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
     assert caught.value.code == 'missing_dependency'
-    assert caught.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_NO_MODEL'
-    assert events == ['probe', *[name for name in order if name not in blocked_ids]]
+    first = next(name for name in order if name not in blocked_ids)
+    assert caught.value.to_envelope()['entry']['id'] == first
+    assert 'fake target missing candidate models' in str(caught.value)
+    assert events == ['probe', first]
 
 
 def test_auto_all_unqualified_names_each_route_and_reason_without_probe(monkeypatch):
@@ -578,7 +580,8 @@ def test_foley_runpod_refuses_before_policy_registry_or_admission(monkeypatch, s
     envelope = raised.value.to_envelope()
     assert envelope['task_id'] is None and envelope['status'] == 'blocked'
     assert envelope['issues'][0]['code'] == 'foley_runpod_unsupported'
-    assert 'Fal' in envelope['issues'][0]['message']
+    assert 'Fal' not in envelope['issues'][0]['message']
+    assert 'Foley is not supported on RunPod' in envelope['issues'][0]['message']
     assert envelope['fixes'][0]['argv'] == ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley']
     client.invoke_result.assert_not_called()
     assert not client.runpod_generation_owner.mock_calls
