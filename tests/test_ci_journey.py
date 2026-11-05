@@ -481,11 +481,12 @@ def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selecti
                "data_root": str(prior_data), "uninstalled": True}
     journey.write_json(selection, receipt)
 
+    # The caller maps windows-upgrade-refusal to host_leg "fresh-install" (VERSION_JUMP_LEGS).
     with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
-        journey.assert_host_available("windows-upgrade-refusal", refusal_program, refusal_data,
+        journey.assert_host_available("fresh-install", refusal_program, refusal_data,
                                       skip_process_check=True)
     journey.assert_host_available(
-        "windows-upgrade-refusal", refusal_program, refusal_data, skip_process_check=True,
+        "fresh-install", refusal_program, refusal_data, skip_process_check=True,
         related_uninstalled_selection=(prior_program, prior_data),
     )
     for changed in ({**receipt, "uninstalled": False},
@@ -494,7 +495,7 @@ def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selecti
         journey.write_json(selection, changed)
         with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
             journey.assert_host_available(
-                "windows-upgrade-refusal", refusal_program, refusal_data, skip_process_check=True,
+                "fresh-install", refusal_program, refusal_data, skip_process_check=True,
                 related_uninstalled_selection=(prior_program, prior_data),
             )
 

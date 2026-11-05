@@ -1495,8 +1495,7 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
                          and _same_path(selection.get("data_root"), data)
                          and selection.get("uninstalled") is True
                          and not selection.get("foreground"))
-    related_uninstalled = (leg == "windows-upgrade-refusal"
-                           and related_uninstalled_selection is not None
+    related_uninstalled = (related_uninstalled_selection is not None
                            and isinstance(selection, dict)
                            and selection.get("owner") == "haus.astrid.runtime"
                            and _same_path(selection.get("program_root"), related_uninstalled_selection[0])
