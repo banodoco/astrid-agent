@@ -42,3 +42,21 @@ def test_pack_and_sdk_facades_expose_pipeline_and_media_contracts():
     assert sdk.write_transcript is media_transcript.write_transcript
     assert sdk.timeline_intent_words is timeline_intent.words
     assert sdk.select_capability_row is capability_selection.select_capability_row
+
+
+def test_moving_packs_can_access_existing_media_and_timeline_contracts():
+    from astrid import pack_api, sdk
+    from astrid.core import env_vars, media
+    from astrid.core.rendering import remotion_runtime
+    from astrid.core.timeline import audio_curves, clip_fields
+    from astrid.sdk import media_handles, timeline
+
+    assert pack_api.clip_fields is clip_fields
+    assert pack_api.audio_curve_registry is audio_curves.registry
+    assert pack_api.ASTRID_REMOTION_PROJECT_DIR == env_vars.ASTRID_REMOTION_PROJECT_DIR
+    assert pack_api.resolve_remotion_project_dir is remotion_runtime.resolve_remotion_project_dir
+    assert pack_api.load_rgba is media.load_rgba
+    assert pack_api.outline_integrity is media.outline_integrity
+    assert sdk.resolve_media_handle is media_handles.resolve_media_handle
+    assert sdk.save_media is media_handles.save_media
+    assert sdk.Checkout is timeline.Checkout

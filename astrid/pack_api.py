@@ -10,10 +10,16 @@ from __future__ import annotations
 
 from importlib import import_module as _import_module
 
-VERSION = (2, 0)
+VERSION = (2, 1)
 
 # Public name -> implementation module. No pack may be a dependency here.
 _EXPORTS = {
+    'ASTRID_REMOTION_PROJECT_DIR': 'astrid.core.env_vars',
+    'clip_fields': 'astrid.core.timeline.clip_fields',
+    'audio_curve_registry': 'astrid.core.timeline.audio_curves',
+    'resolve_remotion_project_dir': 'astrid.core.rendering.remotion_runtime',
+    'load_rgba': 'astrid.core.media',
+    'outline_integrity': 'astrid.core.media',
     'ARRANGEMENT_VERSION': 'astrid.core.timeline',
     'AssetRegistry': 'astrid.core.timeline',
     'AstridArgumentError': 'astrid.core.cli_choices',
@@ -184,6 +190,7 @@ _EXPORTS = {
 }
 
 _ALIASES = {
+    "audio_curve_registry": "registry",
     "signal_pipeline_process_group": "_signal_process_group",
     "pipeline_process_group_exists": "_process_group_exists",
     "terminate_pipeline_process_group": "_terminate_process_group",
@@ -201,7 +208,10 @@ def __getattr__(name: str):
         module = _EXPORTS[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    return getattr(_import_module(module), _ALIASES.get(name, name))
+    loaded = _import_module(module)
+    if name == "clip_fields":
+        return loaded
+    return getattr(loaded, _ALIASES.get(name, name))
 
 
 def __dir__() -> list[str]:

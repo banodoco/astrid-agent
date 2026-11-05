@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib
 
 _EXPORTS = {
+    "resolve_media_handle": ("media_handles", "resolve_media_handle"),
+    "save_media": ("media_handles", "save_media"),
+    "Checkout": ("timeline", "Checkout"),
     "MEDIA_TRANSCRIPT_SCHEMA": ("media_transcript", "SCHEMA"),
     "WHISPER_SOURCE": ("media_transcript", "WHISPER_SOURCE"),
     "write_transcript": ("media_transcript", "write_transcript"),
