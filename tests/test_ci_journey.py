@@ -464,6 +464,41 @@ def test_tst_b1_cleanup_accepts_only_exact_uninstalled_selection_receipt(tmp_pat
             journey.assert_host_available("cleanup", root, data)
 
 
+def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selection(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    default = tmp_path / "default" / "Astrid"
+    default.parent.mkdir()
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    monkeypatch.setattr(journey.windows, "scheduled_task_diagnostics", lambda **unused: {
+        "status": "absent", "tasks": [],
+    })
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    prior_program, prior_data = tmp_path / "fresh" / "program", tmp_path / "fresh" / "data"
+    refusal_program, refusal_data = tmp_path / "refusal" / "program", tmp_path / "refusal" / "data"
+    selection = default.parent / "astrid-install.json"
+    receipt = {"owner": "haus.astrid.runtime", "program_root": str(prior_program),
+               "data_root": str(prior_data), "uninstalled": True}
+    journey.write_json(selection, receipt)
+
+    with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
+        journey.assert_host_available("windows-upgrade-refusal", refusal_program, refusal_data,
+                                      skip_process_check=True)
+    journey.assert_host_available(
+        "windows-upgrade-refusal", refusal_program, refusal_data, skip_process_check=True,
+        related_uninstalled_selection=(prior_program, prior_data),
+    )
+    for changed in ({**receipt, "uninstalled": False},
+                    {**receipt, "program_root": str(tmp_path / "foreign" / "program")},
+                    {**receipt, "foreground": {"pid": 123}}):
+        journey.write_json(selection, changed)
+        with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
+            journey.assert_host_available(
+                "windows-upgrade-refusal", refusal_program, refusal_data, skip_process_check=True,
+                related_uninstalled_selection=(prior_program, prior_data),
+            )
+
+
 def test_release1_cleanup_host_check_accepts_only_owned_retained_r1_install(
         tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "linux")
