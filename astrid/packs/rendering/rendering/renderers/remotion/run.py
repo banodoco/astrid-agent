@@ -773,16 +773,11 @@ def _resolve_end_spanning_card_assets(
     return resolved
 
 
-def _stage_effect_assets_for_timeline(
-    timeline_data: dict[str, Any],
-    *,
-    project_dir: Path,
-    theme_path: Path | None,
-    render_hash: str,
-    composition_clip_types: frozenset[str] = frozenset(),
-    asset_registry: Mapping[str, Any] | None = None,
-    registry: Any | None = None,
-) -> dict[str, Any]:
+def _timeline_element_selection(
+    timeline_data: Mapping[str, Any], *, theme_path: Path | None = None,
+    composition_clip_types: frozenset[str] = frozenset(), registry: Any | None = None,
+) -> tuple[dict, dict, dict, dict]:
+    """The render and frame cache share one admitted element selection."""
     # Resolve one immutable element registry for this render. Effects and
     # animation/transition references must agree even if the filesystem pack
     # inventory changes between support probing and execution; loading the
@@ -798,7 +793,7 @@ def _stage_effect_assets_for_timeline(
     )
     clips = timeline_data.get("clips")
     if not isinstance(clips, list):
-        return {"root": None, "effects": [], **resolved_elements}
+        return resolved_elements, {}, {}, {}
 
     unknown_clip_types = sorted(
         {
@@ -850,6 +845,24 @@ def _stage_effect_assets_for_timeline(
         if isinstance(clip_id, str) and clip_id:
             clip_ids_by_effect.setdefault(key, []).append(clip_id)
 
+    return resolved_elements, used_effects, clip_effects, clip_ids_by_effect
+
+
+def _stage_effect_assets_for_timeline(
+    timeline_data: dict[str, Any],
+    *,
+    project_dir: Path,
+    theme_path: Path | None,
+    render_hash: str,
+    composition_clip_types: frozenset[str] = frozenset(),
+    asset_registry: Mapping[str, Any] | None = None,
+    registry: Any | None = None,
+) -> dict[str, Any]:
+    resolved_elements, used_effects, clip_effects, clip_ids_by_effect = _timeline_element_selection(
+        timeline_data, theme_path=theme_path, composition_clip_types=composition_clip_types,
+        registry=registry,
+    )
+    clips = timeline_data.get("clips", [])
     if not used_effects:
         return {"root": None, "effects": [], **resolved_elements}
 

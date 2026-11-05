@@ -138,7 +138,7 @@ def test_verify_says_what_each_side_shows_and_the_exact_pixels(tmp_path, monkeyp
 
 
 def test_verify_with_zoom_crops_both_sides_at_full_resolution(tmp_path, monkeypatch):
-    from tests.packs.rendering.test_timeline_visualize_motion_views import layered_snapshot
+    from tests.packs.astrid_motion.test_timeline_visualize_motion_views import layered_snapshot
 
     snapshot = layered_snapshot()
     snapshot["config"] = {"tracks": snapshot["tracks"], "clips": [dict(c) for c in snapshot["clips"]]}
@@ -164,7 +164,7 @@ def test_verify_with_zoom_crops_both_sides_at_full_resolution(tmp_path, monkeypa
 
 
 def test_a_changed_layer_under_an_opaque_higher_layer_is_named_as_hidden(tmp_path, monkeypatch):
-    from tests.packs.rendering.test_timeline_visualize_motion_views import _clip, layered_snapshot
+    from tests.packs.astrid_motion.test_timeline_visualize_motion_views import _clip, layered_snapshot
 
     occ = "occ-ch01"
     clips = [
