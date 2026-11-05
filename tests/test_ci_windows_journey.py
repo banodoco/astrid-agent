@@ -338,6 +338,40 @@ def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state,
     assert journey.host_ready() is expected
 
 
+def test_windows_update_pack_host_capture_is_bounded_read_only_and_scrubbed(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    evidence = tmp_path / "evidence"
+    support = tmp_path / "data" / "runtime"
+    support.mkdir(parents=True)
+    registration = support / "generic-host.json"
+    registration.write_text(json.dumps({
+        "executor_id": "astrid-pack-host", "pid": 123, "support_root": str(support),
+        "credential_file": r"C:\\private\\host.token", "runtime_service_launch_id": "launch-1",
+    }), encoding="utf-8")
+    cleanup = support / "pack-host-job-cleanup.json"
+    cleanup.write_text(json.dumps({"version": 1, "service_name": "pack-host", "receipts": [
+        {"job_drained": True, "post_cleanup_error": "diagnostic error", "token": "TOPSECRET"},
+    ]}), encoding="utf-8")
+    original = registration.read_bytes(), cleanup.read_bytes()
+
+    shared_journey._capture_windows_pack_host_update_state(evidence, tmp_path / "data", "before")
+
+    receipt = json.loads((evidence / "windows-pack-host-update-before.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "captured"
+    assert receipt["files"]["generic-host.json"]["content"]["executor_id"] == "astrid-pack-host"
+    assert receipt["files"]["generic-host.json"]["content"]["support_root"] == "<path>"
+    assert receipt["files"]["generic-host.json"]["content"]["credential_file"] == "<redacted>"
+    assert receipt["files"]["pack-host-job-cleanup.json"]["content"]["receipts"][0]["job_drained"] is True
+    assert (receipt["files"]["pack-host-job-cleanup.json"]["content"]["receipts"][0]
+            ["post_cleanup_error"] == "diagnostic error")
+    assert "TOPSECRET" not in json.dumps(receipt) and str(tmp_path) not in json.dumps(receipt)
+    assert registration.read_bytes() == original[0] and cleanup.read_bytes() == original[1]
+
+    shared_journey._capture_windows_pack_host_update_state(evidence, tmp_path / "data", "after")
+    after = json.loads((evidence / "windows-pack-host-update-after.json").read_text(encoding="utf-8"))
+    assert after["files"]["generic-host.ready.json"]["status"] == "missing"
+
+
 @pytest.mark.parametrize("state,outputs,expected", [
     ("queued", [], False), ("failed", [], False), ("succeeded", [], False),
     ("succeeded", [{"name": "sfx", "digest": "sha256:" + "a" * 64, "size": 9644}], False),

@@ -89,10 +89,12 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "windows-real-profile-pack-host-before-cleanup.json",
     "windows-real-profile-pack-host-after-cleanup.json",
+    "windows-pack-host-update-before.json", "windows-pack-host-update-after.json",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 WINDOWS_PROFILE_SERVICE_LOG_LIMIT = 64 * 1024
+WINDOWS_PACK_HOST_STATE_LIMIT = 64 * 1024
 _WINDOWS_ABSOLUTE_PATH = re.compile(
     r"(?i)(?:[a-z]:\\|\\\\[^\\\s]+\\[^\\\s]+\\|/(?:[^/\s]+/)+)[^\s\"'<>|,;]*"
 )
@@ -863,6 +865,55 @@ $result | ConvertTo-Json -Depth 5 -Compress
         write_json(evidence / f"windows-real-profile-pack-host-{phase}.json", status)
     except OSError as exc:
         print(f"Journey Windows profile log status capture ({phase}) failed: {type(exc).__name__}",
+              file=sys.stderr, flush=True)
+
+
+def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: str) -> None:
+    """Read bounded, scrubbed pack-host registration/Job receipt around update."""
+    status = {"schema_version": 1, "phase": phase, "status": "captured", "files": {}}
+    support = data / "runtime"
+    for name in ("generic-host.json", "generic-host.ready.json", "pack-host-job-cleanup.json"):
+        source = support / name
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        unsafe_parent = False
+        for parent in reversed(source.parents):
+            try:
+                attributes = getattr(parent.lstat(), "st_file_attributes", 0)
+            except OSError:
+                break
+            if parent.is_symlink() or attributes & reparse:
+                unsafe_parent = True
+                break
+        if unsafe_parent:
+            details, raw = {"status": "unsafe_type"}, None
+        else:
+            details, raw = windows._read_diagnostic_file(
+                source, WINDOWS_PACK_HOST_STATE_LIMIT, False,
+            )
+        item = {key: value for key, value in details.items() if key in {"status", "bytes", "truncated", "error"}}
+        if raw is not None:
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError):
+                item["status"] = "malformed"
+            else:
+                safe = windows._diagnostic_value(value)
+
+                def scrub_paths(observed):
+                    if isinstance(observed, str):
+                        return _WINDOWS_ABSOLUTE_PATH.sub("<path>", observed)
+                    if isinstance(observed, list):
+                        return [scrub_paths(part) for part in observed]
+                    if isinstance(observed, dict):
+                        return {key: scrub_paths(part) for key, part in observed.items()}
+                    return observed
+
+                item["content"] = scrub_paths(safe)
+        status["files"][name] = item
+    try:
+        write_json(evidence / f"windows-pack-host-update-{phase}.json", status)
+    except OSError as exc:
+        print(f"Journey Windows pack-host update capture ({phase}) failed: {type(exc).__name__}",
               file=sys.stderr, flush=True)
 
 
@@ -2257,6 +2308,13 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if args.leg == "reinstall":
             installed_cli(old, ["install", "--uninstall", "--root", str(root),
                                 "--data-root", str(data)], evidence, "uninstall.log", timeout=1800)
+        capture_update_state = sys.platform == "win32" and args.leg == "stale-update"
+        if capture_update_state:
+            try:
+                _capture_windows_pack_host_update_state(evidence, data, "before")
+            except Exception as diagnostic_error:
+                print(f"Journey Windows pack-host update capture (before) failed: "
+                      f"{type(diagnostic_error).__name__}", file=sys.stderr, flush=True)
         try:
             bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
                       evidence, root, data)
@@ -2264,6 +2322,13 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             if args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct":
                 capture_failed_windows_fresh_install(root, evidence)
             raise
+        finally:
+            if capture_update_state:
+                try:
+                    _capture_windows_pack_host_update_state(evidence, data, "after")
+                except Exception as diagnostic_error:
+                    print(f"Journey Windows pack-host update capture (after) failed: "
+                          f"{type(diagnostic_error).__name__}", file=sys.stderr, flush=True)
         after_sentinel = sentinel_observation(sentinel, birth)
         result["sentinel"]["after_lifecycle"] = after_sentinel
         if not after_sentinel["alive"]:
