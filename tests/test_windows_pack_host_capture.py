@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 
 import pytest
 
@@ -126,14 +127,18 @@ def test_real_profile_pack_host_capture_is_owned_bounded_and_redacted(capture, m
         b"failed at C:\\Users\\private-user\\Documents\\personal.txt\n"
         b"also /Users/private-user/private.txt\n")
     commands = []
+    action = {"executable": str(run_root) + r"\program\pythonw.exe",
+              "arguments": f'-c private-secret --data-root "{run_root / "data"}"',
+              "run_root_match": True, "data_root_match": True}
+    observed = {"task_found": True, "task_path": "\\", "action_count": 1,
+                "actions": [action], "owned_count": 1, "profile_local": str(profile)}
 
-    def owned_task_probe(command, name, **kwargs):
-        commands.append(command)
-        assert name == "windows-real-profile-log-probe.log"
-        assert kwargs == {"show": False, "timeout": 30}
-        return str(profile)
+    def owned_task_probe(command, **kwargs):
+        commands.append(command[-1])
+        assert kwargs["timeout"] == 30 and kwargs["capture_output"] and not kwargs["check"]
+        return subprocess.CompletedProcess(command, 0, json.dumps(observed).encode(), b"")
 
-    monkeypatch.setattr(journey.windows, "powershell", owned_task_probe)
+    monkeypatch.setattr(journey.subprocess, "run", owned_task_probe)
     journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
 
     captured = evidence / "runtime-service-service-pack-host-real-profile-before-cleanup.log"
@@ -148,13 +153,141 @@ def test_real_profile_pack_host_capture_is_owned_bounded_and_redacted(capture, m
     assert "<redacted>" in text and "<path>" in text
     assert str(run_root) in commands[0] and str(run_root / "data") in commands[0]
     assert str(profile) not in json.dumps(receipt)
+    assert "private-secret" not in json.dumps(receipt)
+    assert receipt["probe"]["exit_code"] == 0
+    assert receipt["probe"]["actions"][0]["data_root_match"] is True
+    assert "<data-root>" in receipt["probe"]["actions"][0]["arguments"]
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = evidence.parent.parent / "evidence-upload" / "before-cleanup" / "windows-real-profile-pack-host-before-cleanup.json"
+    assert json.loads(staged.read_text()) == receipt
 
 
-def test_real_profile_log_probe_skips_task_not_owned_by_run(capture, monkeypatch):
+@pytest.mark.parametrize("found,root_match,data_match,owned_count", [
+    (False, False, False, 0),
+    (True, False, True, 0),
+    (True, True, False, 0),
+    (True, True, True, 2),
+])
+def test_real_profile_log_probe_rejects_unowned_or_ambiguous(capture, monkeypatch, found, root_match, data_match, owned_count):
     _, _, evidence, _, _ = capture
     monkeypatch.setattr(journey.sys, "platform", "win32")
-    monkeypatch.setattr(journey.windows, "powershell", lambda *args, **kwargs: "")
+    action = {"executable": r"C:\Users\private-person\secret.exe",
+              "arguments": "--password private-secret", "run_root_match": root_match,
+              "data_root_match": data_match}
+    observed = {"task_found": found, "task_path": "\\" if found else None,
+                "action_count": owned_count or int(found), "actions": [action] if found else [],
+                "owned_count": owned_count, "profile_local": "/private/should-not-read"}
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(a[0], 0, json.dumps(observed).encode(), b""))
     journey.capture_runtime_service_logs(evidence, evidence.parent, "before-cleanup")
     receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
     assert receipt["status"] == "not_owned"
+    assert receipt["probe"]["task_found"] is found
+    assert receipt["probe"]["owned_count"] == owned_count
+    assert "private" not in json.dumps(receipt)
     assert not (evidence / "runtime-service-service-pack-host-real-profile-before-cleanup.log").exists()
+
+
+@pytest.mark.parametrize("result,error,exit_code", [
+    (subprocess.CompletedProcess([], 5, b"private output", b"private error"), "command_failed", 5),
+    (subprocess.CompletedProcess([], 0, b"bad output", b""), "JSONDecodeError", 0),
+    (subprocess.TimeoutExpired("powershell", 30), "TimeoutExpired", None),
+    (FileNotFoundError("private path"), "FileNotFoundError", None),
+])
+def test_real_profile_log_probe_failure_is_recorded_without_private_output(capture, monkeypatch, result, error, exit_code):
+    _, _, evidence, _, _ = capture
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    def run(*args, **kwargs):
+        if isinstance(result, Exception):
+            raise result
+        return result
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    journey.capture_runtime_service_logs(evidence, evidence.parent, "before-cleanup")
+    receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert receipt["status"] == "error"
+    assert receipt["probe"]["exit_code"] == exit_code
+    assert receipt["probe"]["error"] == error
+    assert "private" not in json.dumps(receipt)
+
+
+def test_profile_probe_redacts_arbitrary_action_values():
+    sanitize = journey._profile_probe_text
+    root = r"C:\run"
+    data = root + r"\data"
+    assert sanitize(root + r"\program\pythonw.exe", root, data, arguments=False) == r"<run-root>\...\pythonw.exe"
+    assert sanitize(r"C:\Users\private\pythonw.exe", root, data, arguments=False) == "<outside-run-root>"
+    text = sanitize(f'-c "secret private" --data-root "{data}"', root, data, arguments=True)
+    assert "secret" not in text and "private" not in text
+    assert "--data-root" in text and "<data-root>" in text
+    assert len(sanitize("secret " * 10000, root, data, arguments=True)) <= 2048
+
+
+def test_profile_probe_receipt_limits_actions_and_hides_task_data(capture, monkeypatch):
+    _, _, evidence, _, _ = capture
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    action = {"executable": r"C:\Users\private-person\secret.exe",
+              "arguments": "private-secret " * 2000, "run_root_match": False,
+              "data_root_match": False}
+    observed = {"task_found": True, "task_path": "\\private-folder\\", "action_count": 40,
+                "actions": [action] * 40, "owned_count": 0, "profile_local": None}
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(a[0], 0, json.dumps(observed).encode(), b""))
+    journey.capture_runtime_service_logs(evidence, evidence.parent, "before-cleanup")
+    receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert receipt["probe"]["task_path"] == "<other>"
+    assert receipt["probe"]["action_count"] == 40
+    assert receipt["probe"]["actions_truncated"] is True
+    assert len(receipt["probe"]["actions"]) == 8
+    assert len(json.dumps(receipt)) < 20000
+    assert "private" not in json.dumps(receipt)
+
+
+@pytest.mark.windows_native
+@pytest.mark.parametrize("scenario,root_match,data_match,owned_count", [
+    ("match", True, True, 1),
+    ("case", True, True, 1),
+    ("root-sibling", False, True, 0),
+    ("wrong-data", True, False, 0),
+    ("duplicate", True, True, 2),
+])
+def test_native_profile_probe_predicates(tmp_path, monkeypatch, scenario, root_match, data_match, owned_count):
+    root = tmp_path / "run"
+    root.mkdir()
+    evidence = root / "evidence"
+    evidence.mkdir()
+    profile = tmp_path / "profile"
+    source = profile / "Astrid Runtime" / "logs" / "service-pack-host.log"
+    source.parent.mkdir(parents=True)
+    source.write_text("safe log")
+    executable = str(root / "program" / "pythonw.exe")
+    data = str(root / "data")
+    if scenario == "case":
+        executable, data = executable.upper(), data.upper()
+    if scenario == "root-sibling":
+        executable = str(root) + r"-other\pythonw.exe"
+    if scenario == "wrong-data":
+        data = str(tmp_path / "foreign-data")
+    action = "[pscustomobject]@{ Execute = %s; Arguments = %s }" % (
+        windows._powershell_quote(executable), windows._powershell_quote("--data-root " + data))
+    actions = action + (", " + action if scenario == "duplicate" else "")
+    prefix = ("function Get-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) "
+              "[pscustomobject]@{ TaskPath = '\\'; Actions = @(" + actions + ") } }; ")
+    real_run = subprocess.run
+    def run(command, **kwargs):
+        command = list(command)
+        command[-1] = prefix + command[-1]
+        result = real_run(command, **kwargs)
+        if result.returncode == 0:
+            observed = json.loads(result.stdout.decode("utf-8-sig"))
+            if observed["owned_count"] == 1:
+                observed["profile_local"] = str(profile)
+            result.stdout = json.dumps(observed).encode()
+        return result
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    journey._capture_windows_profile_pack_host_log(evidence, root, "before-cleanup")
+    receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert receipt["probe"]["exit_code"] == 0
+    assert receipt["probe"]["actions"][0]["run_root_match"] is root_match
+    assert receipt["probe"]["actions"][0]["data_root_match"] is data_match
+    assert receipt["probe"]["owned_count"] == owned_count
+    assert receipt["status"] == ("captured" if owned_count == 1 else "not_owned")
