@@ -15,6 +15,18 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "reshape" / "baselines" / "core_pack_boundary.json"
 SCAN_ROOTS = (Path("astrid/core"), Path("astrid/sdk"))
 PACKS_ROOT = ROOT / "astrid" / "packs"
+# Core packs ship with core; naming them is not a boundary finding (Plan 06 Decision 12).
+CORE_PACKS = frozenset({"vibecomfy", "generation", "rendering", "timeline"})
+# The pack-loading modules necessarily name the bare ``astrid.packs`` namespace.
+# This list is explicit and pinned by tests/stage1/test_core_pack_boundary.py.
+PACK_LOADER_MODULES = frozenset({
+    "astrid/core/execution/generic_host_worker.py",
+    "astrid/core/pack/install.py",
+    "astrid/core/pack/loader.py",
+    "astrid/core/pack/transaction.py",
+    "astrid/pack_imports.py",
+    "astrid/core/pack/imports.py",
+})
 
 
 def _pack_inventory(root: Path = ROOT) -> tuple[set[str], set[str]]:
@@ -96,24 +108,42 @@ def _is_repo_pack_path(value: str, pack_names: set[str]) -> bool:
     )
 
 
+def _names_core_pack_module(module: str) -> bool:
+    parts = module.split(".")
+    return len(parts) > 2 and parts[:2] == ["astrid", "packs"] and parts[2] in CORE_PACKS
+
+
+def _bare_namespace(path: str, module: str) -> bool:
+    return module in {"astrid.packs", "astrid.packs."} and path in PACK_LOADER_MODULES
+
+
 def scan_source(path: str, source: str, pack_names: set[str], capability_ids: set[str]) -> Counter:
-    """Return normalized findings with multiplicity; line numbers are deliberately omitted."""
+    """Return normalized findings with multiplicity; line numbers are deliberately omitted.
+
+    Rule (PK-3 guard rule): core-pack names are never findings; another pack's
+    name is a finding only as an exact string value (not as a word inside prose
+    or a dotted path); the bare ``astrid.packs`` namespace is exempt only in
+    PACK_LOADER_MODULES.
+    """
     tree = ast.parse(source, filename=path)
     findings: Counter = Counter()
     for node in ast.walk(tree):
         for module in _module_names(node):
             if module.startswith("astrid.packs.") or module == "astrid.packs":
+                if _names_core_pack_module(module) or _bare_namespace(path, module):
+                    continue
                 findings[(path, "pack_import", module)] += 1
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
-            if value in capability_ids:
+            if value in capability_ids and value.split(".", 1)[0] not in CORE_PACKS:
                 findings[(path, "capability_id", value)] += 1
-            if value.startswith("astrid.packs."):
+            if (value.startswith("astrid.packs.") and not _names_core_pack_module(value)
+                    and not _bare_namespace(path, value)):
                 findings[(path, "dynamic_pack_import", value)] += 1
-            if _is_repo_pack_path(value, pack_names):
+            if _is_repo_pack_path(value, pack_names - CORE_PACKS):
                 findings[(path, "repo_pack_path", value)] += 1
-            for pack_name in _pack_name_hits(value, pack_names):
-                findings[(path, "pack_name_literal", pack_name)] += 1
+            if value in pack_names and value not in CORE_PACKS:
+                findings[(path, "pack_name_literal", value)] += 1
     return findings
 
 

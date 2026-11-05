@@ -173,7 +173,8 @@ def test_mixed_import_aliases_detected():
     assert findings[("astrid/core/probe.py", "pack_import", "astrid.packs.hivemind")] == 1
     assert findings[("astrid/core/probe.py", "pack_import", "astrid.packs")] == 1
     assert findings[("astrid/core/probe.py", "dynamic_pack_import", "astrid.packs.hivemind")] == 1
-    assert findings[("astrid/core/probe.py", "pack_name_literal", "hivemind")] == 1
+    # Exact-string rule: a dotted module path is a dynamic import, not a bare name literal.
+    assert findings[("astrid/core/probe.py", "pack_name_literal", "hivemind")] == 0
 
 
 def test_moved_pack_identity_detected(tmp_path):
@@ -313,3 +314,35 @@ def test_isolated_core_only_tree_has_no_optional_modules_and_injected_dependency
     result = _run_guard(root, "--check")
     assert result.returncode == 1
     assert "pack_import" in result.stderr
+
+
+def test_guard_rule_core_packs_exact_names_and_pinned_loader_exemption():
+    """PK-3 guard rule (Plan 06 local run, STOP S5): core-pack names are not
+    findings; other pack names count only as exact strings; the bare
+    ``astrid.packs`` namespace is exempt only in the pinned loader modules."""
+    guard = _guard_module()
+    assert guard.CORE_PACKS == frozenset({"vibecomfy", "generation", "rendering", "timeline"})
+    assert guard.PACK_LOADER_MODULES == frozenset({
+        "astrid/core/execution/generic_host_worker.py",
+        "astrid/core/pack/install.py",
+        "astrid/core/pack/loader.py",
+        "astrid/core/pack/transaction.py",
+        "astrid/pack_imports.py",
+        "astrid/core/pack/imports.py",
+    })
+    names = {"timeline", "media", "local"}
+    source = (
+        "DOC = 'A timeline of local media.'\n"
+        "a = 'media'\nb = 'timeline'\nc = 'astrid.packs.'\nimport astrid.packs\n"
+        "d = 'astrid.packs.timeline.cli'\n"
+    )
+    probe = guard.scan_source("astrid/core/probe.py", source, names, set())
+    assert probe[("astrid/core/probe.py", "pack_name_literal", "media")] == 1
+    assert probe[("astrid/core/probe.py", "pack_name_literal", "local")] == 0
+    assert probe[("astrid/core/probe.py", "pack_name_literal", "timeline")] == 0
+    assert probe[("astrid/core/probe.py", "dynamic_pack_import", "astrid.packs.")] == 1
+    assert probe[("astrid/core/probe.py", "pack_import", "astrid.packs")] == 1
+    assert probe[("astrid/core/probe.py", "dynamic_pack_import", "astrid.packs.timeline.cli")] == 0
+    loader = guard.scan_source("astrid/core/pack/loader.py", source, names, set())
+    assert loader[("astrid/core/pack/loader.py", "dynamic_pack_import", "astrid.packs.")] == 0
+    assert loader[("astrid/core/pack/loader.py", "pack_import", "astrid.packs")] == 0
