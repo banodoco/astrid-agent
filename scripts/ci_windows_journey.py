@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import urllib.request
+from datetime import datetime, timezone
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,70 @@ def powershell5_command(executable, args=()):
 def save(name, value):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     (EVIDENCE / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def run_bootstrap_process(argv, log_path, mode, *, env=None):
+    """Capture the Windows harness bootstrap process and its two output streams."""
+    if mode not in {"install", "update", "release0"}:
+        raise ValueError("Unsupported bootstrap capture mode")
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    stdout_path = EVIDENCE / f"{mode}-bootstrap-stdout.log"
+    stderr_path = EVIDENCE / f"{mode}-bootstrap-stderr.log"
+    receipt_path = EVIDENCE / f"{mode}-bootstrap-process.json"
+    receipt = {
+        "schema_version": 1,
+        "mode": mode,
+        "identity_basis": "harness Popen PID; started_at sampled immediately before process creation",
+        "executable": str(argv[0]),
+        "arguments": [str(arg) for arg in argv[1:]],
+        "pid": None,
+        "started_at": None,
+        "exited_at": None,
+        "exit_code": None,
+        "stdout": {"file": stdout_path.name, "status": "not_started"},
+        "stderr": {"file": stderr_path.name, "status": "not_started"},
+    }
+    save(receipt_path.name, receipt)
+    process = None
+    try:
+        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            receipt["started_at"] = datetime.now(timezone.utc).isoformat()
+            process = subprocess.Popen([str(arg) for arg in argv], env=env,
+                                       stdout=stdout, stderr=stderr)
+            receipt["pid"] = process.pid
+            receipt["stdout"]["status"] = "captured"
+            receipt["stderr"]["status"] = "captured"
+            save(receipt_path.name, receipt)
+            receipt["exit_code"] = process.wait()
+            receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+    except Exception as exc:
+        receipt["launch_or_wait_error"] = type(exc).__name__
+        if process is not None and receipt["exit_code"] is None:
+            receipt["exit_code"] = process.poll()
+            if receipt["exit_code"] is not None:
+                receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+        for stream in (receipt["stdout"], receipt["stderr"]):
+            if stream["status"] == "not_started":
+                stream["status"] = "unavailable"
+        save(receipt_path.name, receipt)
+        raise
+    for stream in (receipt["stdout"], receipt["stderr"]):
+        path = EVIDENCE / stream["file"]
+        try:
+            stream["bytes"] = path.stat().st_size
+        except OSError as exc:
+            stream.update(status="unavailable", error=type(exc).__name__)
+    # Retain the familiar bootstrap log for existing readers while the
+    # timestamped streams above preserve channel identity.
+    with log_path.open("wb") as combined:
+        combined.write(b"=== stdout ===\n")
+        combined.write(stdout_path.read_bytes())
+        combined.write(b"\n=== stderr ===\n")
+        combined.write(stderr_path.read_bytes())
+    save(receipt_path.name, receipt)
+    if receipt["exit_code"]:
+        raise RuntimeError(f"{mode}-bootstrap.log: exit {receipt['exit_code']}")
+    return log_path.read_text(encoding="utf-8", errors="replace")
 
 
 def run(argv, name, *, env=None, timeout=300, show=True):

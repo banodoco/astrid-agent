@@ -44,6 +44,27 @@ def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
     assert "pwsh" not in command[0].lower()
 
 
+def test_bootstrap_process_capture_keeps_identity_exit_and_streams_separate(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    log = tmp_path / "update-bootstrap.log"
+    with pytest.raises(RuntimeError, match="update-bootstrap.log: exit 7"):
+        journey.run_bootstrap_process(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(7)"],
+            log, "update",
+        )
+
+    evidence = tmp_path / "evidence"
+    receipt = json.loads((evidence / "update-bootstrap-process.json").read_text())
+    assert receipt["pid"] > 0
+    assert receipt["executable"] == sys.executable
+    assert receipt["started_at"] and receipt["exited_at"]
+    assert receipt["exit_code"] == 7
+    assert receipt["stdout"]["status"] == receipt["stderr"]["status"] == "captured"
+    assert (evidence / "update-bootstrap-stdout.log").read_text().strip() == "out"
+    assert (evidence / "update-bootstrap-stderr.log").read_text().strip() == "err"
+    assert "=== stdout ===" in log.read_text() and "=== stderr ===" in log.read_text()
+
+
 @pytest.fixture
 def stub_installed_profile_binding(monkeypatch):
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
