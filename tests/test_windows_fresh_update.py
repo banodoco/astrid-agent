@@ -93,7 +93,9 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
         return path
     journey = SimpleNamespace(installation=lambda *a: (current[0], data, {"root": str(current[0].parent),
         "identity": {"release": 1 if current[0] == old else 2, "managed_by": None}}),
-        healthy=lambda *a: calls.append("healthy"), assert_direct_service_ownership=lambda *a, **kw: calls.append("owner"),
+        healthy=lambda *a: (calls.append("healthy") or {"runtime_instance_id": "runtime-old" if current[0] == old else "runtime-new",
+            "identity": {"release": 1 if current[0] == old else 2}}),
+        assert_direct_service_ownership=lambda *a, **kw: calls.append("owner"),
         verify=verify, wait_ready=lambda *a, **kw: calls.append("ready"), assert_content=lambda *a: calls.append("content"),
         sentinel_observation=lambda *a: {"alive": True}, read_json=lambda p: json.loads(p.read_text()))
     def success(app, shell, path, root, data, evidence):

@@ -93,7 +93,9 @@ def test_execute_runs_public_update_and_checks_post_update(monkeypatch, tmp_path
     monkeypatch.setattr(update.journey, "wait_ready", lambda *a, **kw: calls.append(("ready",)))
     monkeypatch.setattr(update.journey, "installation", lambda *a: (new_path, data, new))
     monkeypatch.setattr(update.journey, "selected_tuple", lambda *a: None)
-    monkeypatch.setattr(update.journey, "healthy", lambda *a: {})
+    health = iter(({"runtime_instance_id": "runtime-before", "identity": {"release": 1}},
+                   {"runtime_instance_id": "runtime-after", "identity": {"release": 2}}))
+    monkeypatch.setattr(update.journey, "healthy", lambda *a: next(health))
     monkeypatch.setattr(update.journey, "assert_content", lambda *a: calls.append(("content",)))
     monkeypatch.setattr(update.journey, "sentinel_alive", lambda *a: True)
     monkeypatch.setattr(update.journey, "task", lambda *a, **kw: calls.append(("task", kw["create_project"])))
