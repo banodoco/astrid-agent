@@ -32,14 +32,7 @@ def test_standin_preserves_pins_and_canonical_hash():
     assert len(hashlib.sha256(raw).hexdigest()) == 64
 
 
-@pytest.mark.parametrize("output,expected", [("File is locked.\n", "File is locked."),
-    ("File is in use.\nFile is locked.\n", None), ("Traceback\nFile is locked.\n", None),
-    ("Access denied.\n", None), ("File is locked. Retry.\n", None)])
-def test_refusal_must_be_one_clear_lock_sentence(output, expected):
-    assert update.refusal_sentence(output) == expected
-
-
-def test_gate_requires_update_and_both_outcome_contracts():
+def test_gate_requires_successful_update():
     assert gate._windows_fresh_update_errors(None, "direct-windows")
     good = receipt()
     assert not gate._windows_fresh_update_errors(good, "direct-windows")
@@ -47,11 +40,8 @@ def test_gate_requires_update_and_both_outcome_contracts():
     refused.update(outcome="refused", exit_code=1, current_version="old", refusal="File is locked.")
     refused["checks"].pop("verify_update")
     refused["checks"].pop("task_settled")
-    assert not gate._windows_fresh_update_errors(refused, "direct-windows")
-    for field, value in (("current_version", "new"), ("refusal", "Access denied."), ("exit_code", 0)):
-        bad = copy.deepcopy(refused)
-        bad[field] = value
-        assert gate._windows_fresh_update_errors(bad, "direct-windows")
+    assert gate._windows_fresh_update_errors(refused, "direct-windows")
+    assert gate._windows_fresh_update_errors(dict(good, outcome="refused"), "direct-windows")
     for field in ("verify_update", "task_settled", "same_labels", "no_r0_handoff", "workspace", "sentinel"):
         bad = copy.deepcopy(good)
         bad["checks"].pop(field)
@@ -76,7 +66,7 @@ def test_public_line_has_local_override_and_candidate_binding(tmp_path, monkeypa
     assert "--update" in observed["argv"][-1]
 
 
-def test_update_success_and_refusal_exercise_assertions(tmp_path, monkeypatch):
+def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     root = tmp_path / "program"
     data = tmp_path / "data"
     evidence = tmp_path / "evidence"
@@ -119,10 +109,8 @@ def test_update_success_and_refusal_exercise_assertions(tmp_path, monkeypatch):
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
     current[0] = old
     calls.clear()
-    monkeypatch.setattr(update, "public_update", lambda *a: (1, "File is locked."))
-    result = update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
-    assert result["outcome"] == "refused" and not gate._windows_fresh_update_errors(result, "direct-windows")
-    assert "verify-update" not in calls and "task" not in calls
-    monkeypatch.setattr(update, "public_update", lambda *a: (1, "Access denied."))
-    with pytest.raises(RuntimeError, match="without a clean lock refusal"):
-        update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
+    for output in ("File is locked.", "Access denied."):
+        monkeypatch.setattr(update, "public_update", lambda *a: (1, output))
+        with pytest.raises(RuntimeError, match=r"Windows update failed \(exit 1\)"):
+            update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
+        assert "verify-update" not in calls and "task" not in calls
