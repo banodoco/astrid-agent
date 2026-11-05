@@ -48,7 +48,7 @@ from typing import Any, NamedTuple
 
 from runtime_protocol import platform
 
-from astrid.core.cli_choices import StaticChoices
+from astrid.pack_api import StaticChoices
 
 PACK_DIR = Path(__file__).resolve().parent
 SERVER_DIR = PACK_DIR / "server"
@@ -405,7 +405,7 @@ def health(url: str, token: str | None = None, timeout: int = 60) -> bool:
 
 
 def _load_runpod_api_key() -> str:
-    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.pack_api import CredentialsScope
 
     return CredentialsScope.get_local("runpod")
 

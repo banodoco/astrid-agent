@@ -17,7 +17,7 @@ from typing import Any, Mapping
 import numpy as np
 from PIL import Image, ImageDraw
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 # Brand palette from the Astrid style guide, plus pure white and black so
 # neutral backgrounds and outlines remain representable.

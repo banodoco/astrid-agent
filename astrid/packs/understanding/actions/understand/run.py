@@ -10,7 +10,7 @@ one executor call with a switch.
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('understanding.understand')
 import argparse
@@ -18,7 +18,7 @@ import sys
 from collections.abc import Callable
 from importlib import import_module
 
-from astrid.core.cli_choices import add_choice_arg
+from astrid.pack_api import add_choice_arg
 
 ALIASES: dict[str, str | Callable[[list[str]], int]] = {
     "audio": "astrid.packs.understanding.actions.audio_understand.run:main",

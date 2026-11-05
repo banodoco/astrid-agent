@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import sys
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("capture.web_page")
 
@@ -24,15 +24,11 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AstridError
 from astrid.core.env_vars import ASTRID_REMOTION_PROJECT_DIR
-from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.process_group import (
-    popen_owned_group,
-    terminate_group,
-    verify_tree_absent,
-)
+from astrid.pack_api import PipeReader, PipeWriter, close_pipe_workers
+from astrid.pack_api import popen_owned_group, terminate_group, verify_tree_absent
 from astrid.core.rendering.remotion_runtime import resolve_remotion_project_dir
 
 DEFAULT_VIEWPORT = (1600, 1000)

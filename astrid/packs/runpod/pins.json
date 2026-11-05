@@ -5,10 +5,6 @@
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
       "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
     },
-    "vibecomfy": {
-      "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "e2905d068d5851b9c32856d32b8251852a01d6dd"
-    },
     "h3-motion-context": {
       "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
       "revision": "361624fb406b63eb6694442eac6c895fc1533a70"
@@ -16,14 +12,12 @@
     "videohelpersuite": {
       "repository": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
       "revision": "4ee72c065db22c9d96c2427954dc69e7b908444b"
-    },
-    "vibecomfy-h3": {
-      "repository": "https://github.com/banodoco/VibeComfy.git",
-      "revision": "e2905d068d5851b9c32856d32b8251852a01d6dd"
-    },
-    "comfyui-plain": {
-      "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-      "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
     }
-  }
+  },
+  "includes": [
+    {
+      "path": "packs/vibecomfy/pins.json",
+      "sha256": "39c0ffce2ad3cdd11ded41013861566076ea5639eb1744fcef5225f41de0766d"
+    }
+  ]
 }

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, warn_if_unledgered
+from astrid.pack_api import guard_canonical_entrypoint
+from astrid.core.pack.entrypoint import warn_if_unledgered
 
 guard_canonical_entrypoint("generation.generate_speech")
 
@@ -19,8 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared.result_manifest import complete_output_metadata
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import AstridError
+from astrid.pack_api import write_json_atomic
 from astrid.core.generation import GENERATION_RESULT_KEY
 from astrid.core.generation.backends.base import GenerationResult
 from astrid.core.media import ffprobe_metadata

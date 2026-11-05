@@ -123,7 +123,7 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
         }
     assert packaged_locks == {
         'astrid/packs/runpod/requirements.linux-cu130.lock',
-        'astrid/packs/comfyui/requirements.linux-cu130.lock',
+        'astrid/packs/vibecomfy/requirements.linux-cu130.lock',
     }
     recipe = json.loads((REPO / 'astrid/packs/runpod/recipe.linux-cu130.json').read_text())
     for env in recipe['environments']:

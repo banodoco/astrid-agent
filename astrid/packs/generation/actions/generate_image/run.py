@@ -9,8 +9,9 @@ Features are validated per-mode.
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, warn_if_unledgered
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint
+from astrid.core.pack.entrypoint import warn_if_unledgered
 
 guard_canonical_entrypoint('generation.generate_image')
 import argparse
@@ -24,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared.result_manifest import complete_output_metadata
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import write_json_atomic
 from astrid.core.generation import GENERATION_RESULT_KEY
 from astrid.core.generation.storage_policy import (
     CLOUD_EDIT_STORAGE_POLICY,
@@ -41,7 +42,7 @@ from astrid.core.generation.backends import (
     load_default_generation_backend_registry,
 )
 from astrid.core.generation.backends.codex import codex_unavailable_reason
-from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.pack_api import ModelRegistry
 from astrid.core.util.png_metadata import embed_png_text
 from astrid.packs.generation.shared._common import (
     _PROMPT_ENTRY_CONTROL_KEYS,

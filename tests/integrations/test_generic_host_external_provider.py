@@ -20,7 +20,6 @@ from astrid.core.execution.generic_host import (
     GenericPackHost,
     HostError,
     RuntimeProtocolClient,
-    _hivemind_source_preflight,
 )
 from astrid.core.execution.network_broker import ObservableNetworkBroker
 from astrid_runtime_client import WorkspaceClient
@@ -280,8 +279,8 @@ def test_external_pack_command_imports_from_its_admitted_pack_root(
     assert (tmp_path / "attempt" / "outputs" / "response.txt").read_text(encoding="utf-8") == "provider-http-response"
 
 
-def test_hivemind_without_clean_pinned_source_is_optional_unavailable(tmp_path: Path) -> None:
-    """B9.3 must expose an unavailable Hivemind row, never silently advertise it."""
+def test_hivemind_preflight_does_not_require_a_git_checkout(tmp_path: Path) -> None:
+    """Core Hivemind readiness is independent of external source checkout state."""
     pack_root = tmp_path / "hivemind"
     executor_root = pack_root / "executors" / "search"
     executor_root.mkdir(parents=True)
@@ -318,8 +317,7 @@ def test_hivemind_without_clean_pinned_source_is_optional_unavailable(tmp_path: 
     assert record.definition.metadata["source_pack"] == "hivemind"
     host.preflight()
     assert host.capabilities[record.id].ready is False
-    assert host.capabilities[record.id].preflight["pack_source"]["ok"] is False
-    assert "not a Git checkout" in host.capabilities[record.id].preflight["pack_source"]["reason"]
+    assert "pack_source" not in host.capabilities[record.id].preflight
 
 
 def test_external_provider_without_key_is_admitted_by_runtime(tmp_path: Path, real_runtime) -> None:
@@ -679,12 +677,11 @@ def test_native_network_command_is_unready_without_enforceable_observable_gatewa
         )
 
 
-def test_clean_pinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Path, real_runtime) -> None:
-    """A committed local Hivemind-style pack is admitted by digest and settles via CAS."""
-    checkout = tmp_path / "hivemind-checkout"
-    executor_root = checkout / "packs" / "hivemind" / "executors" / "search"
+def test_unpinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Path, real_runtime) -> None:
+    """A local Hivemind-style pack is admitted by digest and settles via CAS."""
+    pack_root = tmp_path / "hivemind"
+    executor_root = pack_root / "executors" / "search"
     executor_root.mkdir(parents=True)
-    pack_root = checkout / "packs" / "hivemind"
     (pack_root / "pack.yaml").write_text(
         "schema_version: 2\nid: hivemind\nname: Hivemind\nversion: 2.0\n"
         "capabilities: [search_corpus]\ncontent:\n  executors: executors\n"
@@ -701,17 +698,11 @@ def test_clean_pinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Pat
         "isolation": {"mode": "subprocess", "network": True, "secrets_required": ["HIVEMIND_ANON_KEY"]},
         "metadata": {"adapter_family": "provider", "network_policy": {"allowed_protocols": ["dns", "tcp"], "allowed_destinations": [], "broker": {"host_managed": True}}},
     }), encoding="utf-8")
-    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "fixture@example.invalid"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Fixture"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "add", "packs"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "pin hivemind fixture"], check=True)
     host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt", credential_source={"HIVEMIND_ANON_KEY": "fixture-key"})
     record = host.discover()[0]
     host.preflight()
-    assert host.capabilities[record.id].preflight["pack_source"]["ok"]
-    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
-    assert host.capabilities[record.id].preflight["pack_source"]["revision"] == revision
+    assert host.capabilities[record.id].ready
+    assert "pack_source" not in host.capabilities[record.id].preflight
 
     daemon = real_runtime()
     try:

@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "e0ca283b5dc9db2056b41c822a899ac539919b143b4287740b4d3b0df9a16da0"
+    "sha256": "14961a6917a380dd16b84562e12956475bb194d5d50a4edcf736669ef91582d7"
   },
   "source_bindings": [
     {
@@ -14,7 +14,7 @@
     },
     {
       "name": "vibecomfy",
-      "pin": "vibecomfy-h3",
+      "pin": "vibecomfy",
       "relative_path": "runtime/vibecomfy"
     },
     {

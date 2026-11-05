@@ -13,19 +13,12 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from astrid.core.audit import AuditContext
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AuditContext
+from astrid.pack_api import AstridError
 from astrid.core.foundation.paths import PACKAGE_ROOT
-from astrid.core.timeline import (
-    METADATA_VERSION,
-    AssetRegistry,
-    PipelineMetadata,
-    TimelineConfig,
-    canonical_timeline_config,
-    materialize_output,
-)
-from astrid.core.util.time import utc_now_seconds
-from astrid.core.timeline import compile_arrangement_plan
+from astrid.pack_api import METADATA_VERSION, AssetRegistry, PipelineMetadata, TimelineConfig, canonical_timeline_config, materialize_output
+from astrid.pack_api import utc_now_seconds
+from astrid.pack_api import compile_arrangement_plan
 
 _LEGACY_DEFAULT_CLIP_SEC = 4.0
 

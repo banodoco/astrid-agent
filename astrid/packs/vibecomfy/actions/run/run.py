@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('vibecomfy.run')
 import argparse
@@ -23,12 +23,9 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager
 from types import ModuleType
 
-from astrid.core._shared.result_manifest import (  # noqa: E402
-    build_manifest,
-    write_manifest,
-)
-from astrid.core.contracts.errors import AstridError, render_astrid_error  # noqa: E402
-from astrid.core.cli_choices import add_choice_arg  # noqa: E402
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AstridError, render_astrid_error  # noqa: E402
+from astrid.pack_api import add_choice_arg  # noqa: E402
 from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     read_managed_generation_result,

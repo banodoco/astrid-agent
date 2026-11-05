@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.human_notes')
 
@@ -15,11 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.execution.executor.argv import executor_argv
-from astrid.core.media import require_runtime_materialized_file
-from astrid.core.timeline import load_arrangement, load_pool
-from astrid.core.util.llm_clients import ClaudeClient, build_claude_client
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import executor_argv
+from astrid.pack_api import require_runtime_materialized_file
+from astrid.pack_api import load_arrangement, load_pool
+from astrid.pack_api import ClaudeClient, build_claude_client
 from astrid.packs.editorial.actions.arrange.run import pool_digest
 from astrid.packs.editorial.actions.editor_review.run import (
     DEFAULT_MODEL,

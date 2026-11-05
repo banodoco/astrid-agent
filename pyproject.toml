@@ -152,6 +152,8 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
+    "core/hivemind/docs/*.md",
+    "core/hivemind/LICENSE",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
 
@@ -185,7 +187,7 @@ astrid = [
     "packs/**/requirements.txt",
     "packs/**/requirements.windows-nvidia.txt",
     "packs/runpod/requirements.linux-cu130.lock",
-    "packs/comfyui/requirements.linux-cu130.lock",
+    "packs/vibecomfy/requirements.linux-cu130.lock",
     "packs/**/requirements.*.lock",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",

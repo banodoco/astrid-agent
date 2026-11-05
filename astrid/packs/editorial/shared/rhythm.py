@@ -319,7 +319,7 @@ def build_rhythm(
     notes: list[str] = []
     records: list[dict[str, Any]] = []
     chapters: list[dict[str, Any]] = []
-    from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle, picture_cuts
+    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
 
     shared_cuts: dict[str, list[dict[str, Any]]] = {}
     for cut in picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)):
@@ -621,7 +621,7 @@ def make_visualizer_layer():
     from PIL import ImageDraw
 
     from astrid.packs.rendering.actions.timeline_visualize.layers import Layer, LayerResult
-    from astrid.packs.rendering.actions.timeline_visualize.layers.base import PALETTE, draw_text
+    from astrid.packs.rendering.api import PALETTE, draw_text
 
     neighbours = 6
 

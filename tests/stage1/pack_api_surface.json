@@ -1,0 +1,560 @@
+[
+  {
+    "exports": {
+      "ARRANGEMENT_VERSION": {
+        "type": "builtins.int",
+        "value": 1
+      },
+      "AssetRegistry": {
+        "annotations": {
+          "assets": "ForwardRef('dict[str, AssetRegistryEntry]', module='astrid.core.timeline.banodoco_schema')"
+        },
+        "optional_keys": [],
+        "required_keys": [
+          "assets"
+        ],
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "typing._TypedDictMeta"
+      },
+      "AstridArgumentError": {
+        "signature": "(message: 'str', argument_name: 'str', invalid_value: 'str', valid_options: 'tuple[str, ...]', catalog: 'str | None' = None) -> None",
+        "type": "builtins.type"
+      },
+      "AstridError": {
+        "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'",
+        "type": "builtins.type"
+      },
+      "AstridValueError": {
+        "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'",
+        "type": "builtins.type"
+      },
+      "AuditContext": {
+        "signature": "(run_dir: 'Path', enabled: 'bool' = True) -> None",
+        "type": "builtins.type"
+      },
+      "CARRY_FORWARD_SOURCE_FIELDS": {
+        "type": "builtins.frozenset"
+      },
+      "CapabilityDescriptor": {
+        "signature": "(capability_id: 'str', ownership_mode: 'str' = 'manager_owned', terminate_authority: 'str' = 'generic_pack_host', residency_support: 'str' = 'observable_releasable', admission_capacity: 'str' = 'serial', cancellation_strength: 'str' = 'fenced', uncertain_cancellation: 'str' = 'reconcile_before_settlement', resources_claimed: 'tuple[str, ...]' = ('gpu', 'ports', 'files'), warm_reuse_expected: 'bool' = False) -> None",
+        "type": "builtins.type"
+      },
+      "CapabilityIdentity": {
+        "signature": "(capability_id: 'str', capability_digest: 'str') -> None",
+        "type": "builtins.type"
+      },
+      "ClaudeClient": {
+        "signature": "(*args, **kwargs)",
+        "type": "typing._ProtocolMeta"
+      },
+      "CommandSpec": {
+        "signature": "(name: 'str', help: 'str', aliases: 'Sequence[str]' = <factory>, configure: 'Callable[[argparse.ArgumentParser], None] | None' = None, requires_pack_host: 'bool' = False) -> None",
+        "type": "builtins.type"
+      },
+      "CredentialsScope": {
+        "signature": "(provider: 'str', value: 'str') -> None",
+        "type": "builtins.type"
+      },
+      "DEFAULT_OUTPUT_MAX_BYTES": {
+        "type": "builtins.int",
+        "value": 536870912
+      },
+      "ExperimentValidationError": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "FalBackend": {
+        "signature": "(env_file: 'Path | None' = None, client: 'HttpClient | None' = None) -> 'None'",
+        "type": "abc.ABCMeta"
+      },
+      "HttpClient": {
+        "signature": "(transport: 'Transport | None' = None, default_timeout: 'int' = 60) -> 'None'",
+        "type": "builtins.type"
+      },
+      "MAX_VISUAL_HOLD_RATIO": {
+        "type": "builtins.float",
+        "value": 0.2
+      },
+      "METADATA_VERSION": {
+        "type": "builtins.int",
+        "value": 1
+      },
+      "MIN_OVERLAY_COVERAGE_SEC": {
+        "type": "builtins.float",
+        "value": 4.0
+      },
+      "ManagedToolSession": {
+        "signature": "(*, manager_id: 'str' = 'generic-pack-host') -> 'None'",
+        "type": "builtins.type"
+      },
+      "ModelRegistry": {
+        "signature": "(entries: 'list[ModelEntry]') -> 'None'",
+        "type": "builtins.type"
+      },
+      "OrchestrationContractError": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "PARENT_IDS_ENV": {
+        "type": "builtins.str",
+        "value": "ASTRID_AUDIT_PARENT_IDS"
+      },
+      "PipeReader": {
+        "signature": "(stream, *, chunk_size=65536, events=None, name=None, sink=None)",
+        "type": "builtins.type"
+      },
+      "PipeWriter": {
+        "signature": "(stream)",
+        "type": "builtins.type"
+      },
+      "PipelineMetadata": {
+        "annotations": {
+          "clips": "ForwardRef('dict[str, PipelineMetadataClipEntry]', module='astrid.core.timeline.banodoco_schema')",
+          "generated_at": "ForwardRef('str', module='astrid.core.timeline.banodoco_schema')",
+          "pipeline": "ForwardRef('dict[str, Any]', module='astrid.core.timeline.banodoco_schema')",
+          "sources": "ForwardRef('dict[str, dict[str, Any]]', module='astrid.core.timeline.banodoco_schema')",
+          "version": "ForwardRef('int', module='astrid.core.timeline.banodoco_schema')"
+        },
+        "optional_keys": [],
+        "required_keys": [
+          "clips",
+          "generated_at",
+          "pipeline",
+          "sources",
+          "version"
+        ],
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "typing._TypedDictMeta"
+      },
+      "ProjectRuntimeError": {
+        "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'",
+        "type": "builtins.type"
+      },
+      "ROLE_DURATION_BOUNDS": {
+        "type": "builtins.dict"
+      },
+      "RecoverableArgumentParser": {
+        "signature": "(*args: 'Any', **kwargs: 'Any') -> 'None'",
+        "type": "builtins.type"
+      },
+      "RunStatus": {
+        "signature": "(*values)",
+        "type": "enum.EnumType"
+      },
+      "RuntimeAdmission": {
+        "signature": "(body: 'Mapping[str, Any]', idempotency_key: 'str') -> None",
+        "type": "builtins.type"
+      },
+      "SCHEMA_VERSION": {
+        "type": "builtins.str",
+        "value": "1"
+      },
+      "STITCH_CAPABILITIES": {
+        "type": "builtins.dict"
+      },
+      "STITCH_FAMILY": {
+        "type": "builtins.str",
+        "value": "stitch_finalization"
+      },
+      "SessionBinding": {
+        "signature": "(session_id: 'str', runtime_instance_id: 'str', process_birth_id: 'str', endpoint: 'str', source_digest: 'str', config_digest: 'str', execution_identity: 'str' = '', runtime_epoch: 'int | None' = None, launch_generation: 'str' = '', engine_birth_id: 'str' = '') -> None",
+        "type": "builtins.type"
+      },
+      "StaleAdmissionError": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "StaleStateConflict": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "StaticChoices": {
+        "signature": "(values: 'Iterable[str]', *, catalog: 'str | None' = None) -> 'None'",
+        "type": "abc.ABCMeta"
+      },
+      "TOTAL_DURATION_BOUNDS": {
+        "type": "builtins.tuple"
+      },
+      "TRIM_BOUND_EXTENSION_SEC": {
+        "type": "builtins.float",
+        "value": 0.6
+      },
+      "TimelineConfig": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "UncertainCancellation": {
+        "signature": "(self, /, *args, **kwargs)",
+        "type": "builtins.type"
+      },
+      "add_choice_arg": {
+        "signature": "(parser: 'argparse.ArgumentParser', *name_or_flags: 'str', values: 'Iterable[str]', catalog: 'str | None' = None, **kwargs: 'Any') -> 'argparse.Action'",
+        "type": "builtins.function"
+      },
+      "admit_orchestrator_project_run": {
+        "signature": "(*, project: 'str', tool_id: 'str', argv: 'list[str]', client: 'Any | None' = None) -> 'KernelAdmissionContext'",
+        "type": "builtins.function"
+      },
+      "apply_experiment_review_save": {
+        "signature": "(state_path: 'Path', body: 'dict[str, Any]', *, lock: 'threading.Lock | None' = None) -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "build_claude_client": {
+        "signature": "(env_file: 'Path | None' = None) -> 'ClaudeClient'",
+        "type": "builtins.function"
+      },
+      "build_diagnostics": {
+        "signature": "(review: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "build_manifest": {
+        "signature": "(*, kind: 'str', inputs: 'Mapping[str, Any]', outputs: 'Sequence[Mapping[str, Any]]', created: 'str', schema_version: 'int' = 1, warnings: 'list[str] | None' = None, **extras: 'Any') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "build_normalized_review": {
+        "signature": "(*, experiment: 'Mapping[str, Any]', cases_with_manifests: 'Sequence[tuple[Mapping[str, Any], str, Path]]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "build_rubric_response_schema": {
+        "signature": "(experiment: 'Mapping[str, Any]', *, case_ids: 'Sequence[str] | None' = None) -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "bundle_fps": {
+        "signature": "(bundle: 'Mapping[str, Any]') -> 'float'",
+        "type": "builtins.function"
+      },
+      "canonical_event_json": {
+        "signature": "(event: 'dict[str, Any]') -> 'str'",
+        "type": "builtins.function"
+      },
+      "canonical_runtime_entrypoint": {
+        "signature": "(capability_id: 'str') -> 'Iterator[None]'",
+        "type": "builtins.function"
+      },
+      "canonical_timeline_config": {
+        "signature": "(config: 'Any') -> 'TimelineConfig'",
+        "type": "builtins.function"
+      },
+      "close_pipe_workers": {
+        "signature": "(*workers, timeout=1.0)",
+        "type": "builtins.function"
+      },
+      "compile_arrangement_plan": {
+        "signature": "(arrangement: 'dict[str, Any]', pool: 'dict[str, Any]') -> 'list[dict[str, Any]]'",
+        "type": "builtins.function"
+      },
+      "default_client": {
+        "signature": "() -> 'HttpClient'",
+        "type": "builtins.function"
+      },
+      "derive_ulid": {
+        "signature": "(seed: 'str') -> 'str'",
+        "type": "builtins.function"
+      },
+      "download_output": {
+        "signature": "(client: 'HttpClient', url: 'str', destination: 'Path', *, timeout: 'int', max_bytes: 'int' = 536870912, fallback_suffix: 'str' = '.png', unique: 'bool' = False, validate: 'Callable[[bytes], object] | None' = None, infer_suffix: 'bool' = True) -> 'tuple[Path, bytes]'",
+        "type": "builtins.function"
+      },
+      "executor_argv": {
+        "signature": "(executor_id: 'str', python_exec: 'str') -> 'list[str]'",
+        "type": "builtins.function"
+      },
+      "fal_storage_upload": {
+        "signature": "(client: 'HttpClient', file_path: 'Path', api_key: 'str') -> 'str'",
+        "type": "builtins.function"
+      },
+      "fal_submit_and_poll": {
+        "signature": "(client: 'HttpClient', model_id: 'str', payload: 'dict[str, Any]', api_key: 'str', *, max_wait_sec: 'int' = 300, max_response_bytes: 'int | None' = None, submit_timeout: 'int | None' = None) -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "ffprobe_duration_seconds": {
+        "signature": "(media_path: 'str | Path', *, runner: 'Runner' = <function run>, env: 'Mapping[str, str] | None' = None) -> 'float'",
+        "type": "builtins.function"
+      },
+      "group_exists": {
+        "signature": "(process: 'subprocess.Popen') -> 'bool'",
+        "type": "builtins.function"
+      },
+      "guard_canonical_entrypoint": {
+        "signature": "(pack_id: 'str') -> 'None'",
+        "type": "builtins.function"
+      },
+      "has_url_scheme": {
+        "signature": "(value: 'str') -> 'bool'",
+        "type": "builtins.function"
+      },
+      "hash_artifact": {
+        "signature": "(path: 'Path') -> 'str'",
+        "type": "builtins.function"
+      },
+      "init_experiment_review_state": {
+        "signature": "(state_path: 'Path', experiment_id: 'str') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "is_all_generative_arrangement": {
+        "signature": "(arrangement: 'Any', pool: 'Any') -> 'bool'",
+        "type": "builtins.function"
+      },
+      "is_experiment_review_save": {
+        "signature": "(body: 'Any') -> 'bool'",
+        "type": "builtins.function"
+      },
+      "is_valid_content_hash": {
+        "signature": "(value: 'str') -> 'bool'",
+        "type": "builtins.function"
+      },
+      "load_arrangement": {
+        "signature": "(path: 'Path', pool_ids: 'set[str] | None' = None, *, assign_missing_uuids: 'bool' = False) -> 'Arrangement'",
+        "type": "builtins.function"
+      },
+      "load_default_registry": {
+        "signature": "(banodoco_config: \"'BanodocoCatalogConfig | None'\" = None, *, project_root: 'str | Path' = PosixPath('<REPO_ROOT>'), extra_pack_roots: 'tuple[str, ...]' = (), additional_executors: 'Iterable[ExecutorDefinition | dict[str, Any]]' = ()) -> 'ExecutorRegistry'",
+        "type": "builtins.function"
+      },
+      "load_experiment_review_state": {
+        "signature": "(state_path: 'Path', *, expected_experiment_id: 'str') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "load_metadata": {
+        "signature": "(path: 'Path') -> 'PipelineMetadata'",
+        "type": "builtins.function"
+      },
+      "load_pool": {
+        "signature": "(path: 'Path') -> 'Pool'",
+        "type": "builtins.function"
+      },
+      "load_provider_key": {
+        "signature": "(provider: 'str', *, env_file: 'Path | None' = None, explicit: 'str | None' = None) -> 'str'",
+        "type": "builtins.function"
+      },
+      "load_registry": {
+        "signature": "(path: 'Path') -> 'AssetRegistry'",
+        "type": "builtins.function"
+      },
+      "load_theme": {
+        "signature": "(path: 'str | Path') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "load_timeline": {
+        "signature": "(path: 'Path') -> 'TimelineConfig'",
+        "type": "builtins.function"
+      },
+      "log_and_swallow": {
+        "signature": "(exc: 'BaseException', *, level: 'int' = 10, context: 'str', logger: 'logging.Logger | None' = None) -> 'None'",
+        "type": "builtins.function"
+      },
+      "managed_file_digest": {
+        "signature": "(value: 'Any', name: 'str') -> 'str'",
+        "type": "builtins.function"
+      },
+      "materialize_output": {
+        "signature": "(config: 'Any', theme: 'Any') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "observe_tree": {
+        "signature": "(process: 'subprocess.Popen', *, deadline: 'float | None' = None) -> 'dict[int, str]'",
+        "type": "builtins.function"
+      },
+      "occurrences_from_bundle": {
+        "signature": "(bundle: 'Mapping[str, Any]') -> 'list[dict[str, Any]]'",
+        "type": "builtins.function"
+      },
+      "owned_by_current_user": {
+        "signature": "(path_or_fd, metadata, *, mode: 'int | None' = None, forbidden: 'int' = 0) -> 'bool'",
+        "type": "builtins.function"
+      },
+      "pack_die": {
+        "signature": "(message: 'str', *, recovery_command: 'str | None' = None, valid_options: 'list[str] | None' = None, state_snapshot: 'dict | None' = None) -> 'NoReturn'",
+        "type": "builtins.function"
+      },
+      "picture_cuts": {
+        "signature": "(occurrences: 'Iterable[Mapping[str, Any]]', *, fps: 'float' = 30.0) -> 'list[dict[str, Any]]'",
+        "type": "builtins.function"
+      },
+      "popen_owned_group": {
+        "signature": "(argv: 'list[str]', **kwargs: 'Any') -> 'subprocess.Popen'",
+        "type": "builtins.function"
+      },
+      "popen_owned_process": {
+        "signature": "(argv: 'list[str]', **kwargs: 'Any') -> 'subprocess.Popen'",
+        "type": "builtins.function"
+      },
+      "print_result": {
+        "signature": "(result: 'object', *, as_json: 'bool' = False, stream: 'TextIO | None' = None, human_renderer: 'Callable[[object], str] | None' = None) -> 'int'",
+        "type": "builtins.function"
+      },
+      "process_birth_identity": {
+        "signature": "(pid: 'int | None' = None) -> 'str'",
+        "type": "builtins.function"
+      },
+      "project_dir": {
+        "signature": "(slug: 'str', *, root: 'str | Path | None' = None) -> 'Path'",
+        "type": "builtins.function"
+      },
+      "project_run_env": {
+        "signature": "(project_slug: 'str | None' = None) -> 'dict[str, str]'",
+        "type": "builtins.function"
+      },
+      "read_json": {
+        "signature": "(path: 'str | Path') -> 'Any'",
+        "type": "builtins.function"
+      },
+      "read_result_json": {
+        "signature": "(path: 'Path') -> 'dict[str, Any] | None'",
+        "type": "builtins.function"
+      },
+      "register_outputs": {
+        "signature": "(*, stage: 'str', outputs: 'Iterable[tuple[str, Path | str, str]]', parents: 'Iterable[str]' = (), metadata: 'dict[str, Any] | None' = None) -> 'list[str]'",
+        "type": "builtins.function"
+      },
+      "register_product_commands": {
+        "signature": "(subparsers: 'Any', commands: 'Sequence[CommandSpec]', *, family: 'str', client: 'Any') -> 'tuple[CommandSpec, ...]'",
+        "type": "builtins.function"
+      },
+      "reject_project_with_out": {
+        "signature": "(project: 'str | None', out: 'str | Path | None') -> 'None'",
+        "type": "builtins.function"
+      },
+      "release_group": {
+        "signature": "(process: 'subprocess.Popen') -> 'None'",
+        "type": "builtins.function"
+      },
+      "render_astrid_error": {
+        "signature": "(error: 'AstridError') -> 'int'",
+        "type": "builtins.function"
+      },
+      "require_action_available": {
+        "signature": "(action_id: 'str') -> 'None'",
+        "type": "builtins.function"
+      },
+      "require_project_owned_artifact": {
+        "signature": "(project_slug: 'str', artifact_type: 'str', value: 'str | Path', *, root: 'str | Path | None' = None) -> 'Path'",
+        "type": "builtins.function"
+      },
+      "require_runtime_materialized_file": {
+        "signature": "(value: 'str | Path', *, label: 'str' = 'media input') -> 'Path'",
+        "type": "builtins.function"
+      },
+      "resolve_manifest_path": {
+        "signature": "(run_path: 'Path', manifest_path: 'str') -> 'tuple[Path | None, str | None]'",
+        "type": "builtins.function"
+      },
+      "resolve_projects_root": {
+        "signature": "(root: 'str | Path | None' = None) -> 'Path'",
+        "type": "builtins.function"
+      },
+      "run_pack_main": {
+        "signature": "(capability_id: 'str', runner: 'Callable[[], int]', *, argv: 'list[str] | None' = None, recovery_command: 'str | None' = None) -> 'int'",
+        "type": "builtins.function"
+      },
+      "run_subprocess": {
+        "signature": "(cmd: 'list[str]', *, label: 'str', orchestrator: 'str | None' = None, **kwargs: 'Any') -> 'str'",
+        "type": "builtins.function"
+      },
+      "sanitize_portable": {
+        "signature": "(value: 'Any', *, forbidden_paths: 'tuple[str, ...]' = ()) -> 'Any'",
+        "type": "builtins.function"
+      },
+      "save_arrangement": {
+        "signature": "(arrangement: 'Arrangement', path: 'Path', pool_ids: 'set[str] | None' = None) -> 'None'",
+        "type": "builtins.function"
+      },
+      "save_metadata": {
+        "signature": "(meta: 'PipelineMetadata', path: 'Path') -> 'None'",
+        "type": "builtins.function"
+      },
+      "save_registry": {
+        "signature": "(registry: 'AssetRegistry', path: 'Path') -> 'None'",
+        "type": "builtins.function"
+      },
+      "save_timeline": {
+        "signature": "(config: 'TimelineConfig', path: 'Path') -> 'None'",
+        "type": "builtins.function"
+      },
+      "selected_project": {
+        "signature": "(explicit_project: 'str | None', *, runtime_client: 'object | None' = None) -> 'tuple[str | None, str]'",
+        "type": "builtins.function"
+      },
+      "sha256_file": {
+        "signature": "(path: 'Path') -> 'str'",
+        "type": "builtins.function"
+      },
+      "signal_group": {
+        "signature": "(process: 'subprocess.Popen', sig: 'int') -> 'None'",
+        "type": "builtins.function"
+      },
+      "synthesize_discord_manifest": {
+        "signature": "(*, result: 'Mapping[str, Any]', run_dir: 'Path', subdir_name: 'str') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "terminate_group": {
+        "signature": "(process: 'subprocess.Popen', *, grace_seconds: 'float' = 1.0) -> 'None'",
+        "type": "builtins.function"
+      },
+      "terminate_tree": {
+        "signature": "(process: 'subprocess.Popen', *, grace_seconds: 'float' = 1.0) -> 'None'",
+        "type": "builtins.function"
+      },
+      "utc_now_iso": {
+        "signature": "(*, timespec: 'TimeSpec' = 'auto') -> 'str'",
+        "type": "builtins.function"
+      },
+      "utc_now_seconds": {
+        "signature": "() -> 'str'",
+        "type": "builtins.function"
+      },
+      "validate_arrangement": {
+        "signature": "(arrangement: 'Any', pool_ids: 'set[str] | None' = None) -> 'None'",
+        "type": "builtins.function"
+      },
+      "validate_arrangement_duration_window": {
+        "signature": "(arrangement: 'Any', *, min_sec: 'float' = 75.0, max_sec: 'float' = 90.0) -> 'None'",
+        "type": "builtins.function"
+      },
+      "validate_conclusions": {
+        "signature": "(payload: 'Mapping[str, Any]', *, case_ids: 'Sequence[str] | None' = None, experiment: 'Mapping[str, Any] | None' = None, experiment_id: 'str | None' = None) -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "validate_diagnostics": {
+        "signature": "(diag: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "validate_experiment": {
+        "signature": "(experiment: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "validate_import_report": {
+        "signature": "(report: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "validate_review": {
+        "signature": "(review: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "validate_review_final": {
+        "signature": "(payload: 'Mapping[str, Any]', *, experiment: 'Mapping[str, Any]', case_ids: 'Sequence[str]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      },
+      "verify_tree_absent": {
+        "signature": "(process: 'subprocess.Popen', *, deadline: 'float | None' = None) -> 'None'",
+        "type": "builtins.function"
+      },
+      "write_journal_atomic": {
+        "signature": "(path: 'str | Path', payload: 'object') -> 'None'",
+        "type": "builtins.function"
+      },
+      "write_json_atomic": {
+        "signature": "(path: 'str | Path', payload: 'Any') -> 'None'",
+        "type": "builtins.function"
+      },
+      "write_manifest": {
+        "signature": "(path: 'str | Path', manifest: 'Mapping[str, Any]') -> 'dict[str, Any]'",
+        "type": "builtins.function"
+      }
+    },
+    "version": [
+      1,
+      0
+    ]
+  }
+]

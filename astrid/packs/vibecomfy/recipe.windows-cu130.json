@@ -3,8 +3,8 @@
   "engine": "vibecomfy",
   "platform": "windows-x86_64-cu130",
   "pins": {
-    "path": "packs/runpod/pins.json",
-    "sha256": "e0ca283b5dc9db2056b41c822a899ac539919b143b4287740b4d3b0df9a16da0"
+    "path": "packs/vibecomfy/pins.json",
+    "sha256": "39c0ffce2ad3cdd11ded41013861566076ea5639eb1744fcef5225f41de0766d"
   },
   "source_bindings": [
     {
@@ -16,16 +16,6 @@
       "name": "vibecomfy",
       "pin": "vibecomfy",
       "relative_path": "runtime/vibecomfy"
-    },
-    {
-      "name": "h3-motion-context",
-      "pin": "h3-motion-context",
-      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef"
-    },
-    {
-      "name": "videohelpersuite",
-      "pin": "videohelpersuite",
-      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite"
     }
   ],
   "environments": [
@@ -45,14 +35,6 @@
           {
             "source": "vibecomfy",
             "path": "pyproject.toml"
-          },
-          {
-            "source": "h3-motion-context",
-            "path": "requirements.txt"
-          },
-          {
-            "source": "videohelpersuite",
-            "path": "requirements.txt"
           }
         ],
         "constraints": [
@@ -113,8 +95,8 @@
     "path": "/system_stats",
     "object_info_path": "/object_info",
     "required_nodes": [
-      "MiniMaxH3ReferenceToVideo",
-      "VHS_VideoCombine"
+      "UNETLoader",
+      "VAELoader"
     ],
     "timeout_seconds": 120,
     "poll_interval_seconds": 2

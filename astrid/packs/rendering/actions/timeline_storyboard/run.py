@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("rendering.timeline_storyboard")
 
@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.atomic_io import write_json_atomic, write_text_atomic
-from astrid.core.media import require_runtime_materialized_file
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AstridError
+from astrid.pack_api import write_json_atomic
+from astrid.core.foundation.atomic_io import write_text_atomic
+from astrid.pack_api import require_runtime_materialized_file
 
 _DISCORD_INPUT_RE = re.compile(r"^input_media(?:_([2-9]|10))?$")
 CONTACT_SHEET_COLUMNS = 2

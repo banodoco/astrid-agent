@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
     PackValidationError,
@@ -511,8 +511,20 @@ def discover_pack_metadata(
             )
 
     source_packs = scan()
+    # Hivemind is a runtime-owned core pack rather than an authorable pack
+    # under ``astrid/packs``. Admit it through the same strict manifest loader
+    # as source packs, and place it first so user/managed copies cannot shadow
+    # the bundled implementation in registries that honor discovery order.
+    core_hivemind_root = PACKAGE_ROOT / "core" / "hivemind"
+    core_hivemind_manifest = core_hivemind_root / "pack.yaml"
+    if core_hivemind_manifest.is_file():
+        core_hivemind = loader.load_pack_manifest(
+            core_hivemind_manifest,
+            expected_pack_id="hivemind",
+        )
+        _add(core_hivemind, "source")
     for pack in source_packs:
-        if pack.id == "local":
+        if pack.id in {"local", "hivemind"}:
             continue
         _add(pack, "source")
 

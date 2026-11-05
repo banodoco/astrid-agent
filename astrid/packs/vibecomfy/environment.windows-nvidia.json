@@ -8,23 +8,14 @@
     "torchaudio": "2.10.0+cu130"
   },
   "source": {
-    "pin": "comfyui"
+    "pin": "comfyui-plain"
   },
   "vibecomfy_source": {
     "pin": "vibecomfy"
   },
-  "custom_nodes": [
-    {
-      "name": "ComfyUI-H3-Motion-Context-MultiRef",
-      "pin": "h3-motion-context"
-    },
-    {
-      "name": "ComfyUI-VideoHelperSuite",
-      "pin": "videohelpersuite"
-    }
-  ],
+  "custom_nodes": [],
   "pins": {
     "path": "packs/vibecomfy/pins.json",
-    "sha256": "b6faf63c76905d879922350768bf924b60aaa0a129e55c444a985787686d7ab5"
+    "sha256": "39c0ffce2ad3cdd11ded41013861566076ea5639eb1744fcef5225f41de0766d"
   }
 }

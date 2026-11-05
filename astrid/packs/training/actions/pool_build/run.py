@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError, AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('training.pool_build')
 import argparse
@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.audit import register_outputs
-from astrid.core.util.time import utc_now_seconds
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import register_outputs
+from astrid.pack_api import utc_now_seconds
 
 AUDIO_EVENT_RE = re.compile(r"\b(applause|laughter|cheer|audience)\b", re.IGNORECASE)
 KIND_LETTER = {"dialogue": "d", "visual": "v", "reaction": "r", "applause": "a", "music": "m"}
