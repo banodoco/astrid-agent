@@ -1460,6 +1460,25 @@ def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     }
 
 
+def _same_path(a, b) -> bool:
+    """Compare two filesystem paths by normalized identity, not by spelling."""
+    def usable(value) -> bool:
+        return isinstance(value, (str, Path)) and str(value) != ""
+
+    if not usable(a) or not usable(b):
+        return False
+
+    def normalized(value) -> str:
+        return os.path.normcase(os.path.normpath(os.path.abspath(str(value))))
+
+    if normalized(a) == normalized(b):
+        return True
+    try:
+        return os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
+
+
 def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False,
                           release: int = 0,
                           related_uninstalled_selection: tuple[Path, Path] | None = None) -> None:
@@ -1472,16 +1491,16 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
     selection = read_json(selection_path) if selection_path.exists() else None
     owned_uninstalled = (leg == "cleanup" and isinstance(selection, dict)
                          and selection.get("owner") == "haus.astrid.runtime"
-                         and selection.get("program_root") == str(root)
-                         and selection.get("data_root") == str(data)
+                         and _same_path(selection.get("program_root"), root)
+                         and _same_path(selection.get("data_root"), data)
                          and selection.get("uninstalled") is True
                          and not selection.get("foreground"))
     related_uninstalled = (leg == "windows-upgrade-refusal"
                            and related_uninstalled_selection is not None
                            and isinstance(selection, dict)
                            and selection.get("owner") == "haus.astrid.runtime"
-                           and selection.get("program_root") == str(related_uninstalled_selection[0])
-                           and selection.get("data_root") == str(related_uninstalled_selection[1])
+                           and _same_path(selection.get("program_root"), related_uninstalled_selection[0])
+                           and _same_path(selection.get("data_root"), related_uninstalled_selection[1])
                            and selection.get("uninstalled") is True
                            and not selection.get("foreground"))
     owned_r1_cleanup = False
