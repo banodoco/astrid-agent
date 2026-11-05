@@ -639,7 +639,8 @@ def test_door_verification_permanent_mismatch_reports_sanitized_endpoints(tmp_pa
     program, data = tmp_path / "program", tmp_path / "data"
     version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile",
                       {"ASTRID_RUNTIME_DOOR_PORT": "17391"})
-    discovery = {"door_endpoint": "http://user:secret@127.0.0.1:17340/private?token=hidden#fragment"}
+    discovery = {"runtime_instance_id": "cccccccccccccccccccccccccccccccc",
+                 "door_endpoint": "http://user:secret@127.0.0.1:17340/private?token=hidden#fragment"}
     write_json(data / "runtime/discovery.json", discovery)
     backend = Backend(program, tmp_path / "log", tmp_path / "uv")
     backend.runtime = Mock(return_value={"discovery": discovery, "support": {"pid_alive": True}})
@@ -648,12 +649,42 @@ def test_door_verification_permanent_mismatch_reports_sanitized_endpoints(tmp_pa
     monkeypatch.setattr(module.time, "sleep", lambda value: None)
 
     with pytest.raises(RuntimeError) as raised:
-        backend.verify(version, data, "selected", timeout=1)
+        backend.verify(version, data, "selected", timeout=1,
+                       pre_update_instance_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
     message = str(raised.value)
     assert "expected endpoint: http://127.0.0.1:17391" in message
     assert "observed endpoint: http://127.0.0.1:17340" in message
+    assert "discovery runtime_instance_id: cccccccccccccccccccccccccccccccc" in message
+    assert "pre-update runtime_instance_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in message
     assert all(secret not in message for secret in ("user", "secret", "/private", "token=hidden", "fragment"))
+
+
+def test_door_verification_timeout_reports_sanitized_runtime_refusal_and_no_discovery(tmp_path, monkeypatch):
+    from astrid.installer import backend as module
+    from astrid.installer.core import RuntimeOperationError
+
+    program, data = tmp_path / "program", tmp_path / "data"
+    version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile",
+                      {"ASTRID_RUNTIME_DOOR_PORT": "17391"})
+    backend = Backend(program, tmp_path / "log", tmp_path / "uv")
+    backend.runtime = Mock(side_effect=RuntimeOperationError(
+        "Runtime admission refused for /private/person with token=hidden"))
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(module.time, "sleep", lambda value: None)
+
+    with pytest.raises(RuntimeError) as raised:
+        backend.verify(version, data, "selected", timeout=1,
+                       pre_update_instance_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    message = str(raised.value)
+    assert "expected endpoint: http://127.0.0.1:17391" in message
+    assert "observed endpoint: <no discovery>" in message
+    assert "discovery runtime_instance_id: <unavailable>" in message
+    assert "pre-update runtime_instance_id: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in message
+    assert "last Runtime status/startup error: Runtime admission refusal (details withheld)" in message
+    assert all(secret not in message for secret in ("/private", "person", "token=hidden"))
 
 
 def test_door_verification_retries_stale_discovery_until_candidate_endpoint_is_published(tmp_path, monkeypatch):
