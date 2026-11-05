@@ -10,8 +10,9 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
 
-    assert sources["counts"]["pack_labels"] == 110
-    assert sources["counts"]["historical_pack_labels"] == 111
+    # comfy_wrap (label run_workflow) is deleted (owner Decision 13; removed by park g1 at PK-4).
+    assert sources["counts"]["pack_labels"] == 109
+    assert sources["counts"]["historical_pack_labels"] == 110
     # The executor inventory is the committed output-result snapshot plus historical
     # rows; it grows whenever a bundled executor is registered, so pin it to the
     # approved census lock rather than a literal.
