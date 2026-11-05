@@ -746,6 +746,15 @@ class VibeComfyBackend(BackendAdapter):
 
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
         if isinstance(unbound_inputs, dict):
+            # Generated templates list every public input's default under
+            # ``unbound_inputs``; a public input bound to a node in this
+            # workflow is declared, so only names without that binding count.
+            declared_inputs = getattr(wf, "inputs", None)
+            workflow_nodes = getattr(wf, "nodes", None)
+            bound_inputs = {
+                name for name, spec in (declared_inputs.items() if isinstance(declared_inputs, dict) else ())
+                if isinstance(workflow_nodes, dict) and getattr(spec, "node_id", None) in workflow_nodes
+            }
             requested_unbound = sorted(
                 tmpl_param
                 for canon, tmpl_param in param_map.items()
@@ -753,6 +762,7 @@ class VibeComfyBackend(BackendAdapter):
                 and canon in params
                 and params[canon] is not None
                 and tmpl_param in unbound_inputs
+                and tmpl_param not in bound_inputs
             )
             if requested_unbound:
                 raise ValueError(

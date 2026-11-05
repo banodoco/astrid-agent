@@ -1311,6 +1311,10 @@ class GenerationFacade:
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
             preview.update(model=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))
+            # Name the VibeComfy workflow the selected entry resolved to.
+            ready_template = (getattr(workflow, 'metadata', None) or {}).get('ready_template')
+            if isinstance(ready_template, str) and ready_template:
+                preview.setdefault('workflow', ready_template)
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             readiness['entry'].update(preview)
