@@ -106,6 +106,8 @@ def validate_runner_identity(
     provenance: dict[str, str] = {}
     if hosted:
         expected_runner, expected_os, expected_image = HOSTED_RUNNERS[os_name]
+        if os_name == "macos" and runner == "macos-15":
+            expected_runner, expected_os, expected_image = ("macos-15", "macOS", "macos15")
         if runner != expected_runner:
             raise AdapterError(f"hosted {os_name} requires runner {expected_runner}")
         provenance = {

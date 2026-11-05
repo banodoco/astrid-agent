@@ -262,6 +262,46 @@ def test_source_fake_is_explicit_and_rejected_by_hosted_gate(tmp_path: Path):
         admit_hosted_receipt(receipt)
 
 
+@pytest.mark.parametrize("runner,image", [("macos-14", "macos14"), ("macos-15", "macos15")])
+def test_macos_executor_runner_provenance(monkeypatch, runner, image):
+    from scripts import pinokio_backend_executor as executor
+
+    monkeypatch.setattr(executor.sys, "platform", "darwin")
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setenv("ImageOS", image)
+    monkeypatch.setenv("ImageVersion", "2026")
+    platform = {"os": "macos", "runner": runner, "shell": "sh", "hosted": True,
+                "evidence_class": "hosted-lifecycle"}
+    assert executor._validate_platform(platform)["runner"] == runner
+    monkeypatch.setenv("ImageOS", "macos14" if image == "macos15" else "macos15")
+    with pytest.raises(ValidationError, match="provenance"):
+        executor._validate_platform(platform)
+
+
+@pytest.mark.parametrize("runner,image", [("macos-14", "macos14"), ("macos-15", "macos15")])
+def test_macos_hosted_receipt_admission_checks_matching_image(runner, image):
+    from scripts import pinokio_backend_executor as executor
+
+    receipt = {
+        "evidence_class": "hosted-lifecycle", "source_override_test_mode": False,
+        "job_id": "pinokio-backend-macos", "runner_image": runner,
+        "runner_provenance": {"RUNNER_OS": "macOS", "ImageOS": image, "ImageVersion": "2026"},
+        "final_cleanup": "pass", "source_unit_evidence": {"substitute_for_hosted": False},
+        "pinokio_backend": {
+            "os": "macos", "hosted_lifecycle": {"status": "pass"},
+            "old_launcher": {"ref": executor.APPROVED_OLD_LAUNCHER_REF,
+                             "sha256": executor.APPROVED_OLD_UPDATE_SHA256, "validated": True},
+            "stopped_path_agent": {"validated": True,
+                                   "required_ancestors": executor.REQUIRED_STOPPED_PATH_ANCESTORS},
+            "final_cleanup": {"result": "stopped"},
+        },
+    }
+    admit_hosted_receipt(receipt)
+    receipt["runner_provenance"]["ImageOS"] = "macos14" if image == "macos15" else "macos15"
+    with pytest.raises(ValidationError, match="provenance"):
+        admit_hosted_receipt(receipt)
+
+
 def test_source_override_and_smuggled_hosted_label_fail_before_action(tmp_path: Path):
     config = _config(tmp_path / "override")
     config["source_override_test_mode"] = True

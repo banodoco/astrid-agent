@@ -220,6 +220,8 @@ def _validate_platform(raw: Mapping[str, Any]) -> dict[str, Any]:
     runner_provenance: dict[str, str] = {}
     if hosted:
         expected_runner, expected_runner_os, expected_image_os = HOSTED_RUNNERS[os_name]
+        if os_name == "macos" and runner == "macos-15":
+            expected_runner, expected_runner_os, expected_image_os = ("macos-15", "macOS", "macos15")
         if runner != expected_runner:
             raise ValidationError(f"hosted {os_name} execution requires runner {expected_runner}")
         runner_provenance = {
@@ -843,6 +845,8 @@ def admit_hosted_receipt(receipt: Mapping[str, Any]) -> None:
     if os_name not in HOSTED_RUNNERS:
         raise ValidationError("hosted receipt has no supported backend OS")
     expected_runner, expected_runner_os, expected_image_os = HOSTED_RUNNERS[os_name]
+    if os_name == "macos" and receipt.get("runner_image") == "macos-15":
+        expected_runner, expected_runner_os, expected_image_os = ("macos-15", "macOS", "macos15")
     provenance = receipt.get("runner_provenance") or {}
     if (receipt.get("job_id") != f"pinokio-backend-{os_name}"
             or receipt.get("runner_image") != expected_runner
