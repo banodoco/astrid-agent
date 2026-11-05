@@ -696,62 +696,145 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def _profile_probe_text(value: str, run_root: str, data_root: str, *, arguments: bool) -> str:
+    """Expose only run-owned paths and known launch syntax from task actions."""
+    if not isinstance(value, str):
+        return "<unavailable>"
+    # Values from other tasks and embedded Python can contain profile data or
+    # credentials. Retain only known syntax and path markers in the receipt.
+    for path, marker in sorted(((data_root, "<data-root>"), (run_root, "<run-root>")),
+                               key=lambda pair: len(pair[0]), reverse=True):
+        value = re.sub(re.escape(path), lambda _: marker, value, flags=re.IGNORECASE)
+    if not arguments:
+        if value.casefold().startswith("<run-root>\\"):
+            # Relative components belong to this run, but do not expose arbitrary names.
+            name = ntpath.basename(value).casefold()
+            return "<run-root>\\...\\" + (name if name in {"python.exe", "pythonw.exe"} else "<executable>")
+        return "<outside-run-root>" if value else "<empty>"
+    allowed = {"-x", "utf8", "-i", "-m", "-c", "astrid_runtime", "run", "--profile", "astrid",
+               "--data-root", "--source-manifest", "<data-root>", "<run-root>"}
+    parts = re.findall(r"<data-root>|<run-root>|[A-Za-z0-9_-]+|[^A-Za-z0-9_<>-]+", value)
+    return "".join(part if part.casefold() in allowed or re.fullmatch(r"[\s\"']+", part)
+                   else "<redacted>" for part in parts)[:2048]
+
+
 def _capture_windows_profile_pack_host_log(evidence: Path, run_root: Path, phase: str) -> None:
     """Capture only this run's scheduled-task pack-host log from the user profile."""
-    status = {"schema_version": 1, "phase": phase, "status": "unavailable"}
+    status = {"schema_version": 1, "phase": phase, "status": "unavailable",
+              "probe": {"exit_code": None, "error": None}}
+    probe = status["probe"]
+    probe_complete = False
     try:
         expected_root = str(run_root.resolve())
         expected_data = str((run_root / "data").resolve())
         script = r"""
-$task = Get-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\' -ErrorAction SilentlyContinue
-if ($null -eq $task) { exit 0 }
-$root = __RUN_ROOT__
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $task = Get-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\' -ErrorAction Stop
+} catch {
+    if ($_.FullyQualifiedErrorId -eq 'CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask' -and
+        $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        @{ task_found = $false; task_path = $null; action_count = 0; actions = @(); owned_count = 0 } | ConvertTo-Json -Depth 5 -Compress
+        exit 0
+    }
+    exit 1
+}
+$root = [IO.Path]::GetFullPath(__RUN_ROOT__).TrimEnd('\') + '\'
 $data = __DATA_ROOT__
-$root = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
-$owned = @($task.Actions | Where-Object {
-    $null -ne $_.Execute -and $_.Execute.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
-    $_.Arguments -and $_.Arguments.IndexOf($data, [StringComparison]::OrdinalIgnoreCase) -ge 0
+$actions = @($task.Actions | ForEach-Object {
+    $execute = [string]$_.Execute
+    $arguments = [string]$_.Arguments
+    $rootMatch = $null -ne $_.Execute -and $execute.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+    $dataMatch = [bool]$_.Arguments -and $arguments.IndexOf($data, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    @{ executable = $execute; arguments = $arguments; run_root_match = $rootMatch; data_root_match = $dataMatch }
 })
-if ($owned.Count -eq 1) { [Environment]::GetFolderPath('LocalApplicationData') }
+$owned = @($actions | Where-Object { $_.run_root_match -and $_.data_root_match })
+# Keep the transport bounded, while computing ownership on the complete action values.
+$bounded = @($actions | Select-Object -First 8 | ForEach-Object {
+    $a = $_.arguments
+    if ($a.Length -gt 4096) { $a = $a.Substring(0, 2048) + ' <omitted> ' + $a.Substring($a.Length - 2048) }
+    $e = $_.executable
+    if ($e.Length -gt 2048) { $e = $e.Substring(0, 2048) }
+    @{ executable = $e; arguments = $a; run_root_match = $_.run_root_match; data_root_match = $_.data_root_match }
+})
+$result = @{ task_found = $true; task_path = [string]$task.TaskPath; action_count = $actions.Count;
+             actions = $bounded; owned_count = $owned.Count; profile_local = $null }
+if ($owned.Count -eq 1) { $result.profile_local = [Environment]::GetFolderPath('LocalApplicationData') }
+$result | ConvertTo-Json -Depth 5 -Compress
 """.replace("__RUN_ROOT__", windows._powershell_quote(expected_root)).replace(
             "__DATA_ROOT__", windows._powershell_quote(expected_data))
-        profile_local = windows.powershell(
-            script, "windows-real-profile-log-probe.log", show=False, timeout=30).strip()
-        if not profile_local:
-            status["status"] = "not_owned"
+        env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                capture_output=True, timeout=30, check=False, env=env)
+        probe["exit_code"] = result.returncode
+        if result.returncode:
+            probe["error"] = "command_failed"
+            status["status"] = "error"
         else:
-            source = Path(profile_local) / "Astrid Runtime" / "logs" / "service-pack-host.log"
-            info = source.lstat()
-            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-            unsafe_parent = any(
-                parent.is_symlink() or
-                getattr(parent.lstat(), "st_file_attributes", 0) & reparse
-                for parent in source.parents
-            )
-            if (stat.S_ISLNK(info.st_mode) or
-                    getattr(info, "st_file_attributes", 0) & reparse or
-                    not stat.S_ISREG(info.st_mode) or
-                    unsafe_parent):
-                status["status"] = "unsafe_type"
+            observed = json.loads(result.stdout.decode("utf-8-sig"))
+            if (not isinstance(observed, dict) or type(observed.get("task_found")) is not bool or
+                    type(observed.get("action_count")) is not int or
+                    type(observed.get("owned_count")) is not int or
+                    not isinstance(observed.get("actions"), list)):
+                raise ValueError("invalid probe output")
+            probe.update(task_found=observed["task_found"],
+                         task_path=("\\" if observed.get("task_path") == "\\" else
+                                    "<other>" if observed["task_found"] else None),
+                         action_count=observed["action_count"], owned_count=observed["owned_count"],
+                         actions_truncated=observed["action_count"] > 8, actions=[])
+            for action in observed["actions"][:8]:
+                if (not isinstance(action, dict) or type(action.get("run_root_match")) is not bool or
+                        type(action.get("data_root_match")) is not bool):
+                    raise ValueError("invalid action")
+                probe["actions"].append({
+                    "executable": _profile_probe_text(action.get("executable"), expected_root, expected_data, arguments=False),
+                    "arguments": _profile_probe_text(action.get("arguments"), expected_root, expected_data, arguments=True),
+                    "run_root_match": action["run_root_match"], "data_root_match": action["data_root_match"],
+                })
+            probe_complete = True
+            profile_local = observed.get("profile_local") if observed["task_found"] and observed["owned_count"] == 1 else None
+            if not isinstance(profile_local, str) or not profile_local:
+                status["status"] = "not_owned"
             else:
-                with source.open("rb") as stream:
-                    size = os.fstat(stream.fileno()).st_size
-                    stream.seek(max(0, size - WINDOWS_PROFILE_SERVICE_LOG_LIMIT))
-                    raw = stream.read(WINDOWS_PROFILE_SERVICE_LOG_LIMIT)
-                decoded = raw.decode("utf-8", errors="replace")
-                safe = windows._diagnostic_text(decoded)
-                safe = _WINDOWS_ABSOLUTE_PATH.sub("<path>", safe)
-                encoded = safe.encode("utf-8")[-WINDOWS_PROFILE_SERVICE_LOG_LIMIT:]
-                evidence_name = f"runtime-service-service-pack-host-real-profile-{phase}.log"
-                evidence.mkdir(parents=True, exist_ok=True)
-                (evidence / evidence_name).write_bytes(encoded)
-                status.update(status="captured", source_bytes=size, captured_bytes=len(encoded),
-                              evidence=evidence_name,
-                              truncated=size > len(raw) or len(safe.encode("utf-8")) > len(encoded))
-    except FileNotFoundError:
-        status["status"] = "missing"
+                source = Path(profile_local) / "Astrid Runtime" / "logs" / "service-pack-host.log"
+                info = source.lstat()
+                reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                unsafe_parent = any(
+                    parent.is_symlink() or
+                    getattr(parent.lstat(), "st_file_attributes", 0) & reparse
+                    for parent in source.parents
+                )
+                if (stat.S_ISLNK(info.st_mode) or
+                        getattr(info, "st_file_attributes", 0) & reparse or
+                        not stat.S_ISREG(info.st_mode) or
+                        unsafe_parent):
+                    status["status"] = "unsafe_type"
+                else:
+                    with source.open("rb") as stream:
+                        size = os.fstat(stream.fileno()).st_size
+                        stream.seek(max(0, size - WINDOWS_PROFILE_SERVICE_LOG_LIMIT))
+                        raw = stream.read(WINDOWS_PROFILE_SERVICE_LOG_LIMIT)
+                    decoded = raw.decode("utf-8", errors="replace")
+                    safe = windows._diagnostic_text(decoded)
+                    safe = _WINDOWS_ABSOLUTE_PATH.sub("<path>", safe)
+                    encoded = safe.encode("utf-8")[-WINDOWS_PROFILE_SERVICE_LOG_LIMIT:]
+                    evidence_name = f"runtime-service-service-pack-host-real-profile-{phase}.log"
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    (evidence / evidence_name).write_bytes(encoded)
+                    status.update(status="captured", source_bytes=size, captured_bytes=len(encoded),
+                                  evidence=evidence_name,
+                                  truncated=size > len(raw) or len(safe.encode("utf-8")) > len(encoded))
+    except FileNotFoundError as exc:
+        if probe_complete:
+            status["status"] = "missing"
+        else:
+            status.update(status="error", error=type(exc).__name__)
+            probe["error"] = type(exc).__name__
     except Exception as exc:
         status.update(status="error", error=type(exc).__name__)
+        if not probe_complete:
+            probe["error"] = type(exc).__name__
     try:
         write_json(evidence / f"windows-real-profile-pack-host-{phase}.json", status)
     except OSError as exc:
