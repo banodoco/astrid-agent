@@ -135,6 +135,10 @@ def test_workflow_runs_both_windows_checks_and_keeps_artifacts_separate():
     assert '$freshExit -eq 0' not in text
     assert 'if ($refusalExit -ne 0) { exit $refusalExit }' in text
     assert 'windows_upgrade_refusal -NotePropertyValue $refusal' in text
+    assert "$refusalReceipt = Join-Path $refusalRoot 'evidence-upload/after-cleanup/journey-result.json'" in text
+    assert 'if (-not (Test-Path -LiteralPath $refusalReceipt)) {' in text
+    assert "$refusalReceipt = Join-Path $refusalRoot 'evidence-upload/before-cleanup/journey-result.json'" in text
+    assert "$source = Join-Path (Split-Path $refusalReceipt) $name" in text
     download = text.split('- name: Download every per-job receipt', 1)[1].split('- name: Aggregate the exact Release-1', 1)[0]
     assert 'merge-multiple: false' in download
 
