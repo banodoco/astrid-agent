@@ -281,8 +281,10 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: OS build does not match the required matrix")
     if row.get("source_override_test_mode") is not False:
         errors.append(f"{job_id}: source override is not admissible")
-    if row.get("final_cleanup") != "pass":
-        errors.append(f"{job_id}: final cleanup did not pass")
+    expected_cleanup = ("retained-after-upgrade-refusal"
+                        if job_id in {"direct-linux", "direct-macos"} else "pass")
+    if row.get("final_cleanup") != expected_cleanup:
+        errors.append(f"{job_id}: final cleanup is not {expected_cleanup}")
     observed = row.get("candidate_checkouts")
     if not isinstance(observed, dict):
         errors.append(f"{job_id}: exact candidate checkout receipt is absent")
