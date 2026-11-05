@@ -698,9 +698,79 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
 
 
 def evaluate_release1_1_pinokio_matrix(candidate, results):
-    """Check the separate three-row R1.1 Pinokio hosted journey gate."""
-    return _evaluate_pinokio_backend_matrix(
-        candidate, results, RELEASE1_1_PINOKIO_MATRIX, "R1.1 Pinokio", reject_unknown=True)
+    """Check the three plain JSON R1.1 Pinokio row receipts."""
+    required_steps = {
+        "install", "start_task", "stop_start", "busy_stop_data",
+        "update_ready_task", "uninstall_data",
+    }
+    expected_os = {"pinokio-linux": "linux", "pinokio-macos": "macos",
+                   "pinokio-windows": "windows"}
+    expected_ids = set(expected_os)
+    candidate_sha = None
+    if candidate is not None:
+        if not isinstance(candidate, dict):
+            return ["candidate: expected an object"]
+        candidate_sha = candidate.get("pinokio_sha", candidate.get("pinokio"))
+        if not isinstance(candidate_sha, str) or not SHA.fullmatch(candidate_sha):
+            return ["candidate: pinokio SHA must be a full commit SHA"]
+
+    errors = []
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        job_id = row.get("job_id")
+        if job_id not in expected_ids:
+            errors.append(f"{path}: unknown or absent Pinokio job id")
+            continue
+        if job_id in found:
+            errors.append(f"{job_id}: duplicate Pinokio receipt")
+            continue
+        found[job_id] = row
+
+    for job_id in sorted(expected_ids):
+        row = found.get(job_id)
+        if row is None:
+            errors.append(f"{job_id}: missing Pinokio receipt")
+            continue
+        if set(row) != {"schema", "job_id", "os", "pinokio_sha", "steps"}:
+            errors.append(f"{job_id}: receipt fields do not match pinokio-row-v1")
+        if row.get("schema") != "pinokio-row-v1":
+            errors.append(f"{job_id}: schema is not 'pinokio-row-v1'")
+        if row.get("job_id") != job_id or row.get("os") != expected_os[job_id]:
+            errors.append(f"{job_id}: job id and OS do not match")
+        pinokio_sha = row.get("pinokio_sha")
+        if not isinstance(pinokio_sha, str) or not SHA.fullmatch(pinokio_sha):
+            errors.append(f"{job_id}: pinokio_sha must be a full commit SHA")
+        elif candidate_sha is not None and pinokio_sha != candidate_sha:
+            errors.append(f"{job_id}: pinokio SHA differs from candidate")
+        steps = row.get("steps")
+        if not isinstance(steps, dict):
+            errors.append(f"{job_id}: steps must be an object")
+            continue
+        if set(steps) != required_steps:
+            errors.append(f"{job_id}: step names are missing or extra")
+        for step_name, value in steps.items():
+            if not isinstance(value, dict):
+                errors.append(f"{job_id}: {step_name} must be a step object")
+                continue
+            status = value.get("status")
+            if status == "pass":
+                if set(value) != {"status"}:
+                    errors.append(f"{job_id}: {step_name} has malformed pass fields")
+                continue
+            if status == "fail":
+                reason = value.get("error")
+                if (set(value) != {"status", "error"} or not isinstance(reason, str)
+                        or not reason.strip() or "\n" in reason or "\r" in reason):
+                    errors.append(f"{job_id}: {step_name} has malformed fail fields")
+                errors.append(f"{job_id}: {step_name} status is not pass")
+                continue
+            errors.append(f"{job_id}: {step_name} status is not pass")
+    return errors
 
 
 def _m4_5_row_errors(row):
@@ -1111,6 +1181,13 @@ def main():
                 f"{row['id']}: obligation status {row['status']}"
                 for row in obligation_statuses if row["status"] != "passed"
             )
+        elif args.aggregate_release1_1_pinokio:
+            if args.results is None:
+                raise ValueError("--results is required with --aggregate-release1-1-pinokio")
+            if args.allow_source_override:
+                raise ValueError("R1.1 Pinokio aggregate never admits a source override")
+            candidate = read(args.candidate) if args.candidate is not None else None
+            errors.extend(evaluate_release1_1_pinokio_matrix(candidate, args.results))
         elif args.aggregate_m4_4b_local:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-m4-4b-local")
@@ -1128,12 +1205,6 @@ def main():
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1_1_pinokio:
-            if args.results is None:
-                raise ValueError("--results is required with --aggregate-release1-1-pinokio")
-            if args.allow_source_override:
-                raise ValueError("R1.1 Pinokio aggregate never admits a source override")
-            errors.extend(evaluate_release1_1_pinokio_matrix(candidate, args.results))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")

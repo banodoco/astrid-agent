@@ -310,12 +310,89 @@ def test_r1_1_pinokio_matrix_has_exact_three_rows_and_own_checker(tmp_path):
     assert len({row["job_id"] for row in rows}) == 3
     assert all(row["leg"] == "fresh-install" for row in rows)
     assert journey_matrix.validate_job("pinokio-linux", "pinokio-backend")["os"] == "linux"
-    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_1_pinokio_matrix({}, tmp_path)} == {
+    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_1_pinokio_matrix(None, tmp_path)} == {
         "pinokio-linux", "pinokio-macos", "pinokio-windows",
     }
     assert {error.split(":", 1)[0] for error in gate.evaluate_release1_matrix({}, tmp_path)} == {
         row["job_id"] for row in gate.RELEASE1_MATRIX
     }
+
+
+def _pinokio_row(job_id):
+    os_name = {"pinokio-linux": "linux", "pinokio-macos": "macos",
+               "pinokio-windows": "windows"}[job_id]
+    steps = {name: {"status": "pass"} for name in (
+        "install", "start_task", "stop_start", "busy_stop_data",
+        "update_ready_task", "uninstall_data",
+    )}
+    return {"schema": "pinokio-row-v1", "job_id": job_id, "os": os_name,
+            "pinokio_sha": "a" * 40, "steps": steps}
+
+
+def _write_pinokio_rows(root, rows):
+    root.mkdir(parents=True, exist_ok=True)
+    for index, row in enumerate(rows):
+        path = root / f"row-{index}" / "journey-result.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(row), encoding="utf-8")
+
+
+def test_pinokio_row_receipts_accept_exact_complete_green_set(tmp_path):
+    rows = [_pinokio_row(job_id) for job_id in (
+        "pinokio-linux", "pinokio-macos", "pinokio-windows",
+    )]
+    _write_pinokio_rows(tmp_path, rows)
+    assert gate.evaluate_release1_1_pinokio_matrix({"pinokio": "a" * 40}, tmp_path) == []
+
+
+def test_pinokio_row_receipts_reject_missing_row_step_and_failed_step(tmp_path):
+    rows = [_pinokio_row(job_id) for job_id in (
+        "pinokio-linux", "pinokio-macos", "pinokio-windows",
+    )]
+    _write_pinokio_rows(tmp_path / "missing-row", rows[:2])
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "missing-row")
+    assert any("pinokio-windows: missing" in error for error in errors)
+
+    incomplete = copy.deepcopy(rows)
+    del incomplete[0]["steps"]["install"]
+    incomplete[1]["steps"]["start_task"] = {"status": "fail", "error": "task did not start"}
+    _write_pinokio_rows(tmp_path / "bad-steps", incomplete)
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "bad-steps")
+    assert any("step names are missing or extra" in error for error in errors)
+    assert any("start_task status is not pass" in error for error in errors)
+
+
+def test_pinokio_row_receipts_reject_duplicate_and_mismatched_jobs(tmp_path):
+    rows = [_pinokio_row(job_id) for job_id in (
+        "pinokio-linux", "pinokio-macos", "pinokio-windows",
+    )]
+    _write_pinokio_rows(tmp_path / "duplicate", rows + [copy.deepcopy(rows[0])])
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "duplicate")
+    assert any("pinokio-linux: duplicate" in error for error in errors)
+
+    mismatched = copy.deepcopy(rows)
+    mismatched[0]["os"] = "windows"
+    mismatched[1]["job_id"] = "pinokio-linux"
+    mismatched[2]["pinokio_sha"] = "b" * 40
+    _write_pinokio_rows(tmp_path / "mismatch", mismatched)
+    errors = gate.evaluate_release1_1_pinokio_matrix({"pinokio": "a" * 40}, tmp_path / "mismatch")
+    assert any("job id and OS do not match" in error for error in errors)
+    assert any("duplicate Pinokio receipt" in error for error in errors)
+    assert any("pinokio SHA differs from candidate" in error for error in errors)
+
+
+def test_pinokio_row_receipts_reject_malformed_schema_and_fields(tmp_path):
+    rows = [_pinokio_row(job_id) for job_id in (
+        "pinokio-linux", "pinokio-macos", "pinokio-windows",
+    )]
+    rows[0]["schema"] = "pinokio-row-v2"
+    rows[1]["steps"]["install"] = {"status": "pass", "error": "unexpected"}
+    rows[2]["extra"] = True
+    _write_pinokio_rows(tmp_path, rows)
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path)
+    assert any("schema is not" in error for error in errors)
+    assert any("malformed pass fields" in error for error in errors)
+    assert any("receipt fields do not match" in error for error in errors)
 
 
 def test_pinokio_dispatch_selects_only_r1_1_pinokio_rows():
