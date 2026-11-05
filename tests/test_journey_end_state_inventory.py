@@ -56,6 +56,17 @@ def release1_row(contract, pinned):
                                                  "managed_by": "pinokio", "foreground_fallback": False}
     if contract.get("leg", "fresh-install") == "fresh-install":
         row["checks"]["workspace_content"] = "pass"
+    if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
+        row["update"] = {
+            "status": "pass", "release_from": 1, "release_to": 2,
+            "old_version": "old", "new_version": "new", "manifest_sha256": "d" * 64,
+            "service": {"foreground_fallback": False, "service_path": "/run/astrid.service"},
+            "service_names": ["astrid.service"],
+            "checks": {key: "pass" for key in (
+                "new_version", "old_version_retained", "same_service", "no_boundary_handoff",
+                "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled",
+            )},
+        }
     if contract["job_id"] == "direct-windows":
         row["update"] = {
             "outcome": "updated", "from_release": 1, "to_release": 2,
