@@ -560,6 +560,41 @@ def test_launchd_disabled_state_matches_only_exact_service_and_disabled_values(o
     assert journey.launchd_service_is_disabled(output, "haus.astrid.runtime") is expected
 
 
+def test_windows_login_selection_diagnostic_is_classified_and_contains_no_install_values(tmp_path, monkeypatch):
+    default = tmp_path / "profile" / "Local" / "Astrid"
+    default.parent.mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    selection = default.parent / "astrid-install.json"
+    selection.write_text(json.dumps({
+        "owner": "haus.astrid.runtime",
+        "program_root": str(tmp_path / "foreign-program"),
+        "data_root": str(tmp_path / "foreign-data"),
+        "uninstalled": True,
+        "foreground": {"pid": 12345},
+    }))
+
+    diagnostic = journey.windows_login_selection_diagnostic(
+        tmp_path / "journey-program", tmp_path / "journey-data")
+
+    assert diagnostic == {
+        "default_install_marker_present": False,
+        "default_current_marker_present": False,
+        "selection_present": True,
+        "selection_readable": True,
+        "selection_is_object": True,
+        "selection_owner_matches": True,
+        "selection_program_root_matches_journey": False,
+        "selection_data_root_matches_journey": False,
+        "selection_uninstalled": True,
+        "selection_foreground_present": True,
+    }
+    rendered = json.dumps(diagnostic)
+    assert str(tmp_path) not in rendered
+    assert "12345" not in rendered
+    assert "haus.astrid.runtime" not in rendered
+
+
 @pytest.mark.parametrize("phase,returncode,stderr,absent", [
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
     ("after-cleanup", 113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),

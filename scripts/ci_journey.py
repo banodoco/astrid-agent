@@ -1363,6 +1363,40 @@ def windows_task_owned(output: str, root: Path) -> bool:
     return ntpath.normcase(lines[1].replace("/", "\\")).startswith(root_prefix)
 
 
+def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
+    """Describe Windows login-install selection state without recording paths or values."""
+    default = program_root()
+    selection_path = default.parent / "astrid-install.json"
+    present = selection_path.exists()
+    selection = None
+    readable = None
+    if present:
+        try:
+            selection = read_json(selection_path)
+            readable = True
+        except Exception:
+            readable = False
+    is_object = isinstance(selection, dict)
+    return {
+        "default_install_marker_present": (default / "install.json").exists(),
+        "default_current_marker_present": (default / "current").exists(),
+        "selection_present": present,
+        "selection_readable": readable,
+        "selection_is_object": is_object,
+        "selection_owner_matches": (
+            selection.get("owner") == "haus.astrid.runtime" if is_object else None
+        ),
+        "selection_program_root_matches_journey": (
+            selection.get("program_root") == str(root) if is_object else None
+        ),
+        "selection_data_root_matches_journey": (
+            selection.get("data_root") == str(data) if is_object else None
+        ),
+        "selection_uninstalled": selection.get("uninstalled") is True if is_object else None,
+        "selection_foreground_present": bool(selection.get("foreground")) if is_object else None,
+    }
+
+
 def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False,
                           release: int = 0,
                           related_uninstalled_selection: tuple[Path, Path] | None = None) -> None:
@@ -2345,6 +2379,7 @@ def execute(args: argparse.Namespace) -> dict:
             return journey_version_jumps.execute_diagnostic_release0_stage(
                 args, root, data, evidence,
             )
+    host_availability_diagnostic = None
     try:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
@@ -2364,6 +2399,11 @@ def execute(args: argparse.Namespace) -> dict:
                 }
                 raise
         host_leg = "fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg
+        if sys.platform == "win32":
+            try:
+                host_availability_diagnostic = windows_login_selection_diagnostic(root, data)
+            except Exception as diagnostic_error:
+                host_availability_diagnostic = {"capture_error": type(diagnostic_error).__name__}
         if narrow_refusal:
             prior_run = run_root.with_name("astrid-r1-direct-windows")
             related_selection = (prior_run / "program", prior_run / "data")
@@ -2397,6 +2437,8 @@ def execute(args: argparse.Namespace) -> dict:
                        "unrelated_sentinel": "not-run"},
         }
         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        if host_availability_diagnostic is not None:
+            recorded["windows_login_selection_diagnostic"] = host_availability_diagnostic
         write_json(failure_path, recorded)
         print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         stage_evidence("before-cleanup")
