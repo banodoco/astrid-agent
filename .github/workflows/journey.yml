@@ -1039,6 +1039,7 @@ jobs:
           path: |
             ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/evidence
             ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/*.log
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/.local/state/astrid-runtime/logs
           if-no-files-found: warn
 
   release2:
