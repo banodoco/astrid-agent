@@ -156,6 +156,26 @@ def harness(tmp_path, monkeypatch):
     h.cleanup()
 
 
+def test_copied_registration_is_foreign_and_its_markers_are_dropped(tmp_path):
+    support = tmp_path / "runtime-r1"
+    other = tmp_path / "runtime-r0"
+    support.mkdir()
+    other.mkdir()
+    copied = {"support_root": str(other), "pid": 4242}
+    state_path = support / "generic-host.json"
+    ready_path = support / "generic-host.ready.json"
+    state_path.write_text(json.dumps(copied))
+    ready_path.write_text("{}")
+
+    assert host_bootstrap._same_support_root(copied, support) is False
+    assert host_bootstrap._same_support_root({"support_root": str(support)}, support) is True
+
+    host_bootstrap._drop_foreign_registration(state_path, ready_path)
+    assert not state_path.exists()
+    assert not ready_path.exists()
+    assert other.is_dir()
+
+
 def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkeypatch, tmp_path):
     h = harness
     second = tmp_path / "second-source"

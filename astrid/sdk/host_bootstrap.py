@@ -1021,17 +1021,28 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
     return False
 
 
+def _same_support_root(state: Mapping[str, Any], support: Path) -> bool:
+    """True when the registration's support_root names the same directory as support."""
+    root = state.get("support_root")
+    if not isinstance(root, str) or not root:
+        return False
+    if os.path.normcase(os.path.abspath(root)) == os.path.normcase(os.path.abspath(support)):
+        return True
+    try:
+        return os.path.samefile(root, support)
+    except (OSError, ValueError):
+        return False
+
+
+def _drop_foreign_registration(state_path: Path, ready_path: Path) -> None:
+    """Drop markers copied from another root. Their pid is never signalled."""
+    for marker in (state_path, ready_path):
+        marker.unlink(missing_ok=True)
+
+
 def _check_locked_host_registration(state: Mapping[str, Any], support: Path) -> None:
     """Refuse a registration that is not the one protected by this lock."""
-    root = state.get("support_root")
-    same_root = False
-    if isinstance(root, str) and root:
-        same_root = os.path.normcase(os.path.abspath(root)) == os.path.normcase(os.path.abspath(support))
-        if not same_root:
-            try:
-                same_root = os.path.samefile(root, support)
-            except (OSError, ValueError):
-                pass
+    same_root = _same_support_root(state, support)
     current = _read_object(support / "generic-host.json")
     if (not same_root or current is None
             or json.dumps(current, sort_keys=True) != json.dumps(dict(state), sort_keys=True)):
@@ -1994,6 +2005,12 @@ def ensure_pack_host(
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
         ready = _read_object(ready_path)
+        if current and not _same_support_root(current, runtime_support):
+            # A registration copied from another root (e.g. the R0->R1 workspace adoption) is not
+            # this root's host: never signal its pid. Drop only the stale markers inside our own
+            # support dir and launch a fresh host.
+            _drop_foreign_registration(state_path, ready_path)
+            current, ready = None, None
         if current:
             _check_locked_host_registration(current, runtime_support)
         status = _registered_host_status(current) if current else None
