@@ -182,22 +182,42 @@ def test_failure_diagnostic_rejects_untrusted_fields():
         assert not live.valid_failure_diagnostic(bad)
 
 
+def test_snapshot_failure_diagnostic_retains_only_known_missing_field():
+    class Client:
+        def request(self, _method, _path):
+            return {}
+
+    with pytest.raises(KeyError) as caught:
+        live.snapshot(Client(), {"project": "project", "timeline": "timeline"})
+    diagnostic = live.failure_diagnostic(caught.value)
+    assert diagnostic["schema"] == "astrid.live-workspace-failure.v2"
+    assert diagnostic["error_type"] == "KeyError"
+    assert diagnostic["missing_field"] == "head_revision_id"
+    assert live.valid_failure_diagnostic(diagnostic)
+
+    secret = "/private/runner/.credential/token"
+    diagnostic = live.failure_diagnostic(KeyError(secret))
+    assert diagnostic["missing_field"] is None
+    assert secret not in json.dumps(diagnostic)
+    assert not live.valid_failure_diagnostic({**diagnostic, "missing_field": secret})
+
+
 def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
     from scripts import ci_journey as journey
 
     evidence = tmp_path / "evidence" / "release0-to-release1"
     source = evidence / "release0-api-seed" / "live-snapshot-failure.json"
     source.parent.mkdir(parents=True)
-    safe = {"schema": "astrid.live-workspace-failure.v1", "error_type": "HTTPError",
+    safe = {"schema": "astrid.live-workspace-failure.v2", "error_type": "KeyError",
             "frames": [{"function": "snapshot", "line": 123}],
-            "http_status": 503, "runtime_code": "unavailable"}
+            "http_status": None, "runtime_code": None, "missing_field": "head_revision_id"}
     source.write_text(json.dumps(safe))
 
     journey.retain_named_evidence(evidence, "before-cleanup")
     staged = tmp_path / "evidence-upload" / "before-cleanup" / "live-snapshot-failure.json"
     assert json.loads(staged.read_text()) == safe
 
-    source.write_text(json.dumps({**safe, "runtime_code": "credential-secret"}))
+    source.write_text(json.dumps({**safe, "missing_field": "credential-secret"}))
     journey.retain_named_evidence(evidence, "before-cleanup")
     assert not staged.exists()
 
@@ -208,16 +228,16 @@ def test_release1_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_
     evidence = tmp_path / "evidence" / "release0-to-release1"
     source = evidence / "release1-api-observe" / "live-snapshot-failure.json"
     source.parent.mkdir(parents=True)
-    safe = {"schema": "astrid.live-workspace-failure.v1", "error_type": "HTTPError",
+    safe = {"schema": "astrid.live-workspace-failure.v2", "error_type": "KeyError",
             "frames": [{"function": "snapshot", "line": 123}],
-            "http_status": 503, "runtime_code": "unavailable"}
+            "http_status": None, "runtime_code": None, "missing_field": "head_revision_id"}
     source.write_text(json.dumps(safe))
 
     journey.retain_named_evidence(evidence, "before-cleanup")
     staged = tmp_path / "evidence-upload" / "before-cleanup" / "live-release1-snapshot-failure.json"
     assert json.loads(staged.read_text()) == safe
 
-    source.write_text(json.dumps({**safe, "runtime_code": "credential-secret"}))
+    source.write_text(json.dumps({**safe, "missing_field": "credential-secret"}))
     journey.retain_named_evidence(evidence, "before-cleanup")
     assert not staged.exists()
 
