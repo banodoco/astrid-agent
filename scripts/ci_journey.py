@@ -16,6 +16,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -80,6 +81,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     # The Windows activation error names this diagnostic directly. Keep its
     # native basename so the receipt contains the path operators are told to inspect.
     "service-pack-host.log",
+    "windows-service-log-status.json",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -651,6 +653,40 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         except Exception as exc:
             print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    if sys.platform == "win32":
+        # These two exact files are the useful Windows service outputs: the
+        # pack-host log named by installer failures and the native Runtime log.
+        # Record absence explicitly so an omitted artifact is not ambiguous.
+        status = {"schema_version": 1, "phase": phase, "logs": {}}
+        for source_name, evidence_name in (
+                ("service-pack-host.log", "service-pack-host.log"),
+                ("runtime-service.log", "runtime-service-native.log")):
+            source = log_dir / source_name
+            item = {"evidence_name": evidence_name}
+            try:
+                info = source.lstat()
+                if (stat.S_ISLNK(info.st_mode) or
+                        getattr(info, "st_file_attributes", 0) &
+                        getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
+                        not stat.S_ISREG(info.st_mode)):
+                    item["status"] = "unsafe_type"
+                else:
+                    target = evidence / evidence_name
+                    if target.is_file() and not target.is_symlink():
+                        item.update(status="captured", source_bytes=info.st_size,
+                                    captured_bytes=target.stat().st_size)
+                    else:
+                        item.update(status="error", error="capture_unavailable")
+            except FileNotFoundError:
+                item["status"] = "missing"
+            except OSError as exc:
+                item.update(status="error", error=type(exc).__name__)
+            status["logs"][source_name] = item
+        try:
+            write_json(evidence / "windows-service-log-status.json", status)
+        except Exception as exc:
+            print(f"Journey Windows service-log status capture ({phase}) failed: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
@@ -813,6 +849,11 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
+        if sys.platform == "win32":
+            status_path = destination / "windows-service-log-status.json"
+            if status_path.is_file():
+                status = read_json(status_path)
+                diagnostic["windows_service_logs"] = status.get("logs", {})
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
