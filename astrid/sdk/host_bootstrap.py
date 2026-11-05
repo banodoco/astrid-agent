@@ -1021,10 +1021,29 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
     return False
 
 
-def _retire_host_locked(state: Mapping[str, Any], *, foreground: bool = False,
+def _check_locked_host_registration(state: Mapping[str, Any], support: Path) -> None:
+    """Refuse a registration that is not the one protected by this lock."""
+    root = state.get("support_root")
+    same_root = False
+    if isinstance(root, str) and root:
+        same_root = os.path.normcase(os.path.abspath(root)) == os.path.normcase(os.path.abspath(support))
+        if not same_root:
+            try:
+                same_root = os.path.samefile(root, support)
+            except (OSError, ValueError):
+                pass
+    current = _read_object(support / "generic-host.json")
+    if (not same_root or current is None
+            or json.dumps(current, sort_keys=True) != json.dumps(dict(state), sort_keys=True)):
+        raise PackHostBootstrapError(
+            "inconsistent host support directory or registration; retirement blocked"
+        )
+
+
+def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: bool = False,
                         current_runtime_instance_id: str | None = None) -> None:
-    """Caller holds the host lock. Stop the registered host, drop its markers."""
-    support = Path(str(state.get("support_root") or ""))
+    """Caller holds support's host lock. Stop its registered host and drop its markers."""
+    _check_locked_host_registration(state, support)
     status = _registered_host_status(state)
     used_receipt = (
         sys.platform == "win32" and status in {"gone", "reused"}
@@ -1051,7 +1070,7 @@ def _stop_registered_host(state: Mapping[str, Any]) -> None:
         with lock_path.open("a+") as lock:
             platform.owner_only(lock.fileno())
             platform.lock_file(lock.fileno())
-            _retire_host_locked(state)
+            _retire_host_locked(state, lock_path.parent)
     except (ImportError, OSError) as exc:
         raise PackHostBootstrapError("prior host registration lock is unavailable; retirement blocked") from exc
 
@@ -1975,6 +1994,8 @@ def ensure_pack_host(
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
         ready = _read_object(ready_path)
+        if current:
+            _check_locked_host_registration(current, runtime_support)
         status = _registered_host_status(current) if current else None
         if not _foreground and attach_healthy and current and ready and status == "ours":
             receipt = _attach_resident_host(
@@ -2063,10 +2084,10 @@ def ensure_pack_host(
                 health_instance = health_value.get("runtime_instance_id")
                 current_instance = (discovery_instance if isinstance(discovery_instance, str)
                                     and discovery_instance == health_instance else None)
-                _retire_host_locked(current, foreground=True,
+                _retire_host_locked(current, runtime_support, foreground=True,
                                     current_runtime_instance_id=current_instance)
             else:
-                _retire_host_locked(current)
+                _retire_host_locked(current, runtime_support)
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:
@@ -2185,7 +2206,7 @@ def ensure_pack_host(
 
         def _abandon() -> None:
             try:
-                _retire_host_locked(process_state)
+                _retire_host_locked(process_state, runtime_support)
             finally:
                 process.poll()
 

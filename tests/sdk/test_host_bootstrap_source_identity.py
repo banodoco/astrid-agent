@@ -318,7 +318,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     # reuse and refusal are exercised by the structured observation cases.
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda state: "ours")
     monkeypatch.setattr(host_bootstrap, "_IDLE_CHECK_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda current: terminated.append(dict(current)))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda current, support: terminated.append(dict(current)))
     # The explicit bootstrap read is joined by one Remotion registry-context
     # read when the supported renderer is provisioned in the environment.
     inventory_reads_per_launch = 2 if os.environ.get("ASTRID_REMOTION_PROJECT_DIR") else 1
@@ -500,10 +500,12 @@ def test_bootstrap_stops_on_correlated_terminal_registration_failure(
         def poll(self):
             return None
 
+    real_read = host_bootstrap._read_object
+
     def fake_read(path: Path):
         if path.name == "generic-host.ready.json":
             return ready or None
-        return None
+        return real_read(path)
 
     def fake_popen(argv, **_kwargs):
         launches.append(list(argv))
@@ -877,7 +879,7 @@ def test_startup_budget_polling_preserves_identity_and_original_cleanup(
     monkeypatch.setattr(host_bootstrap, "_read_object", read)
     monkeypatch.setattr(host_bootstrap, "_host_birth_identity", lambda _pid: "birth")
     # A host that fails to register is retired by its registration.
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state: cleanup.append("retired"))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: cleanup.append("retired"))
     _mock_host_launch(monkeypatch, launch)
     # Injected progress source: advances while the host is "making progress".
     monkeypatch.setattr(host_bootstrap, "_host_progress_token",
@@ -954,7 +956,7 @@ def test_darwin_host_reuse_matches_full_known_launch_without_ps(native_host_comm
 def test_darwin_host_unknown_or_changed_command_blocks_before_retirement(native_host_command_fixture, monkeypatch, fault):
     f = native_host_command_fixture
     retire = []
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state: retire.append(state))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: retire.append(state))
     if fault == "missing-pin": del f.state["launch_argv_sha256"]
     elif fault == "credential-tail": f.argv[f.argv.index("--credential-file") + 1] += "-other"
     elif fault in {"endpoint", "source", "boot"}:
@@ -995,7 +997,7 @@ def test_darwin_host_unknown_or_changed_command_blocks_before_retirement(native_
     with pytest.raises(host_bootstrap.PackHostBootstrapError):
         # This is the exact decision ordering at ensure_pack_host's retirement boundary.
         if host_bootstrap._parked_host_identity_matches(f.state):
-            host_bootstrap._retire_host_locked(f.state)
+            host_bootstrap._retire_host_locked(f.state, Path(f.state["support_root"]))
     assert retire == []
 
 

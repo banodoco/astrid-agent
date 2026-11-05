@@ -195,7 +195,7 @@ def test_launcher_replaces_cross_checkout_host_when_resident_is_unhealthy(
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     retired = []
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state: retired.append(dict(state)))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: retired.append(dict(state)))
 
     if fault == "unready-registration":
         client_type = generic_host.RuntimeProtocolClient
@@ -293,7 +293,7 @@ def test_node_discovery_exception_leaves_host_running_and_render_unconfigured(ha
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     retired = []
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state: retired.append(dict(state)))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: retired.append(dict(state)))
 
     def fail_node_discovery(*_args, **_kwargs):
         raise RuntimeError("Node discovery unavailable")
@@ -312,7 +312,7 @@ def test_busy_prior_host_is_not_replaced(harness, monkeypatch):
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: False)
     retired = []
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state: retired.append(dict(state)))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: retired.append(dict(state)))
 
     (harness.source / "astrid" / "core" / "execution" / "generic_host.py").write_text(
         "# source changed to require a host replacement\n", encoding="utf-8"
@@ -654,8 +654,9 @@ def test_windows_gone_host_without_retained_job_keeps_registration_markers(monke
     for marker in markers:
         marker.write_text("{}", encoding="utf-8")
 
+    (tmp_path / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="no retained Job custody"):
-        host_bootstrap._retire_host_locked(state)
+        host_bootstrap._retire_host_locked(state, tmp_path)
     assert all(marker.exists() for marker in markers)
 
 
@@ -673,7 +674,8 @@ def test_windows_prior_runtime_retirement_drops_markers_without_signalling(monke
     for marker in markers:
         marker.write_text("{}", encoding="utf-8")
 
-    host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+    (tmp_path / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
+    host_bootstrap._retire_host_locked(state, tmp_path, foreground=True, current_runtime_instance_id="new-runtime")
 
     assert all(not marker.exists() for marker in markers)
 
@@ -704,8 +706,9 @@ def test_windows_prior_runtime_retirement_refuses_ambiguous_identity(monkeypatch
     for marker in markers:
         marker.write_text("{}", encoding="utf-8")
 
+    (tmp_path / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(host_bootstrap.PackHostBootstrapError):
-        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id=current)
+        host_bootstrap._retire_host_locked(state, tmp_path, foreground=True, current_runtime_instance_id=current)
     assert all(marker.exists() for marker in markers)
 
 
@@ -720,8 +723,9 @@ def test_windows_prior_runtime_retirement_refuses_non_stale_status(monkeypatch, 
              "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
     marker = tmp_path / "generic-host.json"
     marker.write_text("{}", encoding="utf-8")
+    (tmp_path / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(host_bootstrap.PackHostBootstrapError):
-        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+        host_bootstrap._retire_host_locked(state, tmp_path, foreground=True, current_runtime_instance_id="new-runtime")
     assert marker.exists()
 
 
@@ -733,8 +737,9 @@ def test_windows_prior_runtime_retirement_refuses_ambiguous_native_birth(monkeyp
              "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
     marker = tmp_path / "generic-host.json"
     marker.write_text("{}", encoding="utf-8")
+    (tmp_path / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="identity is ambiguous"):
-        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+        host_bootstrap._retire_host_locked(state, tmp_path, foreground=True, current_runtime_instance_id="new-runtime")
     assert marker.exists()
 
 
@@ -758,7 +763,7 @@ def test_foreground_retirement_uses_only_matching_explicit_runtime_identity(
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
     seen = []
 
-    def retire(_state, **kwargs):
+    def retire(_state, _support, **kwargs):
         seen.append(kwargs)
         raise host_bootstrap.PackHostBootstrapError("stop at retirement")
 
@@ -862,9 +867,9 @@ def test_windows_retirement_consumes_only_matching_supervisor_receipt(monkeypatc
     ready = tmp_path / "generic-host.ready.json"
     registration = tmp_path / "generic-host.json"
     ready.write_text("{}", encoding="utf-8")
-    registration.write_text("{}", encoding="utf-8")
+    registration.write_text(json.dumps(state), encoding="utf-8")
 
-    host_bootstrap._retire_host_locked(state, foreground=True)
+    host_bootstrap._retire_host_locked(state, tmp_path, foreground=True)
 
     assert not ready.exists() and not registration.exists()
     assert json.loads(cleanup_path.read_text(encoding="utf-8"))["receipts"] == [
@@ -1051,3 +1056,60 @@ def test_process_census_catches_declared_failure_without_hiding_programming_erro
         host_bootstrap._host_birth_identity(4321)
     with pytest.raises(RuntimeError, match="invalid census implementation"):
         host_bootstrap._descendant_snapshot(4321)
+
+
+@pytest.mark.parametrize("mismatched", [False, True])
+def test_foreground_retirement_is_bound_to_locked_support(harness, monkeypatch, tmp_path, mismatched):
+    other = tmp_path / "other-support"
+    other.mkdir()
+    names = ("generic-host.json", "generic-host.ready.json")
+    other_bytes = b'{"pid":9999,"runtime_instance_id":"unrelated-owner"}'
+    for name in names:
+        (other / name).write_bytes(other_bytes)
+    state = {
+        "pid": 4321, "process_birth_id": "windows-creation:1234",
+        "support_root": str(other if mismatched else harness.support),
+        "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32,
+    }
+    for name in names:
+        (harness.support / name).write_text(json.dumps(state), encoding="utf-8")
+    before = {name: (harness.support / name).read_bytes() for name in names}
+    monkeypatch.setattr(host_bootstrap, "sys", SimpleNamespace(**{**vars(sys), "platform": "win32"}))
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap, "_RETAINED_HOSTS", {})
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(host_bootstrap, "terminate_group", lambda *_a, **_kw: pytest.fail("signalled a Job"))
+    monkeypatch.setattr(host_bootstrap.os, "kill", lambda *_a, **_kw: pytest.fail("signalled a PID"))
+
+    class AfterRetirement(Exception):
+        pass
+
+    def stop_after_retirement(*_args):
+        raise AfterRetirement
+
+    monkeypatch.setattr(host_bootstrap, "_capability_matrix_path", stop_after_retirement)
+    if mismatched:
+        with pytest.raises(host_bootstrap.PackHostBootstrapError, match="inconsistent host support"):
+            host_bootstrap.ensure_pack_host(harness.value, reconfigure_action="reconfigure", _foreground=True)
+        assert {name: (harness.support / name).read_bytes() for name in names} == before
+    else:
+        with pytest.raises(AfterRetirement):
+            host_bootstrap.ensure_pack_host(harness.value, reconfigure_action="reconfigure", _foreground=True)
+        assert all(not (harness.support / name).exists() for name in names)
+    assert all((other / name).read_bytes() == other_bytes for name in names)
+
+
+def test_stop_registered_host_refuses_superseded_registration(monkeypatch, tmp_path):
+    state = {"pid": 4321, "support_root": str(tmp_path)}
+    successor = {"pid": 9876, "support_root": str(tmp_path)}
+    registration = tmp_path / "generic-host.json"
+    readiness = tmp_path / "generic-host.ready.json"
+    registration.write_text(json.dumps(successor), encoding="utf-8")
+    readiness.write_bytes(b"successor readiness")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: pytest.fail("inspected stale owner"))
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="inconsistent host support"):
+        host_bootstrap._stop_registered_host(state)
+
+    assert json.loads(registration.read_text(encoding="utf-8")) == successor
+    assert readiness.read_bytes() == b"successor readiness"
