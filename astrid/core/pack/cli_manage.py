@@ -7,14 +7,17 @@ collects source facts and obtains user consent; it never imports pack code.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -22,7 +25,7 @@ import yaml
 
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
-from astrid.core.pack.install import PackInstallError
+from astrid.core.pack.install import PackInstallError, _fetch_tree, _git_source
 from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.core.pack.transaction import GroupCommitError, install_group, rollback_group
 
@@ -81,14 +84,180 @@ def _confirm(prompt: str, *, yes: bool) -> bool:
         return False
 
 
+
+# ── Browser build inputs (PK-14 prerequisite) ───────────────────────────────
+# A pack's `ui.<name>` editor entry is built by the pinned builder inside the
+# transaction (astrid.pack_build). The CLI only derives the frozen build inputs
+# from the pack bytes and selects the release-pinned toolchain; it never runs
+# pack code and never downloads a tool.
+TOOLCHAIN_ENV = "ASTRID_PACK_TOOLCHAIN"
+_EXTENSION_MANIFEST_NAMES = ("astrid-extension.json", "extension.json")
+_TOOLCHAIN_FIELDS = frozenset({"version", "node_path", "node_version", "node_sha256", "esbuild_path",
+                               "esbuild_version", "esbuild_sha256", "shared_modules_lock"})
+
+
+def _editor_build(pack_root: Path) -> dict[str, Any] | None:
+    """Return the transaction build input for the pack's one `ui.<name>` editor entry.
+
+    A missing or unreadable manifest yields None: the transaction then refuses it
+    with its own validation error. A declared editor entry must be complete.
+    """
+    try:
+        data = yaml.safe_load((pack_root / "pack.yaml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return None
+    ui = data.get("ui") if isinstance(data, dict) else None
+    if not isinstance(ui, dict):
+        return None
+    editors = sorted(name for name, item in ui.items() if isinstance(item, dict) and item.get("type") == "editor")
+    if not editors:
+        return None
+    if len(editors) > 1:
+        raise PackInstallError("invalid_request", "The pack declares more than one ui editor entry ("
+                               + ", ".join(f"ui.{name}" for name in editors)
+                               + "); the build hook admits one browser entry per pack.")
+    name = editors[0]
+    entry = ui[name].get("entry")
+    parts = PurePosixPath(entry).parts if isinstance(entry, str) else ()
+    if (not isinstance(entry, str) or not entry.endswith(".tsx") or "\\" in entry
+            or PurePosixPath(entry).is_absolute() or any(part in {"", ".", ".."} for part in parts)):
+        raise PackInstallError("invalid_request", f"ui.{name}.entry must be a relative .tsx path inside the pack.")
+    folder = pack_root.joinpath(*parts[:-1])
+    found = [folder / manifest_name for manifest_name in _EXTENSION_MANIFEST_NAMES
+             if (folder / manifest_name).is_file() and not (folder / manifest_name).is_symlink()]
+    if len(found) != 1:
+        raise PackInstallError("invalid_request", f"ui.{name} needs exactly one extension manifest beside its entry ("
+                               + " or ".join(_EXTENSION_MANIFEST_NAMES) + ").")
+    try:
+        manifest = json.loads(found[0].read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PackInstallError("invalid_request", f"ui.{name} extension manifest {found[0].name} is not valid JSON.") from exc
+    if not isinstance(manifest, dict):
+        raise PackInstallError("invalid_request", f"ui.{name} extension manifest {found[0].name} must be an object.")
+    return {"entry": entry, "extension_manifest": manifest}
+
+
+def _source_builds(source: str, revision: str | None, packs: Mapping[str, str]) -> dict[str, dict[str, Any]]:
+    """Read build inputs from the selected source before any collection state is written.
+
+    A Git source is read from the same declared refs the transaction fetches, into
+    a private temporary directory outside every packs root. The consent check
+    re-derives them from the staged bytes, so a moved ref cannot change them.
+    """
+    builds: dict[str, dict[str, Any]] = {}
+    if revision is None:
+        for pack_id, subpath in packs.items():
+            build = _editor_build(Path(source).expanduser() / subpath)
+            if build is not None:
+                builds[pack_id] = build
+        return builds
+    work = Path(tempfile.mkdtemp(prefix="astrid-pack-review-"))
+    try:
+        text = _git_source(str(source))
+        for index, (pack_id, subpath) in enumerate(sorted(packs.items())):
+            prepared = work / str(index)
+            prepared.mkdir()
+            stage = prepared / "pack"
+            stage.mkdir()
+            _fetch_tree(prepared, text, revision, subpath, stage)
+            build = _editor_build(stage)
+            if build is not None:
+                builds[pack_id] = build
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return builds
+
+
+def _check_staged_builds(changes: Mapping[str, Any], builds: Mapping[str, Any]) -> None:
+    """Bind the frozen build inputs to the exact staged bytes the user reviews."""
+    for pack_id, change in changes["packs"].items():
+        if _editor_build(Path(change["staged_root"])) != builds.get(pack_id):
+            raise PackInstallError("source_changed", f"The ui entry of {pack_id} changed between review and staging; review it again.")
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _toolchain(selected: str | None) -> dict[str, Any]:
+    """Load and verify the release-pinned browser toolchain lock; refuse when unavailable.
+
+    The lock names absolute Node and esbuild binaries with their pinned versions
+    and sha256, and the App's shared-module lock (its sha256 is the toolchain
+    digest recorded in every artifact manifest).
+    """
+    from astrid import pack_build
+
+    def refuse(reason: str) -> PackInstallError:
+        return PackInstallError("toolchain_unavailable", reason + " Nothing was changed.")
+
+    value = selected if selected is not None else os.environ.get(TOOLCHAIN_ENV)
+    if not value:
+        raise refuse("This pack declares a browser ui entry, but no pinned build toolchain is selected:"
+                     f" pass --toolchain <toolchain.json> or set {TOOLCHAIN_ENV}.")
+    path = Path(value).expanduser()
+    try:
+        lock = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise refuse(f"The build toolchain lock {path} is unreadable.") from exc
+    if (not isinstance(lock, dict) or set(lock) != _TOOLCHAIN_FIELDS or lock["version"] != 1
+            or not all(isinstance(lock[key], str) and lock[key] for key in _TOOLCHAIN_FIELDS - {"version"})):
+        raise refuse(f"The build toolchain lock {path} must hold exactly: " + ", ".join(sorted(_TOOLCHAIN_FIELDS)) + ".")
+    node, esbuild, shared_lock = (Path(lock[key]) for key in ("node_path", "esbuild_path", "shared_modules_lock"))
+    if not all(item.is_absolute() for item in (node, esbuild, shared_lock)):
+        raise refuse("The build toolchain lock must name absolute node, esbuild and shared-module lock paths.")
+    if lock["esbuild_version"] != "0.27.7":
+        raise refuse("The pinned builder accepts only esbuild 0.27.7.")
+    env = {"PATH": "", "LANG": "C.UTF-8", "ESBUILD_BINARY_PATH": str(esbuild)}
+    for label, binary, version in (("node", node, "v" + lock["node_version"]),
+                                   ("esbuild", esbuild, lock["esbuild_version"])):
+        try:
+            if not binary.is_file() or _file_sha256(binary) != lock[f"{label}_sha256"]:
+                raise refuse(f"The {label} binary {binary} is missing or does not match its pinned sha256.")
+            observed = subprocess.run([str(binary), "--version"], capture_output=True, text=True, env=env,
+                                      timeout=15).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise refuse(f"The {label} binary {binary} cannot be run.") from exc
+        if observed != version:
+            raise refuse(f"The {label} binary {binary} reports {observed or 'nothing'}, not the pinned {version}.")
+    api = esbuild.parent.parent / "lib" / "main.js"
+    try:
+        api_ok = _file_sha256(api) == pack_build._API_HASH
+    except OSError:
+        api_ok = False
+    if not api_ok:
+        raise refuse(f"The esbuild JavaScript API {api} does not match the pinned builder.")
+    try:
+        shared_bytes = shared_lock.read_bytes()
+        shared = json.loads(shared_bytes)["shared_modules"]
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+        raise refuse(f"The shared-module lock {shared_lock} is unreadable.") from exc
+    if not isinstance(shared, dict) or set(shared) != pack_build._SINGLETONS:
+        raise refuse(f"The shared-module lock {shared_lock} must map exactly: " + ", ".join(sorted(pack_build._SINGLETONS)) + ".")
+    return {"node_path": str(node), "node_version": lock["node_version"], "node_sha256": lock["node_sha256"],
+            "esbuild_path": str(esbuild), "esbuild_version": lock["esbuild_version"],
+            "esbuild_sha256": lock["esbuild_sha256"], "lock_sha256": hashlib.sha256(shared_bytes).hexdigest(),
+            "shared_modules": shared}
+
+
+def _build_inputs(source: str, revision: str | None, packs: Mapping[str, str],
+                  selected_toolchain: str | None) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    builds = _source_builds(source, revision, packs)
+    return builds, (_toolchain(selected_toolchain) if builds else None)
+
+
 def _handle_add(args: argparse.Namespace) -> int:
     pack_id = args.pack_id
     subpath = args.subpath
     source = args.source
     root = _selected_root(args.packs_root)
 
+    builds, toolchain = _build_inputs(source, args.revision, {pack_id: subpath}, args.toolchain)
+
     def consent(changes: dict[str, Any]) -> bool:
         staged_root = Path(changes["packs"][pack_id]["staged_root"])
+        _check_staged_builds(changes, builds)
         details = _consent_details(staged_root, source=source, commit=changes["revision"])
         if details["id"] != pack_id:
             raise PackInstallError("pack_id_mismatch", "Selected manifest id does not match --pack-id.")
@@ -108,7 +277,8 @@ def _handle_add(args: argparse.Namespace) -> int:
                               packs_root=root,
                               selected_roots=_composition_roots(root, include_default=args.packs_root is None),
                               core_root=_core_root(), python_packages=packages, release_pins=pins,
-                              origin="folder" if args.revision is None else "user", consent=consent)
+                              origin="folder" if args.revision is None else "user",
+                              builds=builds, toolchain=toolchain, consent=consent)
     except PackInstallError as exc:
         if exc.code in {"user_cancelled", "source_changed"} and not root_was_present:
             try:
@@ -171,7 +341,14 @@ def build_add_parser(subparsers: Any) -> None:
     parser.add_argument("--revision", help="Git ref or commit to resolve and show before consent.")
     parser.add_argument("--packs-root", help="User pack collection root (defaults to ~/Astrid/packs).")
     parser.add_argument("--yes", action="store_true", help="Accept the displayed source and permission declarations.")
+    add_toolchain_argument(parser)
     parser.set_defaults(handler=_handle_add_error)
+
+
+def add_toolchain_argument(parser: Any) -> None:
+    parser.add_argument("--toolchain", metavar="TOOLCHAIN_JSON",
+                        help="Release-pinned browser build toolchain lock, required for a pack with a ui editor"
+                             f" entry (default: ${TOOLCHAIN_ENV}).")
 
 
 def build_remove_parser(subparsers: Any) -> None:
@@ -277,11 +454,17 @@ def _handle_update(args: argparse.Namespace) -> int:
         root = _selected_root(args.packs_root)
         selected_roots = _composition_roots(root, include_default=args.packs_root is None)
         packages, pins = _validation_snapshot()
+        builds, toolchain = _build_inputs(args.source, args.revision, packs, getattr(args, "toolchain", None))
+
+        def consent(changes: dict[str, Any]) -> bool:
+            _check_staged_builds(changes, builds)
+            return _confirm_update(changes)
+
         result = install_group(source=args.source, revision=args.revision, packs=packs,
                                packs_root=root, selected_roots=selected_roots,
                                core_root=_core_root(),
                                python_packages=packages, release_pins=pins, intent="update",
-                               consent=_confirm_update)
+                               builds=builds, toolchain=toolchain, consent=consent)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

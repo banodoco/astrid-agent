@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli_inspect import _handle_inspect  # noqa: PLC0415
     from .cli_search import _handle_agent_index, _handle_search  # noqa: PLC0415
     from .cli_manage import (  # noqa: PLC0415
-        _handle_rollback, _handle_update, build_add_parser, build_remove_parser,
+        _handle_rollback, _handle_update, add_toolchain_argument, build_add_parser, build_remove_parser,
     )
 
     parser = RecoverableArgumentParser(
@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pack in the selected dependency group (repeat for each pack).",
     )
     update_parser.add_argument("--packs-root", help="Installed collection directory (defaults to Astrid's configured root).")
+    add_toolchain_argument(update_parser)
     update_parser.set_defaults(handler=_handle_update)
 
     rollback_parser = subparsers.add_parser(
