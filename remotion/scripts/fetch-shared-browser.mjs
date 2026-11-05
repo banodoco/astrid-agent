@@ -39,7 +39,16 @@ if (!fs.existsSync(path.join(downloaded, relative.replace(/^chrome-headless-shel
 }
 fs.mkdirSync(path.dirname(target), {recursive: true});
 if (fs.existsSync(target)) fs.rmSync(target, {recursive: true, force: true});
-fs.renameSync(downloaded, target);
+try {
+  fs.renameSync(downloaded, target);
+} catch (error) {
+  if (error?.code !== 'EXDEV') throw error;
+  // The install tree and user cache can be on different Windows volumes.
+  // Preserve the download until the cache copy succeeds, then continue with
+  // the same project-local copy used after a successful rename.
+  fs.cpSync(downloaded, target, {recursive: true, errorOnExist: true});
+  fs.rmSync(downloaded, {recursive: true, force: true});
+}
 // Directory symlinks require Developer Mode or elevation on Windows. A copy
 // keeps Remotion's project-local lookup working for ordinary user installs.
 fs.cpSync(target, downloaded, {recursive: true, errorOnExist: true});
