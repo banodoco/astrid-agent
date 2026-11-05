@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Standalone real-Mac install/update diagnostic; never imports ci_journey."""
-import fcntl, hashlib, json, os, plistlib, re, subprocess, sys, threading, time, traceback, urllib.request
+import datetime, fcntl, hashlib, json, os, plistlib, re, stat, subprocess, sys, threading, time, traceback, urllib.request
 from pathlib import Path
 
 base=Path(sys.argv[1]); run=base/'run'; home=run/'home'; root=home/'.local/share/astrid'; data=run/'data'; evidence=base/'evidence'; evidence.mkdir(); run.mkdir(mode=0o700)
@@ -60,6 +60,76 @@ def prove(label):
  ps=subprocess.run(['/bin/ps','-ww','-p',str(pid),'-o','uid=,command='],capture_output=True,text=True,check=True,timeout=20).stdout.strip()
  if not ps.startswith(str(os.getuid())+' ') or str(data) not in ps:raise RuntimeError('Runtime process differs')
  return pid,born,out
+def snapshot(name):
+ row={'captured_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'expected_port':int(port),'expected_door_endpoint':'http://127.0.0.1:'+port,'discovery':'unavailable'}
+ path=data/'runtime/discovery.json'
+ if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(data):
+  try:
+   raw=json.loads(path.read_text())
+   # Retain connection/identity fields without retaining possible credentials.
+   row['discovery']={k:raw.get(k) for k in ('pid','runtime_instance_id','door_endpoint','endpoint','realm_root') if k in raw}
+   row['discovery_mtime_utc']=datetime.datetime.fromtimestamp(path.stat().st_mtime,datetime.timezone.utc).isoformat()
+  except (OSError,ValueError,TypeError) as exc:row['discovery_error_type']=type(exc).__name__
+ (evidence/(name+'-discovery.json')).write_text(json.dumps(row,indent=2,sort_keys=True)+'\n')
+def capture_service_log(name):
+ path=home/'Library/Logs/Astrid Runtime/runtime-service.log'
+ if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(home):
+  (evidence/('runtime-service-'+name+'.log')).write_bytes(path.read_bytes())
+  status['runtime_service_log_'+name]={'captured':True,'bytes':path.stat().st_size,'mtime_utc':datetime.datetime.fromtimestamp(path.stat().st_mtime,datetime.timezone.utc).isoformat()}
+ else: status['runtime_service_log_'+name]={'captured':False}
+def stop_unhealthy_owned(label):
+ # Only the label and home proved by the successful fresh-install phase.
+ if label!=owned_label or not all(absent(x) for x in labels if x!=label): raise RuntimeError('Other service is present or label differs')
+ plist=home/'Library/LaunchAgents'/(label+'.plist')
+ for target in (plist,root,data):
+  for part in (target,*target.parents):
+   if part==base.parent:break
+   entry=part.lstat()
+   if stat.S_ISLNK(entry.st_mode) or entry.st_uid!=os.getuid() or entry.st_dev!=base.stat().st_dev: raise RuntimeError('Task component identity differs')
+ spec=plistlib.loads(plist.read_bytes());args=spec.get('ProgramArguments')
+ if spec.get('Label')!=label or not isinstance(args,list) or not all(isinstance(x,str) for x in args) or not any(str(root) in x for x in args) or not any(str(data) in x for x in args): raise RuntimeError('Owned plist action differs')
+ def match_action():
+  proc=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/{label}'],capture_output=True,text=True,timeout=20,check=True)
+  head,sep,rest=proc.stdout.partition('\targuments = {\n')
+  paths=re.findall(r'(?m)^[ \t]*path = ([^\r\n]+?)[ \t]*$',head)
+  if paths!=[str(plist)] or not sep or not rest.startswith(''.join('\t\t'+x+'\n' for x in args)+'\t}\n'): raise RuntimeError('Loaded action differs from owned plist')
+  return proc.stdout
+ (evidence/'launchctl-before-cleanup.txt').write_text(match_action())
+ realms=data/'runtime/realms'
+ if realms.is_symlink() or not realms.is_dir() or not realms.resolve().is_relative_to(data):raise RuntimeError('Task realm directory unsafe')
+ candidates=[p for p in realms.iterdir() if p.is_dir() and not p.is_symlink()]
+ if len(candidates)!=1:raise RuntimeError('Task realm identity ambiguous')
+ lock=candidates[0]/'owner.lock'
+ if lock.is_symlink() or not lock.is_file() or not lock.resolve().is_relative_to(data):raise RuntimeError('Task lock unsafe')
+ status['cleanup_intent']='disable and bootout verified task label';save()
+ with (evidence/'stop-intent.json').open('x') as f:json.dump({'label':label,'intent':'stop verified test-owned service'},f);f.flush();os.fsync(f.fileno())
+ fd=os.open(evidence,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try:os.fsync(fd)
+ finally:os.close(fd)
+ match_action();changed=False
+ try:
+  changed=True;subprocess.run(['/bin/launchctl','disable',f'gui/{os.getuid()}/{label}'],check=True,timeout=30)
+  subprocess.run(['/bin/launchctl','bootout',f'gui/{os.getuid()}/{label}'],check=True,timeout=120)
+  def task_pids():
+   proc=subprocess.run(['/bin/ps','-ww','-u',str(os.getuid()),'-o','pid=,command='],capture_output=True,text=True,timeout=20,check=True);records=[]
+   for line in proc.stdout.splitlines():
+    m=re.match(r'^\s*(\d+)\s+(.*)$',line)
+    if m:records.append([int(m.group(1)),m.group(2)])
+    elif records:records[-1][1]+='\n'+line
+   return [pid for pid,command in records if str(base) in command and pid!=os.getpid()]
+  deadline=time.monotonic()+120
+  while not absent(label) or task_pids():
+   if time.monotonic()>deadline:raise RuntimeError('Task process or service remains')
+   time.sleep(1)
+  fd=os.open(lock,os.O_RDWR|os.O_NOFOLLOW)
+  try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);fcntl.flock(fd,fcntl.LOCK_UN)
+  finally:os.close(fd)
+  status['recovery_stop']='stopped; lock free; no task processes'
+ finally:
+  if changed:
+   if not all(absent(x) for x in labels):raise RuntimeError('Cannot restore launchd state while job present')
+   subprocess.run(['/bin/launchctl','enable',f'gui/{os.getuid()}/{label}'],check=True,timeout=30)
+   if states()[label] not in ('enabled','false','not-listed'):raise RuntimeError('Launchd state restore failed')
 def task(version,tag,create):
  e=dict(env);e.update(version['env']); py=version['python']; proj='mac-update-smoke'
  def cli(name,args,module='astrid',timeout=300):
@@ -88,17 +158,30 @@ try:
  if s['release']!=pins['release']+1 or s['agent']!=pins['agent'] or s['runtime']!=pins['runtime']:raise RuntimeError('Stand-in pins or release differ')
  (evidence/'standin.json').write_bytes(standin.read_bytes());mark('standin-pins')
  prove(owned_label)
+ snapshot('before-update')
+ status['update_started_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();save()
  stop=threading.Event()
  def observe():
   while not stop.wait(.25):
    p=subprocess.run(['/bin/ps','-ww','-u',str(os.getuid()),'-o','pid=,lstart=,command='],capture_output=True,text=True,timeout=10)
    lines=[line for line in p.stdout.splitlines() if str(data) in line and 'astrid_runtime' in line]
-   observation.append({'t':time.monotonic(),'old_alive':birth(old_pid)==old_birth,'runtime_count':len(lines),'lines':lines})
+   try:
+    disc=json.loads((data/'runtime/discovery.json').read_text());door=disc.get('door_endpoint');instance=disc.get('runtime_instance_id')
+   except (OSError,ValueError,TypeError):door=None;instance=None
+   observation.append({'t':time.monotonic(),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'old_alive':birth(old_pid)==old_birth,'runtime_count':len(lines),'lines':lines,'discovery_door_endpoint':door,'discovery_runtime_instance_id':instance})
    if len(observation)>20000: return
  watcher=threading.Thread(target=observe,daemon=True);watcher.start()
  try: cmd('update',['/bin/sh',str(base/'app/public/install'),'--manifest',str(standin),'--root',str(root),'--data-root',str(data),'--update'],work=base/'app')
  finally:
-  stop.set();watcher.join(timeout=15);(evidence/'process-transition.json').write_text(json.dumps(observation,indent=2));p=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/{owned_label}'],capture_output=True,text=True,timeout=20);(evidence/'launchctl-after.txt').write_text('exit='+str(p.returncode)+'\n'+p.stdout+'\n'+p.stderr)
+  stop.set();watcher.join(timeout=15);status['update_finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+  try:snapshot('after-update')
+  except Exception as exc:status['after_update_snapshot_error']=type(exc).__name__
+  try:(evidence/'process-transition.json').write_text(json.dumps(observation,indent=2))
+  except Exception as exc:status['transition_capture_error']=type(exc).__name__
+  try:
+   p=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/{owned_label}'],capture_output=True,text=True,timeout=20)
+   (evidence/'launchctl-after.txt').write_text('exit='+str(p.returncode)+'\n'+p.stdout+'\n'+p.stderr)
+  except Exception as exc:status['launchctl_after_capture_error']=type(exc).__name__
  ready();new,v2=current()
  if name==new or not (root/'versions'/name).is_dir() or not (root/'versions'/new).is_dir():raise RuntimeError('Version switching or retention failed')
  if [l for l in labels if not absent(l)]!=[owned_label]:raise RuntimeError('Service label changed')
@@ -110,13 +193,19 @@ except Exception as exc:
  status['error_type']=type(exc).__name__;status['error']=str(exc);traceback.print_exc()
 finally:
  log=home/'Library/Logs/Astrid Runtime/install.log'
- if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(home): (evidence/'install.log').write_bytes(log.read_bytes())
+ try:
+  if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(home): (evidence/'install.log').write_bytes(log.read_bytes())
+ except Exception as exc: status['install_log_capture_error']=type(exc).__name__
+ try:capture_service_log('before-cleanup')
+ except Exception as exc:status['service_log_capture_error_before']=type(exc).__name__
  try:
   active=[l for l in labels if not absent(l)]
   if active:
    if len(active)!=1 or active[0]!=owned_label:raise RuntimeError('Cannot prove service cleanup identity')
-   prove(owned_label)
-  if owned_label is not None and (root/'install.json').is_file():
+   if status['outcome']=='failed':
+    stop_unhealthy_owned(owned_label);active=[]
+   else: prove(owned_label)
+  if status['outcome']!='failed' and owned_label is not None and (root/'install.json').is_file():
    current()
    status['uninstall']='attempted';save()
    try:
@@ -126,9 +215,11 @@ finally:
     status['uninstall']='failed';raise
   if not all(absent(l) for l in labels):raise RuntimeError('Service still loaded after uninstall')
   after=states()
-  if after!=initial:raise RuntimeError('Launchd disabled state differs from initial state')
+  if any(after.get(k) not in ('enabled','false','not-listed') for k in labels):raise RuntimeError('Launchd disabled state differs from initial state')
   status['cleanup']='task-owned services stopped; launchd state restored'
  except Exception as exc:status['cleanup_error']=str(exc)
+ try:capture_service_log('after-cleanup')
+ except Exception as exc:status['service_log_capture_error_after']=type(exc).__name__
  if status['uninstall']!='pass' or status['cleanup']!='task-owned services stopped; launchd state restored':
   status['outcome']='failed'
  save()
