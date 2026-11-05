@@ -41,9 +41,8 @@ def test_in_tree_aliases_follow_v3_declared_element_roots() -> None:
     assert result["@pack-rendering-elements-effects"].endswith(
         "astrid/packs/rendering/rendering/elements/effects"
     )
-    assert result["@pack-local-elements-effects"].endswith(
-        "astrid/packs/local/rendering/elements/effects"
-    )
+    # PK-12: the `local` pack is retired; no alias points at it.
+    assert "@pack-local-elements-effects" not in result
     assert result["@pack-astrid_motion-elements-effects"].endswith(
         "astrid/packs/astrid_motion/rendering/elements/effects"
     )

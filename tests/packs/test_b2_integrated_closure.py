@@ -87,7 +87,7 @@ def test_examples_and_external_fixtures_use_canonical_schema_without_installed_o
     candidates = [
         *sorted((ROOT / "examples/packs").glob("*/pack.yaml")),
         ROOT / "tests/fixtures/external_pack/pack.yaml",
-        ROOT / "tests/fixtures/local_effect_smoke/astrid/packs/local/pack.yaml",
+        ROOT / "tests/fixtures/local_effect_smoke/personal/pack.yaml",
     ]
     for manifest in candidates:
         data = yaml.safe_load(manifest.read_text(encoding="utf-8"))

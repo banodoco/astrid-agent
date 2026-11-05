@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 _SCHEMAS_ROOT = Path(__file__).resolve().parent / "schemas"
 _RENDERING_SCHEMAS_ROOT = _SCHEMAS_ROOT.parent.parent / "rendering" / "schemas"
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # the selected astrid package (checkout or wheel)
 _RENDERING_MANIFEST_KINDS = ("renderer", "planner", "finalizer")
 
 _PACK_TAXONOMY_ENUMS: dict[str, tuple[str, ...]] = {
@@ -874,7 +874,7 @@ class PackValidator:
         ):
             return component_dir / Path(*parts[4:]).with_suffix(".py")
         if len(parts) >= 5 and parts[0:2] == ["astrid", "packs"]:
-            pack_root = _REPO_ROOT / "astrid" / "packs" / parts[2]
+            pack_root = _PACKAGE_ROOT / "packs" / parts[2]
             component_name = parts[3]
             tail = Path(*parts[4:]).with_suffix(".py")
             for kind_root in ("executors", "orchestrators"):
@@ -882,7 +882,7 @@ class PackValidator:
                 if candidate.is_file():
                     return candidate
         if module.startswith("astrid."):
-            return _REPO_ROOT / Path(*module.split(".")).with_suffix(".py")
+            return _PACKAGE_ROOT.parent / Path(*module.split(".")).with_suffix(".py")
         if "." not in module:
             return component_dir / f"{module}.py"
         return component_dir / Path(*module.split(".")).with_suffix(".py")

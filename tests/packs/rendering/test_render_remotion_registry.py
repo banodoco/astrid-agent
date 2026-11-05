@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -80,8 +81,19 @@ class RenderRemotionRegistryGenerationTest(unittest.TestCase):
         return project_dir, composition_src
 
     def _copy_local_effect_smoke_project(self, tmp: Path) -> tuple[Path, Path, Path, Path]:
+        # PK-12: the retired project-local `local` layer is gone; the fixture
+        # effect now lives in the per-user personal pack ($HOME/Astrid/packs).
         project_root = tmp / "fixture-project"
-        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE, project_root)
+        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE, project_root, ignore=shutil.ignore_patterns("personal"))
+        home = tmp / "home"
+        (home / "Astrid" / "packs").mkdir(parents=True)
+        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE / "personal", home / "Astrid" / "packs" / "personal")
+        environment = mock.patch.dict(os.environ, {"HOME": str(home), "ASTRID_PACKS_PATH": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
+        from astrid.core.element.registry import clear_default_registry_cache
+        clear_default_registry_cache()
+        self.addCleanup(clear_default_registry_cache)
         project_dir, _composition_src = self._write_fake_remotion_project(tmp)
         return (
             project_root,
@@ -270,9 +282,9 @@ class RenderRemotionRegistryGenerationTest(unittest.TestCase):
             self.assertFalse(staged_asset_path.exists(), "render should clean fixture-staged assets")
         self.assertFalse((project_root / "astrid" / "packs" / "local" / "elements" / "effects" / "model-trends").exists())
         self.assertEqual(provenance["resolved_effect_ids"], ["fixture-smoke-effect"])
-        self.assertEqual(provenance["source_pack_ids"], ["local"])
+        self.assertEqual(provenance["source_pack_ids"], ["personal"])  # PK-12: local retired
         self.assertEqual(provenance["staged_asset_ids"], ["badge", "palette"])
-        self.assertIn("local", [pack["id"] for pack in provenance["active_pack_order"]])
+        self.assertIn("personal", [pack["id"] for pack in provenance["active_pack_order"]])
 
     def test_main_synthesizes_empty_asset_registry_when_assets_are_absent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="render-main-assets-") as tmp_text:

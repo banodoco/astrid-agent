@@ -932,8 +932,19 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
         return registry
 
     def _copy_local_effect_smoke_project(self, tmp: Path) -> tuple[Path, Path, Path, Path]:
+        # PK-12: the retired project-local `local` layer is gone; the fixture
+        # effect now lives in the per-user personal pack ($HOME/Astrid/packs).
         project_root = tmp / "fixture-project"
-        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE, project_root)
+        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE, project_root, ignore=shutil.ignore_patterns("personal"))
+        home = tmp / "home"
+        (home / "Astrid" / "packs").mkdir(parents=True)
+        shutil.copytree(LOCAL_EFFECT_SMOKE_FIXTURE / "personal", home / "Astrid" / "packs" / "personal")
+        environment = mock.patch.dict(os.environ, {"HOME": str(home), "ASTRID_PACKS_PATH": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
+        from astrid.core.element.registry import clear_default_registry_cache
+        clear_default_registry_cache()
+        self.addCleanup(clear_default_registry_cache)
         project_dir, _composition_src = self._write_fake_remotion_project(tmp)
         return (
             project_root,
@@ -1444,10 +1455,10 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
         self.assertEqual(result, out_path.resolve())
         self.assertEqual(provenance["active_pack_order"], expected_pack_order)
         self.assertEqual(provenance["resolved_effect_ids"], [expected_effect.id])
-        self.assertEqual(provenance["source_pack_ids"], ["local"])
+        self.assertEqual(provenance["source_pack_ids"], ["personal"])
         self.assertEqual(provenance["element_roots"], [str(expected_effect.root)])
         self.assertEqual(provenance["resolved_effects"][0]["effect_id"], expected_effect.id)
-        self.assertEqual(provenance["resolved_effects"][0]["source_pack_id"], "local")
+        self.assertEqual(provenance["resolved_effects"][0]["source_pack_id"], "personal")
         self.assertEqual(provenance["resolved_effects"][0]["source"], expected_effect.source)
         self.assertEqual(provenance["resolved_effects"][0]["element_root"], str(expected_effect.root))
         self.assertEqual(provenance["resolved_effects"][0]["clip_ids"], ["fixture-effect"])

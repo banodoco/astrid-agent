@@ -45,11 +45,11 @@ def first_pack_owner(items: Iterable[Any]) -> list[Any]:
                 )
             if pack_id == "personal" and {previous_kind, source_kind} != {"personal"}:
                 raise PackValidationError("the personal pack id is reserved for the canonical personal root")
-            if previous_kind in {"source", "core", "personal", "local"}:
+            if previous_kind in {"source", "core", "personal"}:
                 if source_kind == previous_kind:
                     raise PackValidationError(f"duplicate pack id {pack_id!r}")
                 continue
-            if source_kind in {"source", "core", "personal", "local"}:
+            if source_kind in {"source", "core", "personal"}:
                 winners = [winner for winner in winners
                            if getattr(getattr(winner, "pack", winner), "id", None) != pack_id]
             else:

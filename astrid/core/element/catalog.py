@@ -23,7 +23,7 @@ from astrid.core.element.registry import (
     load_default_registry,
 )
 from astrid.core.element.schema import ElementKind
-from astrid.core.foundation.paths import REPO_ROOT, WORKSPACE_ROOT
+from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT, WORKSPACE_ROOT
 
 TOOLS_DIR = REPO_ROOT
 EDITOR_CATALOG_VERSION = 1
@@ -160,7 +160,7 @@ def _element_descriptor(definition: Any, *, files=None) -> dict[str, Any]:
 def _component_path(definition: Any) -> str:
     """Return the stable path used by source-backed editor hosts."""
 
-    source_root = (REPO_ROOT / "astrid").resolve()
+    source_root = PACKAGE_ROOT.resolve()
     try:
         return definition.component.resolve().relative_to(source_root).as_posix()
     except ValueError:

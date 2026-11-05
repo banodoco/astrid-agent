@@ -98,9 +98,9 @@ Executor-owned complexity stays in the executor folder, usually under optional l
 | Module or path | Classification | Notes |
 | --- | --- | --- |
 | `astrid/core/element/schema.py` | Element support | `element.yaml` schema (`id`, singular `kind`, `pack_id`, `metadata`, `schema`, `defaults`, `dependencies`) and dependency dataclasses. |
-| `astrid/core/element/registry.py` | Element support | Pack-driven resolution from canonical discovered manifests. Local packs are ordinary editable source roots and cannot shadow an existing id by priority. |
+| `astrid/core/element/registry.py` | Element support | Pack-driven resolution from canonical discovered manifests. The personal pack is the editable root; packs and cannot shadow an existing id by priority. |
 | `astrid/packs/rendering/elements/{effects,animations,transitions}` | Element support | Default elements shipped in the rendering pack; `kind`-scoped folders so `animations/fade` and `transitions/fade` coexist. |
-| `astrid/packs/local/elements/<kind>/<id>` | Element support | Optional project-local source pack for authored elements; identities and digests come from its declared manifests. |
+| `~/Astrid/packs/personal/rendering/elements/<kind>/<id>` | Element support | The per-user `personal` pack for authored elements (the project-local `local` pack was retired in PK-12; see `docs/packs/local-effects-archive.md`). |
 | `astrid/core/element/catalog.py` | Element support | Effect, animation, and transition catalog support used by render validation. |
 | `scripts/gen_effect_registry.py` | Element support | Generates Remotion registries from the element registry; emits `@pack-<pack>-elements-<kind>/...` imports. |
 | `scripts/gen_capability_index.py` | Capability discovery | Regenerates the capability catalog in `astrid/packs/_core/docs/references/capabilities.md` from the executor, orchestrator, and element manifests of the in-repo packs only (external packs are never listed); `make doc-refs` and a default-lane test fail when it is stale. |

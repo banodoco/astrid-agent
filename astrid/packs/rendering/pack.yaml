@@ -704,8 +704,8 @@ actions:
   html_canvas_effect:
     name: HTML Canvas Effect
     version: '1.0'
-    short_description: Scaffold a local Remotion HTML-in-canvas effect element.
-    description: Create a user-editable local effect element that wraps DOM content
+    short_description: Scaffold a personal Remotion HTML-in-canvas effect element.
+    description: Create a user-editable personal effect element that wraps DOM content
       in Remotion HtmlInCanvas for optional canvas/WebGL-style post-processing.
     keywords:
     - html
@@ -718,7 +718,7 @@ actions:
     - name: effect_id
       type: string
       required: true
-      description: Bare effect id to create under the local pack, e.g. glass-product-card.
+      description: Bare effect id to create under the personal pack, e.g. glass-product-card.
     outputs:
     - name: report
       type: file
@@ -740,7 +740,7 @@ actions:
       requires_timeline: false
       runtime_module: astrid.packs.rendering.actions.html_canvas_effect.run
       runtime_file: actions/html_canvas_effect/run.py
-      creates: astrid/packs/local/rendering/elements/effects/<effect_id>
+      creates: ~/Astrid/packs/personal/rendering/elements/effects/<effect_id>
       render_path: rendering.render remains the final Remotion compositor.
       remotion_min_version: 4.0.455
     invocation:

@@ -1,0 +1,20 @@
+schema_version: 3
+id: personal
+name: Personal
+version: 0.1.0
+pack_api: "1.0"
+actions: {}
+documentation:
+  kind: none
+  reason: Fixture intentionally has no pack skill.
+rendering:
+  effects/fixture-smoke-effect:
+    type: element
+    path: rendering/elements/effects/fixture-smoke-effect/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/effects/fixture-smoke-effect/component.tsx
+    - kind: asset
+      path: rendering/elements/effects/fixture-smoke-effect/assets/badge.txt
+    - kind: asset
+      path: rendering/elements/effects/fixture-smoke-effect/assets/palette.json

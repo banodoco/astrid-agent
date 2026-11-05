@@ -38,7 +38,7 @@ from astrid.core.contracts.run_status import RunStatus
 from astrid.core.contracts.scoped_config import SCOPE_REGISTRY, ScopeRequest
 from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION
 from astrid.core.foundation.hash import executor_definition_digest
-from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.foundation.paths import PACKAGE_ROOT
 from astrid.core.generation.vibecomfy_dependency import dependency_pythonpath
 from astrid.core.media import require_runtime_materialized_file
 from astrid.core.pack.imports import install_pack_imports, pack_module_path
@@ -1005,7 +1005,7 @@ def _external_pack_pythonpath_env(
     if not isinstance(pack_root_raw, str) or not pack_root_raw:
         return {}
     pack_root = Path(pack_root_raw).expanduser().resolve()
-    builtin_root = (REPO_ROOT / "astrid" / "packs" / pack_id).resolve()
+    builtin_root = (PACKAGE_ROOT / "packs" / pack_id).resolve()
     if pack_root == builtin_root:
         return {}
     pack_parent = str(pack_root.parent)

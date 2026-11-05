@@ -668,12 +668,6 @@
       "value": "media"
     },
     {
-      "count": 1,
-      "file": "astrid/core/rendering/remotion_runtime.py",
-      "kind": "repo_pack_path",
-      "value": "astrid/packs/local"
-    },
-    {
       "count": 9,
       "file": "astrid/core/rendering/service.py",
       "kind": "pack_name_literal",

@@ -20,7 +20,6 @@
 | generation | Generate images and videos from text prompts using the elegant `astrid.generate` facade.  Image, audio, and video gen... | `astrid/packs/generation/docs/SKILL.md` |
 | h3_av | Request-driven MiniMax H3 audiovisual transformations with explicit video/audio scopes, references, and approval evid... | `astrid/packs/h3_av/docs/SKILL.md` |
 | iteration | Iteration pack — assembles runtime-owned project runs into a canonical iteration timeline plus render-ready hype inpu... | `astrid/packs/iteration/docs/SKILL.md` |
-| local | Local rendering elements pack — authored Remotion visual effect elements and immutable assets. | `astrid/packs/local/docs/SKILL.md` |
 | media | Media pack — lossless clip extraction, GIF and sticker search, and weak-mic speech repair for downstream timeline and... | `astrid/packs/media/docs/SKILL.md` |
 | moirae | Moirae pack — renders YAML screenplays into terminal-as-cinema videos via asciinema, agg, and ffmpeg.  External pack ... | `astrid/packs/moirae/docs/SKILL.md` |
 | music | Analyze imported music alignment, loudness and beat grids, and bake speech-keyed music ducking for timeline editing. | `astrid/packs/music/docs/SKILL.md` |

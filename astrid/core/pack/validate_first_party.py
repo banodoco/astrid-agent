@@ -19,8 +19,8 @@ import yaml
 # from the manifests present in that root.
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_FIRST_PARTY_PACKS_ROOT = _REPO_ROOT / "astrid" / "packs"
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+_FIRST_PARTY_PACKS_ROOT = _PACKAGE_ROOT / "packs"
 # ``_core`` remains a manifestless skill shell until M3-15 relocates it.
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
 

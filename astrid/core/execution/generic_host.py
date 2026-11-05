@@ -2282,7 +2282,7 @@ def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str
     raw = record.definition.metadata.get('pack_root')
     if source_pack and isinstance(raw, str) and raw:
         pack_root = Path(raw).expanduser().resolve()
-        builtin_root = (Path(__file__).resolve().parents[3] / 'astrid/packs' / source_pack).resolve()
+        builtin_root = (Path(__file__).resolve().parents[2] / 'packs' / source_pack).resolve()
         if pack_root != builtin_root:
             return os.pathsep.join((str(pack_root), existing))
     return existing
@@ -4633,7 +4633,7 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
     pack_root = _pack_root_for_executor(root)
     if pack_root is None or str(getattr(definition, "kind", "")) != "external":
         return ()
-    builtin_packs = (Path(__file__).resolve().parents[3] / "astrid" / "packs").resolve()
+    builtin_packs = (Path(__file__).resolve().parents[2] / "packs").resolve()
     if pack_root == builtin_packs or pack_root.is_relative_to(builtin_packs):
         return ()
     return (pack_root.resolve(),)

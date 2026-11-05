@@ -1,0 +1,11 @@
+schema_version: 1
+id: fixture-smoke-effect
+kind: effect
+pack_id: personal
+metadata:
+  name: Fixture Smoke Effect
+assets:
+  badge: assets/badge.txt
+  palette: assets/palette.json
+defaults: {}
+schema: {}

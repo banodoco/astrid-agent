@@ -219,9 +219,10 @@ astrid/packs/<pack>/elements/<kind>/<id>/
                      # pack_id, metadata, schema, defaults, dependencies
 ```
 
-User-authored elements may live in a project-local source pack at
-`astrid/packs/local/elements/<kind>/<id>/`. Declare that pack in `pack.yaml`
-and edit its manifests directly; registry identities and digests come from
+User-authored elements live in your personal pack at
+`~/Astrid/packs/personal/rendering/elements/<kind>/<id>/` (the
+`rendering.html_canvas_effect` action scaffolds one). Declare each element in
+`personal/pack.yaml` and edit its manifests directly; registry identities and digests come from
 canonical discovered manifests, with no fork, override, or dirty-tracking
 sidecar.
 

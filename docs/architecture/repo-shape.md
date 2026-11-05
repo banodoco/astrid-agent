@@ -189,10 +189,11 @@ The shipped packs are: `rendering`, `understanding`, `generation`, `editorial`,
 `video_editing`, `foley`, `training`, `youtube`, `fal`, `vibecomfy`,
 `runpod`, `moirae`, `iteration`, `media`, and `stream_content`.
 
-A project-local `local` pack at `astrid/packs/local/` is an optional ordinary
-source root for user-authored capabilities. Its `pack.yaml` and content
-manifests are discovered like every other source pack; there is no fork state,
-sidecar redirect, or local-priority rule.
+The project-local `local` pack was retired (Plan 06 PK-12); its effects are
+listed with checksums in `docs/packs/local-effects-archive.md`. User-authored
+elements live in the per-user `personal` pack (`~/Astrid/packs/personal`),
+which is discovered like any other pack; there is no fork state, sidecar
+redirect, or priority rule.
 
 The retired `builtin` pack is not shipped. Historical fixtures that referenced
 it are retired; new capability work uses the canonical shipped packs.

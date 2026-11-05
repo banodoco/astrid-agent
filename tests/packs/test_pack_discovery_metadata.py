@@ -232,7 +232,7 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
         self.assertEqual([dp.source_kind for dp in discovered], ["source", "extra"])
 
     def test_source_kinds_include_env_in_priority_order(self) -> None:
-        self.assertEqual(SOURCE_KINDS, ("source", "local", "managed", "extra", "env"))
+        self.assertEqual(SOURCE_KINDS, ("source", "managed", "extra", "env"))  # PK-12: local layer retired
 
     def test_env_layer_uses_pathsep_and_skips_empty_or_missing_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
