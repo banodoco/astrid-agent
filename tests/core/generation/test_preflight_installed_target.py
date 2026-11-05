@@ -42,16 +42,42 @@ def test_uninstalled_managed_target_preserves_structural_preflight(monkeypatch):
 
 
 def test_unowned_installed_engine_blocks_without_falling_back(monkeypatch):
-    monkeypatch.setattr(engine_local_endpoint, 'recorded_engine_root', lambda engine: '/installed/comfyui')
-    def unowned(*args, **kwargs):
-        raise EndpointOwnershipError('synthetic unowned listener')
-    monkeypatch.setattr(engine_local_endpoint, 'local_engine_endpoint', unowned)
-    with pytest.raises(preflight.GenerationReadinessError) as caught:
-        preflight.select_generation_target('managed')
-    envelope = caught.value.to_envelope()
-    assert envelope['status'] == 'blocked'
-    assert envelope['issues'][0]['details']['engine_code'] == 'endpoint_ownership'
-    assert envelope['fixes'][0]['argv'][:4] == ['astrid', 'engines', 'install', 'comfyui']
+    import platform
+
+    cases = (
+        ('Linux', 'x86_64', True),
+        ('Darwin', 'arm64', False),
+        ('Linux', 'aarch64', False),
+        ('Windows', 'AMD64', False),
+    )
+    for system, machine, offers_install in cases:
+        with monkeypatch.context() as case_patch:
+            case_patch.setattr(platform, 'system', lambda: system)
+            case_patch.setattr(platform, 'machine', lambda: machine)
+            case_patch.setattr(engine_local_endpoint, 'recorded_engine_root',
+                               lambda engine: '/installed/comfyui')
+
+            def unowned(*args, **kwargs):
+                raise EndpointOwnershipError('synthetic unowned listener')
+
+            case_patch.setattr(engine_local_endpoint, 'local_engine_endpoint', unowned)
+            case_patch.setattr(preflight, '_module_available',
+                               lambda name: pytest.fail(f'unowned engine fell back to probing {name}'))
+            case_patch.setattr(preflight, '_comfyui_runtime_available',
+                               lambda: pytest.fail('unowned engine fell back to the legacy runtime'))
+            case_patch.setattr(ComfyTargetClient, 'request_json',
+                               lambda *a, **k: pytest.fail(
+                                   'unowned engine fell back to an attached endpoint'))
+            with pytest.raises(preflight.GenerationReadinessError) as caught:
+                preflight.select_generation_target('managed')
+            envelope = caught.value.to_envelope()
+            assert envelope['status'] == 'blocked'
+            assert envelope['issues'][0]['details']['engine_code'] == 'endpoint_ownership'
+            if offers_install:
+                assert envelope['fixes'][0]['argv'][:4] == [
+                    'astrid', 'engines', 'install', 'comfyui']
+            else:
+                assert envelope['fixes'] == []
 
 
 def test_explicit_attached_url_never_adopts_registered_engine(monkeypatch):

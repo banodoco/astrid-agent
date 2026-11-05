@@ -18,6 +18,11 @@ CHARACTER_SWAP_URL = (
     "62407e0cc8089c363abd9ce4b0b27662abb237af/"
     "h3_character_swap_pro4500_1000.safetensors"
 )
+REF2V_LORA_URL = (
+    "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/"
+    "0f7fb980293fcc4d55c1158cbda920806682ed5d/"
+    "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+)
 URL = re.compile(r"https?://[^\s\"'\\<>]+")
 MODEL_FILE = re.compile(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf)(?:\?|$)", re.I)
 
@@ -89,7 +94,10 @@ def test_h3_workflow_model_urls_match_lock():
     models = {model.destination: model for model in lock.models}
     locked_urls = {_required_locked_url(models, destination) for destination in models}
     assert len(locked_urls) == 5
-    allowed = locked_urls | {CHARACTER_SWAP_URL}
+    # The active RunPod lock still describes the old FL2V asset. The H3 Ref2VA
+    # graph owns this separately pinned official Ref2V asset until that lock is
+    # updated in its owning lane; all five existing lock URLs remain required.
+    allowed = locked_urls | {CHARACTER_SWAP_URL, REF2V_LORA_URL}
     found = set()
     files_with_models = {}
 
@@ -112,6 +120,8 @@ def test_h3_workflow_model_urls_match_lock():
 
     # Avoid a vacuous pass if workflow discovery or asset declarations disappear.
     assert locked_urls <= found
+    refs_graph = PACK_WORKFLOWS / "native_h3_continuation_refs/workflow.py"
+    assert REF2V_LORA_URL in files_with_models.get(refs_graph, set())
     expected_workflows = [
         PACK_WORKFLOWS / name / "workflow.py"
         for name in ("native_h3_continuation", "native_h3_continuation_refs")

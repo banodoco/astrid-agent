@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """Print or bump the VibeComfy revision Astrid is pinned to.
 
-The pin lives in the engine pin manifests. Update their references and the
-recipe index together so every shipped platform selects the same source.
+The pin authority is the packaged VibeComfy engine recipe. The dependency
+adapter, CI and this command all read its digest-verified source pin.
 
     python scripts/vibecomfy_pin.py            # print the pinned revision
     python scripts/vibecomfy_pin.py <sha>      # bump it (full 40-hex commit)
 
-After a bump, run the VibeComfy-related tests against a checkout at the new
-revision and set the same sha in the hosted ``install-manifest.json`` (or drop
-its ``vibecomfy`` entry so the installer uses this pin).
+A bump rewrites the ``vibecomfy`` and ``vibecomfy-h3`` revisions in every
+package-owned pin manifest, then the dependent ``{"path", "sha256"}`` pin
+digests and the engine index recipe digests, and finally prints the revision
+read back through the digest-verified recipe authority. It does not update the
+source node lock, requirements locks or test literals that name the old
+revision; coordinate those by hand. Run the VibeComfy-related tests against a
+checkout at the new revision afterwards and set the same sha in the hosted
+``install-manifest.json`` (or drop its ``vibecomfy`` entry so the installer
+uses this pin).
 """
 
 from __future__ import annotations
@@ -19,6 +25,12 @@ import json
 import re
 import sys
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    # Keep the documented checkout command usable without an editable install.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from astrid.core.generation.engine_recipe import engine_source_revision
 
 ROOT = Path(__file__).resolve().parents[1] / "astrid"
 
@@ -36,7 +48,7 @@ def _digest(path: Path) -> str:
 
 
 def read() -> str:
-    return _load(ROOT / "packs/vibecomfy/pins.json")["sources"]["vibecomfy"]["revision"]
+    return engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy")
 
 
 def bump(revision: str) -> None:

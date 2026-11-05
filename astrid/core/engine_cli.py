@@ -16,11 +16,11 @@ from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
 
 from astrid.core.generation.engine_contracts import (
-    EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
+    EngineError, EngineReinstallRequired, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
 )
 from astrid.core.generation.engine_recipe import load_model_lock, load_recipe
 from astrid.core.generation.engine_runner import (
-    _disk_anchor, engine_status, install_engine, plan_install, validate_model_cache_root,
+    _check_install_identity, _disk_anchor, engine_status, install_engine, plan_install, validate_model_cache_root,
 )
 
 
@@ -133,6 +133,16 @@ def main(argv=None, *, backend_factory=None):
                                  sort_keys=True, ensure_ascii=False))
                 return 0
             if disk['status'] == 'blocked':
+                if os.path.lexists(os.path.join(plan.root, '.astrid-engine')):
+                    # A stale installation cannot be repaired by freeing disk.
+                    # Reuse the runner's locked identity check before reporting
+                    # space; this never starts a helper or writes a receipt.
+                    _custody_preflight(plan.root)
+                    deadline = time.monotonic() + args.deadline
+                    factory = backend_factory if backend_factory is not None else _default_backend
+                    context, adapter = factory(engine=args.engine, platform=args.platform,
+                        placement=args.placement, root=plan.root, deadline=deadline)
+                    _check_install_identity(plan, context=context, adapter=adapter, deadline=deadline)
                 print(json.dumps({'error': {'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
                     'retryable': True, 'recovery_handle': None,
                     'message': 'Free disk space or choose a different --root, then retry.',
@@ -156,6 +166,12 @@ def main(argv=None, *, backend_factory=None):
         else:
             result = engine_status(args.engine, platform=args.platform, placement=args.placement,
                                    root=plan.root, context=context, deadline=deadline)
+            if result is not None and result.error_code == EngineReinstallRequired.code:
+                environment = next((e.name for e in recipe.environments
+                                    if result.failed_step_id == 'environment:' + e.name),
+                                   recipe.primary_environment)
+                raise EngineReinstallRequired('stale installation', environment=environment,
+                                              step_id=result.failed_step_id)
         print(json.dumps(_plain(result) if result is not None else None, sort_keys=True, ensure_ascii=False))
         return 0
     except EngineError as exc:
@@ -172,9 +188,22 @@ def main(argv=None, *, backend_factory=None):
             'custody_not_owner_only': 'Engine custody directory must be owner-only. /workspace is FUSE-unsafe; '
                                       'install under a local --root.',
         }
-        print(json.dumps({'error': {'code': exc.code, 'step': step,
-                                    'retryable': exc.retryable, 'recovery_handle': handle,
-                                    'message': messages.get(exc.code, 'Engine operation failed.')}},
+        public = {'code': exc.code, 'step': step, 'retryable': exc.retryable,
+                  'recovery_handle': handle, 'message': messages.get(exc.code, 'Engine operation failed.')}
+        if isinstance(exc, EngineReinstallRequired):
+            environment = next((e.name for e in recipe.environments
+                                if e.name == exc.environment), recipe.primary_environment)
+            clean_root = plan.root + '-clean'
+            suffix = 2
+            # A recommendation is read-only; install still owns all acquisition.
+            while os.path.lexists(clean_root):
+                clean_root = plan.root + '-clean-' + str(suffix)
+                suffix += 1
+            recovery = EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
+                root=plan.root, environment=environment, clean_root=clean_root)
+            public.update(environment=environment, clean_root=clean_root,
+                          install_command=recovery.install_command, message=recovery.message)
+        print(json.dumps({'error': public},
                          sort_keys=True), file=sys.stderr)
         return 1
     except Exception:  # Avoid leaking transport diagnostics or command arguments.

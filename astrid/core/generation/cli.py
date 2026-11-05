@@ -24,6 +24,24 @@ def _open_client() -> Any:
     return AstridClient.open_from_launcher()
 
 
+def _no_generation_target(target: str) -> bool:
+    """Whether a local request has no engine and no ComfyUI to run on.
+
+    Read-only: it never starts a recorded engine (it stops at the install
+    record) and only probes an unbound discovery address, as the facade does.
+    Anything it cannot settle is left to the facade's normal path.
+    """
+    try:
+        from astrid.core.generation.engine_local_endpoint import recorded_engine_root
+        from astrid.core.generation.preflight import _select_generation_target
+
+        if recorded_engine_root('comfyui') is not None:
+            return False
+        return _select_generation_target(target) is None
+    except Exception:
+        return False
+
+
 class _Once(argparse.Action):
     """Reject repeated convenience flags instead of silently keeping the last."""
 
@@ -52,12 +70,18 @@ def _common_options(command):
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
+    command.add_argument('--offer-digest', action=_Once, help='Accept the digest returned by target description.')
+    command.add_argument('--preparation-seconds', action=_Once, type=float)
+    command.add_argument('--execution-seconds', action=_Once, type=float)
+    command.add_argument('--idle-seconds', action=_Once, type=float)
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
 def _entry_help(description: dict[str, Any]) -> str:
     lines = [f"Entry: {description['id']} ({description['source']}, {description['kind']})",
              "Modes: " + ", ".join(description["modes"])]
+    if description.get("license_notice"):
+        lines.append(description["license_notice"])
     selected = description.get("mode")
     schemas = {selected: description} if selected else description.get("mode_descriptions", {})
     for mode, schema in schemas.items():
@@ -78,7 +102,7 @@ def _entry_help(description: dict[str, Any]) -> str:
 
 
 def _context_description(argv: list[str]) -> dict[str, Any] | None:
-    if not argv or argv[0] not in {"image", "video"} or not any(
+    if not argv or argv[0] not in {"image", "video", "audio", "foley"} or not any(
             item in {"-h", "--help"} for item in argv):
         return None
     selector = argparse.ArgumentParser(add_help=False)
@@ -93,10 +117,10 @@ def _context_description(argv: list[str]) -> dict[str, Any] | None:
         selector.error("--model and --entry select different generation entries")
     from astrid.core.generation.entries import describe_entry
     try:
-        description = describe_entry(entry_id, mode=parsed.mode)
+        description = describe_entry(entry_id, mode=parsed.mode or ("sfx" if argv[0] == "foley" else None))
     except (ValueError, KeyError) as exc:
         selector.error(str(exc))
-    if description["kind"] != argv[0]:
+    if description["kind"] != ("audio" if argv[0] == "foley" else argv[0]):
         selector.error(f"entry {entry_id!r} does not support {argv[0]}")
     return description
 
@@ -129,20 +153,26 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command = sub.add_parser('list', help='List generation entries and readiness.')
     command.add_argument('--kind', choices=('image', 'video', 'audio', 'generation', 'fixture'))
     command.add_argument('--json', action='store_true')
-    for modality in ("image", "video"):
-        command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video'}.",
+    for name in ("image", "video", "audio", "foley"):
+        modality = "audio" if name == "foley" else name
+        alias_mode = "sfx" if name == "foley" else None
+        command = sub.add_parser(name, help=("Alias for audio --mode sfx." if alias_mode else f"Generate {'an image' if modality == 'image' else 'a video' if modality == 'video' else 'audio'}."),
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
             formatter_class=argparse.RawDescriptionHelpFormatter)
+        command.set_defaults(modality=modality, mode=alias_mode)
         command.add_argument("prompt", nargs="?", help="Describe the media to generate.")
         command.add_argument('--prompt', dest='named_prompt', action=_Once)
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, help="Generation mode; inferred from the supplied inputs by default.")
+        command.add_argument("--mode", action=_Once, choices=(alias_mode,) if alias_mode else ('music', 'tts', 'sfx') if modality == 'audio' else None,
+                             required=modality == 'audio' and alias_mode is None, help=("Audio mode: music, tts, or sfx." if modality == 'audio'
+                             else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
-            "--target", action=_Once, default="auto", metavar="TARGET",
-            help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
+            "--target", action=_Once, default='auto', metavar="TARGET",
+            help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
+                  else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
@@ -158,6 +188,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--fps", action=_Once, type=float)
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
+        if modality == 'audio':
+            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
+            command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
     command.add_argument("--entry")
@@ -218,7 +251,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
 def _values(parsed):
     from astrid.core.generation.entries import merge_input_values
     common = {name: getattr(parsed, name, None) for name in (
-        'prompt', 'negative_prompt', 'image_ref', 'width', 'height', 'seed',
+        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'width', 'height', 'seed',
         'frames', 'fps', 'steps', 'guidance_scale')}
     common = {name: value for name, value in common.items() if value is not None}
     named = getattr(parsed, 'named_prompt', None)
@@ -236,7 +269,10 @@ def _controls(parsed):
     controls = {}
     if parsed.no_wait:
         controls['wait'] = False
-    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path'):
+    if getattr(parsed, 'resume', False):
+        controls['resume'] = True
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
+                 'preparation_seconds', 'execution_seconds', 'idle_seconds'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
@@ -367,6 +403,9 @@ def _main(argv: list[str]) -> int:
         return 0
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
+    if parsed.modality == 'audio' and parsed.mode == 'sfx' and parsed.target == 'runpod':
+        # Ask the SDK for its canonical refusal before entry or input resolution.
+        _generate_facade().audio(mode='sfx', target='runpod')
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
@@ -398,7 +437,7 @@ def _main(argv: list[str]) -> int:
                     context = None
                 raise GenerationInputError(str(exc), entry=context) from exc
             parser.error(str(exc))
-    elif 'prompt' not in values:
+    elif 'prompt' not in values and not (parsed.modality == 'audio' and values):
         parser.error("prompt is required unless declared entry inputs are supplied")
     from astrid.sdk.exceptions import AstridSDKError
 
@@ -424,7 +463,10 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run:
+        from astrid.sdk.generation import _prompt_only_video
+        if parsed.dry_run or (parsed.modality == 'video' and _prompt_only_video(
+                model=parsed.model, entry=parsed.entry, inputs=values)):
+            # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
         elif description is not None and description["source"] == "action" and parsed.target != 'runpod':
             from astrid.sdk.generation import _action_client_scope
@@ -435,7 +477,15 @@ def _main(argv: list[str]) -> int:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
         else:
-            with _open_client() as client:
+            try:
+                client_scope = _open_client()
+            except AstridSDKError:
+                if parsed.target != 'runpod' and _no_generation_target(parsed.target):
+                    # No workspace and no engine or ComfyUI: the target guidance
+                    # (the refusal a dry run gives) is the actionable answer.
+                    generate(**{**kwargs, "dry_run": True})
+                raise
+            with client_scope as client:
                 result = generate(client=client, **kwargs)
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
