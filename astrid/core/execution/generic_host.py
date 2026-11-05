@@ -2282,7 +2282,7 @@ def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str
         pack_root = Path(raw).expanduser().resolve()
         builtin_root = (Path(__file__).resolve().parents[3] / 'astrid/packs' / source_pack).resolve()
         if pack_root != builtin_root:
-            return os.pathsep.join((str(pack_root), str(pack_root.parent), existing))
+            return os.pathsep.join((str(pack_root), existing))
     return existing
 
 
@@ -4680,11 +4680,29 @@ def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[s
         raise HostError("Python action requires a matching admitted definition digest")
     if admission.get("python_path_roots"):
         raise HostError("Python action pack imports must use the selected canonical namespace")
+    selected = admission.get("selected_pack_map")
+    if selected is not None:
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        try:
+            selected = validate_selected_pack_map(selected, verify_digests=False)
+        except (OSError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+        if selected.get(str(metadata.get("source_pack") or root.name)) != {
+                "root": str(root), "source_digest": admission["source_digest"]}:
+            raise HostError("Python action differs from the admitted pack map")
 
 
 
 def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
     """Validate a single run's observed source; never compare an install PIN."""
+    if admission.get("selected_pack_map"):
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        try:
+            validate_selected_pack_map(admission["selected_pack_map"])
+        except (OSError, ValueError) as exc:
+            raise HostError(f"admitted capability source digest changed: {exc}") from exc
     expected = str(admission.get("source_digest") or "")
     if not expected:
         return
@@ -6983,6 +7001,7 @@ class GenericPackHost:
             project_root=self.pack_roots[0] if self.pack_roots else REPO_ROOT,
             extra_pack_roots=tuple(str(root) for root in self.pack_roots),
         )
+        self._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
         from astrid.core.execution.executor.actions import action_is_local_orchestrator
 
         # An explicitly configured pack with the same ID is a complete
@@ -7079,7 +7098,41 @@ class GenericPackHost:
         })
         return tuple(records[key] for key in sorted(records))
 
-    def admit(self, capability_kind: str, capability_id: str) -> tuple[Mapping[str, Any], Mapping[str, str]]:
+    def _selected_pack_map(self, record: CapabilityRecord) -> dict[str, dict[str, str]]:
+        """M2-05 resource-selection seam: live roots for the selected dependency closure.
+
+        Discovery owns inventory and compatibility. This construction reads only
+        manifests and source trees reached by dependencies.packs from that inventory.
+        Packs without actions remain eligible dependencies.
+        """
+        from astrid.core.pack.identity import pack_digest
+        from astrid.core.pack.loader import _load_manifest_payload
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        if not record.definition.metadata.get("action_invocation"):
+            return {}
+        root = Path(str(record.definition.metadata["pack_root"])).resolve()
+        inventory = getattr(self, "_pack_source_roots", {})
+        selected: dict[str, dict[str, str]] = {}
+
+        def visit(pack_id: str, pack_root: Path) -> None:
+            if pack_id in selected:
+                return
+            selected[pack_id] = {"root": str(pack_root), "source_digest": pack_digest(pack_root)}
+            payload = _load_manifest_payload(pack_root / "pack.yaml")
+            for dependency in sorted(payload.get("dependencies", {}).get("packs", ())):
+                dependency_root = inventory.get(dependency)
+                if dependency_root is None:
+                    raise HostError(f"selected pack dependency {dependency!r} is unavailable")
+                visit(dependency, dependency_root)
+
+        visit(str(record.definition.metadata.get("source_pack") or root.name), root)
+        try:
+            return validate_selected_pack_map(selected, verify_digests=False)
+        except (OSError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+
+    def admit(self, capability_kind: str, capability_id: str) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         """Capture the exact definition and source epoch used by a task child."""
         if capability_kind == "executor":
             if not self.capabilities:
@@ -7107,6 +7160,7 @@ class GenericPackHost:
             return record.definition.to_dict(), {
                 "capability_digest": record.capability_digest,
                 "source_digest": _run_source_digest(record),
+                "selected_pack_map": self._selected_pack_map(record),
                 "dependency_digest": record.dependency_digest,
                 "version": record.definition.version,
                 "source_root": str(record.source_root),
@@ -9663,7 +9717,11 @@ class GenericPackHost:
         if selected_command:
             control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
                        "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
-                       "argv": selected_arguments}
+                       "argv": selected_arguments,
+                       "map": (admission or {}).get("selected_pack_map") or self._selected_pack_map(record)}
+            from astrid.core.pack.imports import selected_pack_environment
+
+            env.update(selected_pack_environment(control["map"]))
             argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                     "--pack-command", json.dumps(control)]
             if child_bridge is not None:
@@ -9988,6 +10046,10 @@ class GenericPackHost:
                 dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
             )
             env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+        if isinstance(admission, Mapping) and admission.get("selected_pack_map"):
+            from astrid.core.pack.imports import selected_pack_environment
+
+            env.update(selected_pack_environment(admission["selected_pack_map"]))
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
@@ -11392,6 +11454,7 @@ class GenericPackHost:
             "capability_digest": record.capability_digest,
             "source_digest": run_source_digest,
             "dependency_digest": record.dependency_digest,
+            "selected_pack_map": self._selected_pack_map(record),
             "version": record.definition.version,
             "source_root": str(record.source_root),
             "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)],
