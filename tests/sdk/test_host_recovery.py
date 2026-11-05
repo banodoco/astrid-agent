@@ -659,6 +659,115 @@ def test_windows_gone_host_without_retained_job_keeps_registration_markers(monke
     assert all(marker.exists() for marker in markers)
 
 
+@pytest.mark.parametrize("observed", [None, {"pid": 4321, "birth_id": "windows-creation:9999"}])
+def test_windows_prior_runtime_retirement_drops_markers_without_signalling(monkeypatch, tmp_path, observed):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: observed)
+    monkeypatch.setattr(host_bootstrap, "terminate_group", lambda *_a, **_kw: pytest.fail("signalled a Job"))
+    monkeypatch.setattr(host_bootstrap, "_stop_group", lambda *_a, **_kw: pytest.fail("signalled a PID"))
+    monkeypatch.setattr(host_bootstrap.os, "kill", lambda *_a, **_kw: pytest.fail("signalled a PID"))
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path),
+             "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
+    markers = [tmp_path / "generic-host.json", tmp_path / "generic-host.ready.json"]
+    for marker in markers:
+        marker.write_text("{}", encoding="utf-8")
+
+    host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+
+    assert all(not marker.exists() for marker in markers)
+
+
+@pytest.mark.parametrize("fault", ["same", "missing_old", "missing_current", "blank_old", "blank_current",
+                                  "missing_launch", "bad_launch", "missing_birth", "bad_birth", "missing_pid", "wrong_service"])
+def test_windows_prior_runtime_retirement_refuses_ambiguous_identity(monkeypatch, tmp_path, fault):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(host_bootstrap, "terminate_group", lambda *_a, **_kw: pytest.fail("signalled a Job"))
+    monkeypatch.setattr(host_bootstrap.os, "kill", lambda *_a, **_kw: pytest.fail("signalled a PID"))
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path),
+             "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
+    current = "new-runtime"
+    if fault == "same": current = "old-runtime"
+    elif fault == "missing_old": del state["runtime_instance_id"]
+    elif fault == "missing_current": current = None
+    elif fault == "blank_old": state["runtime_instance_id"] = " "
+    elif fault == "blank_current": current = " "
+    elif fault == "missing_launch": del state["runtime_service_launch_id"]
+    elif fault == "bad_launch": state["runtime_service_launch_id"] = "bad"
+    elif fault == "missing_birth": del state["process_birth_id"]
+    elif fault == "bad_birth": state["process_birth_id"] = "ambiguous"
+    elif fault == "missing_pid": del state["pid"]
+    elif fault == "wrong_service": monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "other")
+    markers = [tmp_path / "generic-host.json", tmp_path / "generic-host.ready.json"]
+    for marker in markers:
+        marker.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError):
+        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id=current)
+    assert all(marker.exists() for marker in markers)
+
+
+@pytest.mark.parametrize("status", ["foreign", "ours", "unknown"])
+def test_windows_prior_runtime_retirement_refuses_non_stale_status(monkeypatch, tmp_path, status):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: status)
+    monkeypatch.setattr(host_bootstrap, "terminate_group", lambda *_a, **_kw: pytest.fail("signalled a Job"))
+    monkeypatch.setattr(host_bootstrap.os, "kill", lambda *_a, **_kw: pytest.fail("signalled a PID"))
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path),
+             "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
+    marker = tmp_path / "generic-host.json"
+    marker.write_text("{}", encoding="utf-8")
+    with pytest.raises(host_bootstrap.PackHostBootstrapError):
+        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+    assert marker.exists()
+
+
+def test_windows_prior_runtime_retirement_refuses_ambiguous_native_birth(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: {"pid": 4321})
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path),
+             "runtime_instance_id": "old-runtime", "runtime_service_launch_id": "a" * 32}
+    marker = tmp_path / "generic-host.json"
+    marker.write_text("{}", encoding="utf-8")
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="identity is ambiguous"):
+        host_bootstrap._retire_host_locked(state, foreground=True, current_runtime_instance_id="new-runtime")
+    assert marker.exists()
+
+
+@pytest.mark.parametrize("discovery,health,expected", [
+    ("instance-1", "instance-1", "instance-1"),
+    ("instance-1", "other-instance", None),
+    (None, "instance-1", None),
+    ("instance-1", None, None),
+])
+def test_foreground_retirement_uses_only_matching_explicit_runtime_identity(
+    harness, monkeypatch, discovery, health, expected,
+):
+    harness.value["runtime_instance_id"] = discovery
+    original_client = generic_host.RuntimeProtocolClient
+
+    class Client(original_client):
+        def health(self):
+            return {**super().health(), "runtime_instance_id": health}
+
+    monkeypatch.setattr(generic_host, "RuntimeProtocolClient", Client)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
+    seen = []
+
+    def retire(_state, **kwargs):
+        seen.append(kwargs)
+        raise host_bootstrap.PackHostBootstrapError("stop at retirement")
+
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", retire)
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="stop at retirement"):
+        host_bootstrap.ensure_pack_host(harness.value, reconfigure_action="reconfigure", _foreground=True)
+    assert seen == [{"foreground": True, "current_runtime_instance_id": expected}]
+
+
 def test_windows_supervisor_receipt_proves_only_the_bound_drained_service_job(monkeypatch, tmp_path):
     monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
     monkeypatch.setattr(host_bootstrap.platform, "is_owner_only", lambda _path: True)
