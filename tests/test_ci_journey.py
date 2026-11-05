@@ -36,6 +36,23 @@ def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(t
     assert not (tmp_path / "evidence").exists()
 
 
+def test_wait_ready_timeout_preserves_last_health_error(tmp_path, monkeypatch):
+    def unhealthy(_data):
+        raise RuntimeError("discovery endpoint unavailable")
+
+    monkeypatch.setattr(journey, "healthy", unhealthy)
+    monkeypatch.setattr(journey.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(journey.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+            RuntimeError,
+            match="last health check failed: RuntimeError: discovery endpoint unavailable") as exc:
+        journey.wait_ready(tmp_path, timeout=0)
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert str(exc.value.__cause__) == "discovery endpoint unavailable"
+
+
 def test_sdk_capture_keeps_exact_bounded_cli_bytes_and_tuple_context(tmp_path, monkeypatch):
     version_root = tmp_path / "program" / "versions" / "v1"
     version_root.mkdir(parents=True)

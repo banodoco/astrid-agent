@@ -1501,13 +1501,18 @@ def assert_release0_runtime(data: Path, version_path: Path, evidence: Path) -> N
 
 def wait_ready(data: Path, *, timeout: int = 900) -> None:
     deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
     while True:
         try:
             healthy(data)
             return
-        except (OSError, ValueError, KeyError, RuntimeError):
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            last_error = exc
             if time.monotonic() >= deadline:
-                raise RuntimeError("Installed Runtime did not become healthy")
+                raise RuntimeError(
+                    "Installed Runtime did not become healthy; "
+                    f"last health check failed: {type(last_error).__name__}: {last_error}"
+                ) from last_error
             time.sleep(5)
 
 
