@@ -761,6 +761,7 @@ jobs:
           )
           if ($runWindowsRefusal) {
             $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
+            $env:ASTRID_CI_SANDBOX_PROFILE = '1'
             python -u agent/scripts/ci_journey.py `
               --job-id direct-windows --mode direct --leg windows-upgrade-refusal `
               --candidate "$env:RUNNER_TEMP/candidate.json" `
