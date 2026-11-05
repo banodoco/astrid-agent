@@ -723,6 +723,11 @@ def _profile_probe_text(value: str, run_root: str, data_root: str, *, arguments:
                    else "<redacted>" for part in parts)[:2048]
 
 
+def _windows_task_path_forms(path: str) -> tuple[str, ...]:
+    """Return the raw and Python-source-escaped forms of a Windows task path."""
+    return (path, path.replace("\\", "\\\\"))
+
+
 def _capture_windows_profile_pack_host_log(evidence: Path, run_root: Path, phase: str) -> None:
     """Capture only this run's scheduled-task pack-host log from the user profile."""
     status = {"schema_version": 1, "phase": phase, "status": "unavailable",
@@ -732,6 +737,8 @@ def _capture_windows_profile_pack_host_log(evidence: Path, run_root: Path, phase
     try:
         expected_root = str(run_root.resolve())
         expected_data = str((run_root / "data").resolve())
+        expected_data_forms = ", ".join(
+            windows._powershell_quote(value) for value in _windows_task_path_forms(expected_data))
         script = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -747,12 +754,20 @@ try {
     exit 1
 }
 $root = [IO.Path]::GetFullPath(__RUN_ROOT__).TrimEnd('\') + '\'
-$data = __DATA_ROOT__
+$dataForms = @(__DATA_PATH_FORMS__)
 $actions = @($task.Actions | ForEach-Object {
     $execute = [string]$_.Execute
     $arguments = [string]$_.Arguments
     $rootMatch = $null -ne $_.Execute -and $execute.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
-    $dataMatch = [bool]$_.Arguments -and $arguments.IndexOf($data, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    $dataMatch = $false
+    if ($_.Arguments) {
+        foreach ($dataForm in $dataForms) {
+            if ($arguments.IndexOf($dataForm, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $dataMatch = $true
+                break
+            }
+        }
+    }
     @{ executable = $execute; arguments = $arguments; run_root_match = $rootMatch; data_root_match = $dataMatch }
 })
 $owned = @($actions | Where-Object { $_.run_root_match -and $_.data_root_match })
@@ -769,7 +784,7 @@ $result = @{ task_found = $true; task_path = [string]$task.TaskPath; action_coun
 if ($owned.Count -eq 1 -or __HOSTED__) { $result.profile_local = [Environment]::GetFolderPath('LocalApplicationData') }
 $result | ConvertTo-Json -Depth 5 -Compress
 """.replace("__RUN_ROOT__", windows._powershell_quote(expected_root)).replace(
-            "__DATA_ROOT__", windows._powershell_quote(expected_data)).replace(
+            "__DATA_PATH_FORMS__", expected_data_forms).replace(
             "__HOSTED__", "$true" if hosted_windows_runner() else "$false")
         env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
