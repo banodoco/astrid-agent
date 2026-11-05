@@ -685,7 +685,14 @@ def load_capability_ledger(matrix_path: str | Path, *, executor_registry: Any = 
         raise CapabilityLedgerError("capability ledger requires schema_version 1 and a capabilities list")
     _validate_matrix_capabilities(payload["capabilities"])
     result = dict(payload)
-    repo_root = path.parent.parent if selected_packs is not None or executor_registry is not None else _repo_root_for_matrix(path)
+    repo_root = _repo_root_for_matrix(path)
+    if selected_packs is not None or executor_registry is not None:
+        # A selected inventory reconciles against the matrix's own project
+        # (its model catalog), not an ambient checkout. A matrix outside any
+        # project (host fixtures) keeps the unreconciled default.
+        project = path.parent.parent
+        if (project / "astrid" / "core" / "model_catalog" / "models.yaml").is_file():
+            repo_root = project
     result["sources"] = _reconcile_sources(repo_root, payload["capabilities"], executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs, external_contracts=payload.get("external_contracts", {}), matrix_source=path) if repo_root else {"counts": {}, "coverage": {}}
     return result
 
