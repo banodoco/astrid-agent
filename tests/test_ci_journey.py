@@ -405,6 +405,49 @@ def test_tst_b1_cleanup_accepts_only_exact_uninstalled_selection_receipt(tmp_pat
             journey.assert_host_available("cleanup", root, data)
 
 
+def test_release1_cleanup_host_check_accepts_only_owned_retained_r1_install(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    default = tmp_path / "default" / "astrid"
+    default.parent.mkdir()
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    root, data = tmp_path / "run" / "program", tmp_path / "run" / "data"
+    r1_data = Path(str(data) + "-r1")
+    version_root = root / "versions" / "r1"
+    version_root.mkdir(parents=True)
+    r1_data.mkdir(parents=True)
+    (root / "current").write_text("r1\n", encoding="utf-8")
+    journey.write_json(root / "install.json", {
+        "data_root": str(data), "r1_data_root": str(r1_data),
+    })
+    identity = {"release": 1, "managed_by": None}
+    journey.write_json(version_root / "version.json", {
+        "root": str(version_root), "identity": identity,
+    })
+    journey.write_json(version_root / "manifest.json", {"release": 1})
+    selection = {
+        "owner": "haus.astrid.runtime", "program_root": str(root),
+        "data_root": str(data), "uninstalled": False, "identity": identity,
+    }
+    selection_path = default.parent / "astrid-install.json"
+    journey.write_json(selection_path, selection)
+    service_checks = []
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda checked_root, checked_data, *, release: service_checks.append(
+                            (checked_root, checked_data, release)))
+
+    journey.assert_host_available("cleanup", root, data, release=1)
+    assert service_checks == [(root, data, 1)]
+
+    for changed in ({**selection, "program_root": str(tmp_path / "foreign")},
+                    {**selection, "uninstalled": True},
+                    {**selection, "foreground": {"pid": 123}}):
+        journey.write_json(selection_path, changed)
+        with pytest.raises(RuntimeError, match="non-journey Astrid login installation|selection is not owned"):
+            journey.assert_host_available("cleanup", root, data, release=1)
+    assert service_checks == [(root, data, 1)]
+
+
 def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
     root = Path(r"C:\runner\tst-b1\program")
     assert journey.windows_task_owned('present\nC:\\runner\\tst-b1\\program\\versions\\v1\\python.exe\n', root)
