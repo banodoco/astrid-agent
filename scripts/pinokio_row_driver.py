@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,7 @@ class Row:
         self.scratch = run_root / "work"
         self.evidence = self.scratch / "evidence"
         self.pinokio = pinokio
+        self.launcher = pinokio
         self.agent = agent
         self.app_checkout = app_checkout
         self.candidate_sha = candidate_sha
@@ -215,11 +217,15 @@ class Row:
             raise RowError("isolated HOME already exists; refusing reuse")
         self.home.mkdir(parents=True)
         self.scratch.mkdir(parents=True, exist_ok=True)
-        self.app_dir.mkdir(parents=True)
+        # Pinokio clones the launcher repository into its app folder; the updater
+        # looks for pinokio/session.mjs there, so lay the folder out the same way.
+        self.app_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.pinokio, self.app_dir, ignore=shutil.ignore_patterns(".git", "tests"))
+        self.launcher = self.app_dir
         code = ("const p=require(process.argv[1]);"
                 "process.stdout.write(JSON.stringify(p.buildEnvironment({appDirectory:process.argv[2]})))")
         self.env = dict(os.environ, HOME=str(self.home))
-        self.env = json.loads(self.command(["node", "-e", code, self.pinokio / "pinokio" / "environment.js",
+        self.env = json.loads(self.command(["node", "-e", code, self.launcher / "pinokio" / "environment.js",
                                             self.app_dir], timeout=30))
         if self.env.get("HOME") != str(self.home):
             raise RowError("candidate environment rejected the isolated HOME")
@@ -251,7 +257,7 @@ class Row:
         log = self.scratch / f"session-{self.session_count}.log"
         with log.open("w", encoding="utf-8") as output:
             self.child = subprocess.Popen(
-                [str(node), str(self.pinokio / "pinokio" / "session.mjs"), "serve",
+                [str(node), str(self.launcher / "pinokio" / "session.mjs"), "serve",
                  str(self.root), str(self.root.parent / "editor"), "backend"],
                 env=self.env, cwd=str(self.home), stdout=output, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 180
@@ -282,7 +288,7 @@ class Row:
                 "if(r.absent) throw Error('Active session controller absent');"
                 "await m.waitForInstallerLock(root,o);")
         self.command(["node", "--input-type=module", "-e", code,
-                      (self.pinokio / "pinokio" / "lifecycle.mjs").as_uri(), self.root, self.app_dir], timeout=90)
+                      (self.launcher / "pinokio" / "lifecycle.mjs").as_uri(), self.root, self.app_dir], timeout=90)
 
     def finish_stop(self) -> None:
         try:
