@@ -3,7 +3,9 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import sys
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -11,9 +13,50 @@ import pytest
 
 from scripts import journey_live_workspace as live
 from scripts import journey_version_jumps as jumps
+from scripts import journey_workspace as offline
 
 
 FIXTURE = Path(__file__).parent / "fixtures/upgrade/r0-legacy-timeline"
+
+
+def test_offline_snapshot_failure_retains_only_allowlisted_field_and_frames(tmp_path, monkeypatch):
+    store = types.ModuleType("runtime_protocol.store")
+    store.SCHEMA_VERSION = 1
+    monkeypatch.setitem(sys.modules, "runtime_protocol", types.ModuleType("runtime_protocol"))
+    monkeypatch.setitem(sys.modules, "runtime_protocol.store", store)
+
+    class Service:
+        def get_project(self, *_args):
+            return {}
+
+    with pytest.raises(KeyError) as caught:
+        offline.snapshot(Service(), {})
+    diagnostic = offline.failure_diagnostic(caught.value)
+    assert diagnostic["schema"] == "astrid.live-workspace-failure.v2"
+    assert diagnostic["error_type"] == "KeyError"
+    assert diagnostic["missing_field"] == "project"
+    assert any(frame["function"] == "snapshot" for frame in diagnostic["frames"])
+    assert live.valid_failure_diagnostic(diagnostic)
+    assert str(tmp_path) not in json.dumps(diagnostic)
+
+    secret = "/private/runner/.credential/token"
+    diagnostic = offline.failure_diagnostic(KeyError(secret))
+    assert diagnostic["missing_field"] is None
+    assert secret not in json.dumps(diagnostic)
+    assert not live.valid_failure_diagnostic({**diagnostic, "missing_field": [secret]})
+
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    source = evidence / "release1-api-observe" / "live-snapshot-failure.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(offline.failure_diagnostic(caught.value)), encoding="utf-8")
+    (evidence / "journey-result.json").write_text(json.dumps({"scenario": "release0-to-release1"}),
+                                                   encoding="utf-8")
+    monkeypatch.setattr(jumps.journey, "capture_runtime_service_logs", lambda *_: None)
+    monkeypatch.setattr(jumps.journey, "capture_manager_state", lambda *_: None)
+    jumps.journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    staged = run_root / "evidence-upload" / "before-cleanup" / "live-release1-snapshot-failure.json"
+    assert json.loads(staged.read_text(encoding="utf-8")) == offline.failure_diagnostic(caught.value)
 
 
 def test_authentic_r0_legacy_document_survives_offline_migration(tmp_path):

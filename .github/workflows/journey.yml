@@ -888,6 +888,9 @@ jobs:
                 catch { throw "Malformed live workspace failure diagnostic: $relative" }
                 $keys = @($diagnostic.PSObject.Properties.Name)
                 $expectedKeys = @('schema', 'error_type', 'frames', 'http_status', 'runtime_code')
+                if ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v2') {
+                  $expectedKeys += 'missing_field'
+                }
                 if ($diagnostic -isnot [PSCustomObject] -or $keys.Count -ne $expectedKeys.Count) {
                   throw "Invalid live workspace failure diagnostic: $relative"
                 }
@@ -900,8 +903,11 @@ jobs:
                 $allowedRuntimeCodes = @('runtime_error', 'unauthorized', 'conflict', 'validation_error', 'forbidden',
                   'unavailable', 'not_found', 'retired_route', 'owner_busy', 'realm_admission_failed',
                   'lease_fenced', 'protocol_error', 'invalid_request')
+                $allowedSnapshotFields = @('project', 'timeline', 'object_digest', 'task_id', 'id', 'slug', 'name',
+                  'metadata', 'content', 'version', 'status', 'task', 'schema_version', 'target_schema_version',
+                  'project_id', 'timeline_id', 'cas_sha256')
                 if ($diagnostic.schema -isnot [string] -or
-                    $diagnostic.schema -cne 'astrid.live-workspace-failure.v1' -or
+                    $diagnostic.schema -cnotin @('astrid.live-workspace-failure.v1', 'astrid.live-workspace-failure.v2') -or
                     $diagnostic.error_type -isnot [string] -or
                     $allowedErrorTypes -cnotcontains $diagnostic.error_type -or
                     $diagnostic.frames -isnot [array] -or $diagnostic.frames.Count -gt 10 -or
@@ -909,7 +915,9 @@ jobs:
                       (($diagnostic.http_status -isnot [int] -and $diagnostic.http_status -isnot [long]) -or
                         $diagnostic.http_status -lt 100 -or $diagnostic.http_status -gt 599)) -or
                     ($null -ne $diagnostic.runtime_code -and
-                      ($diagnostic.runtime_code -isnot [string] -or $allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code))) {
+                      ($diagnostic.runtime_code -isnot [string] -or $allowedRuntimeCodes -cnotcontains $diagnostic.runtime_code)) -or
+                    ($diagnostic.schema -ceq 'astrid.live-workspace-failure.v2' -and $null -ne $diagnostic.missing_field -and
+                      ($diagnostic.missing_field -isnot [string] -or $allowedSnapshotFields -cnotcontains $diagnostic.missing_field))) {
                   throw "Invalid live workspace failure values: $relative"
                 }
                 foreach ($frame in $diagnostic.frames) {

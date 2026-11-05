@@ -302,7 +302,7 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
 
 
 def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict,
-              *, realm: Path | None = None) -> dict:
+              *, realm: Path | None = None, diagnostic_args: list[str | Path] | None = None) -> dict:
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
     journey.write_json(request_path, request)
@@ -318,9 +318,11 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
                 os.close(directory)
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
+    log = evidence / (action + ".json")
     output = journey.run([version["python"], "-I", journey.ROOT / "scripts/journey_workspace.py",
                           action, "--run-root", data.parent, "--realm", realm or journey.workspace_root(data),
-                          "--request", request_path], evidence / (action + ".json"), env=env, timeout=120)
+                          "--request", request_path, *(diagnostic_args or [])],
+                         log, env=env, timeout=120)
     return json.loads(output)
 
 
@@ -558,7 +560,11 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
-        return workspace(version, active_data, evidence, action, request, realm=realm)
+        diagnostic_args = []
+        if action == "snapshot" and evidence.name == "release1-api-observe":
+            diagnostic_args = ["--diagnostic", evidence / "live-snapshot-failure.json"]
+        return workspace(version, active_data, evidence, action, request, realm=realm,
+                         diagnostic_args=diagnostic_args)
     finally:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
