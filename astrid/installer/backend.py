@@ -65,14 +65,23 @@ def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
     return found
 
 
-def _last_service_log(log: Path, *, tail: int = 8192) -> str | None:
+def _last_service_log(log: Path, *, tail: int = 8192) -> str:
     try:
         with log.open("rb") as stream:
-            stream.seek(max(0, log.stat().st_size - tail))
-            value = stream.read().decode("utf-8", "replace").strip()
-        return value or None
-    except OSError:
-        return None
+            size = os.fstat(stream.fileno()).st_size
+            stream.seek(max(0, size - tail))
+            value = stream.read(tail)
+    except FileNotFoundError:
+        return "Service log capture: absent."
+    except OSError as exc:
+        # Keep the failure class useful while avoiding machine-specific error
+        # strings or other details from the filesystem exception.
+        return f"Service log capture: read_error={type(exc).__name__}."
+    if not value:
+        return f"Service log capture: empty (bytes={size})."
+    text = value.decode("utf-8", "replace").strip()
+    prefix = f"Service log capture: bytes={size}; tail_bytes={len(value)}; truncated={size > len(value)}."
+    return f"{prefix}\n{text}" if text else prefix
 
 
 def _door_endpoint_for_diagnostic(endpoint: object) -> str:
