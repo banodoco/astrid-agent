@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -20,6 +24,66 @@ else:
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 MARKER = "M-RT UPDATE TEST STAND-IN"
+SCHEDULER_EVENTS = "windows-update-scheduler-events.json"
+
+
+def capture_update_scheduler_events(evidence, started):
+    """Keep only structured events for the owned task since update began.
+
+    Task history may be disabled or inaccessible. Never retain event messages,
+    action paths, user names, or command output from the machine-wide log.
+    """
+    stamp = started.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    script = r'''$ErrorActionPreference = 'Stop'
+$log = 'Microsoft-Windows-TaskScheduler/Operational'
+try {
+  if (-not (Get-WinEvent -ListLog $log).IsEnabled) {
+    @{status='disabled'; events=@()} | ConvertTo-Json -Depth 4 -Compress; exit 0
+  }
+  $query = "*[System[TimeCreated[@SystemTime >= 'START_TIME']] and EventData[Data[@Name='TaskName']='\Astrid Runtime']]"
+  try { $events = @(Get-WinEvent -LogName $log -FilterXPath $query -MaxEvents 64 -ErrorAction Stop) }
+  catch {
+    if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $events = @() }
+    else { throw }
+  }
+  $rows = @($events | ForEach-Object {
+    $e = $_; [xml]$xml = $e.ToXml()
+    $result = @($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'ResultCode' })
+    $instance = @($xml.Event.EventData.Data | Where-Object { $_.Name -eq 'TaskInstanceId' })
+    [pscustomobject]@{id=$e.Id; time=$e.TimeCreated.ToUniversalTime().ToString('o');
+      result=if ($result.Count -eq 1) { $result[0].'#text' } else { $null };
+      instance=if ($instance.Count -eq 1) { $instance[0].'#text' } else { $null }}
+  })
+  ConvertTo-Json -InputObject @{status='observed'; events=$rows} -Depth 4 -Compress
+} catch { @{status='unavailable'; events=@()} | ConvertTo-Json -Depth 4 -Compress }
+'''.replace("START_TIME", stamp)
+    record = {"schema_version": 1, "status": "unavailable", "started_at_utc": stamp,
+              "event_limit_reached": False, "events": [],
+              "limitation": "Task history may be disabled, incomplete, or overwritten; absence is inconclusive."}
+    try:
+        completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        value = json.loads(completed.stdout) if completed.returncode == 0 else {}
+        if isinstance(value, dict) and value.get("status") in {"disabled", "unavailable", "observed"}:
+            record["status"] = value["status"]
+            if value["status"] == "observed" and isinstance(value.get("events"), list):
+                record["event_limit_reached"] = len(value["events"]) >= 64
+                for row in value["events"][:64]:
+                    if not isinstance(row, dict) or type(row.get("id")) is not int or not 0 <= row["id"] <= 65535:
+                        continue
+                    when = row.get("time")
+                    if not isinstance(when, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{1,7}Z", when):
+                        continue
+                    result = row.get("result")
+                    result = int(result) if isinstance(result, str) and re.fullmatch(r"\d{1,10}", result) and int(result) <= 0xffffffff else None
+                    try:
+                        instance = str(uuid.UUID(row.get("instance")))
+                    except (ValueError, TypeError, AttributeError):
+                        instance = None
+                    record["events"].append({"id": row["id"], "time": when, "result_code": result, "instance_id": instance})
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        pass
+    (evidence / SCHEDULER_EVENTS).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
 def make_standin_release(candidate, *, marker=MARKER):
@@ -105,7 +169,15 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     manifest_path.write_bytes(raw)
     sha = hashlib.sha256(raw).hexdigest()
     (evidence / "windows-update-SHA256SUMS").write_text(f"{sha}  {manifest_path.name}\n", encoding="utf-8")
-    journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
+    started = datetime.now(timezone.utc)
+    try:
+        journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
+    except Exception:
+        try:
+            capture_update_scheduler_events(evidence, started)
+        except Exception:
+            pass  # Diagnostics must never replace the update failure.
+        raise
     code = 0
     version_path, selected_data, version = journey.installation(root, data)
     new_id = version_path.parent.name
