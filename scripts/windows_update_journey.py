@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -25,6 +26,8 @@ MARKER = "M-RT UPDATE TEST STAND-IN"
 
 def make_standin_release(candidate, *, marker=MARKER):
     """Piece A's make_standin_release interface, pending integration."""
+    if not isinstance(candidate, Mapping):
+        raise TypeError("candidate manifest must be a mapping")
     release = candidate.get("release")
     if isinstance(release, bool) or not isinstance(release, int) or release < 0:
         raise ValueError("candidate release must be a non-negative integer")
