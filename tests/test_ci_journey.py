@@ -1657,3 +1657,24 @@ def test_capture_runtime_service_logs_retains_native_service_log(tmp_path, monke
     assert (evidence / "runtime-service-native.log").read_bytes() == expected
     staged = run_root / "evidence-upload" / "before-cleanup" / "runtime-service-native.log"
     assert staged.read_bytes() == expected
+
+
+def test_windows_pack_host_log_is_retained_under_installer_named_path(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    contents = b"pack host startup failure\n" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 8)
+    (log_dir / "service-pack-host.log").write_bytes(contents)
+    (log_dir / "unrelated-user-file.txt").write_text("must not be retained", encoding="utf-8")
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    expected = contents[-journey.EVIDENCE_LOG_LIMIT:]
+    assert (evidence / "service-pack-host.log").read_bytes() == expected
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    assert (staged / "service-pack-host.log").read_bytes() == expected
+    assert not (staged / "unrelated-user-file.txt").exists()

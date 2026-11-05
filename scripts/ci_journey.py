@@ -77,6 +77,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "runtime-owner-workspace.json",
     "runtime-service-runtime.log",
     "runtime-service-native.log",
+    # The Windows activation error names this diagnostic directly. Keep its
+    # native basename so the receipt contains the path operators are told to inspect.
+    "service-pack-host.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -638,6 +641,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         name = ("install.log" if source.name == "install.log" else
                 "runtime-service-runtime.log" if source.name == "runtime.log" else
                 "runtime-service-native.log" if source.name == "runtime-service.log" else
+                "service-pack-host.log" if source.name == "service-pack-host.log" else
                 f"runtime-service-{source.name}")
         target = evidence / name
         try:
