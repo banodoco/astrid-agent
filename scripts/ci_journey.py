@@ -64,6 +64,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "windows-schema-acl.json", "journey-result.json", "keepgoing-report.json", "keepgoing-report.md", "install.log", "uninstall.log", "final-uninstall.log",
+    "live-release1-snapshot-failure.json",
     "release1-task-sdk-invocation.json", "release1-task-installed-source.json",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
@@ -727,6 +728,18 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                     write_json(target, value)
         except (OSError, UnicodeError, ValueError, TypeError):
             pass
+    # The post-upgrade snapshot has the same basename as the R0 snapshot, so
+    # retain its sanitized diagnostic under a distinct artifact name.
+    source = evidence / "release1-api-observe" / "live-snapshot-failure.json"
+    target = destination / "live-release1-snapshot-failure.json"
+    try:
+        target.unlink(missing_ok=True)
+        if source.is_file() and not source.is_symlink() and source.stat().st_size <= 4096:
+            value = json.loads(source.read_text(encoding="utf-8"))
+            if live_workspace.valid_failure_diagnostic(value):
+                write_json(target, value)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
 
     # Keep each R0 workspace census and exact native identities separately
     # from initial selection and from subsequent restart observations.

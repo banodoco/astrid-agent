@@ -790,7 +790,7 @@ jobs:
           $allowedNames = @(
             'journey-result.json', 'keepgoing-report.json', 'keepgoing-report.md', 'project-create-capture-status.json', 'sdk-capture-status.json',
             'release1-task-sdk-invocation.json', 'release1-task-installed-source.json',
-            'live-seed-failure.json', 'live-snapshot-failure.json', 'windows-schema-acl.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'live-seed-failure.json', 'live-snapshot-failure.json', 'live-release1-snapshot-failure.json', 'windows-schema-acl.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
@@ -868,7 +868,7 @@ jobs:
                   throw "Invalid installed source values: $relative"
                 }
               }
-              if ($name -in @('live-seed-failure.json', 'live-snapshot-failure.json')) {
+              if ($name -in @('live-seed-failure.json', 'live-snapshot-failure.json', 'live-release1-snapshot-failure.json')) {
                 if ($file.Length -gt 4096) { throw "Oversized live workspace failure diagnostic: $relative" }
                 try { $diagnostic = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
                 catch { throw "Malformed live workspace failure diagnostic: $relative" }
