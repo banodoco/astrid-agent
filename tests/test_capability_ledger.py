@@ -97,18 +97,15 @@ def test_historical_executor_rows_are_explicitly_not_installed():
     absent = {row["id"]: row for row in rows if row["discovery_status"] != "discovered"}
 
     retired_ids = {"iteration.prepare", "training.asset_cache"}
-    external_ids = {
-        "hivemind.contribute", "hivemind.get_item", "hivemind.ingest_article",
-        "hivemind.ingest_workflow", "hivemind.ingest_youtube",
-        "hivemind.refresh_media", "hivemind.search",
-    }
-    assert set(absent) == retired_ids | external_ids
+    # Hivemind ships in core since the foundation chain (PK-3): its executors are
+    # discovered from astrid/core/hivemind, not unavailable external rows (g4's
+    # pre-chain expectation; see p06 STOPS S13).
+    assert set(absent) == retired_ids
     external = {row["id"]: row for row in absent.values() if row["id"].split(".", 1)[0] in {"discord_local", "hivemind", "seedance_local"}}
     historical = {row["id"]: row for row in absent.values() if row["id"] not in external}
-    assert set(external) == external_ids
-    assert {row["disposition"] for row in external.values()} == {"unavailable_external"}
-    assert {row["discovery_status"] for row in external.values()} == {"not_installed"}
-    assert all(row["executable"] is False for row in external.values())
+    assert external == {}
+    hivemind = {row["id"]: row for row in rows if row["id"].startswith("hivemind.")}
+    assert len(hivemind) == 7 and {row["discovery_status"] for row in hivemind.values()} == {"discovered"}
     assert set(historical) == retired_ids
     assert {row["disposition"] for row in historical.values()} == {"retired"}
     assert {row["discovery_status"] for row in historical.values()} == {"historical_only"}
@@ -129,10 +126,12 @@ def test_hivemind_census_keeps_the_external_contract_without_claiming_installati
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     census = ledger["sources"]["hivemind"]["external_census"]
 
+    # Core Hivemind (foundation chain, PK-3) provides all seven declared executors;
+    # the external contract stays declared and is now resolved (p06 STOPS S13).
     assert census == {
         "declared_count": 7,
-        "installed_count": 0,
-        "unresolved": True,
+        "installed_count": 7,
+        "unresolved": False,
         "note": "Seven Hivemind executors are declared by the optional external pack; installation is proven by the managed source inventory.",
     }
 

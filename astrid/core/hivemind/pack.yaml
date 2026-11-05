@@ -61,6 +61,38 @@ documentation:
 dependencies:
   packs: []
   python_requirements: []
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        search:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        get_item:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        refresh_media:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        contribute:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        ingest_article:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        ingest_workflow:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
+        ingest_youtube:
+          reasons:
+          - external-escape-hatch
+          note: Hivemind executor shipped in core (astrid/core/hivemind); it calls the Hivemind service and writes its own response, not the universal result manifest.
 actions:
   search:
     name: Search

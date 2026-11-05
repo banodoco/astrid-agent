@@ -29,7 +29,8 @@ def test_dependency_resolves_across_configured_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(loader, "packs_root", lambda: bundled)
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(second))
     result = discover_pack_metadata(project_root=tmp_path, extra_pack_roots=(str(first),))
-    assert {item.id for item in result} == {"consumer", "provider"}
+    # Core Hivemind ships in core and is always discovered (p06 STOPS S13).
+    assert {item.id for item in result} - {"hivemind"} == {"consumer", "provider"}
 
 
 @pytest.mark.parametrize("call_order", [(True, False), (False, True)])
@@ -57,8 +58,9 @@ def test_discovery_cache_separates_hidden_policy_in_both_call_orders(tmp_path, m
                 )
             }
 
-    assert observed[False] == {"visible"}
-    assert observed[True] == {"visible", "hidden"}
+    # Core Hivemind ships in core and is always discovered (p06 STOPS S13).
+    assert observed[False] - {"hivemind"} == {"visible"}
+    assert observed[True] - {"hivemind"} == {"visible", "hidden"}
 
 
 def test_checker_refuses_forbidden_import(tmp_path, monkeypatch):

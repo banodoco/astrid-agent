@@ -184,3 +184,41 @@ assert "--idempotency-token" in contribute_argv and "installed-wheel-test" in co
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_clean_install_has_no_external_provisioning(tmp_path: Path) -> None:
+    """PK-6: a clean home gets core Hivemind with no source declaration, fetch or Git process."""
+    home = tmp_path / "clean-home"
+    home.mkdir()
+    probe = r'''
+import json, subprocess, sys
+calls = []
+_popen = subprocess.Popen.__init__
+def _record(self, args, *a, **k):
+    calls.append([str(item) for item in (args if isinstance(args, (list, tuple)) else [args])])
+    return _popen(self, args, *a, **k)
+subprocess.Popen.__init__ = _record
+from astrid.core.pack.source_setup import active_sources, declarations_from_json
+from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.foundation.paths import PACKAGE_ROOT
+records = {record.id: record for record in GenericPackHost(pack_roots=[]).discover()}
+print(json.dumps({
+    "declarations": [item.pack_id for item in declarations_from_json()],
+    "active": [item.pack_id for item in active_sources()],
+    "hivemind_root": str(records["hivemind.search"].source_root),
+    "core_root": str(PACKAGE_ROOT / "core" / "hivemind"),
+    "git": [call for call in calls if any("git" == part.rsplit("/", 1)[-1] for part in call)],
+}))
+'''
+    env = {key: value for key, value in os.environ.items() if key in {"PATH", "LANG", "TMPDIR", "PYTHONPATH",
+                                                                     "ASTRID_RUNTIME_CHECKOUT"}}
+    env["HOME"] = str(home)
+    env["PYTHONPATH"] = os.pathsep.join(item for item in (str(ROOT), env.get("PYTHONPATH", "")) if item)
+    result = _run([sys.executable, "-c", probe], env=env, cwd=tmp_path)
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-3000:]
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["declarations"] == []
+    assert payload["active"] == []
+    assert payload["hivemind_root"] == payload["core_root"]
+    assert payload["git"] == []
+    assert not (home / "Astrid" / "sources").exists()

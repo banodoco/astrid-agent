@@ -282,7 +282,11 @@ def _isolate_incompatible_packs(
             executable.append(pack)
     packs = executable
     bundled_root = packs_root().resolve()
-    external = [pack for pack in packs if not pack.root.resolve().is_relative_to(bundled_root)]
+    # Core Hivemind ships inside core (astrid/core/hivemind, foundation chain),
+    # not under the bundled packs root: it is core-owned, never external inventory.
+    core_hivemind_root = (Path(__file__).resolve().parents[1] / "hivemind").resolve()
+    external = [pack for pack in packs if not pack.root.resolve().is_relative_to(bundled_root)
+                and pack.root.resolve() != core_hivemind_root]
     external_ids = {pack.id for pack in external}
     if not external:
         return packs, quarantined
