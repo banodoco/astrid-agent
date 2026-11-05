@@ -94,6 +94,37 @@ def _door_endpoint_for_diagnostic(endpoint: object) -> str:
     return f"{scheme}://127.0.0.1:{suffix}"
 
 
+def _runtime_instance_for_diagnostic(value: object) -> str:
+    """Emit only Runtime's random 128-bit hex instance identifiers."""
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None:
+        return "<unavailable>"
+    return value
+
+
+def _runtime_error_for_diagnostic(value: object) -> str:
+    """Summarize known startup errors without exposing raw logs or paths."""
+    message = str(value or "").casefold()
+    if "admission" in message and ("refus" in message or "denied" in message):
+        return "Runtime admission refusal (details withheld)"
+    if "startup" in message or "start" in message:
+        return "Runtime startup error (details withheld)"
+    if message:
+        return "Runtime status error (details withheld)"
+    return "<none observed>"
+
+
+def _door_discovery_for_diagnostic(data: Path) -> tuple[str, object]:
+    """Read only the safe endpoint and instance fields from current discovery."""
+    try:
+        discovery = read_json(data / "runtime" / "discovery.json")
+    except (OSError, ValueError):
+        return "<discovery unavailable>", None
+    if not discovery:
+        return "<no discovery>", None
+    return (_door_endpoint_for_diagnostic(discovery.get("door_endpoint")),
+            discovery.get("runtime_instance_id"))
+
+
 def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, dict | None]:
     """Classify one health snapshot as ready, crashed, or still starting."""
     if not isinstance(services, list):
@@ -1220,16 +1251,31 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return self.service.restart_required()
 
     def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90,
-               hosted: bool = True) -> None:
+               hosted: bool = True, pre_update_instance_id: str | None = None) -> None:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))) if hosted else None
         deadline = time.monotonic() + timeout
-        error = None
         identity_ok = False
+        last_endpoint = "<no discovery>"
+        last_discovery_instance = None
+        last_runtime_error = None
         while time.monotonic() < deadline:
             try:
-                status = self.runtime(version, data, "status", timeout=3)
+                try:
+                    status = self.runtime(version, data, "status", timeout=3)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                    last_endpoint, last_discovery_instance = _door_discovery_for_diagnostic(data)
+                    last_runtime_error = _runtime_error_for_diagnostic(exc)
+                    raise
+                status_error = status.get("health_error") or status.get("error")
+                if status_error:
+                    last_runtime_error = _runtime_error_for_diagnostic(status_error)
                 discovery = read_json(data / "runtime" / "discovery.json")
+                if discovery:
+                    last_endpoint = _door_endpoint_for_diagnostic(discovery.get("door_endpoint"))
+                    last_discovery_instance = discovery.get("runtime_instance_id")
+                else:
+                    last_endpoint, last_discovery_instance = "<no discovery>", None
                 endpoint = discovery.get("door_endpoint", "")
                 if hosted and endpoint != f"http://127.0.0.1:{port}":
                     expected_endpoint = f"http://127.0.0.1:{port}"
@@ -1282,20 +1328,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("The browser door belongs to a different Runtime, release, or workspace.")
                 identity_ok = True
                 break
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                error = exc
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 time.sleep(0.25)
         if not identity_ok:
             cause = _last_logged_error(self.service.log)
             if cause:
                 raise VerificationError(
-                    f"Astrid Runtime did not start: {cause} (details: {self.service.log})",
-                    safe_message=f"Astrid Runtime didn't start. Its log says why: {self.service.log}",
+                    "Astrid Runtime did not start; "
+                    f"expected endpoint: {f'http://127.0.0.1:{port}' if hosted else '<door disabled>'}; "
+                    f"observed endpoint: {last_endpoint}; "
+                    f"discovery runtime_instance_id: {_runtime_instance_for_diagnostic(last_discovery_instance)}; "
+                    f"pre-update runtime_instance_id: {_runtime_instance_for_diagnostic(pre_update_instance_id)}; "
+                    f"last Runtime status/startup error: {_runtime_error_for_diagnostic(cause)}.",
+                    safe_message="Astrid Runtime didn't start; diagnostic details were redacted.",
                 )
             raise VerificationError(
-                f"Astrid's browser door did not become ready: {error}",
-                safe_message=(f"Astrid didn't become reachable from the browser in time. "
-                              f"Its log may say why: {self.service.log}"),
+                "Astrid's browser door did not become ready before the verification deadline; "
+                f"expected endpoint: {f'http://127.0.0.1:{port}' if hosted else '<door disabled>'}; "
+                f"observed endpoint: {last_endpoint}; "
+                f"discovery runtime_instance_id: {_runtime_instance_for_diagnostic(last_discovery_instance)}; "
+                f"pre-update runtime_instance_id: {_runtime_instance_for_diagnostic(pre_update_instance_id)}; "
+                f"last Runtime status/startup error: {last_runtime_error or '<none observed>'}.",
+                safe_message="Astrid didn't become reachable from the browser in time; diagnostic details were redacted.",
             )
 
         ready_file = data / "runtime" / "generic-host.ready.json"

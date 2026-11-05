@@ -153,7 +153,7 @@ def test_matching_unfinished_recovery_returns_i3_and_ends_this_update_request(tm
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     monkeypatch.setattr(update_job, "_recover_matching_transaction", recover)
 
-    def ready(selected_root, _data_root, expected_version, expected_identity, _realm):
+    def ready(selected_root, _data_root, expected_version, expected_identity, _realm, **_kwargs):
         _assert_lock_busy(selected_root)
         return (Version.load(expected_version), "restored-instance", expected_identity)
 
@@ -285,9 +285,9 @@ def test_recovered_before_stop_terminal_record_is_verified_then_new_update_is_ad
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     ready = []
 
-    def verify(selected_root, data_root, version, identity, realm):
+    def verify(selected_root, data_root, version, identity, realm, **kwargs):
         _assert_lock_busy(selected_root)
-        ready.append((version, identity, realm))
+        ready.append((version, identity, realm, kwargs.get("pre_update_instance_id")))
         return (Version.load(version), previous["old_instance_id"], identity)
 
     monkeypatch.setattr(update_job, "_verify_selected_ready", verify)
@@ -299,6 +299,7 @@ def test_recovered_before_stop_terminal_record_is_verified_then_new_update_is_ad
     assert marker["update_job_history"][-1]["operation_id"] == previous["operation_id"]
     assert ready and ready[0][0] == previous["old_version"]
     assert ready[0][1] == previous["old_identity"]
+    assert ready[0][3] == previous["old_instance_id"]
 
 
 def test_unreadable_journal_and_prior_transaction_are_busy_and_preserved(tmp_path, monkeypatch):
@@ -354,7 +355,7 @@ def test_unready_selected_runtime_preserves_terminal_recovery_evidence(tmp_path,
 
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     monkeypatch.setattr(update_job, "_verify_selected_ready",
-                        lambda *_args: (_ for _ in ()).throw(ValueError("wrong Runtime identity")))
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("wrong Runtime identity")))
     with pytest.raises(ValueError) as refusal:
         update_job.accept(dict(request, operation_id="b" * 32,
                                job_name="astrid-update-" + "b" * 32))
@@ -378,7 +379,7 @@ def test_real_selected_readiness_verifier_rejects_identity_and_health_failures(
             assert selected_data == data
             return {"realm_id": "realm-1"}
 
-        def verify(self, *_args):
+        def verify(self, *_args, **_kwargs):
             if failure == "unready":
                 raise ValueError("Runtime health is unavailable")
 
@@ -532,7 +533,7 @@ def test_live_runtime_must_match_transaction_before_recovery(tmp_path, monkeypat
                         lambda *_args: ("live-instance", {"release": 7 if identity_matches else 8,
                                                           "managed_by": None}))
     monkeypatch.setattr(update_job, "_verify_selected_ready",
-                        lambda *args: (Version.load(args[2]), "restored-instance", args[3]))
+                        lambda *args, **_kwargs: (Version.load(args[2]), "restored-instance", args[3]))
 
     if identity_matches:
         result = update_job.accept(dict(request, operation_id="b" * 32,
@@ -567,7 +568,7 @@ def test_terminal_rollback_can_admit_one_newer_operation_on_later_update(tmp_pat
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     verified = []
 
-    def ready(selected_root, data_root, expected_version, expected_identity, expected_realm):
+    def ready(selected_root, data_root, expected_version, expected_identity, expected_realm, **_kwargs):
         _assert_lock_busy(selected_root)
         verified.append((expected_version, expected_identity, expected_realm))
         return (Version.load(expected_version), "restored-instance", expected_identity)
@@ -607,7 +608,7 @@ def test_h3_confirmed_terminal_result_with_no_newer_target_returns_without_admis
     monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
     verified = []
     monkeypatch.setattr(update_job, "_verify_selected_ready",
-                        lambda *args: (verified.append(args)
+                        lambda *args, **_kwargs: (verified.append(args)
                                        or (Version.load(args[2]), "updated-instance", args[3])))
     result = update_job.accept(dict(request, operation_id="b" * 32,
                                     job_name="astrid-update-" + "b" * 32,
@@ -656,7 +657,7 @@ def test_recovery_result_cannot_be_mistaken_for_new_operation_launch(tmp_path, m
 
     monkeypatch.setattr(update_job, "_recover_matching_transaction", recover)
     monkeypatch.setattr(update_job, "_verify_selected_ready",
-                        lambda *args: (Version.load(args[2]), "restored-instance", args[3]))
+                        lambda *args, **_kwargs: (Version.load(args[2]), "restored-instance", args[3]))
     result = update_job.accept(dict(request, operation_id="b" * 32,
                                     job_name="astrid-update-" + "b" * 32))
     assert result["state"] == "rolled_back"

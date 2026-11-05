@@ -836,7 +836,8 @@ def _journal_result(job: dict, journal: dict) -> tuple[dict, dict, str, str]:
 def _verify_journal_result_ready(root: Path, data_root: Path, job: dict, journal: dict,
                                  expected: dict, identity: dict, state: str) -> tuple[Version, str, dict]:
     selected, instance_id, observed_identity = _verify_selected_ready(
-        root, data_root, expected, identity, journal.get("realm"))
+        root, data_root, expected, identity, journal.get("realm"),
+        pre_update_instance_id=job.get("old_instance_id"))
     requires_new_instance = (state == "updated"
                              or (state == "rolled_back" and journal.get("step") == "rolled_back"))
     if requires_new_instance and instance_id == job.get("old_instance_id"):
@@ -845,7 +846,8 @@ def _verify_journal_result_ready(root: Path, data_root: Path, job: dict, journal
 
 
 def _verify_selected_ready(root: Path, data_root: Path, expected_version: dict,
-                           expected_identity: dict, expected_realm: dict | None = None) -> tuple[Version, str, dict]:
+                           expected_identity: dict, expected_realm: dict | None = None,
+                           *, pre_update_instance_id: str | None = None) -> tuple[Version, str, dict]:
     """Verify the selected installer image and the live Runtime owner."""
     from .backend import Backend
     from .core import current
@@ -862,7 +864,8 @@ def _verify_selected_ready(root: Path, data_root: Path, expected_version: dict,
         if (realm_id != expected_realm.get("realm_id")
                 or absolute(workspace.get("realm_root", "")) != absolute(expected_realm.get("realm_root", ""))):
             raise ValueError("The selected workspace differs from the transaction realm.")
-    backend.verify(selected, data_root, realm_id)
+    backend.verify(selected, data_root, realm_id,
+                   pre_update_instance_id=pre_update_instance_id)
     instance_id, identity = _probe_startup_identity(data_root)
     if not isinstance(instance_id, str) or not instance_id or identity != expected_identity:
         raise ValueError("The reconciled Runtime identity does not match its selected version.")
