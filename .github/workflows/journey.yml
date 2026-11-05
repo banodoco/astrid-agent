@@ -394,7 +394,11 @@ jobs:
               for row in matrix:
                   row["leg"] = diagnostic_leg
           elif diagnostic_leg == "both":
-              matrix = matrix + [dict(row, leg="fresh-install") for row in matrix]
+              # Windows' direct row already represents the fresh lifecycle;
+              # its required R0 refusal is collected alongside that receipt.
+              # Only Linux and macOS have a separate fresh-install matrix row.
+              matrix = matrix + [dict(row, leg="fresh-install") for row in matrix
+                                if row["job_id"] != "direct-windows"]
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
           wait_timeout = "180" if journey_row in journey_matrix.RELEASE1_JOB_IDS else "900"
@@ -737,7 +741,11 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs @keepGoingArgs
           $freshExit = $LASTEXITCODE
-          if ('${{ matrix.job_id }}' -eq 'direct-windows' -and '${{ inputs.diagnostic_keep_going }}' -ne 'true' -and $freshExit -eq 0) {
+          $runWindowsRefusal = '${{ matrix.job_id }}' -eq 'direct-windows' -and (
+            ('${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ matrix.leg }}' -eq 'fresh-install') -or
+            ('${{ inputs.diagnostic_keep_going }}' -ne 'true' -and $freshExit -eq 0)
+          )
+          if ($runWindowsRefusal) {
             $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
             python -u agent/scripts/ci_journey.py `
               --job-id direct-windows --mode direct --leg windows-upgrade-refusal `

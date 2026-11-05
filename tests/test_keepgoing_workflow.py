@@ -35,18 +35,23 @@ def config(tmp_path, **overrides):
     return result, outputs
 
 
-def test_both_legs_cover_each_direct_platform_and_keep_artifacts_distinct(tmp_path):
+def test_both_legs_cover_platforms_without_duplicate_windows_fresh_and_retain_refusal(tmp_path):
     result, outputs = config(tmp_path)
     assert result.returncode == 0, result.stderr
     rows = json.loads(outputs['matrix'])['include']
     assert {(row['job_id'], row['leg']) for row in rows} == {
-        (f'direct-{platform}', leg) for platform in ('linux', 'macos', 'windows')
-        for leg in ('fresh-install', 'release0-to-release1')}
-    assert len(rows) == 6
+        ('direct-linux', 'fresh-install'), ('direct-linux', 'release0-to-release1'),
+        ('direct-macos', 'fresh-install'), ('direct-macos', 'release0-to-release1'),
+        ('direct-windows', 'fresh-install'),
+    }
+    assert len(rows) == len({(row['job_id'], row['leg']) for row in rows}) == 5
     assert 'fail-fast: false' in WORKFLOW
     suffix = "${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}"
     assert 'name: journey-receipt-${{ matrix.job_id }}' + suffix in WORKFLOW
     assert 'name: journey-manager-${{ matrix.job_id }}' + suffix in WORKFLOW
+    assert "$runWindowsRefusal = '${{ matrix.job_id }}' -eq 'direct-windows'" in WORKFLOW
+    assert "'${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ matrix.leg }}' -eq 'fresh-install'" in WORKFLOW
+    assert '--leg windows-upgrade-refusal' in WORKFLOW
     assert 'test "$DIAGNOSTIC_KEEP_GOING" != true' in WORKFLOW
 
 
