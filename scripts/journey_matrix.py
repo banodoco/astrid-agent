@@ -33,6 +33,14 @@ RELEASE1_DIRECT_FRESH_MATRIX: Final = (
 RELEASE1_DIRECT_FRESH_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_DIRECT_FRESH_MATRIX)
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
 
+# The R1.1 Pinokio journey gate is a separate three-OS hosted backend matrix.
+# Keep its stable job IDs distinct from the older M4-4a evidence labels.
+RELEASE1_1_PINOKIO_MATRIX: Final = (
+    {"job_id": "pinokio-linux", "mode": "pinokio-backend", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install"},
+    {"job_id": "pinokio-macos", "mode": "pinokio-backend", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install"},
+    {"job_id": "pinokio-windows", "mode": "pinokio-backend", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "fresh-install"},
+)
+
 # Deferred to Release 1.1: not part of the Release-1 strict matrix or aggregate.
 # The driver still admits these jobs so the Pinokio code paths stay runnable.
 RELEASE1_1_DEFERRED_PINOKIO_MATRIX: Final = (
@@ -225,7 +233,7 @@ def release1_job(job_id: str) -> dict:
     Deferred R1.1 Pinokio jobs stay admitted for the driver, but are not part
     of RELEASE1_MATRIX or its aggregate.
     """
-    for row in _ADMITTED_JOBS:
+    for row in (*_ADMITTED_JOBS, *RELEASE1_1_PINOKIO_MATRIX):
         if row["job_id"] == job_id:
             return dict(row)
     raise ValueError(f"Unknown Release-1 journey job: {job_id}")

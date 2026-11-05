@@ -27,6 +27,7 @@ if __package__:
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
+        RELEASE1_1_PINOKIO_MATRIX,
     )
 else:
     try:
@@ -46,6 +47,7 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
+            RELEASE1_1_PINOKIO_MATRIX,
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
@@ -64,6 +66,7 @@ else:
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
+            RELEASE1_1_PINOKIO_MATRIX,
         )
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -515,10 +518,10 @@ def _sidecar_json(path: Path, *, expected_os: str, mode: str) -> tuple[dict | No
     return value, errors
 
 
-def evaluate_m4_4a_backend_matrix(candidate, results):
-    """Check the provisional M4-4a backend contract, never source evidence alone."""
+def _evaluate_pinokio_backend_matrix(candidate, results, matrix, gate_name, *, reject_unknown=False):
+    """Check one exact hosted Pinokio backend receipt matrix."""
     errors = []
-    expected = {row["job_id"]: row for row in M4_4A_BACKEND_MATRIX}
+    expected = {row["job_id"]: row for row in matrix}
     found = {}
     paths = {}
     for path in Path(results).rglob("journey-result.json"):
@@ -531,15 +534,17 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
             continue
         job_id = row.get("job_id")
         if job_id not in expected:
+            if reject_unknown:
+                errors.append(f"{path}: unknown or absent {gate_name} job id")
             continue
         if job_id in found:
-            errors.append(f"{job_id}: duplicate M4-4a backend receipt")
+            errors.append(f"{job_id}: duplicate {gate_name} receipt")
         else:
             found[job_id], paths[job_id] = row, path.parent
     for job_id, contract in expected.items():
         row = found.get(job_id)
         if row is None:
-            errors.append(f"{job_id}: missing M4-4a backend receipt")
+            errors.append(f"{job_id}: missing {gate_name} receipt")
             continue
         if row.get("status") != "pass":
             errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
@@ -682,6 +687,18 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
                 or set(historical.get("vectors") or []) != {"H1", "H2", "H3"}):
             errors.append(f"{job_id}: historical action compatibility is not pass")
     return errors
+
+
+def evaluate_m4_4a_backend_matrix(candidate, results):
+    """Check the provisional M4-4a backend contract, never source evidence alone."""
+    return _evaluate_pinokio_backend_matrix(
+        candidate, results, M4_4A_BACKEND_MATRIX, "M4-4a backend")
+
+
+def evaluate_release1_1_pinokio_matrix(candidate, results):
+    """Check the separate three-row R1.1 Pinokio hosted journey gate."""
+    return _evaluate_pinokio_backend_matrix(
+        candidate, results, RELEASE1_1_PINOKIO_MATRIX, "R1.1 Pinokio", reject_unknown=True)
 
 
 def _m4_5_row_errors(row):
@@ -1057,6 +1074,8 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact five direct Release-1 job receipts under --results")
+    parser.add_argument("--aggregate-release1-1-pinokio", action="store_true",
+                        help="require the exact three R1.1 Pinokio hosted journey receipts under --results")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
@@ -1072,7 +1091,8 @@ def main():
     args = parser.parse_args()
     errors = []
     try:
-        aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
+        aggregate_modes = sum((args.aggregate_release1, args.aggregate_release1_1_pinokio,
+                               args.aggregate_m4_4a, args.aggregate_m4_5,
                                args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
@@ -1106,6 +1126,12 @@ def main():
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1_1_pinokio:
+            if args.results is None:
+                raise ValueError("--results is required with --aggregate-release1-1-pinokio")
+            if args.allow_source_override:
+                raise ValueError("R1.1 Pinokio aggregate never admits a source override")
+            errors.extend(evaluate_release1_1_pinokio_matrix(candidate, args.results))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")

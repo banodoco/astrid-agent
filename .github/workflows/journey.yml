@@ -155,7 +155,7 @@ on:
         required: false
         type: string
       row:
-        description: Run one direct journey row or all five direct rows
+        description: Run one direct journey row, all five direct rows, or the three R1.1 Pinokio rows
         required: false
         default: direct
         type: choice
@@ -166,6 +166,7 @@ on:
           - direct-linux-fresh
           - direct-macos-fresh
           - direct
+          - pinokio
 
 concurrency:
   group: reusable-journey-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
@@ -185,6 +186,7 @@ jobs:
       stopped_path_agent_ref: ${{ steps.config.outputs.stopped_path_agent_ref }}
       m4_4a_executor_configs: ${{ steps.config.outputs.m4_4a_executor_configs }}
       m4_4a_backend_only: ${{ steps.config.outputs.m4_4a_backend_only }}
+      pinokio_only: ${{ steps.config.outputs.pinokio_only }}
       m4_5_enabled: ${{ steps.config.outputs.m4_5_enabled }}
       m4_5_only: ${{ steps.config.outputs.m4_5_only }}
       m4_5_boundary: ${{ steps.config.outputs.m4_5_boundary }}
@@ -326,7 +328,7 @@ jobs:
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           journey_row = os.environ["JOURNEY_ROW"].strip()
-          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct"}
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio"}
           if journey_row not in valid_rows:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
@@ -337,6 +339,9 @@ jobs:
           if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
               raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          pinokio_only = journey_row == "pinokio"
+          if pinokio_only and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
+              raise SystemExit("row=pinokio does not support non-proof keep-going diagnostics")
           if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
               raise SystemExit("diagnostic_keep_going requires direct_only")
           if direct_only and (backend_only or m4_5_only):
@@ -365,6 +370,8 @@ jobs:
                   raise SystemExit("M4-5 requires its exact frozen Release-1 candidate tuple")
           m4_4b_enabled = os.environ["M4_4B_ENABLED"].lower() == "true"
           m4_6_enabled = os.environ["M4_6_ENABLED"].lower() == "true"
+          if pinokio_only and (backend_only or m4_5_enabled or m4_5_only or m4_4b_enabled or m4_6_enabled):
+              raise SystemExit("row=pinokio runs only the three R1.1 Pinokio journey rows")
           m4_6_candidate = None
           if m4_6_enabled:
               try:
@@ -377,15 +384,17 @@ jobs:
           else:
               m4_6_candidate = {}
           # The Release-1 strict matrix is the five direct rows; each keeps its
-          # own leg.  Pinokio rows are deferred to R1.1 (backend-only M4-4a).
-          if backend_only:
+          # own leg. The R1.1 Pinokio gate has its own independent matrix.
+          if pinokio_only:
+              matrix = [dict(row) for row in journey_matrix.RELEASE1_1_PINOKIO_MATRIX]
+          elif backend_only:
               matrix = [dict(row) for row in journey_matrix.M4_4A_BACKEND_MATRIX]
           else:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
               # Keep-going diagnostics re-leg the original three direct rows.
               matrix = [row for row in matrix if row["job_id"] not in journey_matrix.RELEASE1_DIRECT_FRESH_JOB_IDS]
-          if journey_row and journey_row != "direct":
+          if journey_row and journey_row not in {"direct", "pinokio"}:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg == "release0-to-release1":
               for row in matrix:
@@ -412,6 +421,7 @@ jobs:
                                   ("stopped_path_agent_ref", stopped_path),
                                   ("m4_4a_executor_configs", executor_configs),
                                   ("m4_4a_backend_only", str(backend_only).lower()),
+                                  ("pinokio_only", str(pinokio_only).lower()),
                                   ("m4_5_enabled", str(m4_5_enabled).lower()),
                                   ("m4_5_only", str(m4_5_only).lower()),
                                   ("m4_5_boundary", boundary),
@@ -1253,7 +1263,7 @@ jobs:
           path: receipts
           merge-multiple: false
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.pinokio_only != 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
@@ -1261,13 +1271,21 @@ jobs:
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
       - name: Aggregate the exact M4-4a Pinokio backend receipts
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true' && needs.config.outputs.pinokio_only != 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-m4-4a
+      - name: Aggregate the exact R1.1 Pinokio receipt matrix
+        if: needs.config.outputs.pinokio_only == 'true'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1-1-pinokio
       - name: Reject skipped M4-5 matrix dependencies
         if: needs.config.outputs.m4_5_enabled == 'true'
         shell: bash

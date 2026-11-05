@@ -282,6 +282,37 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
 
 
+def test_r1_1_pinokio_matrix_has_exact_three_rows_and_own_checker(tmp_path):
+    from scripts import journey_matrix
+
+    rows = journey_matrix.RELEASE1_1_PINOKIO_MATRIX
+    assert [(row["job_id"], row["mode"], row["os"]) for row in rows] == [
+        ("pinokio-linux", "pinokio-backend", "linux"),
+        ("pinokio-macos", "pinokio-backend", "macos"),
+        ("pinokio-windows", "pinokio-backend", "windows"),
+    ]
+    assert len({row["job_id"] for row in rows}) == 3
+    assert all(row["leg"] == "fresh-install" for row in rows)
+    assert journey_matrix.validate_job("pinokio-linux", "pinokio-backend")["os"] == "linux"
+    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_1_pinokio_matrix({}, tmp_path)} == {
+        "pinokio-linux", "pinokio-macos", "pinokio-windows",
+    }
+    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_matrix({}, tmp_path)} == {
+        row["job_id"] for row in gate.RELEASE1_MATRIX
+    }
+
+
+def test_pinokio_dispatch_selects_only_r1_1_pinokio_rows():
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
+    assert "- pinokio" in workflow
+    assert 'pinokio_only = journey_row == "pinokio"' in workflow
+    assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_1_PINOKIO_MATRIX]" in workflow
+    assert "journey_row not in {\"direct\", \"pinokio\"}" in workflow
+    assert "row=pinokio runs only the three R1.1 Pinokio journey rows" in workflow
+    assert "--aggregate-release1-1-pinokio" in workflow
+    assert "outputs.pinokio_only == 'true'" in workflow
+
+
 def test_release1_aggregate_accepts_full_staged_receipts_with_capture_status(tmp_path):
     from scripts import ci_journey as journey
     import shutil
