@@ -261,7 +261,7 @@ def installed(tmp_path, monkeypatch):
     realm = {"realm_id": "realm", "realm_root": str(data / "realm")}
     schema = {"identity": {"version": 31, "kind": "v31", "realm_id": "realm"}, "target": 31}
 
-    def persist_identity(value):
+    def persist_identity(value, *, persist_choices=True):
         if value.root.parent == root / "versions":
             write_json(value.root / "version.json", value.document())
         record["identity"] = value.document()["identity"]
@@ -282,6 +282,7 @@ def installed(tmp_path, monkeypatch):
         validate_candidate=validate_candidate,
         stop=lambda *_args: None,
         persist_identity=persist_identity,
+        sync_skills=lambda _version: {"ok": True, "destinations": []},
         run=lambda *_args, **_kwargs: json.dumps(schema),
         backup=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("app-only update must not back up workspace data")),
@@ -1332,9 +1333,9 @@ def test_update_custody_covers_stop_switch_readiness_and_terminal_write(installe
         assert_owned("stop")
         return stop(*args)
 
-    def persist_checked(*args):
+    def persist_checked(*args, **kwargs):
         assert_owned("switch")
-        return persist(*args)
+        return persist(*args, **kwargs)
 
     def start_checked(version, *args):
         assert_owned("readiness:" + version.root.name)
@@ -1974,4 +1975,188 @@ def test_custodian_loss_preserves_unconfirmed_journal_for_explicit_recovery(inst
     env.lifecycle.start = start
     assert update.recover_app(env.root, env.backend, lifecycle=env.lifecycle, say=lambda _: None)
     assert current(env.root) == env.old
+    assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def _skill_app_update(tmp_path, monkeypatch):
+    from tests.installer_skill_fixtures import skill_installation
+
+    env = skill_installation(tmp_path, monkeypatch, manager="pinokio")
+    env.candidate = env.version("new", 12)
+    env.events = []
+    env.fail_start = False
+    env.schema_changed = False
+    process = env.backend.run
+
+    def execute(argv, **kwargs):
+        if "-c" in argv and "inspect_canonical_schema" in str(argv[argv.index("-c") + 1]):
+            version = 32 if env.schema_changed and Path(argv[0]) == env.candidate.python else 31
+            return json.dumps({"identity": {"version": version, "realm_id": "realm"}, "target": version})
+        env.events.append("skills:" + current(env.root).root.name)
+        assert env.backend._pinokio_custody is not None
+        env.backend._pinokio_custody.check()
+        return process(argv, **kwargs)
+
+    def start(version, *_args):
+        env.events.append("ready:" + version.root.name)
+        assert env.backend.service.recorded()["identity"] == version.document()["identity"]
+        if version == env.candidate and env.fail_start:
+            raise ValueError("candidate readiness failed")
+
+    lifecycle = SimpleNamespace(validate=lambda v: env.events.append("validate:" + v.root.name),
+        stop=lambda v, *_: env.events.append("stop:" + v.root.name), start=start)
+    monkeypatch.setattr(update, "PinokioLifecycle", lambda *_args: lifecycle)
+    monkeypatch.setattr(env.backend, "run", execute)
+    monkeypatch.setattr(env.backend, "stage", lambda *_args: env.candidate)
+    monkeypatch.setattr(env.backend, "validate_candidate", lambda *_args: None)
+    monkeypatch.setattr(env.backend, "preflight_stop", lambda *_args: None)
+    for name in ("register", "backup", "upgrade", "restore"):
+        monkeypatch.setattr(env.backend, name, lambda *_args, step=name: pytest.fail(
+            "strict app update must not invoke " + step))
+    return env
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["saved", "explicit"])
+@pytest.mark.parametrize("requested", [
+    {"skills": False, "skill_copies": True},
+    {"skills": True, "skill_copies": True},
+    {"skills": True, "skill_copies": False},
+], ids=["off", "copies", "links"])
+def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migration(
+        tmp_path, monkeypatch, capsys, explicit, requested):
+    from astrid.installer import cli
+    from astrid.installer.choices import resolve_choices
+    from tests.installer_skill_fixtures import edit_and_foreign
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    owned = env.targets["codex"]
+    if requested["skills"] and requested["skill_copies"]:
+        # Start with an owned link so this proves conversion to a marked copy.
+        marker = read_json(owned / ".astrid-managed-skill.json")
+        shutil.rmtree(owned)
+        owned.symlink_to(marker["source"], target_is_directory=True)
+    edited, edit_bytes, foreign, foreign_file = edit_and_foreign(env)
+    before_workspace = env.sentinel.read_bytes()
+    before_support = (env.data / "keep.txt").read_bytes()
+    policy = resolve_choices(saved=requested, existing_install=True)
+    record = env.backend.service.recorded()
+    if not explicit:
+        write_json(env.backend.service.selection, {**record, "choices": policy})
+    manifest = tmp_path / "manifest.json"
+    write_json(manifest, {})
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _manifest: {"release": 12})
+    args = ["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
+            "--manifest", str(manifest), "--uv", str(env.backend.uv)]
+    if explicit:
+        args.extend(["--skills", "on" if requested["skills"] else "off",
+                     "--skill-copies", "on" if requested["skill_copies"] else "off"])
+    assert cli.main(args) == 0
+    output = capsys.readouterr().out
+    assert env.events.index("ready:new") < env.events.index("skills:new")
+    assert env.events.count("skills:new") == 1
+    assert current(env.root) == env.candidate
+    assert env.backend.service.recorded()["choices"] == policy
+    if requested["skills"]:
+        assert owned.exists()
+        assert owned.is_symlink() is (not requested["skill_copies"])
+        if requested["skill_copies"]:
+            assert (owned / ".astrid-managed-skill.json").is_file()
+        assert str(owned) in output
+    else:
+        assert not owned.exists() and not owned.is_symlink()
+        assert "Astrid skill targets removed:" in output
+    assert "Astrid setup summary:" in output and "Startup: running and ready" in output
+    assert "Astrid is updated and running." in output
+    assert f"Skill target preserved: {edited.parent}" in output
+    assert f"Skill target preserved: {foreign}" in output
+    assert "edited Astrid managed copy preserved" in output
+    assert edited.read_bytes() == edit_bytes and foreign.is_symlink()
+    assert foreign_file.read_bytes() == b"foreign bytes\n"
+    assert env.sentinel.read_bytes() == before_workspace
+    assert (env.data / "keep.txt").read_bytes() == before_support
+    journal = read_json(env.root / "update-transaction.json")
+    assert journal["transaction_kind"] == "app" and journal["step"] == "complete"
+    assert journal["backup"] is None
+    assert f"--skills {'on' if requested['skills'] else 'off'}" in output
+    assert f"--skill-copies {'on' if requested['skill_copies'] else 'off'}" in output
+
+
+@pytest.mark.parametrize("failure", ["readiness", "schema"])
+def test_strict_app_update_failure_keeps_saved_skill_policy_and_targets(
+        tmp_path, monkeypatch, failure):
+    from astrid.skills import state
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    env.fail_start = failure == "readiness"
+    env.schema_changed = failure == "schema"
+    saved = env.backend.service.recorded()["choices"]
+    state_before = state.state_path().read_bytes()
+    env.backend.service.choices = {**saved, "skills": False, "skill_copies": False}
+    before = {path: (path / "SKILL.md").read_bytes() for path in env.targets.values()}
+    message = "candidate readiness failed" if failure == "readiness" else "storage layout changed"
+    with pytest.raises(ValueError, match=message):
+        update.update_app(env.root, env.backend, {"release": 12}, say=lambda _: None)
+    assert current(env.root) == env.old
+    assert env.backend.service.recorded()["choices"] == saved
+    assert not any(event.startswith("skills:") for event in env.events)
+    assert state.state_path().read_bytes() == state_before
+    assert all((path / "SKILL.md").read_bytes() == content for path, content in before.items())
+    assert env.sentinel.read_bytes() == b"workspace bytes\r\n"
+    if failure == "readiness":
+        assert env.events[-1] == "ready:old"
+        assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def test_strict_app_update_reports_skill_process_failure_after_successful_restart(
+        tmp_path, monkeypatch, capsys):
+    from astrid.installer import cli
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    execute = env.backend.run
+
+    def fail_skills(argv, **kwargs):
+        if "astrid.skills" in argv:
+            raise subprocess.CalledProcessError(1, [str(argv[0])], output="skill failure")
+        return execute(argv, **kwargs)
+
+    monkeypatch.setattr(env.backend, "run", fail_skills)
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _: {})
+    manifest = tmp_path / "manifest.json"
+    write_json(manifest, {})
+    assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
+                     "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
+    output = capsys.readouterr().out
+    assert "Skill destinations: sync failed; see the installer log." in output
+    assert "Couldn't add Astrid's skill to your agents" in output
+    assert current(env.root) == env.candidate
+    assert all(target.exists() for target in env.targets.values())
+    assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+def test_strict_app_recovery_keeps_saved_policy_without_applying_new_request(tmp_path, monkeypatch):
+    from astrid.skills import state
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    saved = env.backend.service.recorded()["choices"]
+    state_before = state.state_path().read_bytes()
+    switch(env.root, env.candidate)
+    # Model a strict selection interrupted after publishing the new identity.
+    # The choices remain those of the previous successful setup.
+    record = env.backend.service.recorded()
+    write_json(env.backend.service.selection, {**record, "identity": env.candidate.document()["identity"]})
+    write_json(env.root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "transaction_kind": "app", "step": "switched", "data_root": str(env.data),
+        "old": env.old.document(), "candidate": env.candidate.document(),
+        "realm": {"realm_id": "realm", "realm_root": str(env.realm)}, "backup": None,
+    })
+    env.backend.service.choices = {**saved, "skills": False, "skill_copies": False}
+    assert update.recover_app(env.root, env.backend, say=lambda _: None)
+    assert current(env.root) == env.old
+    assert env.backend.service.recorded()["choices"] == saved
+    assert state.state_path().read_bytes() == state_before
+    assert all(target.exists() for target in env.targets.values())
+    assert not any(event.startswith("skills:") for event in env.events)
     assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"

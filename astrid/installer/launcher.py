@@ -46,7 +46,7 @@ def _registry_path(machine: bool = False) -> str:
         return ""
 
 
-def _update_user_path(service, *, add: bool) -> None:
+def _update_user_path(service, *, add: bool, owned_entry: str | None = None) -> str | None:
     winreg: Any = importlib.import_module("winreg")  # Windows only; mypy pins platform=darwin.
 
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, "Environment", 0,
@@ -56,29 +56,40 @@ def _update_user_path(service, *, add: bool) -> None:
         except FileNotFoundError:
             previous, kind = "", winreg.REG_EXPAND_SZ
         root = str(service.root.absolute())
-        parts = []
-        found = False
-        for part in previous.split(";") if previous else []:
-            if part and _windows_path_key(part) == _windows_path_key(root):
-                if add and not found:
-                    parts.append(part)  # Preserve expansion, spelling and precedence.
-                found = True
-            else:
-                parts.append(part)
-        if add and not found:
+        parts = previous.split(";") if previous else []
+        if add:
+            # Preserve every pre-existing equivalent entry byte-for-byte. Only
+            # claim a path when this call appends the exact root spelling.
+            if any(part and _windows_path_key(part) == _windows_path_key(root) for part in parts):
+                return None
             parts.append(root)
+            changed_entry = root
+        else:
+            # The ownership receipt is an exact string, not a normalized path.
+            # Remove one appended occurrence only; edits and duplicate user
+            # entries must survive.
+            try:
+                index = len(parts) - 1 - parts[::-1].index(owned_entry) if owned_entry else -1
+            except ValueError:
+                index = -1
+            if index < 0:
+                return None
+            removed = parts.pop(index)
+            changed_entry = removed
         updated = ";".join(parts)
         if updated == previous:
-            return
+            return None
         winreg.SetValueEx(key, "Path", 0, kind, updated)
     service.powershell('''Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices;
 public class AstridEnvironment { [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
 public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r); }';
 $result=[UIntPtr]::Zero;
 [AstridEnvironment]::SendMessageTimeout([IntPtr]0xffff, 0x001a, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null''')
+    return changed_entry
 
 
-def install_shim(service, *, say=print) -> tuple[Path | None, str | None]:
+def install_shim(service, *, say=print, manage_path: bool = True,
+                 details: dict[str, Any] | None = None) -> tuple[Path | None, str | None]:
     """Expose the stable launcher without replacing another command."""
     windows = service.system == "win32"
     root = service.root.absolute()
@@ -103,17 +114,54 @@ def install_shim(service, *, say=print) -> tuple[Path | None, str | None]:
             if clash or (_windows_path_key(str(folder)) == _windows_path_key(str(target.parent)) if windows else folder == target.parent):
                 break
     if clash:
+        if details is not None:
+            details.update(shim_change="skipped", path_added=None, path_present=False)
         say(f"Astrid command shim skipped: {clash} already exists and is not managed by Astrid; use {root / ('run-astrid.cmd' if windows else 'run-astrid')}.")
         return None, None
+    existed = os.path.lexists(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     if windows:
         target.write_text(f'@echo off\r\nrem {SHIM_MARKER}\r\n"%~dp0run-astrid.cmd" %*\r\n', encoding="utf-8", newline="")
-        _update_user_path(service, add=True)
-        return target, "Open a new terminal, then run astrid."
+        path_added = _update_user_path(service, add=True) if manage_path else None
+        path_present = any(_windows_path_key(part) == _windows_path_key(str(root))
+                           for part in _registry_path().split(";") if part)
+        if details is not None:
+            details.update(shim_change="updated" if existed else "created",
+                           path_added=path_added, path_present=path_present)
+        hint = ("Open a new terminal, then run astrid." if path_present else
+                f"Add {root} to your user PATH, then open a new terminal and run astrid.")
+        return target, hint
     target.write_text(f'#!/bin/sh\n# {SHIM_MARKER}\nexec {shlex.quote(str(root / "run-astrid"))} "$@"\n', encoding="utf-8", newline="\n")
     target.chmod(0o755)
     on_path = any(Path(entry).absolute() == target.parent for entry in paths[0].split(":"))
+    if details is not None:
+        details.update(shim_change="updated" if existed else "created",
+                       path_added=None, path_present=on_path)
     return target, None if on_path else PATH_HINT
+
+
+def remove_owned_command(service, shim_path: str | None, path_entry: str | None) -> dict[str, bool]:
+    """Remove receipt-backed artifacts or the exact install-bound legacy POSIX shim."""
+    windows = service.system == "win32"
+    expected = service.root.absolute() / "astrid.cmd" if windows else service.home / ".local" / "bin" / "astrid"
+    removed_shim = False
+    receipt_matches = bool(shim_path and Path(shim_path) == expected)
+    legacy_posix = not windows and shim_path is None
+    if (receipt_matches or legacy_posix) and owned_shim(expected):
+        if windows:
+            contents = expected.read_text(encoding="utf-8").splitlines()
+            valid = contents == ["@echo off", f"rem {SHIM_MARKER}", '"%~dp0run-astrid.cmd" %*']
+        else:
+            expected_content = (f'#!/bin/sh\n# {SHIM_MARKER}\n'
+                                f'exec {shlex.quote(str(service.root.absolute() / "run-astrid"))} "$@"\n')
+            valid = expected.read_bytes() == expected_content.encode("utf-8")
+        if valid:
+            expected.unlink()
+            removed_shim = True
+    removed_path = False
+    if windows and path_entry:
+        removed_path = _update_user_path(service, add=False, owned_entry=path_entry) is not None
+    return {"shim": removed_shim, "path": removed_path}
 
 
 def remove_shim(service) -> None:

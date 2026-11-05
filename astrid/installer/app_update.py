@@ -467,7 +467,7 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
                 raise ValueError("Another operation selected a different app; refusing recovery.")
             # A prior recovery may have published the old pointer and
             # crashed before updating its selection identity.
-            backend.persist_identity(previous)
+            backend.persist_identity(previous, persist_choices=False)
 
     original_custody = getattr(backend, "_pinokio_custody", None)
     with contextlib.ExitStack() as recovery_authority:
@@ -500,14 +500,14 @@ def recover_app(root: Path, backend, *, lifecycle=None, say=print) -> bool:
         return _recover_app_locked(root, backend, lifecycle=lifecycle, say=say)
 
 
-def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print) -> None:
+def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print) -> dict:
     """Backward-compatible strict no-migration adapter to the C2 transaction."""
     return update_pinokio(root, backend, manifest, lifecycle=lifecycle, say=say,
                           force=True, no_migration=True)
 
 
 def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=print,
-                   force: bool = False, no_migration: bool = False) -> None:
+                   force: bool = False, no_migration: bool = False) -> dict:
     """Apply C2 release dispatch and transaction using the retained session owner."""
     lock = installer_lock_path(backend.service.home, backend.service.system)
     with operation(root, backend), locked(root / ".app-update.lock"):
@@ -542,13 +542,23 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             say("Restarting Astrid with the prepared app.")
             return candidate
 
+        outcomes = {"startup": "not confirmed", "command": None, "skills": None}
+
+        def persist_selection(version: Version) -> None:
+            if no_migration:
+                # Identity must follow the pointer, but requested choices do not
+                # become durable until the candidate has successfully activated.
+                backend.persist_identity(version, persist_choices=False)
+            else:
+                backend.persist_identity(version)
+
         def select(candidate: Version) -> None:
             with selection_lock(lock, backend):
                 if selection(root, backend, allow_transaction=True) != (old, data, identity):
                     raise ValueError("The selected installation changed before activation.")
-                backend.persist_identity(old)
+                persist_selection(old)
                 switch(root, candidate)
-                backend.persist_identity(candidate)
+                persist_selection(candidate)
 
         def select_old(previous: Version, candidate: Version | None) -> None:
             selected = current(root)
@@ -559,7 +569,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
                     if current(root) != candidate:
                         raise ValueError("The app selection changed during rollback.")
                     switch(root, previous)
-                    backend.persist_identity(previous)
+                    persist_selection(previous)
 
         def activate(candidate: Version, workspace: Path, selected_realm: dict) -> None:
             if not no_migration:
@@ -567,9 +577,10 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             lifecycle.start(candidate, workspace, selected_realm["realm_id"])
             if not no_migration:
                 try:
-                    backend.sync_skills(candidate)
+                    outcomes["skills"] = backend.sync_skills(candidate)
                 except Exception:  # noqa: BLE001 - same best-effort setup as C2
-                    say("Couldn't add Astrid's skill to your agents; see the log.")
+                    outcomes["skills"] = {"ok": False, "destinations": []}
+                    say("Couldn't apply Astrid's skill changes; see the log.")
 
         def migrate(candidate: Version, workspace: Path, _realm: dict) -> None:
             backend.upgrade(candidate, workspace)
@@ -589,4 +600,13 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             restore_workspace=not no_migration and not repair,
             kind="app" if no_migration or repair else "migration",
         )
+        outcomes["startup"] = "running and ready"
+        if no_migration:
+            try:
+                outcomes["skills"] = backend.sync_skills(current(root))
+            except Exception:  # noqa: BLE001 - same best-effort setup as C2
+                outcomes["skills"] = {"ok": False, "destinations": []}
+                say("Couldn't apply Astrid's skill changes; see the log.")
+            backend.persist_identity(current(root))
         say("Astrid is updated and running.")
+        return outcomes
