@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,28 +79,6 @@ def assert_no_boundary(journey, root, data, boundary):
         raise RuntimeError("Unexpected R0 boundary handoff state")
 
 
-def public_update(app, shell, manifest_path, root, data, evidence):
-    # Execute the documented public line; bind its downloaded script to the
-    # frozen App checkout so a changed deployment cannot qualify this candidate.
-    script = ("$ErrorActionPreference='Stop'; "
-              "$s=irm https://astrid.haus/install.ps1; "
-              "$expected=[IO.File]::ReadAllText($env:ASTRID_CI_EXPECTED_BOOTSTRAP); "
-              "if ($s -cne $expected) { throw 'Public bootstrap differs from candidate' }; "
-              "& ([scriptblock]::Create($s)) --update --root $env:ASTRID_CI_PROGRAM_ROOT "
-              "--data-root $env:ASTRID_CI_DATA_ROOT; if ($LASTEXITCODE) { exit $LASTEXITCODE }")
-    env = {k: v for k, v in os.environ.items() if k.casefold() != "psmodulepath"}
-    env.update(ASTRID_INSTALL_MANIFEST_URL=manifest_path.resolve().as_uri(),
-               ASTRID_CI_EXPECTED_BOOTSTRAP=str(app / "public" / "install.ps1"),
-               ASTRID_CI_PROGRAM_ROOT=str(root), ASTRID_CI_DATA_ROOT=str(data),
-               UV_LINK_MODE="copy", BROWSER=f'"{sys.executable}" -c "pass" %s')
-    log = evidence / "update-bootstrap.log"
-    with log.open("w", encoding="utf-8") as stream:
-        completed = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                    "-Command", script], stdout=stream, stderr=subprocess.STDOUT,
-                                   env=env, timeout=3600, check=False)
-    return completed.returncode, log.read_text(encoding="utf-8-sig", errors="replace")
-
-
 def run_update(journey, args, app, manifest, root, data, evidence, sentinel, birth, project, marker, digest):
     if manifest.get("release") != 1:
         raise RuntimeError("Windows update requires a release-1 candidate")
@@ -110,7 +87,8 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
         raise RuntimeError("Windows update baseline is not direct release 1")
     old_id = old_path.parent.name
     before_versions = {p.name for p in (root / "versions").iterdir()}
-    journey.healthy(data)
+    before_health = journey.healthy(data)
+    before_runtime_instance_id = before_health["runtime_instance_id"]
     journey.assert_direct_service_ownership(root, data, release=0)
     assert_running_task()
     labels_before = task_labels()
@@ -127,9 +105,8 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     manifest_path.write_bytes(raw)
     sha = hashlib.sha256(raw).hexdigest()
     (evidence / "windows-update-SHA256SUMS").write_text(f"{sha}  {manifest_path.name}\n", encoding="utf-8")
-    code, _ = public_update(app, args.shell, manifest_path, root, data, evidence)
-    if code != 0:
-        raise RuntimeError(f"Windows update failed (exit {code}); see {evidence / 'update-bootstrap.log'}")
+    journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
+    code = 0
     version_path, selected_data, version = journey.installation(root, data)
     new_id = version_path.parent.name
     if selected_data != data or not old_path.is_file():
@@ -146,6 +123,11 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     assert_no_boundary(journey, root, data, boundary)
     journey.assert_direct_service_ownership(root, data, release=0)
     journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
+    health = journey.healthy(data)
+    if health["runtime_instance_id"] == before_runtime_instance_id:
+        raise RuntimeError("Update did not restart the Runtime")
+    if health["identity"]["release"] != 2:
+        raise RuntimeError("Post-update Runtime health is not release 2")
     assert_running_task()
     journey.assert_content(version, evidence, project, marker, digest)
     if not journey.sentinel_observation(sentinel, birth)["alive"]:

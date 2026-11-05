@@ -120,7 +120,8 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         boundary_before = boundary_state(root, data)
         if boundary_before != {"journals": [], "r1_data_root": None, "selection_r1_data_root": None, "r1_data_exists": False}:
             raise RuntimeError("Fresh update baseline has R0 boundary handoff state")
-        journey.healthy(data)
+        before_health = journey.healthy(data)
+        before_runtime_instance_id = before_health["runtime_instance_id"]
         # This is the same public bootstrap and --update invocation as the R0 journey.
         journey.bootstrap(app, path, args.shell, "update", evidence, root, data)
         journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
@@ -137,7 +138,11 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
                                         boundary_state(root, data)))
         update["checks"].update(new_version="pass", old_version_retained="pass", same_service="pass",
                                 no_boundary_handoff="pass")
-        journey.healthy(data)
+        health = journey.healthy(data)
+        if health["runtime_instance_id"] == before_runtime_instance_id:
+            raise RuntimeError("Update did not restart the Runtime")
+        if health["identity"]["release"] != 2:
+            raise RuntimeError("Post-update Runtime health is not release 2")
         update["checks"]["health"] = "pass"
         journey.assert_content(new_version, evidence, project, marker, digest)
         update["checks"]["workspace_content"] = "pass"

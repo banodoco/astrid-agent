@@ -48,24 +48,6 @@ def test_gate_requires_successful_update():
         assert gate._windows_fresh_update_errors(bad, "direct-windows")
 
 
-def test_public_line_has_local_override_and_candidate_binding(tmp_path, monkeypatch):
-    app = tmp_path / "app"
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text("{}")
-    observed = {}
-    def run(argv, **kwargs):
-        observed.update(argv=argv, **kwargs)
-        kwargs["stdout"].write("ok\n")
-        return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(update.subprocess, "run", run)
-    code, output = update.public_update(app, "powershell.exe", manifest, tmp_path / "root", tmp_path / "data", tmp_path)
-    assert code == 0 and output == "ok\n"
-    assert observed["env"]["ASTRID_INSTALL_MANIFEST_URL"] == manifest.as_uri()
-    assert observed["env"]["ASTRID_CI_EXPECTED_BOOTSTRAP"] == str(app / "public" / "install.ps1")
-    assert "irm https://astrid.haus/install.ps1" in observed["argv"][-1]
-    assert "--update" in observed["argv"][-1]
-
-
 def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     root = tmp_path / "program"
     data = tmp_path / "data"
@@ -91,26 +73,35 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
         path = evidence / f"verify-{mode}.json"
         path.write_text('{"passed": true}')
         return path
-    journey = SimpleNamespace(installation=lambda *a: (current[0], data, {"root": str(current[0].parent),
+    bootstraps = []
+    journey = SimpleNamespace(bootstrap=lambda *a: bootstraps.append(a), installation=lambda *a: (current[0], data, {"root": str(current[0].parent),
         "identity": {"release": 1 if current[0] == old else 2, "managed_by": None}}),
-        healthy=lambda *a: calls.append("healthy"), assert_direct_service_ownership=lambda *a, **kw: calls.append("owner"),
+        healthy=lambda *a: (calls.append("healthy") or {"runtime_instance_id": "runtime-old" if current[0] == old else "runtime-new",
+            "identity": {"release": 1 if current[0] == old else 2}}),
+        assert_direct_service_ownership=lambda *a, **kw: calls.append("owner"),
         verify=verify, wait_ready=lambda *a, **kw: calls.append("ready"), assert_content=lambda *a: calls.append("content"),
         sentinel_observation=lambda *a: {"alive": True}, read_json=lambda p: json.loads(p.read_text()))
-    def success(app, shell, path, root, data, evidence):
+    def bootstrap(app, path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data):
+        bootstraps.append((app, path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data))
         new.parent.mkdir()
         new.write_text("{}")
         (new.parent / "manifest.json").write_bytes(path.read_bytes())
         current[0] = new
-        return 0, "ok"
-    monkeypatch.setattr(update, "public_update", success)
+    journey.bootstrap = bootstrap
     args = SimpleNamespace(shell="powershell.exe")
     result = update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
     assert result["outcome"] == "updated" and not gate._windows_fresh_update_errors(result, "direct-windows")
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
+    assert len(bootstraps) == 1
+    app, candidate_path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data = bootstraps[0]
+    assert app == tmp_path and candidate_path == evidence / "windows-update-manifest.json"
+    assert shell == "powershell.exe" and mode == "update"
+    assert (bootstrap_evidence, bootstrap_root, bootstrap_data) == (evidence, root, data)
+    assert candidate_path.read_bytes() == update.canonical_manifest_bytes(update.make_standin_release(candidate))
     current[0] = old
     calls.clear()
     for output in ("File is locked.", "Access denied."):
-        monkeypatch.setattr(update, "public_update", lambda *a: (1, output))
-        with pytest.raises(RuntimeError, match=r"Windows update failed \(exit 1\)"):
+        journey.bootstrap = lambda *a, _output=output: (_ for _ in ()).throw(RuntimeError(_output))
+        with pytest.raises(RuntimeError, match=output):
             update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
         assert "verify-update" not in calls and "task" not in calls
