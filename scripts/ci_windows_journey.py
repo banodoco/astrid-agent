@@ -603,7 +603,8 @@ def task(project="windows-journey", *, create_project=True):
         "project": project,
         "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
     }
-    invocation = json.loads(cli("astrid.omp_invoke", [json.dumps(request)], "sdk-invocation.json"))
+    invocation = json.loads(cli("astrid.omp_invoke", [json.dumps(request)],
+                                "release1-task-sdk-invocation.json"))
     task_refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if invocation.get("content", [{}])[0].get("type") != "text" or len(task_refs) != 1:
         raise RuntimeError("Installed-profile SDK invocation did not return one admitted task")
