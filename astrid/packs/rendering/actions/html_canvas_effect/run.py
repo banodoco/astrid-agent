@@ -27,7 +27,7 @@ import yaml
 
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.pack.personal import ensure_personal_pack, resolve_personal_packs_root
+from astrid.core.pack.personal import ensure_personal_pack, personal_pack_custody, resolve_personal_packs_root
 
 _EFFECT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates" / "card"
@@ -181,52 +181,56 @@ def scaffold(
     packs_root = resolve_personal_packs_root()
     if packs_root is None:
         raise AstridValueError("no absolute personal packs root is configured")
-    personal_pack = ensure_personal_pack(packs_root)
-    element_root = personal_pack / "rendering" / "elements" / "effects" / effect_id
-    personal_pack_manifest, pack_payload = _load_or_bootstrap_personal_manifest(personal_pack)
-    declaration_key = f"effects/{effect_id}"
-    expected_manifest_path = f"rendering/elements/effects/{effect_id}/element.yaml"
-    expected_component_path = f"rendering/elements/effects/{effect_id}/component.tsx"
-    rendering = pack_payload.setdefault("rendering", {})
-    existing_declaration = rendering.get(declaration_key)
-    if existing_declaration is not None:
-        if not isinstance(existing_declaration, dict) or existing_declaration.get("type") != "element":
-            raise AstridValueError(f"personal pack declaration is not an element: {declaration_key}")
-        if existing_declaration.get("path") not in {None, expected_manifest_path}:
-            raise AstridValueError(
-                f"refusing to move an existing declaration outside its selected closure: {declaration_key}"
-            )
-    element_exists = element_root.exists() or element_root.is_symlink()
-    if element_exists:
-        if not force:
-            raise FileExistsError(
-                f"personal effect already exists: {element_root}; pass --force to overwrite"
-            )
-        if element_root.is_symlink() or not element_root.is_dir():
-            raise OSError(f"refusing to force-overwrite non-directory personal effect: {element_root}")
-        shutil.rmtree(element_root)
+    # The personal pack is in the transaction-managed collection: write it only
+    # under exclusive collection custody so a concurrent pack install, update
+    # or rollback can never retire these bytes (LB-TXN r1 finding 1).
+    with personal_pack_custody(packs_root):
+        personal_pack = ensure_personal_pack(packs_root)
+        element_root = personal_pack / "rendering" / "elements" / "effects" / effect_id
+        personal_pack_manifest, pack_payload = _load_or_bootstrap_personal_manifest(personal_pack)
+        declaration_key = f"effects/{effect_id}"
+        expected_manifest_path = f"rendering/elements/effects/{effect_id}/element.yaml"
+        expected_component_path = f"rendering/elements/effects/{effect_id}/component.tsx"
+        rendering = pack_payload.setdefault("rendering", {})
+        existing_declaration = rendering.get(declaration_key)
+        if existing_declaration is not None:
+            if not isinstance(existing_declaration, dict) or existing_declaration.get("type") != "element":
+                raise AstridValueError(f"personal pack declaration is not an element: {declaration_key}")
+            if existing_declaration.get("path") not in {None, expected_manifest_path}:
+                raise AstridValueError(
+                    f"refusing to move an existing declaration outside its selected closure: {declaration_key}"
+                )
+        element_exists = element_root.exists() or element_root.is_symlink()
+        if element_exists:
+            if not force:
+                raise FileExistsError(
+                    f"personal effect already exists: {element_root}; pass --force to overwrite"
+                )
+            if element_root.is_symlink() or not element_root.is_dir():
+                raise OSError(f"refusing to force-overwrite non-directory personal effect: {element_root}")
+            shutil.rmtree(element_root)
 
-    element_root.mkdir(parents=True, exist_ok=False)
-    component_path = element_root / "component.tsx"
-    manifest_path = element_root / "element.yaml"
-    component_path.write_text(_component_source(), encoding="utf-8")
-    manifest_path.write_text(
-        json.dumps(
-            _element_manifest(effect_id, resolved_label, resolved_description),
-            indent=2,
-            sort_keys=True,
+        element_root.mkdir(parents=True, exist_ok=False)
+        component_path = element_root / "component.tsx"
+        manifest_path = element_root / "element.yaml"
+        component_path.write_text(_component_source(), encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(
+                _element_manifest(effect_id, resolved_label, resolved_description),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    rendering[declaration_key] = {
-        "type": "element",
-        "path": expected_manifest_path,
-        "resources": [
-            {"kind": "implementation", "path": expected_component_path},
-        ],
-    }
-    _write_personal_manifest(personal_pack_manifest, pack_payload)
+        rendering[declaration_key] = {
+            "type": "element",
+            "path": expected_manifest_path,
+            "resources": [
+                {"kind": "implementation", "path": expected_component_path},
+            ],
+        }
+        _write_personal_manifest(personal_pack_manifest, pack_payload)
 
     timeline_clip = {
         "id": f"{effect_id}-sample",

@@ -155,6 +155,26 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
         os.close(fd)
 
 
+@contextmanager
+def collection_write_custody(root: str | Path):
+    """Exclusive collection custody for a direct (non-transaction) writer.
+
+    Group transactions copy the whole collection, build, then exchange it, so a
+    writer that edits collection bytes (for example the personal pack) must
+    serialize with them on the same stable lock. The collection parent is
+    created safely first (no symlinked or special components). Re-entry by a
+    holder of exclusive custody is allowed; hold this only around local file
+    writes, never across network, consent or build work.
+    """
+    root = _root(root)
+    key = str((root.parent / ("." + root.name + ".transaction.lock")).absolute())
+    if _HELD.get().get(key) is True:
+        yield root
+        return
+    with group_read_lock(root, exclusive=True):
+        yield root
+
+
 def _state(root: Path) -> dict[str, Any]:
     path = root / _STATE
     if not path.exists() and not path.is_symlink():
@@ -443,13 +463,65 @@ def _verify_external_root_digests(facts: Mapping[str, Mapping[str, Any]],
                                    f"Selected dependency {pack_id} changed during this transaction; retry.")
 
 
+def _retained_collection_bytes(root: Path, changed: frozenset[str]) -> dict[str, tuple[str, str]]:
+    """Digest every live collection entry a transaction carries over unchanged.
+
+    That is everything except the ids the transaction itself installs, removes
+    or restores, the commit record and the single-pack lock: retained packs,
+    the personal pack and any other user bytes in the collection.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    if not root.is_dir():
+        return result
+    for top in sorted(root.iterdir()):
+        if top.name in changed or top.name in {_STATE, ".install.lock"}:
+            continue
+        nested = sorted(top.rglob("*")) if top.is_dir() and not top.is_symlink() else []
+        for path in (top, *nested):
+            key = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                result[key] = ("link", os.readlink(path))
+            elif path.is_dir():
+                result[key] = ("dir", "")
+            elif path.is_file():
+                result[key] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+            else:
+                result[key] = ("special", "")
+    return result
+
+
+def _verify_retained_collection(live: Path, changed: frozenset[str],
+                                copied: Mapping[str, tuple[str, str]]) -> None:
+    """Refuse when live bytes the candidate copied changed after the copy (LB-TXN r1 #1)."""
+    try:
+        current = _retained_collection_bytes(live, changed)
+    except OSError as exc:
+        raise PackInstallError("collection_changed",
+                               "The pack collection changed during this transaction; nothing was committed. Retry.") from exc
+    if current != copied:
+        changed_paths = sorted(set(current) ^ set(copied) | {k for k in set(current) & set(copied) if current[k] != copied[k]})
+        raise PackInstallError(
+            "collection_changed",
+            "The pack collection changed during this transaction (" + ", ".join(changed_paths[:5])
+            + ("" if len(changed_paths) <= 5 else ", ...") + "); nothing was committed. Retry.")
+
+
 def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mapping[str, Mapping[str, Any]],
                                        paths: Mapping[str, Path], retired: Path, transaction_id: str,
-                                       revision: int) -> None:
-    """Publish, then restore the prior generation if an external root raced the exchange."""
+                                       revision: int,
+                                       retained: Callable[[], None] | None = None) -> None:
+    """Publish, then restore the prior generation if an external root raced the exchange.
+
+    ``retained`` re-checks, after the exchange, the generation that was live
+    until now (``candidate`` names it after the exchange): a write that landed
+    in it between the last pre-swap check and the exchange would otherwise be
+    retired with it. Any refusal exchanges the prior generation back.
+    """
     _publish(candidate, root)
     try:
         _verify_external_root_digests(facts, paths)
+        if retained is not None:
+            retained()
     except PackInstallError:
         try:
             # candidate now names the prior complete generation. Exchanging it
@@ -828,6 +900,10 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     if pin.get("origin") == "personal":
                         raise PackInstallError("reserved_id", "Personal packs cannot be removed.")
                     shutil.rmtree(target)
+            # Everything the candidate carries over unchanged, as copied. Live
+            # writes after this point (fetch, consent, build) must not be lost.
+            carried_ids = frozenset(packs) | frozenset(remove)
+            carried = _retained_collection_bytes(candidate, carried_ids)
             admissions = {i: a for i, a in old["admissions"].items() if i not in remove and i not in packs}
             build_records = _retained_build_records(candidate, admissions, old["revision"])
             facts: dict[str, dict[str, Any]] = dict(host_selected)
@@ -1007,8 +1083,10 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 python_packages=packages, release_pins=release_pins)
             if verified_facts != facts or verified_apis != core_apis:
                 raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during this transaction; retry.")
-            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
-                                               state["revision"])
+            _verify_retained_collection(root, carried_ids, carried)
+            _publish_and_verify_external_roots(
+                candidate, root, facts, _paths(candidate), retired, tx, state["revision"],
+                retained=lambda: _verify_retained_collection(candidate, carried_ids, carried))
             published = True  # Sole terminal-transition owner for this attempt.
             mark("swapped")
             try:
@@ -1142,6 +1220,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             candidate.chmod(0o700)
             (candidate / ".install.lock").unlink(missing_ok=True)
             (candidate / _STATE).unlink(missing_ok=True)
+            carried_ids = frozenset(ids)
+            carried = _retained_collection_bytes(candidate, carried_ids)
             admissions = dict(state["admissions"])
             for pack_id in ids:
                 target = candidate / pack_id
@@ -1242,8 +1322,10 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                 python_packages=packages, release_pins=pins)
             if verified_facts != facts or verified_apis != core_apis:
                 raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during rollback; retry.")
-            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
-                                               new_state["revision"])
+            _verify_retained_collection(root, carried_ids, carried)
+            _publish_and_verify_external_roots(
+                candidate, root, facts, _paths(candidate), retired, tx, new_state["revision"],
+                retained=lambda: _verify_retained_collection(candidate, carried_ids, carried))
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)
@@ -1267,4 +1349,5 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
 
 
 __all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",
+           "collection_write_custody",
            "GroupResult", "GroupSnapshot", "GroupCommitError"]

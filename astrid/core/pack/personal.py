@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -37,15 +38,37 @@ def resolve_personal_packs_root(root: str | os.PathLike[str] | None = None) -> P
         return None
 
 
-def ensure_personal_pack(root: str | os.PathLike[str] | None = None) -> Path:
-    """Create the reserved personal pack if absent and return its directory.
+@contextmanager
+def personal_pack_custody(root: str | os.PathLike[str] | None = None):
+    """Hold exclusive collection custody while writing personal-pack bytes.
 
-    ``root`` is the packs collection root, not the personal directory. Existing
-    files and manifests are left byte-for-byte unchanged.
+    The personal pack lives in the transaction-managed collection. A group
+    install/update/rollback copies that collection and exchanges it later, so
+    every personal-pack writer takes the same exclusive group lock and never
+    races a transaction (LB-TXN r1 finding 1). Yields the resolved collection
+    root. Hold it only around local writes.
     """
     packs_root = resolve_personal_packs_root(root)
     if packs_root is None:
         raise ValueError("no absolute personal packs root is configured")
+    from astrid.core.pack.transaction import collection_write_custody
+
+    with collection_write_custody(packs_root):
+        yield packs_root
+
+
+def ensure_personal_pack(root: str | os.PathLike[str] | None = None) -> Path:
+    """Create the reserved personal pack if absent and return its directory.
+
+    ``root`` is the packs collection root, not the personal directory. Existing
+    files and manifests are left byte-for-byte unchanged. Creation happens
+    under exclusive collection custody (see ``personal_pack_custody``).
+    """
+    with personal_pack_custody(root) as packs_root:
+        return _ensure_personal_pack(packs_root)
+
+
+def _ensure_personal_pack(packs_root: Path) -> Path:
     personal = packs_root / PERSONAL_PACK_ID
     personal.mkdir(parents=True, exist_ok=True)
     if personal.is_symlink() or not personal.is_dir():
@@ -60,4 +83,4 @@ def ensure_personal_pack(root: str | os.PathLike[str] | None = None) -> Path:
     return personal
 
 
-__all__ = ["ensure_personal_pack", "resolve_personal_packs_root"]
+__all__ = ["ensure_personal_pack", "personal_pack_custody", "resolve_personal_packs_root"]

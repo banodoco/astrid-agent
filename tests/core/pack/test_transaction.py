@@ -2291,3 +2291,150 @@ def test_late_ack_does_not_clear_a_newer_commit_outbox(
     snapshot = read_group(packs_root)
     assert (snapshot.transaction_id, snapshot.refresh_pending) == (second.transaction_id, True)
     assert set(second.changed_ids) >= {"alpha", "extra", "shared"}
+
+
+# LB-TXN r1 finding 1 (new): live-collection writes made while a transaction
+# holds its candidate copy (fetch/consent/build window) must never be dropped
+# by a successful exchange. Either the transaction refuses with
+# ``collection_changed`` and the live collection keeps the write, or the write
+# survives in the published collection.
+
+def _seed_personal_and_operation(repo: Repository, packs_root: Path, operation: str):
+    """Commit the state the operation starts from; return the operation to run."""
+    from astrid.core.pack.personal import ensure_personal_pack
+    from astrid.core.pack.transaction import rollback_group
+
+    personal = ensure_personal_pack(packs_root)
+    (personal / "kept.txt").write_text("user content\n", encoding="utf-8")
+    if operation == "install":
+        return lambda **kw: install(repo, packs_root, **kw)
+    install(repo, packs_root, refresh=accepted_refresh)
+    new_commit = repo.next_revision()
+    if operation == "update":
+        return lambda **kw: install_group(source=repo.bare, revision=new_commit, packs=GROUP,
+                                          packs_root=packs_root, python_packages={}, intent="update", **kw)
+    second = install(repo, packs_root, revision=new_commit, refresh=accepted_refresh)
+    return lambda **kw: rollback_group(packs_root=packs_root, pack_ids=tuple(GROUP),
+                                       transaction_id=second.transaction_id, **kw)
+
+
+def _assert_live_write_kept(packs_root: Path, before: dict, before_state, outcome, edits: dict[str, bytes]) -> None:
+    for relative, data in edits.items():
+        assert (packs_root / relative).read_bytes() == data, f"live write {relative} was dropped"
+    if isinstance(outcome, PackInstallError):
+        assert outcome.code == "collection_changed"
+        # Refused: nothing else changed; the committed generation is the old one.
+        assert tree_bytes(packs_root) == {**before, **edits}
+        after = read_group(packs_root)
+        assert (after.transaction_id, after.revision) == (before_state.transaction_id, before_state.revision)
+    else:
+        assert (packs_root / "personal" / "kept.txt").read_bytes() == b"user content\n"
+
+
+@pytest.mark.parametrize("operation", ["install", "update", "rollback"])
+@pytest.mark.parametrize("phase", ["built", "before_swap"])
+def test_personal_write_during_transaction_window_is_never_dropped(
+        repo: Repository, packs_root: Path, operation: str, phase: str) -> None:
+    run = _seed_personal_and_operation(repo, packs_root, operation)
+    # rollback_group has no build phase; its copy-to-swap window is marked
+    # "prepared" (after the candidate copy) and "before_swap".
+    seam = "prepared" if (operation == "rollback" and phase == "built") else phase
+    before = tree_bytes(packs_root)
+    before_state = read_group(packs_root)
+    edit = {"personal/precious.txt": b"written during the transaction\n"}
+    hits: list[str] = []
+
+    def boundary(current: str) -> None:
+        if current == seam and not hits:
+            hits.append(current)
+            (packs_root / "personal" / "precious.txt").write_bytes(edit["personal/precious.txt"])
+
+    try:
+        outcome = run(boundary=boundary)
+    except PackInstallError as exc:
+        outcome = exc
+    assert hits == [seam]
+    _assert_live_write_kept(packs_root, before, before_state, outcome, edit)
+
+
+@pytest.mark.parametrize("operation", ["install", "update", "rollback"])
+def test_personal_write_racing_the_exchange_is_swapped_back(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    """A write after the final pre-swap check but before the kernel exchange
+    lands in the generation being retired: the exchange is reversed."""
+    from astrid.core.pack import transaction
+
+    run = _seed_personal_and_operation(repo, packs_root, operation)
+    before = tree_bytes(packs_root)
+    before_state = read_group(packs_root)
+
+    def generations(root: Path) -> set[str]:
+        retired = root.parent / ".astrid-retired"
+        return {p.name for p in retired.iterdir() if p.is_dir()} if retired.is_dir() else set()
+
+    before_generations = generations(packs_root)
+    edit = {"personal/late.txt": b"raced the exchange\n"}
+    original_publish = transaction._publish
+    calls = 0
+
+    def racing_publish(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (packs_root / "personal" / "late.txt").write_bytes(edit["personal/late.txt"])
+        original_publish(stage, destination)
+
+    monkeypatch.setattr(transaction, "_publish", racing_publish)
+    try:
+        outcome = run()
+    except PackInstallError as exc:
+        outcome = exc
+    assert calls >= 1
+    _assert_live_write_kept(packs_root, before, before_state, outcome, edit)
+    # No candidate generation is left behind by a refused attempt.
+    if isinstance(outcome, PackInstallError):
+        assert generations(packs_root) == before_generations
+        assert calls == 2
+
+
+def test_personal_pack_writers_take_exclusive_collection_custody(
+        packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The core personal-effect writer serializes with group transactions."""
+    import contextvars
+    import threading
+    from astrid.core.pack.transaction import group_read_lock
+    from astrid.packs.rendering.actions.html_canvas_effect.run import scaffold
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    root = home / "Astrid" / "packs"
+    root.mkdir(parents=True)
+    held, release, done = threading.Event(), threading.Event(), threading.Event()
+
+    def transaction_holder() -> None:
+        with group_read_lock(root, exclusive=True):
+            held.set()
+            release.wait(30)
+
+    def writer() -> None:
+        scaffold(effect_id="locked-effect", label=None, description=None, project_root=tmp_path / "project",
+                 out_path=tmp_path / "project" / "report.json")
+        done.set()
+
+    # Fresh contexts: no in-process re-entrancy shortcut, real flocks.
+    holder = threading.Thread(target=contextvars.Context().run, args=(transaction_holder,))
+    holder.start()
+    assert held.wait(30)
+    worker = threading.Thread(target=contextvars.Context().run, args=(writer,))
+    worker.start()
+    try:
+        assert not done.wait(1.0), "personal writer ran while a transaction held collection custody"
+        assert not (root / "personal").exists()
+    finally:
+        release.set()
+        holder.join(30)
+    worker.join(30)
+    assert done.is_set()
+    assert (root / "personal" / "rendering" / "elements" / "effects" / "locked-effect" / "element.yaml").is_file()
+
