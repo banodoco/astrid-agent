@@ -140,8 +140,11 @@ def test_update_uses_shared_transaction_and_persists_app_context_before_stop(tmp
     journal = core.read_json(env.root / "update-transaction.json")
     assert journal["step"] == "complete"
     assert journal["transaction_kind"] == "migration"
-    assert journal["transaction_context"] == {"owner": "local-update", "app": env.hooks.app}
-    assert env.transaction_contexts[0] == journal["transaction_context"]
+    assert journal["transaction_context"] == {
+        "owner": "local-update", "app": env.hooks.app,
+        "activation_lock_path": str(local.installer_lock_path(Path.home(), sys.platform)),
+    }
+    assert env.transaction_contexts[0] == {"owner": "local-update", "app": env.hooks.app}
     assert current(env.root) == env.candidate
     assert env.owner["runtime"] == env.owner["editor"] == "candidate"
     assert result == {"status": "updated", "release": 14,

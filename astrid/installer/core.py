@@ -375,6 +375,20 @@ class Installer:
             self.backend.open()
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
+        if step in {"switched", "rollback_selected"}:
+            import sys
+            from .service import installer_lock_path
+
+            # The entry points hold these locks over activation and recovery.
+            # Rebind on recovery, which may run under a different installer home.
+            service = getattr(self.backend, "service", None)
+            held = getattr(service, "activation_lock_path", None)
+            path = (self.root / ".app-update.lock" if self.managed_by == "pinokio"
+                    else held or installer_lock_path(Path.home(), sys.platform))
+            context = transaction.setdefault("transaction_context", {})
+            if not isinstance(context, dict):
+                raise ValueError("Invalid stopped-update activation context.")
+            context["activation_lock_path"] = str(absolute(path))
         custody = getattr(self.backend, "_pinokio_custody", None)
         if custody is not None:
             custody.check()

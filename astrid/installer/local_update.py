@@ -529,6 +529,7 @@ def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=prin
     # keep that order to avoid deadlocking a concurrent CLI invocation.
     lock_path = installer_lock_path(backend.service.home, backend.service.system)
     with locked(lock_path):
+        backend.service.activation_lock_path = absolute(lock_path)
         with locked(root / ".app-update.lock"):
             return _execute_locked(action, root, backend, stdin=stdin, stdout=stdout, say=say)
 

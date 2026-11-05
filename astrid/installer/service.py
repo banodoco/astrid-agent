@@ -159,12 +159,21 @@ def pinokio_owned(record: dict) -> bool:
     return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
 
 
-def activation_lock_held(root: Path, version: Version) -> bool:
+def activation_lock_held(root: Path, version: Version, context=None, expected_lock=None) -> bool:
     """Return whether this unfinished update's activation lock is held."""
     from runtime_protocol import platform
 
-    path = (root / ".app-update.lock" if version.managed_by == "pinokio"
-            else installer_lock_path(Path.home(), sys.platform))
+    if isinstance(context, dict) and "activation_lock_path" in context:
+        recorded = context["activation_lock_path"]
+        if not isinstance(recorded, str) or not Path(recorded).is_absolute():
+            raise ValueError("Invalid activation lock path.")
+        path = absolute(recorded)
+        expected = root / ".app-update.lock" if version.managed_by == "pinokio" else expected_lock
+        if expected is None or path != absolute(expected) or str(path) != recorded:
+            raise ValueError("Invalid activation lock path.")
+    else:
+        path = (root / ".app-update.lock" if version.managed_by == "pinokio"
+                else installer_lock_path(Path.home(), sys.platform))
     platform.private_directory(path.parent)
     with path.open("a+b") as lock:
         try:
@@ -175,7 +184,7 @@ def activation_lock_held(root: Path, version: Version) -> bool:
     return False
 
 
-def launch_admission(version: Version, data: Path, *, custody: bool = False) -> bool:
+def launch_admission(version: Version, data: Path, *, custody: bool = False, expected_lock=None) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 
     The pending journal selects a version, never a process or stop authority.
@@ -230,9 +239,11 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
         context = transaction.get("transaction_context") or {}
+        if not isinstance(context, dict):
+            raise ValueError("Invalid update transaction context.")
         if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
             raise ValueError("The stopped update requires its authenticated activation lease.")
-        if not activation_lock_held(root, version):
+        if not activation_lock_held(root, version, context, expected_lock):
             raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -248,7 +259,8 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
 
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
-            lock_fd: int | None = None, custody_fd: int | None = None) -> list[str]:
+            lock_fd: int | None = None, custody_fd: int | None = None,
+            expected_lock: Path | None = None) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
     python = version.python.with_name("pythonw.exe") if windows else version.python
@@ -256,8 +268,13 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
                  "--source-manifest", str(version.profile), *(extra_args or [])]
     # Every managed run enters the same admission, including POSIX services.
     source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
+    # Capture the installer's lock location in the service action itself. It is
+    # independent of the journal and of the eventual service process HOME.
+    expected_lock = absolute(
+        version.root.parent.parent / ".app-update.lock" if version.managed_by == "pinokio"
+        else expected_lock or installer_lock_path(Path.home(), sys.platform))
     script = (source + "\n"
-              + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r})\n"
+              + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r},expected_lock=Path({str(expected_lock)!r}))\n"
               + f"os.environ.update({version.env!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
@@ -348,9 +365,10 @@ def _atomic_write_text(path: Path, value: str) -> None:
 
 
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
-           env_file: Path | None = None) -> str:
+           env_file: Path | None = None, expected_lock: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
-    argv = command(version, data, windows=system == "win32", log=log, env_file=env_file)
+    argv = command(version, data, windows=system == "win32", log=log, env_file=env_file,
+                   expected_lock=expected_lock)
     service_env = dict(version.env)
     if system == "darwin":
         return plistlib.dumps({
@@ -402,6 +420,7 @@ class Service:
         self.home, self.system, self.say = home or Path.home(), system or sys.platform, say
         self.selection = install_selection(self.home, self.system)
         self.env_file = root / "service-env.json"
+        self.activation_lock_path = None
         # Retain our child handle for bookkeeping; C1 and the live recorded
         # process identity decide whether an unpublished owner can be stopped.
         self._foreground_process = None
@@ -635,7 +654,8 @@ class Service:
         allowed = []
         for candidate in candidates:
             for env_file in (None, self.env_file):
-                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file)
+                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
+                               expected_lock=self.activation_lock_path)
                 allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
@@ -672,7 +692,48 @@ class Service:
                 if action == encode(release0):
                     return True
             for env_file in (None, self.env_file):
-                prior = command(retained, data, windows=windows, log=self.log, env_file=env_file)
+                prior = command(retained, data, windows=windows, log=self.log, env_file=env_file,
+                                expected_lock=self.activation_lock_path)
+                # A previously registered D2 action may have captured a
+                # different installer HOME. Parse only its literal path and
+                # compare the entire generated action before replacing it;
+                # never use that historical path to probe a lock.
+                if script is not None:
+                    calls = [line for line in script.splitlines()
+                             if line.startswith("launch_admission(Version.load(")]
+                    if len(calls) == 1:
+                        try:
+                            call = ast.parse(calls[0]).body[0].value
+                            lock_arg = next(k.value for k in call.keywords if k.arg == "expected_lock")
+                            if (isinstance(lock_arg, ast.Call) and isinstance(lock_arg.func, ast.Name)
+                                    and lock_arg.func.id == "Path" and len(lock_arg.args) == 1
+                                    and not lock_arg.keywords):
+                                value = ast.literal_eval(lock_arg.args[0])
+                                if isinstance(value, str) and Path(value).is_absolute():
+                                    previous_lock = absolute(value)
+                                    previous = command(retained, data, windows=windows, log=self.log,
+                                                       env_file=env_file, expected_lock=previous_lock)
+                                    if action == encode(previous):
+                                        return True
+                        except (AttributeError, StopIteration, SyntaxError, TypeError, ValueError, OSError):
+                            pass
+                # The immediately preceding gate embedded its complete source
+                # in registered actions. Recognize its exact bytes so existing
+                # services can be upgraded before any owner is stopped.
+                from ._legacy_launch_prelude import SOURCE as legacy_prelude
+
+                current_prelude = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
+                old_call = (f"launch_admission(Version.load({retained.document()!r}),"
+                            f"Path({str(data)!r}),custody=False)")
+                command_lock = (retained.root.parent.parent / ".app-update.lock"
+                                if retained.managed_by == "pinokio" else self.activation_lock_path
+                                or installer_lock_path(Path.home(), sys.platform))
+                new_call = (f"launch_admission(Version.load({retained.document()!r}),"
+                            f"Path({str(data)!r}),custody=False,expected_lock=Path("
+                            f"{str(absolute(command_lock))!r}))")
+                old_script = prior[-1].replace(current_prelude, legacy_prelude, 1).replace(new_call, old_call, 1)
+                if action == encode([*prior[:-1], old_script]):
+                    return True
                 # This is the exact historical wrapper suffix, obtained from
                 # the sole command builder rather than a second argv builder.
                 body = prior[-1][prior[-1].index("os.environ.update("):]
@@ -764,7 +825,7 @@ class Service:
             platform.fsync_directory(self.path.parent)
             confirm_unchanged()
 
-        canonical = command(version, data, env_file=self.env_file)
+        canonical = command(version, data, env_file=self.env_file, expected_lock=self.activation_lock_path)
         try:
             if self.system == "darwin":
                 document = plistlib.loads(observed)
@@ -848,7 +909,8 @@ class Service:
         if not observed:
             return
         action = json.loads(observed)
-        argv = command(version, data, windows=True, log=self.log, env_file=self.env_file)
+        argv = command(version, data, windows=True, log=self.log, env_file=self.env_file,
+                       expected_lock=self.activation_lock_path)
         canonical = [{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
         if action == canonical:
             return
@@ -997,6 +1059,7 @@ class Service:
         user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
         _atomic_write_text(self.path, render(
             self.system, version, data, self.log, user=user, env_file=self.env_file,
+            expected_lock=self.activation_lock_path,
         ))
         if self.system == "darwin":
             self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
@@ -1046,7 +1109,7 @@ class Service:
         env.update(version.env)
         with self.log.open("a", encoding="utf-8") as stream:
             process = platform.spawn_tree(command(
-                version, data, env_file=self.env_file,
+                version, data, env_file=self.env_file, expected_lock=self.activation_lock_path,
             ), detached=True,
                                           cwd=version.root, env=env, stdin=subprocess.DEVNULL,
                                           stdout=stream, stderr=subprocess.STDOUT)
