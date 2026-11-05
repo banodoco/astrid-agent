@@ -757,7 +757,7 @@ jobs:
           $freshExit = $LASTEXITCODE
           $runWindowsRefusal = '${{ matrix.job_id }}' -eq 'direct-windows' -and (
             ('${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ matrix.leg }}' -eq 'fresh-install') -or
-            ('${{ inputs.diagnostic_keep_going }}' -ne 'true' -and $freshExit -eq 0)
+            '${{ inputs.diagnostic_keep_going }}' -ne 'true'
           )
           if ($runWindowsRefusal) {
             $refusalRoot = Join-Path $env:RUNNER_TEMP 'astrid-r1-direct-windows-refusal'
