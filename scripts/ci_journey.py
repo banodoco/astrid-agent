@@ -96,7 +96,9 @@ EVIDENCE_LOG_LIMIT = 1024 * 1024
 WINDOWS_PROFILE_SERVICE_LOG_LIMIT = 64 * 1024
 WINDOWS_PACK_HOST_STATE_LIMIT = 64 * 1024
 _WINDOWS_ABSOLUTE_PATH = re.compile(
-    r"(?i)(?:[a-z]:\\|\\\\[^\\\s]+\\[^\\\s]+\\|/(?:[^/\s]+/)+)[^\s\"'<>|,;]*"
+    # Once a path starts inside diagnostic prose, consume the remainder of
+    # that line so spaces in Windows path components cannot leak their suffix.
+    r"(?i)(?:[a-z]:\\|\\\\[^\\\s]+\\[^\\\s]+\\|/(?:[^/\s]+/)+)[^\r\n]*"
 )
 SDK_CAPTURE_LIMIT = 128 * 1024
 SDK_CAPTURE_STATUS_NAMES = ("project-create-capture-status.json", "sdk-capture-status.json")
@@ -901,11 +903,21 @@ def _capture_windows_pack_host_update_state(evidence: Path, data: Path, phase: s
 
                 def scrub_paths(observed):
                     if isinstance(observed, str):
+                        if ntpath.isabs(observed) or os.path.isabs(observed):
+                            return "<path>"
                         return _WINDOWS_ABSOLUTE_PATH.sub("<path>", observed)
                     if isinstance(observed, list):
                         return [scrub_paths(part) for part in observed]
                     if isinstance(observed, dict):
-                        return {key: scrub_paths(part) for key, part in observed.items()}
+                        result = {}
+                        for key, part in observed.items():
+                            safe_key = windows._diagnostic_text(str(key))
+                            if ntpath.isabs(safe_key) or os.path.isabs(safe_key):
+                                safe_key = "<path>"
+                            else:
+                                safe_key = _WINDOWS_ABSOLUTE_PATH.sub("<path>", safe_key)
+                            result[safe_key] = scrub_paths(part)
+                        return result
                     return observed
 
                 item["content"] = scrub_paths(safe)

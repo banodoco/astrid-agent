@@ -347,6 +347,10 @@ def test_windows_update_pack_host_capture_is_bounded_read_only_and_scrubbed(tmp_
     registration.write_text(json.dumps({
         "executor_id": "astrid-pack-host", "pid": 123, "support_root": str(support),
         "credential_file": r"C:\\private\\host.token", "runtime_service_launch_id": "launch-1",
+        "display_path": r"C:\Users\private person\secret file.json",
+        "diagnostic": r"could not read C:\Users\private person\App Data\record.json (access denied)",
+        r"C:\Users\private person\record.json": "path-key",
+        "credential=KEY-KEY": "key-secret",
     }), encoding="utf-8")
     cleanup = support / "pack-host-job-cleanup.json"
     cleanup.write_text(json.dumps({"version": 1, "service_name": "pack-host", "receipts": [
@@ -361,10 +365,16 @@ def test_windows_update_pack_host_capture_is_bounded_read_only_and_scrubbed(tmp_
     assert receipt["files"]["generic-host.json"]["content"]["executor_id"] == "astrid-pack-host"
     assert receipt["files"]["generic-host.json"]["content"]["support_root"] == "<path>"
     assert receipt["files"]["generic-host.json"]["content"]["credential_file"] == "<redacted>"
+    assert receipt["files"]["generic-host.json"]["content"]["display_path"] == "<path>"
+    assert receipt["files"]["generic-host.json"]["content"]["diagnostic"] == "could not read <path>"
     assert receipt["files"]["pack-host-job-cleanup.json"]["content"]["receipts"][0]["job_drained"] is True
     assert (receipt["files"]["pack-host-job-cleanup.json"]["content"]["receipts"][0]
             ["post_cleanup_error"] == "diagnostic error")
-    assert "TOPSECRET" not in json.dumps(receipt) and str(tmp_path) not in json.dumps(receipt)
+    encoded = json.dumps(receipt)
+    assert all(secret not in encoded for secret in (
+        "TOPSECRET", "KEY-KEY", "private person", str(tmp_path),
+    ))
+    assert "<redacted>" in encoded and "<path>" in encoded
     assert registration.read_bytes() == original[0] and cleanup.read_bytes() == original[1]
 
     shared_journey._capture_windows_pack_host_update_state(evidence, tmp_path / "data", "after")
