@@ -1135,10 +1135,14 @@ def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path)
     (tmp_path / "driver").symlink_to(journey.ROOT, target_is_directory=True)
     output = tmp_path / "output"
     candidate = {key: char * 40 for key, char in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    valid_executor_configs = json.dumps({
+        os_name: {"source_override_test_mode": False}
+        for os_name in ("linux", "macos", "windows")
+    })
     env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
                WORKFLOW_REPOSITORY="banodoco/astrid-agent",
                OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
-               STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
+               STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS=valid_executor_configs,
                DIAGNOSTIC_KEEP_GOING="false", DIAGNOSTIC_LEG="release0-to-release1",
                M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
@@ -1192,6 +1196,19 @@ def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path)
     assert {row["job_id"] for row in backend_rows} == {
         "pinokio-backend-linux", "pinokio-backend-macos", "pinokio-backend-windows"
     }
+    invalid_configs = '{"linux":{},"macos":{},"windows":{}}'
+    proc = config("false", M4_4A_BACKEND_ONLY="true", M4_4A_EXECUTOR_CONFIGS=invalid_configs)
+    assert proc.returncode != 0
+    assert "m4_4a_executor_configs." in proc.stderr
+    assert "must explicitly set source_override_test_mode to false" in proc.stderr
+    invalid_configs = json.dumps({
+        os_name: {"source_override_test_mode": True}
+        for os_name in ("linux", "macos", "windows")
+    })
+    proc = config("false", M4_4A_BACKEND_ONLY="true", M4_4A_EXECUTOR_CONFIGS=invalid_configs)
+    assert proc.returncode != 0
+    assert "m4_4a_executor_configs." in proc.stderr
+    assert "must explicitly set source_override_test_mode to false" in proc.stderr
     for override in ({"M4_4A_BACKEND_ONLY": "true"}, {"M4_5_ONLY": "true"}):
         proc = config("true", **override)
         assert proc.returncode != 0
