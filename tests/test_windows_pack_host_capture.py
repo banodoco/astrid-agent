@@ -111,3 +111,50 @@ def test_bounded_marker_redacts_secret_fields(capture):
     serialized = json.dumps(record)
     assert "hidden" not in serialized
     assert record["ready_marker"]["content"]["access_token"] == "<redacted>"
+
+
+def test_real_profile_pack_host_capture_is_owned_bounded_and_redacted(capture, monkeypatch):
+    _, _, evidence, _, _ = capture
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    run_root = evidence.parent
+    profile = run_root / "real-user-profile"
+    source = profile / "Astrid Runtime" / "logs" / "service-pack-host.log"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b"x" * (journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT + 512) +
+        b"\nAuthorization: Bearer top-secret\n"
+        b"failed at C:\\Users\\private-user\\Documents\\personal.txt\n"
+        b"also /Users/private-user/private.txt\n")
+    commands = []
+
+    def owned_task_probe(command, name, **kwargs):
+        commands.append(command)
+        assert name == "windows-real-profile-log-probe.log"
+        assert kwargs == {"show": False, "timeout": 30}
+        return str(profile)
+
+    monkeypatch.setattr(journey.windows, "powershell", owned_task_probe)
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+
+    captured = evidence / "runtime-service-service-pack-host-real-profile-before-cleanup.log"
+    text = captured.read_text(encoding="utf-8")
+    receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert receipt["status"] == "captured"
+    assert receipt["evidence"] == captured.name
+    assert receipt["source_bytes"] > journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT
+    assert receipt["truncated"] is True
+    assert receipt["captured_bytes"] == captured.stat().st_size <= journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT
+    assert "top-secret" not in text and "private-user" not in text and "personal.txt" not in text
+    assert "<redacted>" in text and "<path>" in text
+    assert str(run_root) in commands[0] and str(run_root / "data") in commands[0]
+    assert str(profile) not in json.dumps(receipt)
+
+
+def test_real_profile_log_probe_skips_task_not_owned_by_run(capture, monkeypatch):
+    _, _, evidence, _, _ = capture
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.windows, "powershell", lambda *args, **kwargs: "")
+    journey.capture_runtime_service_logs(evidence, evidence.parent, "before-cleanup")
+    receipt = json.loads((evidence / "windows-real-profile-pack-host-before-cleanup.json").read_text())
+    assert receipt["status"] == "not_owned"
+    assert not (evidence / "runtime-service-service-pack-host-real-profile-before-cleanup.log").exists()

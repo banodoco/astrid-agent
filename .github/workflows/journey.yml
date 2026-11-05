@@ -823,6 +823,7 @@ jobs:
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-workspace.json',
             'runtime-owner-selection-context.json', 'runtime-service-runtime.log', 'runtime-service-native.log', 'service-pack-host.log', 'windows-service-log-status.json',
+            'windows-real-profile-pack-host-before-cleanup.json', 'windows-real-profile-pack-host-after-cleanup.json',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
