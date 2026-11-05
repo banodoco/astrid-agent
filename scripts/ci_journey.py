@@ -68,6 +68,8 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "release1-task-sdk-invocation.json", "release1-task-installed-source.json",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
+    "verify-observe.json", "verify-observe.log", "windows-update-manifest.json",
+    "windows-update-SHA256SUMS", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
@@ -1940,6 +1942,15 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         if not settled_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel exited before journey settlement")
         result["checks"]["unrelated_sentinel"] = "pass"
+        if (sys.platform == "win32" and getattr(args, "job_id", None) == "direct-windows"
+                and args.leg == "fresh-install" and args.mode == "direct"):
+            if __package__:
+                from . import windows_update_journey
+            else:
+                import windows_update_journey
+            result["update"] = windows_update_journey.run_update(
+                sys.modules[__name__], args, app, manifest, root, data, evidence,
+                sentinel, birth, project, marker, digest)
         result["status"] = "pass"
     except Exception as exc:
         result["status"] = "fail"
