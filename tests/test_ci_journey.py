@@ -499,6 +499,31 @@ def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selecti
             )
 
 
+@pytest.mark.windows_native
+def test_same_path_matches_windows_spelling_variants(tmp_path):
+    assert journey._same_path(r"C:\A\B", "c:/a/b/")
+
+
+def test_same_path_matches_normalized_identity_and_rejects_others(tmp_path):
+    base = tmp_path / "a" / "b"
+    assert journey._same_path(str(base) + os.sep, base)
+    assert journey._same_path(str(tmp_path / "a" / ".." / "a" / "b"), base)
+    assert journey._same_path(base, str(base))
+    assert not journey._same_path(tmp_path / "a", base)
+    assert not journey._same_path(None, base)
+    assert not journey._same_path("", base)
+    assert not journey._same_path(base, "")
+    assert not journey._same_path(42, base)
+
+
+def test_same_path_falls_back_to_samefile_for_hard_links(tmp_path):
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    alias = tmp_path / "alias.json"
+    os.link(real, alias)
+    assert journey._same_path(alias, real)
+    assert not journey._same_path(tmp_path / "missing.json", real)
+
 def test_release1_cleanup_host_check_accepts_only_owned_retained_r1_install(
         tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "linux")
