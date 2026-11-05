@@ -36,7 +36,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -82,6 +81,13 @@ REPO = Path(__file__).resolve().parents[2]
 # When used, each block is {"repo", "sha", "version"} with the reviewed repositories
 # (astrid/installer/tools.py:origin/pre-main:26-29, 67-81; backend.py:origin/pre-main:1017-1023).
 RUNPOD_SOURCES: dict[str, dict[str, str]] | None = None
+
+# The App install manifest pins the installer's Python (public/install-manifest.json
+# tools.python.version: 3.11.13 on App pre-main 878c28df and on the Plan 01 App
+# composition 94f78ad1). requirements/runtime.lock is resolved for it; a newer
+# interpreter (3.13 under agent-setup.sh) has no numpy 1.26.4 wheel and would
+# build from source. uv provisions this CPython for the staged version.
+INSTALLER_PYTHON = "3.11.13"
 
 _DOWNLOAD = re.compile(
     r"(?i)huggingface\.co|hf_hub_download|snapshot_download|OfflineModeIsEnabled|LocalEntryNotFoundError"
@@ -172,9 +178,8 @@ def _manifest(uv: str) -> dict[str, Any]:
         "vibecomfy": vibecomfy,
         "tools": {
             "uv": {"version": uv_version},
-            # RE-VERIFY: pinned to this interpreter's exact version so uv can reuse it.
-            # The App manifest pins its own (3.11.13 on App pre-main 878c28df).
-            "python": {"version": platform.python_version()},
+            # The supported installer Python: the App install manifest's pin.
+            "python": {"version": INSTALLER_PYTHON},
         },
     }
     if RUNPOD_SOURCES is not None:
