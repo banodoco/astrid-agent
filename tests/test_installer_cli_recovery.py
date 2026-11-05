@@ -304,7 +304,7 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
         original_workspace.write_text("old workspace", encoding="utf-8")
 
     backend.restore = restore
-    backend.persist_identity = lambda version: events.append(("identity", version.root.name))
+    backend.persist_identity = lambda version, **_kw: events.append(("identity", version.root.name))
     manifest = tmp_path / "manifest.json"
     uv = tmp_path / "uv"
     write_json(manifest, {"release": 6})

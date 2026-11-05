@@ -65,7 +65,8 @@ def test_fresh_cli_custom_prompt_uses_common_choice_resolver(tmp_path, monkeypat
         def __init__(self, *_args, **_kwargs):
             self.managed_by = None
             self.service = SimpleNamespace(recorded=lambda: {}, choices=None,
-                                           selection=tmp_path / "selection.json")
+                                           selection=tmp_path / "selection.json",
+                                           home=tmp_path, system="linux", path=tmp_path / "astrid.service")
 
         def source_checkout_ownership(self, *_args):
             return False
@@ -95,7 +96,8 @@ def test_fresh_cli_decline_returns_before_setup_effects(tmp_path, monkeypatch, c
         def __init__(self, *_args, **_kwargs):
             self.managed_by = None
             self.service = SimpleNamespace(recorded=lambda: {}, choices=None,
-                                           selection=tmp_path / "selection.json")
+                                           selection=tmp_path / "selection.json",
+                                           home=tmp_path, system="linux", path=tmp_path / "astrid.service")
 
         def preflight_stop(self, *_args):
             raise AssertionError("declining must happen before setup preflight")
