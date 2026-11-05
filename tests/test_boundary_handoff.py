@@ -788,3 +788,45 @@ def test_mac_uninstall_helper_refuses_without_mutation(case, monkeypatch):
     assert str(error.value) == UPGRADE_UNINSTALL_REFUSAL
     assert (snapshot(c.root), snapshot(c.data), snapshot(c.destination),
             snapshot(c.service.path.parent), dict(manager)) == before
+
+
+def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case, monkeypatch, capsys):
+    # The handled R0->R1 route returns before the installer applies choices, so a
+    # requested change must be refused (never silently dropped) and saved policy
+    # must be carried over and summarised. R0 is an existing install: no prompt.
+    c = case
+    manifest = c.root.parent / 'manifest.json'
+    write_json(manifest, c.manifest)
+    saved = {'autostart': False, 'command': True, 'skills': True, 'skill_copies': False}
+    write_json(c.service.selection, {**read_json(c.service.selection), 'choices': saved})
+    before = c.service.selection.read_bytes(), snapshot(c.data)
+    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
+    monkeypatch.setattr(cli, 'validate_manifest', lambda value: value)
+    monkeypatch.setattr(cli, '_prompt_choices', lambda: pytest.fail('R0 is an existing install; no first-install prompt'))
+    args = ['--root', str(c.root), '--manifest', str(manifest), '--uv', sys.executable]
+
+    # Explicit change: refused before any handoff work, nothing changed.
+    assert cli.main([*args, '--autostart', 'on']) == 1
+    out = capsys.readouterr().out
+    assert 'cannot apply setup choice changes (autostart)' in out
+    assert not handoff.journal_path(c.service).exists() and not c.runtime_calls
+    assert (c.service.selection.read_bytes(), snapshot(c.data)) == before
+    assert_r0(c)
+
+    # Explicit value equal to the saved policy is no change: handoff completes with a summary.
+    assert cli.main([*args, '--autostart', 'off']) == 0
+    out = capsys.readouterr().out
+    assert 'Astrid setup summary:' in out and 'R0 to R1 handoff handled' in out
+    assert 'Astrid will not start at sign-in' in out  # saved policy, not defaults
+    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    assert read_json(c.service.selection)['choices'] == saved
+
+    # Completed-handoff fast path: a requested change is refused, no change is silent.
+    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
+    assert cli.main(['--root', str(c.root), '--command', 'off']) == 1
+    assert 'cannot apply setup choice changes (command)' in capsys.readouterr().out
+    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    assert cli.main(['--root', str(c.root)]) == 0
+    out = capsys.readouterr().out
+    assert 'Astrid setup summary:' in out and 'Astrid will not start at sign-in' in out
+    assert read_json(c.service.selection)['choices'] == saved

@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape
 from runtime_protocol import platform
 
 from ..core.execution.platform_helpers import owned_by_current_user
+from .choices import resolve_choices
 from .core import (
     Version,
     absolute,
@@ -426,6 +427,7 @@ class Service:
         self.selection = install_selection(self.home, self.system)
         self.env_file = root / "service-env.json"
         self.activation_lock_path = None
+        self.choices: dict[str, bool] | None = None
         # Retain our child handle for bookkeeping; C1 and the live recorded
         # process identity decide whether an unpublished owner can be stopped.
         self._foreground_process = None
@@ -441,6 +443,11 @@ class Service:
         if record and record.get("owner") != LABEL:
             raise ValueError("The service record belongs to another installer.")
         return record
+
+    def autostart_enabled(self) -> bool:
+        record = self.recorded()
+        return resolve_choices(explicit=self.choices, saved=record.get("choices"),
+                               existing_install=bool(record))["autostart"]
 
     def powershell(self, script: str) -> str:
         executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
@@ -462,7 +469,27 @@ class Service:
             if result == "ASTRID_TASK_COUNT=1":
                 return True
             raise ValueError("The Astrid sign-in task query was ambiguous or malformed.")
-        return self.path.exists()
+        return self.path.exists() or (self.system == "linux" and bool(self._systemd_links()))
+
+    def _systemd_links(self) -> list[Path]:
+        return [*self.path.parent.glob(f"*.wants/{self.path.name}"),
+                *self.path.parent.glob(f"*.requires/{self.path.name}")]
+
+    def _remove_systemd_links(self, data: Path, *, disable: bool = False) -> bool:
+        links = self._systemd_links()
+        if links:
+            record = self.recorded()
+            if (record.get("program_root") != str(self.root) or record.get("data_root") != str(data)
+                    or any(not link.is_symlink() or link.resolve() != self.path.resolve()
+                           or not owned_by_current_user(link, link.lstat()) for link in links)):
+                raise ValueError("The Astrid systemd enablement links have an unknown owner or target.")
+        if disable and self.systemd():
+            self.run(["systemctl", "--user", "disable", "astrid.service"])
+        for link in links:
+            if link.is_symlink() and link.resolve() == self.path.resolve():
+                link.unlink()
+                platform.fsync_directory(link.parent)
+        return bool(links)
 
     def systemd(self) -> bool:
         if self.system != "linux":
@@ -808,8 +835,10 @@ class Service:
                         return True
         return False
 
-    def _publish_posix_launch_admission(self, version: Version, data: Path) -> None:
+    def _reconcile_posix_launch_action(self, version: Version, data: Path, *, remove: bool = False) -> None:
         if not self.path.exists() and not self.path.is_symlink():
+            if remove and self.system == "linux" and self._remove_systemd_links(data) and self.systemd():
+                self.run(["systemctl", "--user", "daemon-reload"])
             return  # Autostart off stays off.
         message = f"The Astrid service {self.path} has an unknown or changed action/owner. Re-run the install line to repair it."
         selection = self.recorded()
@@ -845,7 +874,7 @@ class Service:
                 environment = document.get("EnvironmentVariables", {})
                 if not isinstance(environment, dict):
                     raise ValueError(message)
-                if action == canonical and "ASTRID_INSTALLER_OPERATION_ID" not in environment:
+                if not remove and action == canonical and "ASTRID_INSTALLER_OPERATION_ID" not in environment:
                     flush_current()
                     return
                 script = action[-1] if isinstance(action, list) and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
@@ -881,7 +910,7 @@ class Service:
                 if any(re.fullmatch(r'Environment="ASTRID_INSTALLER_OPERATION_ID=[0-9a-f]{32}"\n', line) is None
                        for line in bindings):
                     raise ValueError(message)
-                if action == canonical and not bindings:
+                if not remove and action == canonical and not bindings:
                     flush_current()
                     if self.systemd():
                         self.run(["systemctl", "--user", "daemon-reload"])
@@ -893,6 +922,16 @@ class Service:
                                       for line in lines if line not in bindings).encode("utf-8")
         except (KeyError, TypeError, IndexError, AttributeError, UnicodeError, plistlib.InvalidFileException) as exc:
             raise ValueError(message) from exc
+        if remove:
+            confirm_unchanged()
+            if self.system == "linux":
+                self._remove_systemd_links(data, disable=True)
+            confirm_unchanged()
+            self.path.unlink()
+            platform.fsync_directory(self.path.parent)
+            if self.system == "linux" and self.systemd():
+                self.run(["systemctl", "--user", "daemon-reload"])
+            return
         # Keep properties and permissions; recheck the observed file immediately
         # before atomic publication. A failed write never truncates the old unit.
         with tempfile.NamedTemporaryFile(dir=self.path.parent, prefix=".astrid-", delete=False) as pending:
@@ -911,18 +950,27 @@ class Service:
 
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Publish the canonical gate for an exactly known owned service action."""
+        self._reconcile_launch_action(version, data)
+
+    def remove_registration(self, version: Version, data: Path) -> None:
+        """Remove an owned login registration after the normal fenced stop."""
+        self._reconcile_launch_action(version, data, remove=True)
+
+    def _reconcile_launch_action(self, version: Version, data: Path, *, remove: bool = False) -> None:
         if self.system != "win32":
-            self._publish_posix_launch_admission(version, data)
+            self._reconcile_posix_launch_action(version, data, remove=remove)
             return
         query = TASK_QUERY + "if ($t) { ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments) }"
         observed = self.powershell(query).strip()
         if not observed:
+            if remove:
+                self.path.unlink(missing_ok=True)
             return
         action = json.loads(observed)
         argv = command(version, data, windows=True, log=self.log, env_file=self.env_file,
                        expected_lock=self.activation_lock_path)
         canonical = [{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
-        if action == canonical:
+        if not remove and action == canonical:
             return
         selection = self.recorded()
         if (selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
@@ -952,14 +1000,18 @@ class Service:
         def quote(value):
             return "'" + value.replace("'", "''") + "'"
         # Recheck exact observed bytes in the same Scheduler operation before
-        # changing only the action; triggers/settings/enablement survive.
+        # changing or removing the owned task.
+        operation = ("$t | Unregister-ScheduledTask -Confirm:$false" if remove else
+            f"$a=New-ScheduledTaskAction -Execute {quote(argv[0])} " +
+            f"-Argument {quote(subprocess.list2cmdline(argv[1:]))} -WorkingDirectory {quote(str(version.root))}; " +
+            "$t | Set-ScheduledTask -Action $a | Out-Null")
         self.powershell(TASK_QUERY +
             "if (-not $t) { throw 'The Astrid Runtime scheduled task disappeared.' }; " +
             "$prior=ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments); " +
             f"if ($prior -cne {quote(observed)}) {{ throw 'The Astrid Runtime scheduled task action changed.' }}; " +
-            f"$a=New-ScheduledTaskAction -Execute {quote(argv[0])} " +
-            f"-Argument {quote(subprocess.list2cmdline(argv[1:]))} -WorkingDirectory {quote(str(version.root))}; " +
-            "$t | Set-ScheduledTask -Action $a | Out-Null")
+            operation)
+        if remove:
+            self.path.unlink(missing_ok=True)
 
     def disable(self) -> None:
         if self.system == "darwin":
@@ -1062,30 +1114,36 @@ class Service:
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
     def register(self, version: Version, data: Path) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
             write_json(self.env_file, {})
         settings = self.settings()
-        user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
-        _atomic_write_text(self.path, render(
-            self.system, version, data, self.log, user=user, env_file=self.env_file,
-            expected_lock=self.activation_lock_path,
-        ))
-        if self.system == "darwin":
-            self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
-        elif self.system == "linux":
-            if self.systemd():
+        enabled = self.autostart_enabled()
+        supervised = not enabled or self.system != "linux" or self.systemd()
+        if not enabled or not supervised:
+            self.remove_registration(version, data)
+            if enabled and not supervised:
+                self.say(UNSUPERVISED_WARNING)
+        else:
+            user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
+            _atomic_write_text(self.path, render(
+                self.system, version, data, self.log, user=user, env_file=self.env_file,
+                expected_lock=self.activation_lock_path,
+            ))
+            if self.system == "darwin":
+                self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+            elif self.system == "linux":
                 self.run(["systemctl", "--user", "daemon-reload"])
                 self.run(["systemctl", "--user", "enable", "astrid.service"])
             else:
-                self.say(UNSUPERVISED_WARNING)
-        else:
-            xml_path = str(self.path).replace("'", "''")
-            self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
-        persist_install_identity(version, self.root, selection=self.selection, fields={
+                xml_path = str(self.path).replace("'", "''")
+                self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
+        fields = {
             "owner": LABEL, "program_root": str(self.root),
             "data_root": str(data), "service_settings": settings,
-        })
+        }
+        if self.choices is not None:
+            fields["choices"] = self.choices
+        persist_install_identity(version, self.root, selection=self.selection, fields=fields)
 
     def settings(self) -> dict:
         settings = read_json(self.env_file)
@@ -1097,9 +1155,17 @@ class Service:
     def restart_required(self) -> bool:
         # Legacy services did not record settings. An empty file preserves their
         # default behavior; a nonempty file needs one restart to establish it.
-        return self.recorded().get("service_settings", {}) != self.settings()
+        record = self.recorded()
+        enabled = self.autostart_enabled()
+        prior = resolve_choices(saved=record.get("choices"), existing_install=bool(record))["autostart"]
+        return (prior != enabled
+                or (not enabled and self.login_service_exists())
+                or (self.system == "linux" and self.path.exists() and not self.systemd())
+                or record.get("service_settings", {}) != self.settings())
 
     def start(self) -> bool:
+        if not self.autostart_enabled():
+            return False
         if self.system == "darwin":
             self.run(["launchctl", "kickstart", f"gui/{platform.current_user()}/{LABEL}"])
         elif self.system == "linux":
