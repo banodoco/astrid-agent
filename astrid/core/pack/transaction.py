@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ from astrid.core.pack.install import (
     _relative,
     _sync_tree,
     _tree,
+    LockedPythonEnvironment,
     install_pack,
 )
 from astrid.pack_build import build_pack_assets
@@ -683,6 +685,32 @@ def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
     return _refresh(root, pending, refresh)
 
 
+def _running_interpreter_environment(packages: Mapping[str, str]) -> LockedPythonEnvironment:
+    """Declare the caller's interpreter snapshot as a locked metadata index.
+
+    Callers of the group transaction pass the selected interpreter's package
+    snapshot (name -> version). The single-pack installer admits requirements
+    only from a LockedPythonEnvironment (park g2: names/versions alone carry no
+    provenance), so each snapshot entry is bound to the running interpreter's
+    installed METADATA file; the installer then re-reads that file in an
+    isolated interpreter. An entry with no matching installed distribution is
+    simply absent and the requirement fails closed.
+    """
+    from importlib import metadata as importlib_metadata
+
+    inventory: dict[str, tuple[str, Path]] = {}
+    for name, version in packages.items():
+        try:
+            dist = importlib_metadata.distribution(name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        info = getattr(dist, "_path", None)
+        if dist.version != version or info is None or not (Path(info) / "METADATA").is_file():
+            continue
+        inventory[str(name)] = (str(version), (Path(info) / "METADATA").resolve())
+    return LockedPythonEnvironment(interpreter=Path(sys.executable).resolve(), inventory=inventory)
+
+
 def _same_tree_bytes(left: Path, right: Path) -> bool:
     """Byte equality of two pack trees (paths, file bytes, symlink targets)."""
     if not left.is_dir() or not right.is_dir():
@@ -745,8 +773,11 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     builds = json.loads(_json(dict(builds or {})))
     toolchain = json.loads(_json(dict(toolchain or {})))
     expected_digests = dict(expected_digests or {})
-    if origin == "default" and packs and (not isinstance(revision, str) or not _SHA.fullmatch(revision)
-                                            or any(i not in expected_digests for i in packs)):
+    # A default group needs a full commit SHA (ca370d21), even when empty; only a
+    # release-manifest reconciliation to an empty default list has no commit (68ccd90e).
+    if origin == "default" and (packs or not reconcile_defaults) and (
+            not isinstance(revision, str) or not _SHA.fullmatch(revision)
+            or any(i not in expected_digests for i in packs)):
         raise PackInstallError("invalid_pin", "Default groups require a full commit SHA and each expected digest.")
     release_pins = {i: dict(v) for i, v in (release_pins or {}).items()}
     host_selected = {i: dict(v) for i, v in (selected or {}).items()}
@@ -860,7 +891,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             for pack_id, subpath in sorted(packs.items()):
                 install_pack(source=source, pack_id=pack_id, revision=commit, subpath=subpath, origin=origin,
                              expected_digest=expected_digests.get(pack_id), packs_root=candidate,
-                             selected=facts, release_pins=release_pins, import_contract=contract, python_packages=packages)
+                             selected=facts, release_pins=release_pins, import_contract=contract,
+                             python_environment=_running_interpreter_environment(packages))
             # Validate the resulting closure, including retained dependants after
             # removals. Inventory mode allows intentional edits to installed packs.
             for pack_id, path in _paths(candidate).items():
