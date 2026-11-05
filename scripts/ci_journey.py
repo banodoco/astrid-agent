@@ -1053,8 +1053,12 @@ def windows_task_owned(output: str, root: Path) -> bool:
     return ntpath.normcase(lines[1].replace("/", "\\")).startswith(root_prefix)
 
 
-def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False) -> None:
+def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False,
+                          release: int = 0) -> None:
     """Reject an existing real login install before changing any service."""
+    if release not in {0, 1}:
+        raise ValueError("Host availability supports only release 0 or release 1")
+    r1_cleanup = leg == "cleanup" and release == 1
     default = program_root()
     selection_path = default.parent / "astrid-install.json"
     selection = read_json(selection_path) if selection_path.exists() else None
@@ -1064,9 +1068,39 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
                          and selection.get("data_root") == str(data)
                          and selection.get("uninstalled") is True
                          and not selection.get("foreground"))
+    owned_r1_cleanup = False
+    if r1_cleanup and isinstance(selection, dict):
+        try:
+            marker = read_json(root / "install.json")
+            _, selected_data, selected = installation(root, data)
+            manifest = read_json(Path(selected["root"]) / "manifest.json")
+            r1_data = marker.get("r1_data_root")
+            owned_r1_cleanup = (
+                selection.get("owner") == "haus.astrid.runtime"
+                and selection.get("program_root") == str(root)
+                and selection.get("data_root") == str(data)
+                and selection.get("uninstalled") is not True
+                and not selection.get("foreground")
+                and isinstance(selection.get("identity"), dict)
+                and selection.get("identity") == selected.get("identity")
+                and selected_data == data
+                and manifest.get("release") == 1
+                and isinstance(r1_data, str)
+                and Path(r1_data) == Path(str(data) + "-r1")
+                and Path(r1_data).is_dir()
+            )
+        except (OSError, RuntimeError, TypeError, KeyError, ValueError):
+            owned_r1_cleanup = False
     if ((default / "install.json").exists() or (default / "current").exists()
-            or (selection is not None and not owned_uninstalled)):
+            or (selection is not None and not owned_uninstalled and not owned_r1_cleanup)):
         raise RuntimeError("A non-journey Astrid login installation is present")
+    if r1_cleanup:
+        if not owned_r1_cleanup:
+            raise RuntimeError("Release-1 cleanup selection is not owned by this journey")
+        # R1 deliberately keeps its service active after the documented
+        # uninstall refusal; this check verifies its R1 action and R0 handoff.
+        assert_direct_service_ownership(root, data, release=1)
+        return
     fresh = leg in {"fresh-install", "cleanup"}
     if sys.platform == "darwin":
         if (Path.home() / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist").exists():
@@ -2061,7 +2095,9 @@ def execute(args: argparse.Namespace) -> dict:
                                 recorded = read_json(result_path)
                                 recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
                                 write_json(result_path, recorded)
-                            if not expected_upgrade_refusal:
+                            if expected_upgrade_refusal:
+                                assert_host_available("cleanup", root, data, release=1)
+                            else:
                                 if narrow_refusal:
                                     assert_host_available("cleanup", root, data, skip_process_check=True)
                                 else:
