@@ -48,6 +48,9 @@ DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
 # Source-kind labels in discovery (and therefore priority) order.
 SOURCE_KINDS: tuple[str, ...] = ("source", "managed", "extra", "env")
+# The retired project-local pack id (Plan 06 PK-12, Decision 8). Discovery
+# never loads a pack with this id; user effects live in ``personal``.
+RETIRED_LOCAL_PACK_ID = "local"
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
@@ -317,7 +320,9 @@ def discover_canonical_pack_metadata(
             try:
                 if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
                     continue
-                if child.name == "__pycache__":
+                # ``local`` is the retired project-local pack id (PK-12): it stays
+                # reserved, so an old folder of that name is never loaded as a pack.
+                if child.name in {RETIRED_LOCAL_PACK_ID, "__pycache__"}:
                     continue
                 if manifest.is_file():
                     add(manifest, source)
@@ -656,6 +661,8 @@ def discover_pack_metadata(
                     " ".join(str(exc).split()),
                 )
                 continue
+            if pack.id == RETIRED_LOCAL_PACK_ID:
+                continue  # retired id stays reserved (PK-12)
             if previous_name is not None and previous_name[1] is None:
                 raise PackValidationError(
                     f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
@@ -691,7 +698,7 @@ def discover_pack_metadata(
         )
         _add(core_hivemind, "source")
     for pack in source_packs:
-        if pack.id == "hivemind":
+        if pack.id in {RETIRED_LOCAL_PACK_ID, "hivemind"}:
             continue
         _register_pack_name(Path(pack.root), pack.id)
         _add(pack, "source")
