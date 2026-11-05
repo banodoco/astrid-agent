@@ -14,9 +14,30 @@ import secrets
 import sqlite3
 import stat
 from pathlib import Path
+import traceback
 
 
 ACTOR = {"actor": "tst-c1-user"}
+FAILURE_FIELDS = frozenset({"project", "timeline", "object_digest", "task_id", "id", "slug", "name",
+                           "metadata", "content", "version", "status", "task", "schema_version",
+                           "target_schema_version", "project_id", "timeline_id", "cas_sha256"})
+
+
+def failure_diagnostic(exc: Exception) -> dict:
+    """Return a bounded helper-local traceback summary without paths or messages."""
+    frames = [{"function": frame.name, "line": frame.lineno}
+              for frame in traceback.extract_tb(exc.__traceback__)
+              if Path(frame.filename).name == "journey_workspace.py"
+              and frame.name in {"main", "snapshot"}]
+    kind = type(exc).__name__
+    error_type = kind if kind in {"KeyError", "ValueError", "TypeError", "RuntimeError"} else "other"
+    missing_field = None
+    if isinstance(exc, KeyError) and len(exc.args) == 1 and isinstance(exc.args[0], str):
+        if exc.args[0] in FAILURE_FIELDS:
+            missing_field = exc.args[0]
+    return {"schema": "astrid.live-workspace-failure.v2", "error_type": error_type,
+            "frames": frames[-10:], "http_status": None, "runtime_code": None,
+            "missing_field": missing_field}
 
 
 def realm_identity(realm: Path) -> dict:
@@ -188,6 +209,7 @@ def main(argv=None) -> int:
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--realm", type=Path, required=True)
     parser.add_argument("--request", type=Path, required=True)
+    parser.add_argument("--diagnostic", type=Path)
     args = parser.parse_args(argv)
     run_root, realm = args.run_root, args.realm
     if (not run_root.is_absolute() or run_root != run_root.resolve()
@@ -245,6 +267,14 @@ def main(argv=None) -> int:
         elif args.action == "snapshot":
             result = snapshot(service, request)
         print(json.dumps(result, sort_keys=True))
+    except Exception as exc:
+        if args.diagnostic is not None:
+            try:
+                args.diagnostic.write_text(json.dumps(failure_diagnostic(exc), sort_keys=True) + "\n",
+                                           encoding="utf-8")
+            except OSError:
+                pass
+        raise
     finally:
         service.close()
     return 0

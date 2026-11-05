@@ -22,6 +22,9 @@ ERROR_CODES = frozenset({"runtime_error", "unauthorized", "conflict", "validatio
 ERROR_TYPES = frozenset({"HTTPError", "URLError", "TimeoutError", "JSONDecodeError", "KeyError", "ValueError",
                          "TypeError", "RuntimeError", "OSError", "FileNotFoundError", "PermissionError"})
 FAILURE_FUNCTIONS = frozenset({"main", "execute", "selection_for", "check_selection", "request", "seed", "snapshot"})
+SNAPSHOT_FAILURE_FIELDS = frozenset({"project", "timeline", "object_digest", "task_id", "id", "slug", "name",
+                                    "metadata", "content", "version", "status", "task", "schema_version",
+                                    "target_schema_version", "project_id", "timeline_id", "cas_sha256"})
 
 
 def failure_diagnostic(exc):
@@ -36,15 +39,24 @@ def failure_diagnostic(exc):
 
 
 def valid_failure_diagnostic(value):
-    return (isinstance(value, dict) and set(value) == {"schema", "error_type", "frames", "http_status", "runtime_code"}
-            and value["schema"] == "astrid.live-workspace-failure.v1"
+    if not isinstance(value, dict):
+        return False
+    schema = value.get("schema")
+    expected = {"schema", "error_type", "frames", "http_status", "runtime_code"}
+    if schema == "astrid.live-workspace-failure.v2":
+        expected.add("missing_field")
+    return (set(value) == expected
+            and schema in {"astrid.live-workspace-failure.v1", "astrid.live-workspace-failure.v2"}
             and isinstance(value["error_type"], str) and value["error_type"] in ERROR_TYPES | {"other"}
             and isinstance(value["frames"], list) and len(value["frames"]) <= 10
             and all(isinstance(frame, dict) and set(frame) == {"function", "line"}
                     and isinstance(frame["function"], str) and frame["function"] in FAILURE_FUNCTIONS and type(frame["line"]) is int
                     and 0 < frame["line"] < 10000 for frame in value["frames"])
             and (value["http_status"] is None or type(value["http_status"]) is int and 100 <= value["http_status"] <= 599)
-            and (value["runtime_code"] is None or isinstance(value["runtime_code"], str) and value["runtime_code"] in ERROR_CODES))
+            and (value["runtime_code"] is None or isinstance(value["runtime_code"], str) and value["runtime_code"] in ERROR_CODES)
+            and (schema == "astrid.live-workspace-failure.v1" or
+                 value["missing_field"] is None or
+                 isinstance(value["missing_field"], str) and value["missing_field"] in SNAPSHOT_FAILURE_FIELDS))
 
 
 class LiveWorkspace:
