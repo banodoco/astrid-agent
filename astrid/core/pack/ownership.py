@@ -1,9 +1,20 @@
 """Shared first-owner policy for layered pack discovery."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Iterable
 
 from astrid.core.pack._common import PackValidationError
+
+
+def _same_pack_root(left: Any, right: Any) -> bool:
+    left_root, right_root = getattr(left, "root", None), getattr(right, "root", None)
+    if left_root is None or right_root is None:
+        return False
+    try:
+        return Path(left_root).resolve() == Path(right_root).resolve()
+    except OSError:
+        return False
 
 
 def first_pack_owner(items: Iterable[Any]) -> list[Any]:
@@ -22,6 +33,9 @@ def first_pack_owner(items: Iterable[Any]) -> list[Any]:
             continue
         source_kind = getattr(item, "source_kind", None) or "external"
         previous = seen.get(pack_id)
+        if previous is not None and _same_pack_root(getattr(previous[0], "pack", previous[0]), pack):
+            # One physical pack reached through two configured roots is one owner.
+            continue
         if previous is not None:
             _, previous_kind = previous
             if ((previous_kind in {"source", "core"} or source_kind in {"source", "core"})

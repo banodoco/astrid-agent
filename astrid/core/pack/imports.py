@@ -151,14 +151,22 @@ def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str]
         pack_id: {"root": str(root), "source_digest": source_digest}})
     if selected.get(pack_id) != {"root": str(root), "source_digest": source_digest}:
         raise ValueError("selected pack differs from admitted map")
-    os.environ.update(selected_pack_environment(selected))
-    import astrid.packs
-
+    environment = selected_pack_environment(selected)
+    previous = {name: os.environ.get(name) for name in environment}
+    os.environ.update(environment)
     prefix = "astrid.packs." + pack_id
-    roots = tuple(Path(item) for item in os.environ["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
+    roots = tuple(Path(item) for item in environment["ASTRID_PACKS_PATH"].split(os.pathsep) if item)
     try:
+        import astrid.packs
+
         astrid.packs._check_collisions(roots)
     except ImportError as exc:
+        # A refused selection leaves no process state behind (PK-4 composition repair).
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         raise ValueError(str(exc)) from exc
     names = dict(path_names or {})
     for finder in sys.meta_path:

@@ -30,7 +30,7 @@ from tempfile import TemporaryDirectory, gettempdir
 from typing import Any, Callable, Mapping, Sequence
 
 from astrid.pack_api import save_registry, timeline_duration_frames, timeline_render_duration_frames
-from astrid.pack_api import load_default_registry
+from astrid.core.element.registry import load_default_registry
 from astrid.core.element.schema import ElementDefinition
 from astrid.core.pack.personal import PERSONAL_PACK_ID, resolve_personal_packs_root
 from astrid.pack_api import write_json_atomic

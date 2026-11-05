@@ -263,7 +263,16 @@ def _pack_root_digests(
     if not config.get("clips"):
         return []
     require_project_snapshots(config)
-    registry = load_default_registry(project_root=checkout)
+    # Same selected registry as the renderer (g5 3aa8fd98): the canonical
+    # personal pack contributes elements, so its bytes are part of the identity.
+    from astrid.core.pack.personal import PERSONAL_PACK_ID, resolve_personal_packs_root
+
+    personal_root = resolve_personal_packs_root()
+    personal_pack = personal_root / PERSONAL_PACK_ID if personal_root is not None else None
+    if personal_pack is not None and (personal_pack / "pack.yaml").is_file():
+        registry = load_default_registry(project_root=checkout, extra_pack_roots=(str(personal_pack),))
+    else:
+        registry = load_default_registry(project_root=checkout)
 
     def identities(registry):
         resolved, effects, _, _ = _timeline_element_selection(config, registry=registry)

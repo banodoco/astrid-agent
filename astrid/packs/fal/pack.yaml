@@ -43,6 +43,12 @@ extensions:
           - external-escape-hatch
           note: fal.ai hunyuan-video-foley model requiring FAL_KEY API token and external
             GPU infrastructure.
+        sprite_upscale:
+          reasons:
+          - paid
+          - external-escape-hatch
+          note: fal.ai hosted image upscale requiring FAL_KEY; writes the upscaled sprite
+            sheet, not the universal result manifest.
 actions:
   fal_foley:
     name: fal Hunyuan-Video Foley

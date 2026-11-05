@@ -8,6 +8,10 @@
       },
       "dependencies": {
         "npm": [],
+        "packs": [
+          "editorial",
+          "iteration"
+        ],
         "python": [],
         "system": []
       },
@@ -20,11 +24,11 @@
       "id": "video-editor",
       "manifest": {
         "path": "pack.yaml",
-        "sha256": "33fc79c201d347607803cf28eb121b8a8b39e4ab571862f70c5603e6f417eb13"
+        "sha256": "5f18b104c39ef774e9157aa02da049c2196fc8f092f933d56787079043ccfecf"
       },
       "pack_id": "video_editing",
       "pack_version": "1.0.0",
-      "release_sha256": "99518d4e3ef89a8bf3c1376723ce65f02ff709685555d10b89f462d58ad291ad",
+      "release_sha256": "871088d34a81e71f41883d986ed00f27db3f4250c91990a8243db7f42b7c8d8d",
       "resources": [],
       "target": "astrid"
     }

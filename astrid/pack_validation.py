@@ -87,6 +87,25 @@ _MARKER_FIELDS = frozenset({
 })
 
 
+def _declared_requirement_names(manifest: Mapping[str, object]) -> list[str] | None:
+    """Return normalized declared Python distribution names (installer facts input)."""
+    deps = manifest.get("dependencies", {})
+    if not isinstance(deps, Mapping):
+        return None
+    raw = deps.get("python_requirements", [])
+    if not isinstance(raw, (list, tuple)):
+        return None
+    packages = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            return None
+        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9_.-]*)", item)
+        if not match:
+            return None
+        packages.append(match.group(1).lower().replace("_", "-").replace(".", "-"))
+    return sorted(set(packages))
+
+
 def _requirements(manifest: Mapping[str, object], packages: Mapping[str, str],
                   environment: Mapping[str, str] | None) -> tuple[str, str] | None:
     """Check PEP 508 against supplied immutable interpreter facts, never the host."""

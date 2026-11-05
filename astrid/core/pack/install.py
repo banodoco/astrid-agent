@@ -30,7 +30,7 @@ from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import _entry_path, pack_digest, read_pin, write_pin
 from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.pack_imports import ImportContract, check_pack_imports
-from astrid.pack_validation import CompatibilityResult, PackFacts, PinFacts, _requirements, validate_pack
+from astrid.pack_validation import CompatibilityResult, PackFacts, PinFacts, _declared_requirement_names, validate_pack
 
 _ID = re.compile(r"[a-z][a-z0-9_]*\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -392,7 +392,7 @@ class PublicationPolicy:
 _PUBLICATION = PublicationPolicy.for_platform(sys.platform)
 
 
-def _publish(stage: Path, destination: Path, *, publication: PublicationPolicy) -> None:
+def _publish(stage: Path, destination: Path, *, publication: PublicationPolicy = _PUBLICATION) -> None:
     if not destination.exists():
         os.rename(stage, destination)
         return
@@ -516,7 +516,7 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                     raise PackInstallError("pin_mismatch", "Observed pack digest does not match the expected digest.")
                 # ONE strict parser/schema and ONE pure compatibility checker.
                 manifest = validate_canonical_pack(stage, expected_pack_id=pack_id).definition.to_dict()
-                requirements = _requirements(manifest) or []
+                requirements = _declared_requirement_names(manifest) or []
                 if python_environment is not None:
                     packages = python_environment.selected_packages(requirements)
                 else:
