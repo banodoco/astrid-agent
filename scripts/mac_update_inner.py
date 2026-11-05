@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Standalone real-Mac install/update diagnostic; never imports ci_journey."""
-import datetime, fcntl, hashlib, json, os, plistlib, re, stat, subprocess, sys, threading, time, traceback, urllib.request
+import datetime, fcntl, hashlib, json, os, plistlib, pwd, re, stat, subprocess, sys, threading, time, traceback, urllib.request
 from pathlib import Path
 
 base=Path(sys.argv[1]); run=base/'run'; home=run/'home'; root=home/'.local/share/astrid'; data=run/'data'; evidence=base/'evidence'; evidence.mkdir(); run.mkdir(mode=0o700)
 for p in (home,run/'tmp'): p.mkdir()
 port=os.environ['ASTRID_RUNTIME_DOOR_PORT']; labels=('haus.astrid.runtime','haus.astrid.runtime.r1')
 env=dict(os.environ); env.update(HOME=str(home),TMPDIR=str(run/'tmp'),TMP=str(run/'tmp'),TEMP=str(run/'tmp'),XDG_DATA_HOME=str(home/'.local/share'),XDG_CONFIG_HOME=str(home/'.config'),XDG_STATE_HOME=str(home/'.local/state'),ASTRID_RUNTIME_DATA_ROOT=str(data),ASTRID_HOST_EXECUTION_PROFILE='installed')
-env.pop('RUNNER_TEMP',None); env.pop('PYTHONPATH',None); env.pop('PYTHONHOME',None)
+env['RUNNER_TEMP']=str(run/'tmp'); env.pop('PYTHONPATH',None); env.pop('PYTHONHOME',None)
 status={'stages':{},'outcome':'failed','cleanup':'unverified','uninstall':'not-run'}; initial={}; owned_label=None; old_pid=None; old_birth=None; observation=[]
 def save(): (evidence/'result.json').write_text(json.dumps(status,sort_keys=True,indent=2)+'\n')
 def mark(name,value='pass'): status['stages'][name]=value;save();print('STAGE',name,value,flush=True)
@@ -143,45 +143,32 @@ def task(version,tag,create):
  if result.get('ok') is not True or row.get('state')!='succeeded' or not {'sfx','sfx_meta'}<=outputs.keys() or any(not re.fullmatch(r'sha256:[0-9a-f]{64}',outputs[n].get('digest','')) or outputs[n].get('size',0)<=0 for n in ('sfx','sfx_meta')): raise RuntimeError('Task did not materialize outputs')
  return tid
 try:
- initial=states()
+ initial=states();status['initial_label_states']=initial
  if any(v not in ('enabled','false','not-listed') for v in initial.values()) or not all(absent(l) for l in labels): raise RuntimeError('Initial service state unavailable or occupied')
  mark('service-preflight')
  manifest=base/'app/public/install-manifest.json'; pins=json.loads(manifest.read_text()); lock=json.loads((base/'agent/runtime.lock.json').read_text())
  if pins['agent']['sha']!='57cabe57f8294eded12c555d8eb3d5e1f1d20368' or pins['runtime']['sha']!=lock['source_commit']:raise RuntimeError('Manifest source pins differ')
- (evidence/'candidate-manifest.json').write_bytes(manifest.read_bytes());status['candidate_manifest_sha256']=hashlib.sha256(manifest.read_bytes()).hexdigest();mark('manifest-pins')
+ status['candidate_manifest_sha256']=hashlib.sha256(manifest.read_bytes()).hexdigest()
+ if status['candidate_manifest_sha256']!='582741c3378d1a652c0b9615d53351b4e6ab527f816621a99fd33b2655b9a197' or pins['release']!=2:raise RuntimeError('Baseline manifest differs')
+ mark('manifest-pins')
  install=['/bin/sh',str(base/'app/public/install'),'--manifest',str(manifest),'--root',str(root),'--data-root',str(data)]
  cmd('fresh-install',install,work=base/'app');ready();name,v=current(); active=[l for l in labels if not absent(l)]
  if len(active)!=1: raise RuntimeError('Expected one Runtime service')
  owned_label=active[0];old_pid,old_birth,out=prove(owned_label);(evidence/'launchctl-before.txt').write_text(out);status.update(label=owned_label,old_pid=old_pid,old_birth=old_birth,old_version=name);mark('fresh-healthy')
  first=task(v,'before',True);status['before_task']=first;mark('before-task')
- standin=base/'standin.json';cmd('standin',[sys.executable,str(base/'agent/scripts/make_standin_release.py'),manifest,'--output',standin,'--sums',base/'standin-SHA256SUMS']);s=json.loads(standin.read_text())
- if s['release']!=pins['release']+1 or s['agent']!=pins['agent'] or s['runtime']!=pins['runtime']:raise RuntimeError('Stand-in pins or release differ')
- (evidence/'standin.json').write_bytes(standin.read_bytes());mark('standin-pins')
  prove(owned_label)
  snapshot('before-update')
+ private=base/'diagnostic-output';private.mkdir(mode=0o700)
  status['update_started_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();save()
- stop=threading.Event()
- def observe():
-  while not stop.wait(.25):
-   p=subprocess.run(['/bin/ps','-ww','-u',str(os.getuid()),'-o','pid=,lstart=,command='],capture_output=True,text=True,timeout=10)
-   lines=[line for line in p.stdout.splitlines() if str(data) in line and 'astrid_runtime' in line]
-   try:
-    disc=json.loads((data/'runtime/discovery.json').read_text());door=disc.get('door_endpoint');instance=disc.get('runtime_instance_id')
-   except (OSError,ValueError,TypeError):door=None;instance=None
-   observation.append({'t':time.monotonic(),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'old_alive':birth(old_pid)==old_birth,'runtime_count':len(lines),'lines':lines,'discovery_door_endpoint':door,'discovery_runtime_instance_id':instance})
-   if len(observation)>20000: return
- watcher=threading.Thread(target=observe,daemon=True);watcher.start()
- try: cmd('update',['/bin/sh',str(base/'app/public/install'),'--manifest',str(standin),'--root',str(root),'--data-root',str(data),'--update'],work=base/'app')
- finally:
-  stop.set();watcher.join(timeout=15);status['update_finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
-  try:snapshot('after-update')
-  except Exception as exc:status['after_update_snapshot_error']=type(exc).__name__
-  try:(evidence/'process-transition.json').write_text(json.dumps(observation,indent=2))
-  except Exception as exc:status['transition_capture_error']=type(exc).__name__
-  try:
-   p=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/{owned_label}'],capture_output=True,text=True,timeout=20)
-   (evidence/'launchctl-after.txt').write_text('exit='+str(p.returncode)+'\n'+p.stdout+'\n'+p.stderr)
-  except Exception as exc:status['launchctl_after_capture_error']=type(exc).__name__
+ source='import hashlib, json, os, pathlib, subprocess, sys, time\ninstall, source, root, data, out = map(pathlib.Path, sys.argv[1:])\nassert sys.platform == "darwin"\nassert all(p.is_absolute() and p.exists() for p in (install, source, root, data, out))\nbase_raw = source.read_bytes()\nassert hashlib.sha256(base_raw).hexdigest() == "582741c3378d1a652c0b9615d53351b4e6ab527f816621a99fd33b2655b9a197"\nbase = json.loads(base_raw)\nassert base["release"] == 2\nassert base["agent"]["sha"] == "57cabe57f8294eded12c555d8eb3d5e1f1d20368"\nassert base["runtime"]["sha"] == "2776ba973b6c8f3555b5629b0840d9691a98d3c2"\nversion_id = (root / "current").read_text().strip()\nassert version_id and "/" not in version_id and "\\\\" not in version_id\ninstalled = json.loads((root / "versions" / version_id / "manifest.json").read_text())\nassert installed["release"] == 2\nassert installed["agent"]["sha"] == "57cabe57f8294eded12c555d8eb3d5e1f1d20368"\nassert installed["runtime"]["sha"] == "2776ba973b6c8f3555b5629b0840d9691a98d3c2"\nmanifest = dict(base)\nmanifest["agent"] = dict(base["agent"], sha="39a3ed6da488b32196df3148cc3bd4da19f82472")\nmanifest["runtime"] = dict(base["runtime"], sha="9fc53b771134940aaac901e4cfc5d03c1db1a20a",\n                           schema_digest="sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c")\nmanifest["release"] = 3\nmanifest["qualification_marker"] = "fresh-install-update-stand-in"\nif "vibecomfy" not in manifest:\n    manifest["vibecomfy"] = installed["vibecomfy"]\nraw = (json.dumps(manifest, indent=2, sort_keys=True) + "\\n").encode()\npath = out / "diagnostic-manifest.json"\npath.write_bytes(raw)\nlogs = [pathlib.Path.home() / "Library/Logs/Astrid Runtime/install.log",\n        pathlib.Path.home() / "Library/Logs/Astrid Runtime/runtime-service.log"]\noffsets = [p.stat().st_size if p.exists() else 0 for p in logs]\nstart = time.time_ns()\nwith (out / "private-update-output.log").open("wb") as stream:\n    result = subprocess.run(["sh", str(install), "--manifest", str(path),\n                             "--root", str(root), "--data-root", str(data), "--update"],\n                            stdout=stream, stderr=subprocess.STDOUT, check=False)\nend = time.time_ns()\nrecords, log_status = [], []\nkeys = {"role", "event", "time_ns", "pid", "platform", "home", "lock_parent",\n        "lock_file", "home_relative_default"}\nfor log, offset in zip(logs, offsets):\n    if not log.exists():\n        log_status.append("missing")\n        continue\n    with log.open("rb") as stream:\n        if os.fstat(stream.fileno()).st_size < offset:\n            log_status.append("truncated")\n            continue\n        log_status.append("read")\n        stream.seek(offset)\n        for line in stream:\n            prefix = b"ASTRID_LOCK_DIAG "\n            if not line.startswith(prefix):\n                continue\n            try:\n                item = json.loads(line[len(prefix):])\n            except (ValueError, UnicodeError):\n                continue\n            if not isinstance(item, dict) or set(item) != keys:\n                continue\n            if (item["role"] not in ("updater", "candidate") or item["platform"] != "darwin"\n                    or item["event"] not in ("acquire_begin", "acquire_success", "acquire_contended",\n                                              "acquire_error", "release_begin", "release_success", "release_error")\n                    or type(item["pid"]) is not int or type(item["time_ns"]) is not int\n                    or type(item["home_relative_default"]) is not bool):\n                continue\n            if any(v is not None and (not isinstance(v, list) or len(v) != 2\n                       or any(type(n) is not int for n in v))\n                   for v in (item["home"], item["lock_parent"], item["lock_file"])):\n                continue\n            records.append(item)\nreceipt = {"baseline_release": 2, "baseline_manifest_sha256": hashlib.sha256(base_raw).hexdigest(),\n           "diagnostic_release": manifest["release"], "diagnostic_agent_sha": manifest["agent"]["sha"],\n           "diagnostic_runtime_sha": manifest["runtime"]["sha"],\n           "diagnostic_manifest_sha256": hashlib.sha256(raw).hexdigest(),\n           "update_exit": result.returncode, "start_ns": start, "end_ns": end,\n           "log_status": dict(zip(("installer", "runtime_service"), log_status)),\n           "records": sorted(records, key=lambda x: x["time_ns"])}\n(out / "sanitized-lock-diagnostic.json").write_text(json.dumps(receipt, indent=2) + "\\n")\nprint(json.dumps(receipt, indent=2))\n'
+ with (private/'handoff-stdout-private.log').open('wb') as output:
+  result=subprocess.run([sys.executable,'-',str(base/'app/public/install'),str(manifest),str(root),str(data),str(private)],input=source.encode(),stdout=output,stderr=subprocess.STDOUT,env=env,cwd=base/'app',timeout=3600)
+ status['update_finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+ if result.returncode:mark('handoff',{'exit':result.returncode});raise RuntimeError('Diagnostic handoff failed before receipt')
+ receipt=private/'sanitized-lock-diagnostic.json'
+ if receipt.is_symlink() or not receipt.is_file():raise RuntimeError('Diagnostic receipt unavailable')
+ diag=json.loads(receipt.read_text());(evidence/'sanitized-lock-diagnostic.json').write_bytes(receipt.read_bytes());mark('update',{'exit':diag['update_exit']})
+ if diag['update_exit']!=0:raise RuntimeError('Diagnostic update failed')
  ready();new,v2=current()
  if name==new or not (root/'versions'/name).is_dir() or not (root/'versions'/new).is_dir():raise RuntimeError('Version switching or retention failed')
  if [l for l in labels if not absent(l)]!=[owned_label]:raise RuntimeError('Service label changed')
@@ -194,10 +181,37 @@ except Exception as exc:
 finally:
  log=home/'Library/Logs/Astrid Runtime/install.log'
  try:
+  service=home/'Library/Logs/Astrid Runtime/runtime-service.log'
+  status['launch_admission_refusal']=service.is_file() and b'Choose Update to finish' in service.read_bytes()
+  native_log=log.read_text(errors='replace') if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(home) else ''
+  frames=re.findall(r'File "[^"\n]*/(astrid/installer/(?:backend|core|cli|service)\.py)", line (\d+)',native_log)
+  if frames:status['error_frames']=[{'file':f,'line':int(n)} for f,n in frames[-8:]]
+  status['recorded_door_mismatch']='recorded door is not on the configured loopback port' in native_log
+  status['rollback_unknown_state']='launchd service state is unknown; refusing to stop it' in native_log
+ except Exception:status['launch_admission_refusal']='unavailable'
+ try:
   if log.is_file() and not log.is_symlink() and log.resolve().is_relative_to(home): (evidence/'install.log').write_bytes(log.read_bytes())
  except Exception as exc: status['install_log_capture_error']=type(exc).__name__
+ status['private_service_log_state']='unverified'
  try:capture_service_log('before-cleanup')
  except Exception as exc:status['service_log_capture_error_before']=type(exc).__name__
+ try:
+  native=home/'Library/Logs/Astrid Runtime/runtime-service.log'
+  if native.is_symlink():raise RuntimeError('Native service log is symlink')
+  if not native.exists():status['private_service_log_state']='missing'
+  elif native.is_file() and native.resolve().is_relative_to(home):
+   userhome=Path(pwd.getpwuid(os.getuid()).pw_dir);preserve=userhome/'.astrid-mac-update04-private'
+   preserve.mkdir(mode=0o700,exist_ok=True)
+   if preserve.is_symlink() or preserve.resolve()!=preserve or preserve.stat().st_uid!=os.getuid() or stat.S_IMODE(preserve.stat().st_mode)!=0o700:raise RuntimeError('Private evidence parent unsafe')
+   before=native.stat();raw_log=native.read_bytes();after=native.stat()
+   if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns) or len(raw_log)!=before.st_size:raise RuntimeError('Native service log changed during capture')
+   source_hash=hashlib.sha256(raw_log).hexdigest();saved=preserve/('service-log-'+base.name+'.log')
+   fd=os.open(saved,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+   with os.fdopen(fd,'wb') as f:f.write(raw_log);f.flush();os.fsync(f.fileno())
+   if hashlib.sha256(saved.read_bytes()).hexdigest()!=source_hash:raise RuntimeError('Private service log digest differs')
+   status['private_service_log_sha256']=source_hash;status['private_service_log_retained']=True;status['private_service_log_state']='retained'
+  else:raise RuntimeError('Native service log identity unsafe')
+ except Exception as exc:status['service_log_preservation_error']=type(exc).__name__
  try:
   active=[l for l in labels if not absent(l)]
   if active:
@@ -220,6 +234,8 @@ finally:
  except Exception as exc:status['cleanup_error']=str(exc)
  try:capture_service_log('after-cleanup')
  except Exception as exc:status['service_log_capture_error_after']=type(exc).__name__
+ if status.get('private_service_log_state') not in ('retained','missing'):
+  status['cleanup']='service stopped; private log retention unverified'
  if status['uninstall']!='pass' or status['cleanup']!='task-owned services stopped; launchd state restored':
   status['outcome']='failed'
  save()
