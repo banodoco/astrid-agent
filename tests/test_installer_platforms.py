@@ -633,6 +633,68 @@ def test_door_verification_retries_status_observed_before_discovery_was_publishe
     sleep.assert_called_once_with(0.25)
 
 
+def test_door_verification_permanent_mismatch_reports_sanitized_endpoints(tmp_path, monkeypatch):
+    from astrid.installer import backend as module
+
+    program, data = tmp_path / "program", tmp_path / "data"
+    version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile",
+                      {"ASTRID_RUNTIME_DOOR_PORT": "17391"})
+    discovery = {"door_endpoint": "http://user:secret@127.0.0.1:17340/private?token=hidden#fragment"}
+    write_json(data / "runtime/discovery.json", discovery)
+    backend = Backend(program, tmp_path / "log", tmp_path / "uv")
+    backend.runtime = Mock(return_value={"discovery": discovery, "support": {"pid_alive": True}})
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(module.time, "sleep", lambda value: None)
+
+    with pytest.raises(RuntimeError) as raised:
+        backend.verify(version, data, "selected", timeout=1)
+
+    message = str(raised.value)
+    assert "expected endpoint: http://127.0.0.1:17391" in message
+    assert "observed endpoint: http://127.0.0.1:17340" in message
+    assert all(secret not in message for secret in ("user", "secret", "/private", "token=hidden", "fragment"))
+
+
+def test_door_verification_retries_stale_discovery_until_candidate_endpoint_is_published(tmp_path, monkeypatch):
+    import json
+
+    from astrid.installer import backend as module
+
+    program, data = tmp_path / "program", tmp_path / "data"
+    version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile",
+                      {"ASTRID_RUNTIME_DOOR_PORT": "17391"})
+    identity = {"release": 0, "managed_by": None}
+    stale = {"active_realm": "selected", "runtime_instance_id": "old-instance",
+             "door_endpoint": "http://127.0.0.1:17340", "identity": identity}
+    candidate = {"active_realm": "selected", "runtime_instance_id": "candidate-instance",
+                 "door_endpoint": "http://127.0.0.1:17391", "identity": identity}
+    write_json(data / "runtime/discovery.json", stale)
+    (data / "runtime/generic-host.ready.json").write_text("{}")
+    health = {"status": "ok", "runtime_instance_id": "candidate-instance", "identity": identity,
+              "services": [{"name": "pack-host", "state": "running"}]}
+    realm = {"realm_id": "selected"}
+    opener = Mock()
+    opener.open.side_effect = lambda request, timeout: io.BytesIO(json.dumps(
+        health if request.full_url.endswith("/health") else realm).encode())
+    monkeypatch.setattr(module.urllib.request, "build_opener", Mock(return_value=opener))
+    monkeypatch.setattr(module.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(module.time, "sleep", lambda value: None)
+    backend = Backend(program, tmp_path / "log", tmp_path / "uv")
+
+    def status(*args, **kwargs):
+        if backend.runtime.call_count == 2:
+            write_json(data / "runtime/discovery.json", candidate)
+        return {"discovery": stale if backend.runtime.call_count == 1 else candidate,
+                "support": {"pid_alive": True}}
+
+    backend.runtime = Mock(side_effect=status)
+    backend.verify(version, data, "selected", timeout=1)
+
+    assert backend.runtime.call_count == 2
+    assert opener.open.call_count == 2
+
+
 @pytest.mark.parametrize("scenario", ["slow-ready", "crash", "failed", "hang"])
 def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkeypatch, scenario):
     from astrid.installer import backend as module
