@@ -87,7 +87,8 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
         raise RuntimeError("Windows update baseline is not direct release 1")
     old_id = old_path.parent.name
     before_versions = {p.name for p in (root / "versions").iterdir()}
-    journey.healthy(data)
+    before_health = journey.healthy(data)
+    before_runtime_instance_id = before_health["runtime_instance_id"]
     journey.assert_direct_service_ownership(root, data, release=0)
     assert_running_task()
     labels_before = task_labels()
@@ -122,6 +123,11 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     assert_no_boundary(journey, root, data, boundary)
     journey.assert_direct_service_ownership(root, data, release=0)
     journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
+    health = journey.healthy(data)
+    if health["runtime_instance_id"] == before_runtime_instance_id:
+        raise RuntimeError("Update did not restart the Runtime")
+    if health["identity"]["release"] != 2:
+        raise RuntimeError("Post-update Runtime health is not release 2")
     assert_running_task()
     journey.assert_content(version, evidence, project, marker, digest)
     if not journey.sentinel_observation(sentinel, birth)["alive"]:
