@@ -14,7 +14,8 @@ def test_default_population_preserves_the_declared_parent_contract():
     parents = load_orchestrators(executor_registry=executors)
     elements = load_elements()
     # 29 packs: comfy_wrap is deleted (owner Decision 13; removed by park g1 at PK-4).
-    assert (len(packs), len(executors.list()), len(parents.list()), len(elements.list())) == (29, 107, 1, 44)
+    # 114 executors: + the 7 core Hivemind actions now admitted by default (p06 STOPS S13).
+    assert (len(packs), len(executors.list()), len(parents.list()), len(elements.list())) == (29, 114, 1, 44)
     assert {parent.id for parent in parents.list()} == {'video_editing.hype'}
     assert 'video_editing.hype' not in {executor.id for executor in executors.list()}
     owner = next(pack for pack in packs if pack.id == 'video_editing')

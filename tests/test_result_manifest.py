@@ -396,8 +396,12 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
         "hivemind.refresh_media",
         "hivemind.search",
     }
-    assert listed_ids - runnable_ids == external_ids
-    assert external_ids.isdisjoint(registry_ids)
+    # Core Hivemind ships in core since the foundation chain (PK-3): its matrix rows
+    # are runnable from the default registry, each with an exempted result policy
+    # (p06 STOPS S13), instead of listed-but-not-runnable external routes.
+    assert listed_ids - runnable_ids == set()
+    assert external_ids <= runnable_ids & exempted_ids
+    assert external_ids <= registry_ids
     for executor_id in external_ids:
         assert rows[executor_id]["reasons"] == ["external-escape-hatch"]
 
