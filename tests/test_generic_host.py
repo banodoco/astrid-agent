@@ -228,9 +228,10 @@ def test_external_pack_import_root_is_fenced_before_direct_command(tmp_path):
     pack_root = tmp_path / "fixture_provider"
     executor_root = pack_root / "executors" / "echo"
     executor_root.mkdir(parents=True)
+    # v3 manifest: external v1 packs are quarantined for an explicit schema upgrade (PK-4 g2 policy).
     (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: fixture_provider\nname: Fixture\nversion: 1.0\n"
-        "capabilities: [echo]\ncontent:\n  executors: executors\n",
+        "schema_version: 3\nid: fixture_provider\nname: Fixture\nversion: 1.0.0\npack_api: '1.0'\n"
+        "documentation: {kind: none, reason: host fixture.}\n",
         encoding="utf-8",
     )
     (pack_root / "helper.py").write_text("VALUE = 'before'\n", encoding="utf-8")
@@ -2114,7 +2115,8 @@ def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypa
 
 
 def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
-    root = tmp_path / "timeline"
+    # Not named after a bundled pack: an extra-root folder owns its name (PK-4 g4 ownership policy).
+    root = tmp_path / "timeline_fixture"
     root.mkdir()
     (root / "executor.yaml").write_text(
         json.dumps(
@@ -2677,7 +2679,7 @@ def test_unready_capability_is_not_dispatched(tmp_path, monkeypatch):
 
 def test_optional_capability_still_requires_storage_admission(tmp_path):
     manifest_path = _write_manifest(
-        tmp_path / "media",
+        tmp_path / "media_fixture",  # not a bundled pack name (PK-4 g4 ownership policy)
         capability_id="vibecomfy.video_enhance",
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
