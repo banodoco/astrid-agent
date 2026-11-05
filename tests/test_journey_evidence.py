@@ -44,6 +44,7 @@ def release1_receipts(tmp_path):
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
                                     "after_sha256": "b" * 64}
             if contract["job_id"] in {"direct-linux", "direct-macos"}:
+                row["final_cleanup"] = "retained-after-upgrade-refusal"
                 row["upgrade_uninstall_refusal"] = {
                     "exit_code": 1,
                     "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
@@ -234,6 +235,21 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-linux: required preserved-state uninstall refusal" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+def test_release1_gate_distinguishes_retained_refusal_from_successful_uninstall(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for job_id in ("direct-linux", "direct-macos", "direct-macos-fresh"):
+        path = tmp_path / job_id / "journey-result.json"
+        original = json.loads(path.read_text())
+        altered = copy.deepcopy(original)
+        altered["final_cleanup"] = ("pass" if job_id != "direct-macos-fresh"
+                                    else "retained-after-upgrade-refusal")
+        path.write_text(json.dumps(altered))
+        assert any(f"{job_id}: final cleanup" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+        path.write_text(json.dumps(original))
 
 
 def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):

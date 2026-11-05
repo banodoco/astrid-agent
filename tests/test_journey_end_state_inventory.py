@@ -45,6 +45,7 @@ def release1_row(contract, pinned):
             semantic_data={"identical": True, "before_sha256": "b" * 64, "after_sha256": "b" * 64},
         )
         if contract["job_id"] in {"direct-linux", "direct-macos"}:
+            row["final_cleanup"] = "retained-after-upgrade-refusal"
             row["upgrade_uninstall_refusal"] = {
                 "exit_code": 1,
                 "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",

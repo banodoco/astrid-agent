@@ -609,6 +609,113 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
     assert data.is_dir() and r1_data.is_dir()
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_upgrade_refusal_receipt_records_retained_service(tmp_path, monkeypatch, platform):
+    run_root = tmp_path / "journey"
+    root, data, r1_data = run_root / "program", run_root / "data", run_root / "data-r1"
+    version_root = root / "versions" / "v1"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    monkeypatch.setattr(journey, "assert_host_available", lambda *a, **kw: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *a: None)
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
+    @contextmanager
+    def sentinel(*args):
+        yield None, None
+    monkeypatch.setattr(journey, "sentinel_process", sentinel)
+    service = {"manager": "launchd" if platform == "darwin" else "systemd-user",
+               "foreground_fallback": False, "service_path": "owned-r1"}
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a, **kw: service)
+    version = {"root": str(version_root), "python": "python", "env": {}}
+    monkeypatch.setattr(journey, "installation", lambda *a: (version_root / "version.json", data, version))
+    def lifecycle(*a):
+        version_root.mkdir(parents=True)
+        data.mkdir()
+        r1_data.mkdir()
+        (root / "current").write_text("v1")
+        journey.write_json(root / "install.json", {"r1_data_root": str(r1_data)})
+        journey.write_json(version_root / "manifest.json", {"release": 1})
+        journey.write_json(run_root / "evidence" / args.leg / "journey-result.json", {"status": "pass"})
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", lifecycle)
+    def refuse(_version, _argv, evidence, name, **kwargs):
+        (evidence / name).write_text(journey.UPGRADE_UNINSTALL_REFUSAL + "\n")
+        raise RuntimeError(f"{name}: exit 1; see {evidence / name}")
+    monkeypatch.setattr(journey, "installed_cli", refuse)
+
+    result = journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
+    assert result["final_cleanup"] == receipt["final_cleanup"] == "retained-after-upgrade-refusal"
+    assert receipt["status"] == "pass"
+    assert receipt["upgrade_uninstall_refusal"]["service_manager"] == service
+    assert (root / "current").is_file() and data.is_dir() and r1_data.is_dir()
+
+
+@pytest.mark.parametrize("condition", ["absent", "r0-loaded", "r1-loaded", "r1-plist", "query-error"])
+def test_macos_final_uninstall_requires_both_services_and_plists_absent(tmp_path, monkeypatch, condition):
+    data = tmp_path / "data"
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501)
+    if condition == "r1-plist":
+        plist = tmp_path / "home/Library/LaunchAgents/haus.astrid.runtime.r1.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_text("retained")
+    calls = []
+    def query(command, **kwargs):
+        label = command[-1].split("/")[-1]
+        calls.append(label)
+        if condition == "query-error":
+            return SimpleNamespace(returncode=1, stderr="permission denied")
+        if (condition == "r0-loaded" and label == "haus.astrid.runtime" or
+                condition == "r1-loaded" and label == "haus.astrid.runtime.r1"):
+            return SimpleNamespace(returncode=0, stderr="")
+        return SimpleNamespace(returncode=113,
+                               stderr=f'Could not find service "{label}" in domain for user gui: 501\n')
+    monkeypatch.setattr(journey.subprocess, "run", query)
+    if condition == "absent":
+        journey.assert_macos_services_removed(data)
+        assert calls == ["haus.astrid.runtime", "haus.astrid.runtime.r1"]
+    else:
+        with pytest.raises(RuntimeError, match="LaunchAgent"):
+            journey.assert_macos_services_removed(data)
+
+
+def test_macos_cleanup_receipt_fails_if_r1_service_remains(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501)
+    monkeypatch.setattr(journey, "assert_host_available", lambda *a, **kw: None)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *a: None)
+    @contextmanager
+    def sentinel(*args):
+        yield None, None
+    monkeypatch.setattr(journey, "sentinel_process", sentinel)
+    def lifecycle(*a):
+        root.mkdir()
+        (root / "current").write_text("v1")
+        journey.write_json(run_root / "evidence" / args.leg / "journey-result.json", {"status": "pass"})
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", lifecycle)
+    monkeypatch.setattr(journey, "installation", lambda *a: (None, data, {"python": "python"}))
+    monkeypatch.setattr(journey, "installed_cli", lambda *a, **kw: (root / "current").unlink())
+    def query(command, **kwargs):
+        label = command[-1].split("/")[-1]
+        if label.endswith(".r1"):
+            return SimpleNamespace(returncode=0, stderr="")
+        return SimpleNamespace(returncode=113,
+                               stderr=f'Could not find service "{label}" in domain for user gui: 501')
+    monkeypatch.setattr(journey.subprocess, "run", query)
+    with pytest.raises(RuntimeError, match="LaunchAgent absence not confirmed"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
+    assert receipt["status"] == receipt["final_cleanup"] == "fail"
+    assert "haus.astrid.runtime.r1" in receipt["cleanup_error"]
+
+
 def test_tst_b1_cli_requires_owned_roots_before_any_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "bootstrap", lambda *unused: (_ for _ in ()).throw(
         AssertionError("bootstrap must not run")))

@@ -1532,6 +1532,22 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
             "service_manager": service}
 
 
+def assert_macos_services_removed(data: Path) -> None:
+    """Require both journey LaunchAgent labels and their plists to be absent."""
+    unit_dir = data.parent / "home" / "Library" / "LaunchAgents"
+    uid = os.getuid()
+    for label in ("haus.astrid.runtime", "haus.astrid.runtime.r1"):
+        plist = unit_dir / f"{label}.plist"
+        if plist.exists() or plist.is_symlink():
+            raise RuntimeError(f"LaunchAgent plist remained after final uninstall: {plist}")
+        completed = subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        missing = f'Could not find service "{label}" in domain for user gui: {uid}'
+        if (completed.returncode != 113 or completed.stderr.strip() not in
+                {missing, f"Bad request.\n{missing}"}):
+            raise RuntimeError(f"LaunchAgent absence not confirmed after final uninstall: {label}")
+
+
 def valid_sdk_capture_status(value: object) -> bool:
     return (isinstance(value, dict) and set(value) == {
         "schema", "exit_condition", "response_size", "json_object", "ok", "task_refs"
@@ -2113,6 +2129,8 @@ def execute(args: argparse.Namespace) -> dict:
                                         raise RuntimeError("Owned installation remained after final uninstall")
                             if not expected_upgrade_refusal and not narrow_refusal and runtime_processes(data):
                                 raise RuntimeError("Owned Runtime processes remained after final uninstall")
+                            if not expected_upgrade_refusal and sys.platform == "darwin":
+                                assert_macos_services_removed(data)
                             cleanup_sentinel = None if narrow_refusal else sentinel_observation(sentinel, birth)
                             if result_path.is_file() and not narrow_refusal:
                                 recorded = read_json(result_path)
@@ -2127,12 +2145,13 @@ def execute(args: argparse.Namespace) -> dict:
                                     assert_host_available("cleanup", root, data)
                             if not narrow_refusal and not cleanup_sentinel["alive"]:
                                 raise RuntimeError("Unrelated sentinel did not survive final uninstall")
+                            cleanup_outcome = "retained-after-upgrade-refusal" if expected_upgrade_refusal else "pass"
                             if result_path.is_file():
                                 recorded = read_json(result_path)
-                                recorded["final_cleanup"] = "pass"
+                                recorded["final_cleanup"] = cleanup_outcome
                                 write_json(result_path, recorded)
                             if "result" in locals():
-                                result["final_cleanup"] = "pass"
+                                result["final_cleanup"] = cleanup_outcome
                         except Exception as cleanup_error:
                             print(f"Journey cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
                                   file=sys.stderr, flush=True)
