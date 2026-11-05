@@ -37,7 +37,7 @@ class LinuxServiceOwnershipTests(unittest.TestCase):
 
     def test_missing_unit_is_an_ownership_failure(self):
         self.unit.unlink()
-        with self.assertRaisesRegex(RuntimeError, "did not install an owned systemd user unit"):
+        with self.assertRaisesRegex(RuntimeError, "did not install the owned astrid\\.service unit"):
             self._check()
 
     def test_missing_or_wrong_fragment_is_an_ownership_failure(self):
