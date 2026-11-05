@@ -36,7 +36,9 @@ runpod     → ``RUNPOD_API_KEY``
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -70,6 +72,54 @@ _PROVIDER_ENV: dict[str, str] = {
 }
 
 _LOG = logging.getLogger("astrid.credentials")
+_ACTION_ID_ENV = "ASTRID_ACTION_ID"
+_ACTION_SECRETS_ENV = "ASTRID_ACTION_ENV_ALLOWLIST"
+
+
+def _injected_worker_credential(
+    reference: str, environ: object | None
+) -> tuple[bool, str | None]:
+    """Resolve a secret inside an action worker without consulting files.
+
+    The host sets the action marker and its manifest declaration alongside
+    the injected environment. Once present, this policy is authoritative for
+    every CredentialsScope API, including the scope registry.
+    """
+    get = getattr(environ or {}, "get")
+    action_id = get(_ACTION_ID_ENV)
+    if not action_id:
+        return False, None
+    try:
+        declared = json.loads(get(_ACTION_SECRETS_ENV, "[]"))
+    except (TypeError, ValueError) as exc:
+        raise AstridError(
+            "action secret declaration is invalid",
+            code="invalid_action_secrets",
+            recovery_command="repair the action's secrets declaration and retry",
+        ) from exc
+    if not isinstance(declared, list) or any(not isinstance(name, str) for name in declared):
+        raise AstridError(
+            "action secret declaration is invalid",
+            code="invalid_action_secrets",
+            recovery_command="repair the action's secrets declaration and retry",
+        )
+    local_id = str(action_id).split(".", 1)[-1]
+    if reference not in declared:
+        raise AstridError(
+            f"secret {reference} is not declared for action {action_id}",
+            code="undeclared_secret",
+            field=reference,
+            recovery_command=f"declare {reference} in actions.{local_id}.secrets and retry",
+        )
+    value = get(reference)
+    if not value:
+        raise AstridError(
+            f"declared secret {reference} was not injected for action {action_id}",
+            code="missing_declared_secret",
+            field=reference,
+            recovery_command=f"configure {reference} for actions.{local_id}.secrets and retry",
+        )
+    return True, str(value)
 
 # ---------------------------------------------------------------------------
 # CredentialsScope
@@ -114,6 +164,19 @@ class CredentialsScope(ScopedConfig):
             raise AssertionError("unreachable")  # pragma: no cover
 
         reference = env_var or canonical_env_var
+        in_worker, injected = _injected_worker_credential(reference, os.environ)
+        if in_worker:
+            _LOG.debug(
+                "Resolved action credential provider=%s reference=%s source=environment",
+                provider,
+                reference,
+            )
+            return ResolvedCredential(
+                provider=provider,
+                reference=reference,
+                source="environment",
+                value=injected or "",
+            )
         value, source = load_local_api_key_with_source(
             reference,
             env_file=env_file,
@@ -183,6 +246,9 @@ class CredentialsScope(ScopedConfig):
                 recovery_command="use a canonical provider name (fal, openai, anthropic, deepseek, fireworks, gemini, giphy, huggingface, runpod)",
             )
         resolved_env_var = env_var or canonical_env_var
+        in_worker, injected = _injected_worker_credential(resolved_env_var, os.environ)
+        if in_worker:
+            return injected or ""
         return load_api_key(
             resolved_env_var,
             env_file=env_file,
@@ -208,6 +274,13 @@ def _make_resolver(provider: str, env_var: str):
     """Factory: create a scope resolver for *provider*."""
 
     def _resolve(request: ScopeRequest) -> CredentialsScope:
+        in_worker, injected = _injected_worker_credential(env_var, os.environ)
+        if not in_worker:
+            in_worker, injected = _injected_worker_credential(
+                env_var, request.env if request.env is not None else os.environ
+            )
+        if in_worker:
+            return CredentialsScope(provider=provider, value=injected or "")
         # Tier 1: explicit overrides take priority (caller-supplied key).
         # ScopeRequest.explicit keys are scope keys ("credentials.fal"); the
         # bare provider key ("fal") is also accepted for compatibility.

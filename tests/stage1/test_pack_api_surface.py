@@ -1,5 +1,6 @@
 """Freeze the pack API and retain every published version for compatibility checks."""
 
+import hashlib
 import inspect
 import json
 from pathlib import Path
@@ -14,6 +15,18 @@ from astrid import pack_api
 
 SNAPSHOT = Path(__file__).with_name("pack_api_surface.json")
 ROOT = str(Path(__file__).resolve().parents[2])
+V1_0_SNAPSHOT_SHA256 = "59987a823f707b0002fc3105bb34863cccdc04f09072f5b081230dfb2e1f0ea2"
+
+
+def _snapshot_digest(snapshot):
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _assert_v1_0_snapshot_pinned(history):
+    published = [entry for entry in history if tuple(entry["version"]) == (1, 0)]
+    assert len(published) == 1, "Keep the published 1.0 API snapshot in version history"
+    assert _snapshot_digest(published[0]) == V1_0_SNAPSHOT_SHA256, "Published API snapshot changed without a version bump"
 
 
 def _signature(value):
@@ -63,12 +76,23 @@ def _compatible(previous_version, previous, current_version, current):
 def test_frozen_surface_and_version_history():
     history = json.loads(SNAPSHOT.read_text())
     assert history, "Keep all published snapshots; append a new version for changes"
+    _assert_v1_0_snapshot_pinned(history)
     versions = [tuple(entry["version"]) for entry in history]
     assert all(len(version) == 2 and all(type(n) is int and n >= 0 for n in version) for version in versions)
     assert tuple(pack_api.VERSION) == versions[-1], "Append a snapshot for the new VERSION"
     for old, new in zip(history, history[1:]):
         assert _compatible(tuple(old["version"]), old["exports"], tuple(new["version"]), new["exports"]), "API change requires a compatible version bump"
     assert _surface() == history[-1]["exports"], "API changed: bump VERSION and append a snapshot; never rewrite published history"
+
+
+def test_rewriting_published_v1_0_snapshot_fails_without_version_bump():
+    history = json.loads(SNAPSHOT.read_text())
+    rewritten = json.loads(json.dumps(history))
+    baseline = next(entry for entry in rewritten if entry["version"] == [1, 0])
+    baseline["exports"]["rewritten_without_bump"] = {"type": "builtins.str"}
+    assert baseline["version"] == [1, 0]
+    with pytest.raises(AssertionError, match="Published API snapshot changed without a version bump"):
+        _assert_v1_0_snapshot_pinned(rewritten)
 
 
 @pytest.mark.parametrize(("version", "surface", "allowed"), [

@@ -1,175 +1,155 @@
-"""Static pack import and Astrid SDK compatibility checks.
-
-The validator never imports pack code. It reads ``pack.yaml`` and Python source
-files under the supplied pack root, then reports all findings as data.
-"""
+"""Canonical raw-source imports for selected pack action workers."""
 
 from __future__ import annotations
 
-import ast
+import importlib.abc
+import importlib.util
+import keyword
 import re
-from dataclasses import dataclass
+import sys
 from pathlib import Path
-from typing import Iterable
-
-import yaml
-
-_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+from typing import Mapping
 
 
-class _UniqueLoader(yaml.SafeLoader):
-    pass
+class _PackSourceLoader(importlib.abc.Loader):
+    """Compile admitted Python source directly; never consult pack bytecode."""
 
+    def __init__(self, source: Path | None, directory: Path) -> None:
+        self.source = source
+        self.directory = directory
 
-def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict:
-    pairs = loader.construct_pairs(node, deep=deep)
-    result: dict = {}
-    for key, value in pairs:
-        if not isinstance(key, str):
-            raise yaml.YAMLError("pack.yaml declaration keys must be strings")
-        if key in result:
-            raise yaml.YAMLError(f"pack.yaml declaration contains duplicate key {key!r}")
-        result[key] = value
-    return result
-
-
-_UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
-
-
-@dataclass(frozen=True, slots=True)
-class PackImportReport:
-    """Immutable result of checking a pack's source imports."""
-
-    root: Path
-    imports: tuple[str, ...]
-    errors: tuple[str, ...] = ()
-
-    @property
-    def valid(self) -> bool:
-        return not self.errors
-
-
-def _version(value: object) -> tuple[int, int, int] | None:
-    if not isinstance(value, str) or not (match := _VERSION.fullmatch(value.strip())):
+    def create_module(self, spec):
         return None
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+    def get_code(self, fullname):
+        if self.source is None:
+            return compile("", str(self.directory), "exec")
+        data = self.source.read_bytes()
+        return compile(data, str(self.source), "exec")
+
+    def exec_module(self, module) -> None:
+        if self.source is not None:
+            module.__file__ = str(self.source)
+            exec(self.get_code(module.__name__), module.__dict__)
 
 
-def _module_exists(root: Path, module: str) -> bool:
-    """Check a pack-local dotted module without importing or executing it."""
-    parts = module.split(".") if module else []
-    if not parts or any(not part.isidentifier() for part in parts):
-        return False
-    base = root.joinpath(*parts)
-    return (base.with_suffix(".py").is_file() or (base / "__init__.py").is_file())
+class _PackSourceFinder(importlib.abc.MetaPathFinder):
+    """Resolve only the selected canonical pack, directly from raw source."""
+
+    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str], source_digest: str) -> None:
+        self.prefix, self.root, self.path_names = prefix, root, path_names
+        self.source_digest = source_digest
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
+            if fullname.startswith("astrid.packs."):
+                pack_id = fullname.split(".")[2]
+                if not (Path(__file__).resolve().parents[2] / "packs" / pack_id).is_dir():
+                    raise ModuleNotFoundError(f"pack {pack_id!r} was not selected for this execution")
+            return None
+        suffix = fullname[len(self.prefix):].lstrip(".")
+        parts = suffix.split(".") if suffix else []
+        if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
+            raise ValueError("invalid action module name")
+        base = self.root.joinpath(*(self.path_names.get(part, part) for part in parts))
+        directory = base.resolve()
+        source = None
+        package = directory.is_dir()
+        if package:
+            initializer = base / "__init__.py"
+            if initializer.exists():
+                source = initializer.resolve()
+        else:
+            source = Path(str(base) + ".py").resolve()
+            if not source.is_file():
+                raise ModuleNotFoundError(f"no selected Python source for {fullname!r}")
+        if not directory.is_relative_to(self.root) or (source is not None and not source.is_relative_to(self.root)):
+            raise ValueError("action import escapes admitted pack root")
+        loader = _PackSourceLoader(source, directory)
+        spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
+        if source is not None:
+            spec.origin = str(source)
+            spec.has_location = True
+        if package:
+            spec.submodule_search_locations = [str(directory)]
+        return spec
 
 
-def _imports(tree: ast.AST) -> Iterable[tuple[str, int, tuple[str, ...]]]:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                yield alias.name, node.lineno, ()
-        elif isinstance(node, ast.ImportFrom):
-            yield "." * node.level + (node.module or ""), node.lineno, tuple(
-                alias.name for alias in node.names
-            )
+def pack_module_path(relative: Path) -> tuple[str, dict[str, str]]:
+    """Give manifest paths with punctuation a stable canonical spelling."""
+    names, aliases = [], {}
+    for part in (*relative.parts[:-1], relative.stem):
+        name = part if part.isidentifier() and not keyword.iskeyword(part) else "_path_" + part.encode("utf-8").hex()
+        if name != part:
+            aliases[name] = part
+        names.append(name)
+    return ".".join(names), aliases
 
 
-def check_pack_imports(
-    pack_root: str | Path,
-    *,
-    host_version: str,
-    public_sdk_modules: Iterable[str] = (),
-) -> PackImportReport:
-    """Validate local imports and the pack's declared Astrid SDK version.
+def install_pack_imports(pack_id: str, root: Path, path_names: Mapping[str, str] | None = None,
+                         *, source_digest: str | None = None) -> str:
+    """Bind this single-run worker to one canonical source identity.
 
-    ``astrid_version`` in ``pack.yaml`` is an exact ``MAJOR.MINOR.PATCH`` SDK
-    compatibility floor. It must be parseable, share the host's major version,
-    and not be newer than the host. The optional ``public_sdk_modules`` list is
-    the host's public module inventory; SDK imports outside it fail closed.
-
-    Imports outside the pack and the Astrid SDK are left to the pack's
-    environment resolver. Relative imports and imports rooted in the pack's
-    own top-level package are checked against source files on disk.
+    The host creates a fresh interpreter for each action. Keep imported modules
+    until that interpreter exits; updates never evict live module objects.
+    Dependency maps and descendant propagation are supplied by the host layer.
     """
-    root = Path(pack_root)
-    errors: list[str] = []
-    found_imports: list[str] = []
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", pack_id) or root.name != pack_id:
+        raise ValueError("selected pack id must match its directory name")
+    root = root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("selected pack root is unavailable")
+    builtin = Path(__file__).resolve().parents[2] / "packs" / pack_id
+    if builtin.is_dir() and builtin.resolve() != root:
+        raise ValueError("external selected pack collides with an in-tree pack")
+    import astrid.packs
 
-    parsed_host = _version(host_version)
-    if parsed_host is None:
-        return PackImportReport(root, (), (f"host_version must be MAJOR.MINOR.PATCH, got {host_version!r}",))
-
-    manifest_path = root / "pack.yaml"
+    prefix = "astrid.packs." + pack_id
+    # Reuse the namespace's reserved-id/core policy; do not maintain a second list.
+    roots = astrid.packs._PACK_ROOTS
+    if root != builtin.resolve():
+        roots = tuple(dict.fromkeys((*roots, root.parent)))
     try:
-        manifest = yaml.load(manifest_path.read_text(encoding="utf-8"), Loader=_UniqueLoader)
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        return PackImportReport(root, (), (f"pack.yaml could not be read: {exc}",))
-    if not isinstance(manifest, dict):
-        return PackImportReport(root, (), ("pack.yaml declaration must be a mapping",))
+        astrid.packs._check_collisions(roots)
+    except ImportError as exc:
+        raise ValueError(str(exc)) from exc
+    if source_digest is None:
+        from astrid.core.pack.identity import pack_digest
 
-    if "astrid_version" in manifest:
-        declared_version = manifest["astrid_version"]
-        parsed_declared = _version(declared_version)
-        if parsed_declared is None:
-            errors.append("pack.yaml: astrid_version must be MAJOR.MINOR.PATCH")
-        elif parsed_declared[0] != parsed_host[0] or parsed_declared > parsed_host:
-            errors.append(
-                f"pack.yaml: astrid_version {declared_version!r} is incompatible with host {host_version!r}"
-            )
-
-    available_sdk = frozenset(public_sdk_modules)
-    source_files = sorted(path for path in root.rglob("*.py") if not path.is_symlink())
-    package_name = root.name
-    for source in source_files:
-        try:
-            text = source.read_text(encoding="utf-8")
-            tree = ast.parse(text, filename=str(source))
-        except (OSError, UnicodeError, SyntaxError) as exc:
-            errors.append(f"{source.relative_to(root)}: malformed Python source: {exc}")
-            continue
-        for imported, line, names in _imports(tree):
-            found_imports.append(imported)
-            if imported.startswith("."):
-                level = len(imported) - len(imported.lstrip("."))
-                suffix = imported[level:]
-                source_module = source.relative_to(root).with_suffix("").as_posix().replace("/", ".")
-                is_package_init = source_module == "__init__" or source_module.endswith(".__init__")
-                if source_module.endswith(".__init__"):
-                    source_module = source_module[: -len(".__init__")]
-                elif source_module == "__init__":
-                    source_module = ""
-                parent = (
-                    source_module.split(".")
-                    if is_package_init and source_module
-                    else source_module.split(".")[:-1]
-                )
-                ascend = level - 1
-                if ascend > len(parent):
-                    errors.append(f"{source.relative_to(root)}:{line}: relative import escapes pack root")
-                    continue
-                target = ".".join(parent[: len(parent) - ascend] + ([suffix] if suffix else []))
-                if suffix and not _module_exists(root, target):
-                    errors.append(f"{source.relative_to(root)}:{line}: missing module {imported!r}")
-                continue
-
-            if imported == "astrid.sdk" or imported.startswith("astrid.sdk."):
-                components = imported.split(".")
-                private = next((component for component in components[2:] if component.startswith("_")), None)
-                if imported == "astrid.sdk":
-                    private = next((name for name in names if name.startswith("_")), private)
-                if private is not None:
-                    errors.append(f"{source.relative_to(root)}:{line}: forbidden private import {imported!r}")
-                elif imported != "astrid.sdk" and available_sdk and imported not in available_sdk:
-                    errors.append(f"{source.relative_to(root)}:{line}: missing SDK module {imported!r}")
-                continue
-
-            if imported == package_name or imported.startswith(package_name + "."):
-                local = imported[len(package_name):].lstrip(".")
-                if local and not _module_exists(root, local):
-                    errors.append(f"{source.relative_to(root)}:{line}: missing module {imported!r}")
-
-    return PackImportReport(root, tuple(sorted(set(found_imports))), tuple(errors))
+        source_digest = pack_digest(root)
+    names = dict(path_names or {})
+    for finder in sys.meta_path:
+        if isinstance(finder, _PackSourceFinder) and finder.prefix == prefix:
+            if (finder.root != root or finder.path_names != names
+                    or finder.source_digest != source_digest):
+                raise ValueError("selected pack changed; start a fresh action worker")
+            return prefix
+    if any(name == prefix or name.startswith(prefix + ".") for name in sys.modules):
+        raise ValueError("selected pack was imported before action admission")
+    sys.meta_path.insert(0, _PackSourceFinder(prefix, root, names, source_digest))
+    return prefix
 
 
-__all__ = ["PackImportReport", "check_pack_imports"]
+def pack_command_args(arguments: list[str], pack_id: str, root: Path) -> list[str]:
+    """Validate the supported Python command routes before importing pack code."""
+    args = list(arguments)
+    while args:
+        if args[0] in {"-u", "-B"}:
+            args.pop(0)
+        elif args[:2] == ["-X", "utf8"]:
+            del args[:2]
+        else:
+            break
+    if (not args or args[0].startswith("-") and args[0] not in {"-m", "-c"}
+            or args[0] in {"-m", "-c"} and len(args) < 2):
+        raise ValueError("unsupported selected Python command")
+    if args[0] == "-m":
+        prefix = "astrid.packs." + pack_id
+        if (args[1] != prefix and not args[1].startswith(prefix + ".")
+                or any(not part.isidentifier() or keyword.iskeyword(part) for part in args[1].split("."))):
+            raise ValueError("external command module is outside selected pack namespace")
+    elif args[0] != "-c":
+        source = Path(args[0]).resolve()
+        if not source.is_relative_to(root) or not source.is_file() or source.suffix != ".py":
+            raise ValueError("external command script is outside selected pack")
+    return args

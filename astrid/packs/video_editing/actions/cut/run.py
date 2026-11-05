@@ -31,7 +31,7 @@ from astrid.pack_api import compile_arrangement_plan
 from . import attempt_assets as _attempt_assets
 from . import probe
 from . import resume as _resume
-from . import timeline_build as _timeline_build
+from astrid.packs.editorial.api import cut_timeline as _timeline_build
 
 # ── re-exports from focused modules ────────────────────────────
 _FFPROBE_VERBOSE = probe._FFPROBE_VERBOSE  # alias for module-level access
@@ -40,23 +40,23 @@ probe_asset = probe.probe_asset
 probe_video_duration = probe.probe_video_duration
 
 # ── re-exports from timeline_build ─────────────────────────────
-_LEGACY_DEFAULT_CLIP_SEC = _timeline_build._LEGACY_DEFAULT_CLIP_SEC
-_THEME_DEFAULT_CLIP_SEC = _timeline_build._theme_default_clip_sec
-_BRANDED_EFFECT_IDS = _timeline_build._BRANDED_EFFECT_IDS
-_TEXT_STYLE_FONT = _timeline_build._TEXT_STYLE_FONT
-_clip_bounds_for_duration = _timeline_build._clip_bounds_for_duration
-_text_style_preset_to_attrs = _timeline_build._text_style_preset_to_attrs
-_drop_brand_animation_overrides = _timeline_build._drop_brand_animation_overrides
-_merged_theme_for_output = _timeline_build._merged_theme_for_output
-_joined_segment_text = _timeline_build._joined_segment_text
-_pool_entry_caption_kind = _timeline_build._pool_entry_caption_kind
-_tool_fingerprints = _timeline_build._tool_fingerprints
-_ref_path_for_metadata = _timeline_build._ref_path_for_metadata
+_LEGACY_DEFAULT_CLIP_SEC = _timeline_build.LEGACY_DEFAULT_CLIP_SEC
+_THEME_DEFAULT_CLIP_SEC = _timeline_build.theme_default_clip_sec
+_BRANDED_EFFECT_IDS = _timeline_build.BRANDED_EFFECT_IDS
+_TEXT_STYLE_FONT = _timeline_build.TEXT_STYLE_FONT
+_clip_bounds_for_duration = _timeline_build.clip_bounds_for_duration
+_text_style_preset_to_attrs = _timeline_build.text_style_preset_to_attrs
+_drop_brand_animation_overrides = _timeline_build.drop_brand_animation_overrides
+_merged_theme_for_output = _timeline_build.merged_theme_for_output
+_joined_segment_text = _timeline_build.joined_segment_text
+_pool_entry_caption_kind = _timeline_build.pool_entry_caption_kind
+_tool_fingerprints = _timeline_build.tool_fingerprints
+_ref_path_for_metadata = _timeline_build.ref_path_for_metadata
 build_multitrack_timeline = _timeline_build.build_multitrack_timeline
 build_metadata_from_arrangement = _timeline_build.build_metadata_from_arrangement
 arrangement_edl_rows = _timeline_build.arrangement_edl_rows
 write_edl = _timeline_build.write_edl
-_register_cut_outputs = _timeline_build._register_cut_outputs
+_register_cut_outputs = _timeline_build.register_cut_outputs
 
 # ── re-exports from resume ─────────────────────────────────────
 ensure_resume_mode_args = _resume.ensure_resume_mode_args

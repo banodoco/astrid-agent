@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ from astrid.core.pack.canonical import (
 )
 
 SOURCE_STATE_VERSION = 1
+_LOGGER = logging.getLogger(__name__)
 DEFAULT_PROFILE = "default"
 SOURCE_DECLARATIONS_ENV = "ASTRID_SOURCE_DECLARATIONS"
 SOURCE_STATE_ENV = "ASTRID_SOURCE_STATE"
@@ -333,6 +335,16 @@ def _record_from_mapping(value: Mapping[str, Any]) -> InstalledSource:
             "tree_sha256": value["tree_sha256"],
         }
     )
+    # Check the checkout and its pack-owned path before resolve() can hide a
+    # symlink, including a dangling link on the way to a missing pack.
+    checkout = next_parent_checkout(raw_root, declaration)
+    component = raw_root
+    while True:
+        if component.is_symlink():
+            raise SourceSetupError(f"managed source path is a symlink: {component}")
+        if component == checkout:
+            break
+        component = component.parent
     return InstalledSource(
         declaration.pack_id, raw_root.resolve(), declaration.repository, declaration.revision,
         declaration.pack_subpath, declaration.manifest_sha256 or "", declaration.tree_sha256 or "",
@@ -355,7 +367,28 @@ def active_sources(*, state_path: str | Path | None = None, verify: bool = True)
                 source.pack_id, source.repository, source.revision,
                 source.pack_subpath, source.manifest_sha256, source.tree_sha256,
             )
-            source = _validate_checkout(next_parent_checkout(source.pack_root, declaration), declaration)
+            checkout = next_parent_checkout(source.pack_root, declaration)
+            if not source.pack_root.exists() and not source.pack_root.is_symlink():
+                if checkout.exists():
+                    # A missing nested pack must not conceal other checkout
+                    # changes or a different revision. Only tracked deletions
+                    # inside the missing subtree are expected here.
+                    if not checkout.is_dir() or checkout.is_symlink():
+                        raise SourceSetupError(f"managed source checkout is unavailable: {checkout}")
+                    revision = _run_git("", "-C", str(checkout), "rev-parse", "HEAD")
+                    if revision != declaration.revision:
+                        raise SourceSetupError(f"managed source revision mismatch for {pack_id!r}: {revision} != {declaration.revision}")
+                    status = _run_git("", "-C", str(checkout), "status", "--porcelain=v1")
+                    prefix = declaration.pack_subpath + "/"
+                    if not status or any(not line.startswith(" D " + prefix) for line in (" " + status).splitlines()):
+                        raise SourceSetupError(f"managed source checkout is dirty: {checkout}")
+                _LOGGER.warning(
+                    "managed pack %r is unavailable because its folder is missing: %s; reinstall the pack to restore it",
+                    pack_id,
+                    source.pack_root,
+                )
+                continue
+            source = _validate_checkout(checkout, declaration)
         result.append(source)
     return tuple(result)
 

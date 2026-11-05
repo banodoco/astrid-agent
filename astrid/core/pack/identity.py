@@ -12,6 +12,7 @@ import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 _EXCLUDED_DIRS = {".git", ".build", ".generated", ".cache", ".pytest_cache", "__pycache__"}
@@ -120,7 +121,14 @@ def _validate_pin(pin: Mapping[str, Any]) -> dict[str, Any]:
     if origin in {"folder", "personal"}:
         if commit is not None or digest is not None:
             raise ValueError("folder and personal PINs must be unpinned")
-        if not value["source"].startswith("file:"):
+        source = urlsplit(value["source"])
+        if (
+            source.scheme != "file"
+            or source.netloc.lower() not in {"", "localhost"}
+            or not source.path.startswith("/")
+            or source.query
+            or source.fragment
+        ):
             raise ValueError("folder and personal PIN sources must be local file URIs")
     else:
         if not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit):

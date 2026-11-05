@@ -47,6 +47,7 @@ documentation:
   path: docs/SKILL.md
 actions:
   provision:
+    secrets: [RUNPOD_API_KEY]
     name: RunPod Provision
     version: 0.1.0
     short_description: Provision a RunPod GPU pod and emit a pod handle for later
@@ -229,6 +230,7 @@ actions:
       runtime_file: actions/provision/run.py
       runtime_module: astrid.packs.runpod.actions.provision.run
   exec:
+    secrets: [RUNPOD_API_KEY]
     name: RunPod Exec
     version: 0.1.0
     short_description: Execute a script on an existing RunPod pod and download artifacts.
@@ -385,6 +387,7 @@ actions:
       runtime_file: actions/exec/run.py
       runtime_module: astrid.packs.runpod.actions.exec.run
   pull:
+    secrets: [RUNPOD_API_KEY]
     name: RunPod Pull
     version: 0.1.0
     short_description: Pull artifacts from an existing RunPod pod into local storage.
@@ -510,6 +513,7 @@ actions:
       runtime_file: actions/pull/run.py
       runtime_module: astrid.packs.runpod.actions.pull.run
   teardown:
+    secrets: [RUNPOD_API_KEY]
     name: RunPod Teardown
     version: 0.1.0
     short_description: Terminate a RunPod pod. Idempotent.
@@ -615,6 +619,7 @@ actions:
       runtime_file: actions/teardown/run.py
       runtime_module: astrid.packs.runpod.actions.teardown.run
   session:
+    secrets: [RUNPOD_API_KEY]
     name: RunPod Session
     version: 0.1.0
     short_description: Composite provision → exec → teardown session with guaranteed

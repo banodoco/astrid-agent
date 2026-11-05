@@ -77,6 +77,63 @@ def test_pin_round_trip_has_exact_c4_fields_and_terminal_newline(tmp_path: Path)
     assert read_pin(path) == pin
 
 
+@pytest.mark.parametrize("origin", ["folder", "personal"])
+@pytest.mark.parametrize("source", ["file:///packs/personal", "file:/packs/personal", "file://localhost/packs/personal"])
+def test_pin_accepts_absolute_local_file_sources_for_unpinned_origins(
+    tmp_path: Path, source: str, origin: str
+) -> None:
+    path = tmp_path / "PIN"
+    value = {
+        "version": 1,
+        "source": source,
+        "commit": None,
+        "digest_rule": "pack-tree-v1",
+        "digest": None,
+        "origin": origin,
+    }
+    write_pin(path, value)
+    assert read_pin(path) == value
+
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="newline"):
+        read_pin(path)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["file://remote-host/path", "file:relative"],
+)
+@pytest.mark.parametrize("origin", ["folder", "personal"])
+def test_pin_rejects_nonlocal_or_nonabsolute_file_sources(
+    tmp_path: Path, source: str, origin: str
+) -> None:
+    path = tmp_path / "PIN"
+    value = {
+        "version": 1,
+        "source": source,
+        "commit": None,
+        "digest_rule": "pack-tree-v1",
+        "digest": None,
+        "origin": origin,
+    }
+    with pytest.raises(ValueError, match="local file URIs"):
+        write_pin(path, value)
+
+
+def test_pin_rejects_non_file_source_for_unpinned_origins(tmp_path: Path) -> None:
+    path = tmp_path / "PIN"
+    value = {
+        "version": 1,
+        "source": "https://example.invalid/personal",
+        "commit": None,
+        "digest_rule": "pack-tree-v1",
+        "digest": None,
+        "origin": "personal",
+    }
+    with pytest.raises(ValueError, match="local file URIs"):
+        write_pin(path, value)
+
+
 def test_pin_requires_newline_and_local_unpinned_origins(tmp_path: Path) -> None:
     path = tmp_path / "PIN"
     value = {
@@ -89,10 +146,6 @@ def test_pin_requires_newline_and_local_unpinned_origins(tmp_path: Path) -> None
     }
     write_pin(path, value)
     assert read_pin(path) == value
-
-    path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ValueError, match="newline"):
-        read_pin(path)
 
     invalid = {**value, "source": "https://example.invalid/personal"}
     with pytest.raises(ValueError, match="local file URIs"):

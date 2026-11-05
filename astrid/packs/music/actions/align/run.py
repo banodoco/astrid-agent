@@ -11,7 +11,7 @@ from pathlib import Path
 
 from astrid.pack_api import build_manifest, write_json_atomic, write_manifest
 from astrid.pack_api import AstridError
-from astrid.packs.chiptune.actions import _midi
+from astrid.packs.chiptune.api import parse_midi
 from astrid.packs.music.actions import _analysis
 
 
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
             raise AstridError("window_s must be positive and ref_s nonnegative")
         target_onset, target_chroma = _analysis.features(_analysis.decode(args.target))
         if args.reference.suffix.lower() in (".mid", ".midi"):
-            notes, _ = _midi.parse_midi(args.reference.read_bytes())
+            notes, _ = parse_midi(args.reference.read_bytes())
             if not notes:
                 raise AstridError("reference MIDI has no playable notes")
             result = _analysis.align_midi(notes, target_onset, args.ref_s, args.window_s)

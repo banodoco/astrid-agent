@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from astrid.packs.editorial.actions.refine.run import build_parser as refine_parser
-from astrid.packs.iteration.actions.assemble.run import build_parser as assemble_parser
+from astrid.packs.iteration.api import build_assemble_parser as assemble_parser
 from astrid.packs.video_editing.actions.cut.run import build_parser as cut_parser
 from astrid.packs.video_editing.actions.hype.steps import build_pool_cut_cmd
 

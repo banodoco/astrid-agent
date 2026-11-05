@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.chiptune.actions._midi import Note
+from astrid.packs.chiptune.api import Note
 from astrid.packs.music.actions._analysis import FRAME_S, align_audio, align_midi, track_beats
 
 
