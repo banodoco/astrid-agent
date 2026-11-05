@@ -1,6 +1,8 @@
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +10,58 @@ import pytest
 
 from scripts import check_journey_evidence as gate
 from scripts import windows_update_journey as update
+from scripts import ci_journey
+
+
+def test_update_scheduler_capture_filters_scope_and_projects_fields(tmp_path, monkeypatch):
+    seen = []
+    row = {"id": 201, "time": "2026-11-05T03:10:01.1234567Z", "result": "2147942401",
+           "instance": "{6b3040e8-a34e-43d9-b42b-96e4be464612}",
+           "action": "private path", "message": "private message"}
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "observed", "events": [row] * 70}))
+    monkeypatch.setattr(update.subprocess, "run", run)
+    update.capture_update_scheduler_events(tmp_path, datetime(2026, 11, 5, 3, 10, tzinfo=timezone.utc))
+    record = json.loads((tmp_path / update.SCHEDULER_EVENTS).read_text())
+    assert record["status"] == "observed" and len(record["events"]) == 64
+    assert record["started_at_utc"] == "2026-11-05T03:10:00.000000Z" and record["event_limit_reached"]
+    assert record["events"][0] == {"id": 201, "time": row["time"], "result_code": 2147942401,
+                                   "instance_id": "6b3040e8-a34e-43d9-b42b-96e4be464612"}
+    assert "private" not in json.dumps(record)
+    command = seen[0][0][-1]
+    assert "2026-11-05T03:10:00.000000Z" in command
+    assert "Data[@Name='TaskName']='\\Astrid Runtime'" in command
+    assert "-MaxEvents 64" in command and seen[0][1]["timeout"] == 30
+    assert update.SCHEDULER_EVENTS in (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+
+
+@pytest.mark.parametrize("value,expected", [
+    ({"status": "disabled", "events": []}, "disabled"),
+    ({"status": "unavailable", "events": []}, "unavailable"),
+    ({"status": "observed", "events": []}, "observed"),
+    ({"status": "observed", "events": [{"id": 201, "time": "private"}]}, "observed"),
+])
+def test_update_scheduler_capture_reports_absence_without_exposing_details(tmp_path, monkeypatch, value, expected):
+    monkeypatch.setattr(update.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=json.dumps(value)))
+    update.capture_update_scheduler_events(tmp_path, datetime.now(timezone.utc))
+    record = json.loads((tmp_path / update.SCHEDULER_EVENTS).read_text())
+    assert record["status"] == expected and record["events"] == []
+    assert "absence is inconclusive" in record["limitation"]
+
+
+def test_update_scheduler_capture_timeout_is_unavailable_and_staged(tmp_path, monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("private command", 30, output="private output")
+    monkeypatch.setattr(update.subprocess, "run", timeout)
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    update.capture_update_scheduler_events(evidence, datetime.now(timezone.utc))
+    ci_journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup" / update.SCHEDULER_EVENTS
+    record = json.loads(staged.read_text())
+    assert record["status"] == "unavailable" and record["events"] == []
+    assert "private" not in staged.read_text()
 
 
 def receipt():
@@ -66,6 +120,10 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "assert_no_boundary", lambda *args: None)
     monkeypatch.setattr(update.windows, "wait_for", lambda *a, **kw: None)
     calls = []
+    def capture(*args):
+        calls.append("capture")
+        raise OSError("capture failure")
+    monkeypatch.setattr(update, "capture_update_scheduler_events", capture)
     monkeypatch.setattr(update.windows, "task", lambda *a, **kw: (calls.append("task") or "task-1"))
     current = [old]
     def verify(mode, *args, **kwargs):
@@ -93,6 +151,7 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     assert result["outcome"] == "updated" and not gate._windows_fresh_update_errors(result, "direct-windows")
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
     assert len(bootstraps) == 1
+    assert "capture" not in calls
     app, candidate_path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data = bootstraps[0]
     assert app == tmp_path and candidate_path == evidence / "windows-update-manifest.json"
     assert shell == "powershell.exe" and mode == "update"
@@ -101,7 +160,9 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     current[0] = old
     calls.clear()
     for output in ("File is locked.", "Access denied."):
+        calls.clear()
         journey.bootstrap = lambda *a, _output=output: (_ for _ in ()).throw(RuntimeError(_output))
         with pytest.raises(RuntimeError, match=output):
             update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
         assert "verify-update" not in calls and "task" not in calls
+        assert "capture" in calls
