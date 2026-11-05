@@ -237,24 +237,16 @@ def _windows_fresh_update_errors(update, job_id):
                   "workspace", "sentinel", "prior_version"):
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: Windows update {check} did not pass")
-    outcome, code = update.get("outcome"), update.get("exit_code")
-    if outcome == "updated":
-        if (type(code) is not int or code != 0 or not old or not current or old == current
-                or update.get("refusal") is not None or not isinstance(update.get("task_id"), str)
-                or not update["task_id"].strip()):
-            errors.append(f"{job_id}: Windows update success identity is invalid")
-        for check in ("verify_update", "task_settled"):
-            if checks.get(check) != "pass":
-                errors.append(f"{job_id}: Windows update {check} did not pass")
-    elif outcome == "refused":
-        message = update.get("refusal")
-        if (type(code) is not int or code == 0 or not old or old != current
-                or not isinstance(message, str) or not re.fullmatch(
-                    r"(?:Error: )?[^.!?\r\n]*(?:locked|in use|being used by another process)[^.!?\r\n]*[.!?]",
-                    message, re.IGNORECASE)):
-            errors.append(f"{job_id}: Windows update refusal is invalid")
-    else:
+    if update.get("outcome") != "updated":
         errors.append(f"{job_id}: Windows update outcome is invalid")
+    code = update.get("exit_code")
+    if (type(code) is not int or code != 0 or not old or not current or old == current
+            or update.get("refusal") is not None or not isinstance(update.get("task_id"), str)
+            or not update["task_id"].strip()):
+        errors.append(f"{job_id}: Windows update success identity is invalid")
+    for check in ("verify_update", "task_settled"):
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: Windows update {check} did not pass")
     return errors
 
 

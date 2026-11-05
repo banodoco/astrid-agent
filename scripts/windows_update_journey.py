@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -81,17 +80,6 @@ def assert_no_boundary(journey, root, data, boundary):
         raise RuntimeError("Unexpected R0 boundary handoff state")
 
 
-def refusal_sentence(output):
-    """Accept only a single explicit lock-related refusal, never a traceback."""
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if any("traceback" in line.lower() for line in lines):
-        return None
-    matches = [line for line in lines if re.fullmatch(
-        r"(?:Error: )?[^.!?\r\n]*(?:locked|in use|being used by another process)[^.!?\r\n]*[.!?]",
-        line, re.IGNORECASE)]
-    return matches[0] if len(matches) == 1 else None
-
-
 def public_update(app, shell, manifest_path, root, data, evidence):
     # Execute the documented public line; bind its downloaded script to the
     # frozen App checkout so a changed deployment cannot qualify this candidate.
@@ -139,24 +127,20 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     manifest_path.write_bytes(raw)
     sha = hashlib.sha256(raw).hexdigest()
     (evidence / "windows-update-SHA256SUMS").write_text(f"{sha}  {manifest_path.name}\n", encoding="utf-8")
-    code, output = public_update(app, args.shell, manifest_path, root, data, evidence)
-    refusal = None if code == 0 else refusal_sentence(output)
-    if code and refusal is None:
-        raise RuntimeError(f"Windows update failed without a clean lock refusal (exit {code}); see {evidence / 'update-bootstrap.log'}")
+    code, _ = public_update(app, args.shell, manifest_path, root, data, evidence)
+    if code != 0:
+        raise RuntimeError(f"Windows update failed (exit {code}); see {evidence / 'update-bootstrap.log'}")
     version_path, selected_data, version = journey.installation(root, data)
     new_id = version_path.parent.name
     if selected_data != data or not old_path.is_file():
         raise RuntimeError("Update changed the data root or discarded the prior version")
-    if code == 0:
-        if new_id == old_id or new_id in before_versions:
-            raise RuntimeError("Update did not select a new version")
-        installed_raw = (version_path.parent / "manifest.json").read_bytes()
-        if installed_raw != raw:
-            raise RuntimeError("Installed stand-in manifest differs from canonical candidate")
-        if version.get("identity") != {"release": 2, "managed_by": None}:
-            raise RuntimeError("Update selected the wrong release identity")
-    elif new_id != old_id:
-        raise RuntimeError("Refused update changed current selection")
+    if new_id == old_id or new_id in before_versions:
+        raise RuntimeError("Update did not select a new version")
+    installed_raw = (version_path.parent / "manifest.json").read_bytes()
+    if installed_raw != raw:
+        raise RuntimeError("Installed stand-in manifest differs from canonical candidate")
+    if version.get("identity") != {"release": 2, "managed_by": None}:
+        raise RuntimeError("Update selected the wrong release identity")
     if task_labels() != labels_before or service_names() != services_before:
         raise RuntimeError("Update changed Astrid task or service labels")
     assert_no_boundary(journey, root, data, boundary)
@@ -167,18 +151,16 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     if not journey.sentinel_observation(sentinel, birth)["alive"]:
         raise RuntimeError("Unrelated sentinel did not survive update")
     checks = {key: "pass" for key in ("running_before", "owned_task", "healthy", "same_labels", "no_r0_handoff", "workspace", "sentinel", "prior_version")}
-    task_id = None
-    if not code:
-        receipt = journey.verify("update", version_path, data, evidence, before=evidence / "verify-observe.json")
-        if journey.read_json(receipt).get("passed") is not True:
-            raise RuntimeError("verify-update did not pass")
-        windows.wait_for("updated pack host ready", windows.host_ready)
-        task_id = windows.task(project, create_project=False)
-        if not journey.sentinel_observation(sentinel, birth)["alive"]:
-            raise RuntimeError("Unrelated sentinel did not survive the updated task")
-        checks.update(verify_update="pass", task_settled="pass")
-    return {"outcome": "refused" if code else "updated", "from_release": 1, "to_release": 2,
+    receipt = journey.verify("update", version_path, data, evidence, before=evidence / "verify-observe.json")
+    if journey.read_json(receipt).get("passed") is not True:
+        raise RuntimeError("verify-update did not pass")
+    windows.wait_for("updated pack host ready", windows.host_ready)
+    task_id = windows.task(project, create_project=False)
+    if not journey.sentinel_observation(sentinel, birth)["alive"]:
+        raise RuntimeError("Unrelated sentinel did not survive the updated task")
+    checks.update(verify_update="pass", task_settled="pass")
+    return {"outcome": "updated", "from_release": 1, "to_release": 2,
             "marker": MARKER, "manifest_sha256": sha, "old_version": old_id, "current_version": new_id,
             "task_labels": [{"path": path, "name": name} for path, name in labels_before],
             "service_names": services_before,
-            "exit_code": code, "refusal": refusal, "task_id": task_id, "checks": checks}
+            "exit_code": code, "refusal": None, "task_id": task_id, "checks": checks}
