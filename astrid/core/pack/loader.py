@@ -319,12 +319,24 @@ def _isolate_incompatible_packs(
         str((Path(personal_packs_root) / "personal").expanduser().resolve())
         if personal_packs_root is not None else None
     )
+    def identity_root(pack) -> str:
+        # A managed source (g2 source_setup) lives at <data>/<id>/<revision>[/<subpath>];
+        # its identity directory is <data>/<id>, which carries the pack id the
+        # basename rule (g4 validator) checks. Every other pack is its own root.
+        root = pack.root.resolve()
+        record = source_records.get(pack.id)
+        if record is not None and Path(record.pack_root).resolve() == root:
+            for parent in (root, *root.parents):
+                if parent.name == record.revision and parent.parent.name == pack.id:
+                    return str(parent.parent)
+        return str(root)
+
     active = packs
     while True:
         selected = {
             pack.id: {
                 "id": pack.id,
-                "canonical_root": str(pack.root.resolve()),
+                "canonical_root": identity_root(pack),
                 "schema_version": int(pack.schema_version),
                 "pack_api": pack.pack_api or "",
                 "dependencies": pack.dependencies,

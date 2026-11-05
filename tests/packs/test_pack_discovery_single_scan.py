@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import builtins
+import hashlib
+import io
 import json
+import os
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -10,7 +15,7 @@ from unittest import mock
 import pytest
 
 from astrid.core.pack import PackValidationError, discover_packs, loader, source_setup
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import discover_pack_metadata, pack_discovery_scope
 from astrid.core.rendering import registry
 
 
@@ -40,6 +45,93 @@ def _write_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields
             "operations": ["render", "support"],
         }), encoding="utf-8")
     return root
+
+
+# PK-11: v3 fixture writer and resource-access audit ported from M3-13 r6
+# (4cf47a6a, read-only reference; not merged) for the selected-source tests.
+def _write_v3_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields) -> Path:
+    root = parent / pack_id
+    root.mkdir(parents=True)
+    names = ["a.yaml", "b.yaml"] if duplicate else ["a.yaml"]
+    rendering_root = root / "rendering"
+    rendering_root.mkdir()
+    manifest = {
+        "schema_version": 3,
+        "id": pack_id,
+        "name": pack_id,
+        "version": "1.0.0",
+        "pack_api": "1.0",
+        "documentation": {"kind": "none", "reason": "Test fixture."},
+        "rendering": {
+            f"renderer_{index}": {"type": "renderer", "path": f"rendering/{name}"}
+            for index, name in enumerate(names)
+        },
+        "aliases": [{"kind": "renderer", "alias": f"{pack_id}.alias",
+                     "canonical_id": f"{pack_id}.renderer_0"}],
+        **fields,
+    }
+    (root / "pack.yaml").write_text(json.dumps(manifest), encoding="utf-8")
+    for index, name in enumerate(names):
+        (rendering_root / name).write_text(json.dumps({
+            "schema_version": 1,
+            "id": f"{pack_id}.renderer_{index}",
+            "name": name,
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "command": ["python3", "backend.py"],
+            "operations": ["render", "support"],
+        }), encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def resource_accesses(monkeypatch):
+    """Audit Path/io/builtin/descriptor opens and both SHA-256 entry paths."""
+    events = {"opens": [], "file_digests": [], "hash_bytes": []}
+
+    def wrap_open(real):
+        def record(file, *args, **kwargs):
+            if not isinstance(file, int):
+                events["opens"].append(Path(file).absolute())
+            return real(file, *args, **kwargs)
+        return record
+
+    for module in (builtins, io, os):
+        monkeypatch.setattr(module, "open", wrap_open(module.open))
+    real_sha256 = hashlib.sha256
+    real_file_digest = hashlib.file_digest
+    real_new = hashlib.new
+
+    class HashAudit:
+        def __init__(self, digest):
+            self.digest_object = digest
+
+        def update(self, data):
+            events["hash_bytes"].append(bytes(data))
+            return self.digest_object.update(data)
+
+        def __getattr__(self, name):
+            return getattr(self.digest_object, name)
+
+    def sha256(data=b"", **kwargs):
+        events["hash_bytes"].append(bytes(data))
+        return HashAudit(real_sha256(data, **kwargs))
+
+    def file_digest(stream, *args, **kwargs):
+        events["file_digests"].append(Path(stream.name).absolute())
+        return real_file_digest(stream, *args, **kwargs)
+
+    def new(name, data=b"", **kwargs):
+        digest = real_new(name, data, **kwargs)
+        if name.lower().replace("-", "") == "sha256":
+            events["hash_bytes"].append(bytes(data))
+            return HashAudit(digest)
+        return digest
+
+    monkeypatch.setattr(hashlib, "sha256", sha256)
+    monkeypatch.setattr(hashlib, "file_digest", file_digest)
+    monkeypatch.setattr(hashlib, "new", new)
+    return events
 
 
 @pytest.fixture(autouse=True)
@@ -246,3 +338,49 @@ def test_production_support_caller_uses_single_scan_without_a_backend_process(tm
     assert transport.run.call_count == 1
     assert transport.run.call_args.args[0] == "support"
     assert transport.run.call_args.kwargs["backend"] == "rendering.remotion"
+
+
+def test_guarded_and_unselected_payloads_are_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resource_accesses,
+) -> None:
+    """PK-11 (new): discovery acquires no byte of a guarded or unselected pack.
+
+    Guarded: a hidden pack and a quarantined (schema 2) pack inside a selected
+    root. Unselected: a whole collection that is neither passed as an extra
+    root nor named by ASTRID_PACKS_PATH. Their payloads are never opened or
+    hashed, cold or warm, while the selected pack is admitted.
+    """
+    selected_root = tmp_path / "selected-root"
+    selected = _write_v3_pack(selected_root, "selected")
+    hidden = _write_v3_pack(selected_root, "guarded_hidden", visibility="hidden")
+    legacy = selected_root / "guarded_legacy"
+    legacy.mkdir()
+    (legacy / "pack.yaml").write_text(json.dumps({
+        "schema_version": 2, "id": "guarded_legacy", "name": "Legacy", "version": "1.0.0",
+        "capabilities": [],
+    }), encoding="utf-8")
+    unselected = _write_v3_pack(tmp_path / "unselected-root", "unselected")
+    payloads = {}
+    for root in (hidden, legacy, unselected):
+        payload = root / "payload.bin"
+        payload.write_bytes(b"guarded-or-unselected-" + root.name.encode())
+        payloads[payload] = payload.read_bytes()
+    (selected / "payload.bin").write_bytes(b"selected-payload")
+
+    def unread() -> None:
+        for path, data in payloads.items():
+            assert path not in resource_accesses["opens"], path
+            assert path not in resource_accesses["file_digests"], path
+            assert not any(data in chunk for chunk in resource_accesses["hash_bytes"]), path
+        assert not any(path.is_relative_to(tmp_path / "unselected-root") for path in resource_accesses["opens"])
+
+    for scoped in (False, True):
+        for values in resource_accesses.values():
+            values.clear()
+        with pack_discovery_scope() if scoped else nullcontext():
+            for _ in range(2):  # cold, then warm
+                ids = {row.id for row in discover_pack_metadata(
+                    project_root=tmp_path / "project", extra_pack_roots=(str(selected_root),))}
+                assert "selected" in ids
+                assert not {"guarded_hidden", "guarded_legacy", "unselected"} & ids
+                unread()

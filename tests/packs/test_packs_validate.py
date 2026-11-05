@@ -1543,7 +1543,12 @@ agent:
         self.assertTrue({"h3_av", "timeline"} <= {result.path.name for result in report.results})
         self.assertFalse({"h3_av", "timeline"} & set(report.runtime_mounts))
         # The existing index, rather than a copied pack-ID list, declares assets.
-        self.assertIn("comfyui", report.excluded)
+        # PK-11 (STOPS S24): comfyui is gone (chain moved its recipe into
+        # vibecomfy; Decision 13 deletes it), so no manifestless engine-resource
+        # directory is left to exclude.
+        self.assertNotIn("comfyui", report.excluded)
+        self.assertFalse((_FIRST_PARTY_PACKS_ROOT / "comfyui").exists())
+        self.assertEqual(report.excluded, ())
 
     def test_non_temporary_layout_exception_cannot_defer_to_future_milestone(self) -> None:
         root = self.make_pack_root()
