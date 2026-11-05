@@ -86,6 +86,8 @@ def catalog_rows() -> list[dict[str, Any]]:
         for mode in entry["modes"] or [""]:
             add(entry["id"], entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
                 reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))
+            if entry.get("license_notice"):
+                rows[-1]["license_notice"] = entry["license_notice"]
             if entry.get("registry_id"):
                 rows[-1]["registry_id"] = entry["registry_id"]
             decision = template_availability(entry["id"], mode, "local")
@@ -235,7 +237,7 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if argv and argv[0] in {"workflow", "describe", "targets", "launch", "release", '--help', '-h'}:
+    if argv and argv[0] in {"workflow", "describe", "targets", "launch", "release", "foley", '--help', '-h'}:
         from astrid.core.generation.cli import main as workflow_main
         return workflow_main(argv)
     parser = argparse.ArgumentParser(prog="astrid generate", description="Discover generation capabilities and readiness.")
@@ -253,5 +255,6 @@ def main(argv: list[str] | None = None) -> int:
             if row["ready"] and row.get("readiness_scope") == "target_inventory":
                 status = f"ready: {status}"
             fix = f"; fix: {row['fix']}" if row["fix"] else ""
-            print(f"{row['id']}  {row['kind']}  {row['mode'] or '-'}  {row['target']}  {status}{fix}")
+            notice = f"; {row['license_notice']}" if row.get("license_notice") else ""
+            print(f"{row['id']}  {row['kind']}  {row['mode'] or '-'}  {row['target']}  {status}{fix}{notice}")
     return 0

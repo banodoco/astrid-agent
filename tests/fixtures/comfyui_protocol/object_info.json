@@ -1,0 +1,1024 @@
+{
+  "CFGGuider": {
+    "name": "CFGGuider",
+    "display_name": "CFG Guider",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/sampling/guiders",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "input_order": {
+      "required": [
+        "model",
+        "positive",
+        "negative",
+        "cfg"
+      ]
+    },
+    "input_order_all": [
+      "model",
+      "positive",
+      "negative",
+      "cfg"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_custom_sampler.py",
+    "source_line": 823,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "positive": [
+          "CONDITIONING"
+        ],
+        "negative": [
+          "CONDITIONING"
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 8.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ]
+      }
+    },
+    "output": [
+      "GUIDER"
+    ],
+    "output_name": [
+      "Guider"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "CLIPLoader": {
+    "name": "CLIPLoader",
+    "display_name": "CLIPLoader",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/loaders",
+    "function": "load_clip",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "clip_name",
+        "type"
+      ],
+      "optional": [
+        "device"
+      ]
+    },
+    "input_order_all": [
+      "clip_name",
+      "type",
+      "device"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 1017,
+    "source_kind": "static_ast",
+    "unresolved": [
+      {
+        "input": "clip_name",
+        "field": "choices",
+        "expression": "folder_paths.get_filename_list('text_encoders')",
+        "status": "dynamic choice; do not imply any model/file exists"
+      }
+    ],
+    "input": {
+      "required": {
+        "clip_name": [
+          [
+            "qwen3vl_8b_int8_convrot.safetensors"
+          ]
+        ],
+        "type": [
+          [
+            "stable_diffusion",
+            "stable_cascade",
+            "sd3",
+            "stable_audio",
+            "mochi",
+            "ltxv",
+            "pixart",
+            "cosmos",
+            "lumina2",
+            "wan",
+            "hidream",
+            "chroma",
+            "ace",
+            "omnigen2",
+            "qwen_image",
+            "hunyuan_image",
+            "flux2",
+            "ovis",
+            "longcat_image",
+            "cogvideox",
+            "lens",
+            "pixeldit",
+            "ideogram4",
+            "boogu",
+            "krea2",
+            "joyimage",
+            "mage",
+            "minimax",
+            "yue2",
+            "flux3",
+            "moss_image",
+            "fibo2"
+          ]
+        ]
+      },
+      "optional": {
+        "device": [
+          [
+            "default",
+            "cpu"
+          ],
+          {
+            "advanced": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "CLIP"
+    ],
+    "output_name": [
+      "Clip"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "EmptyLatentImage": {
+    "name": "EmptyLatentImage",
+    "display_name": "EmptyLatentImage",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/latent",
+    "function": "generate",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "width",
+        "height",
+        "batch_size"
+      ]
+    },
+    "input_order_all": [
+      "width",
+      "height",
+      "batch_size"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 1255,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "width": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 8,
+            "tooltip": "The width of the latent images in pixels."
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 8,
+            "tooltip": "The height of the latent images in pixels."
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096,
+            "tooltip": "The number of latent images in the batch."
+          }
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "Latent"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "KSamplerSelect": {
+    "name": "KSamplerSelect",
+    "display_name": "KSamplerSelect",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/sampling/samplers",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "input_order": {
+      "required": [
+        "sampler_name"
+      ]
+    },
+    "input_order_all": [
+      "sampler_name"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_custom_sampler.py",
+    "source_line": 379,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "imported_source": {
+      "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy/samplers.py",
+      "source_sha256": "2d2dcdee55ff336ad5920a9af9326694ed8e4512390edaf7bbb12590a4ae002a",
+      "constants": {
+        "SAMPLER_NAMES": [
+          "euler",
+          "euler_cfg_pp",
+          "euler_ancestral",
+          "euler_ancestral_cfg_pp",
+          "heun",
+          "heunpp2",
+          "exp_heun_2_x0",
+          "exp_heun_2_x0_sde",
+          "dpm_2",
+          "dpm_2_ancestral",
+          "lms",
+          "dpm_fast",
+          "dpm_adaptive",
+          "dpmpp_2s_ancestral",
+          "dpmpp_2s_ancestral_cfg_pp",
+          "dpmpp_sde",
+          "dpmpp_sde_gpu",
+          "dpmpp_2m",
+          "dpmpp_2m_cfg_pp",
+          "dpmpp_2m_sde",
+          "dpmpp_2m_sde_gpu",
+          "dpmpp_2m_sde_heun",
+          "dpmpp_2m_sde_heun_gpu",
+          "dpmpp_3m_sde",
+          "dpmpp_3m_sde_gpu",
+          "ddpm",
+          "lcm",
+          "ipndm",
+          "ipndm_v",
+          "deis",
+          "cfgpp_ud10_ab",
+          "res_multistep",
+          "res_multistep_cfg_pp",
+          "res_multistep_ancestral",
+          "res_multistep_ancestral_cfg_pp",
+          "gradient_estimation",
+          "gradient_estimation_cfg_pp",
+          "er_sde",
+          "seeds_2",
+          "seeds_3",
+          "sa_solver",
+          "sa_solver_pece",
+          "ddim",
+          "uni_pc",
+          "uni_pc_bh2"
+        ]
+      }
+    },
+    "input": {
+      "required": {
+        "sampler_name": [
+          [
+            "euler",
+            "euler_cfg_pp",
+            "euler_ancestral",
+            "euler_ancestral_cfg_pp",
+            "heun",
+            "heunpp2",
+            "exp_heun_2_x0",
+            "exp_heun_2_x0_sde",
+            "dpm_2",
+            "dpm_2_ancestral",
+            "lms",
+            "dpm_fast",
+            "dpm_adaptive",
+            "dpmpp_2s_ancestral",
+            "dpmpp_2s_ancestral_cfg_pp",
+            "dpmpp_sde",
+            "dpmpp_sde_gpu",
+            "dpmpp_2m",
+            "dpmpp_2m_cfg_pp",
+            "dpmpp_2m_sde",
+            "dpmpp_2m_sde_gpu",
+            "dpmpp_2m_sde_heun",
+            "dpmpp_2m_sde_heun_gpu",
+            "dpmpp_3m_sde",
+            "dpmpp_3m_sde_gpu",
+            "ddpm",
+            "lcm",
+            "ipndm",
+            "ipndm_v",
+            "deis",
+            "cfgpp_ud10_ab",
+            "res_multistep",
+            "res_multistep_cfg_pp",
+            "res_multistep_ancestral",
+            "res_multistep_ancestral_cfg_pp",
+            "gradient_estimation",
+            "gradient_estimation_cfg_pp",
+            "er_sde",
+            "seeds_2",
+            "seeds_3",
+            "sa_solver",
+            "sa_solver_pece",
+            "ddim",
+            "uni_pc",
+            "uni_pc_bh2"
+          ]
+        ]
+      }
+    },
+    "output": [
+      "SAMPLER"
+    ],
+    "output_name": [
+      "Sampler"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "ManualSigmas": {
+    "name": "ManualSigmas",
+    "display_name": "ManualSigmas",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/sampling/sigmas",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "input_order": {
+      "required": [
+        "sigmas"
+      ]
+    },
+    "input_order_all": [
+      "sigmas"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_custom_sampler.py",
+    "source_line": 1125,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "sigmas": [
+          "STRING",
+          {
+            "default": "1, 0.5",
+            "multiline": false
+          }
+        ]
+      }
+    },
+    "output": [
+      "SIGMAS"
+    ],
+    "output_name": [
+      "Sigmas"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "QwenImage21Cache": {
+    "name": "QwenImage21Cache",
+    "display_name": "Qwen Image 2.1 Cache",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/conditioning/qwen image",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_qwen",
+    "input_order": {
+      "required": [
+        "model",
+        "device",
+        "dtype"
+      ]
+    },
+    "input_order_all": [
+      "model",
+      "device",
+      "dtype"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "54ce02aa9e167c0b497ce026ac6b558f539427d2d1ed4fc1fcc2ec8e6bc529da",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_qwen.py",
+    "source_line": 185,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "device": [
+          [
+            "auto",
+            "gpu",
+            "cpu",
+            "off"
+          ],
+          {
+            "default": "auto",
+            "tooltip": "auto uses spare VRAM, then RAM. cpu (RAM) is prefetched behind compute and costs little speed. off recomputes the prefix every step, which is slower but is the one way to rule the cache out."
+          }
+        ],
+        "dtype": [
+          [
+            "default",
+            "int8",
+            "int4"
+          ],
+          {
+            "default": "default",
+            "tooltip": "Storage precision. default is lossless. int8 halves the cache at about bf16 accuracy, int4 quarters it but roughly doubles the per-step error."
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_name": [
+      "Model"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "RandomNoise": {
+    "name": "RandomNoise",
+    "display_name": "RandomNoise",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/sampling/noise",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "input_order": {
+      "required": [
+        "noise_seed"
+      ]
+    },
+    "input_order_all": [
+      "noise_seed"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_custom_sampler.py",
+    "source_line": 1003,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "noise_seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "NOISE"
+    ],
+    "output_name": [
+      "Noise"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "SamplerCustomAdvanced": {
+    "name": "SamplerCustomAdvanced",
+    "display_name": "SamplerCustomAdvanced",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/sampling/custom",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_custom_sampler",
+    "input_order": {
+      "required": [
+        "noise",
+        "guider",
+        "sampler",
+        "sigmas",
+        "latent_image"
+      ]
+    },
+    "input_order_all": [
+      "noise",
+      "guider",
+      "sampler",
+      "sigmas",
+      "latent_image"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "b0ba1521c72475e06fed15db004274ed7c8bb2bf73f1d58849faf6f9f9d264fe",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_custom_sampler.py",
+    "source_line": 1020,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "noise": [
+          "NOISE"
+        ],
+        "guider": [
+          "GUIDER"
+        ],
+        "sampler": [
+          "SAMPLER"
+        ],
+        "sigmas": [
+          "SIGMAS"
+        ],
+        "latent_image": [
+          "LATENT"
+        ]
+      }
+    },
+    "output": [
+      "LATENT",
+      "LATENT"
+    ],
+    "output_name": [
+      "output",
+      "denoised_output"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ]
+  },
+  "SaveImage": {
+    "name": "SaveImage",
+    "display_name": "SaveImage",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "image",
+    "function": "save_images",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "images",
+        "filename_prefix"
+      ],
+      "hidden": [
+        "prompt",
+        "extra_pnginfo"
+      ]
+    },
+    "input_order_all": [
+      "images",
+      "filename_prefix"
+    ],
+    "output_node": true,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 1669,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE",
+          {
+            "tooltip": "The images to save."
+          }
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "ComfyUI",
+            "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+          }
+        ]
+      },
+      "hidden": {
+        "prompt": [
+          "PROMPT"
+        ],
+        "extra_pnginfo": [
+          "EXTRA_PNGINFO"
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "images"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "TextEncodeQwenImage21": {
+    "name": "TextEncodeQwenImage21",
+    "display_name": "Text Encode Qwen Image 2.1",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/conditioning/qwen image",
+    "function": "execute",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "comfy_extras.nodes_qwen",
+    "input_order": {
+      "required": [
+        "clip",
+        "prompt",
+        "negative_prompt",
+        "resolution"
+      ],
+      "optional": [
+        "vae",
+        "images.image_1",
+        "images.image_2",
+        "images.image_3",
+        "images.image_4",
+        "images.image_5",
+        "images.image_6",
+        "images.image_7",
+        "images.image_8",
+        "images.image_9",
+        "images.image_10",
+        "images.image_11",
+        "images.image_12",
+        "images.image_13",
+        "images.image_14",
+        "images.image_15",
+        "images.image_16"
+      ]
+    },
+    "input_order_all": [
+      "clip",
+      "prompt",
+      "negative_prompt",
+      "resolution",
+      "vae",
+      "images.image_1",
+      "images.image_2",
+      "images.image_3",
+      "images.image_4",
+      "images.image_5",
+      "images.image_6",
+      "images.image_7",
+      "images.image_8",
+      "images.image_9",
+      "images.image_10",
+      "images.image_11",
+      "images.image_12",
+      "images.image_13",
+      "images.image_14",
+      "images.image_15",
+      "images.image_16"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "54ce02aa9e167c0b497ce026ac6b558f539427d2d1ed4fc1fcc2ec8e6bc529da",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/comfy_extras/nodes_qwen.py",
+    "source_line": 111,
+    "source_kind": "static_ast",
+    "unresolved": [
+      {
+        "input": "images",
+        "field": "autogrow",
+        "expanded_names": [
+          "image_1",
+          "image_2",
+          "image_3",
+          "image_4",
+          "image_5",
+          "image_6",
+          "image_7",
+          "image_8",
+          "image_9",
+          "image_10",
+          "image_11",
+          "image_12",
+          "image_13",
+          "image_14",
+          "image_15",
+          "image_16"
+        ],
+        "min": 0,
+        "source_expr": "io.Autogrow.Input('images', template=io.Autogrow.TemplateNames(io.Image.Input('image'), names=[f'image_{i}' for i in range(1, 17)], min=0), tooltip='Reference images, seen by the text encoder and spliced into the sequence as VAE latents.')"
+      }
+    ],
+    "input": {
+      "required": {
+        "clip": [
+          "CLIP"
+        ],
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true,
+            "dynamic_prompts": true
+          }
+        ],
+        "negative_prompt": [
+          "STRING",
+          {
+            "multiline": true,
+            "dynamic_prompts": true
+          }
+        ],
+        "resolution": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 0,
+            "max": 4096,
+            "step": 32,
+            "tooltip": "Reference images are resized to about resolution x resolution pixels, at multiples of 32, preserving aspect ratio. 0 keeps each reference at its own size, rounded to a multiple of 32. "
+          }
+        ]
+      },
+      "optional": {
+        "vae": [
+          "VAE"
+        ],
+        "images.image_1": [
+          "IMAGE"
+        ],
+        "images.image_2": [
+          "IMAGE"
+        ],
+        "images.image_3": [
+          "IMAGE"
+        ],
+        "images.image_4": [
+          "IMAGE"
+        ],
+        "images.image_5": [
+          "IMAGE"
+        ],
+        "images.image_6": [
+          "IMAGE"
+        ],
+        "images.image_7": [
+          "IMAGE"
+        ],
+        "images.image_8": [
+          "IMAGE"
+        ],
+        "images.image_9": [
+          "IMAGE"
+        ],
+        "images.image_10": [
+          "IMAGE"
+        ],
+        "images.image_11": [
+          "IMAGE"
+        ],
+        "images.image_12": [
+          "IMAGE"
+        ],
+        "images.image_13": [
+          "IMAGE"
+        ],
+        "images.image_14": [
+          "IMAGE"
+        ],
+        "images.image_15": [
+          "IMAGE"
+        ],
+        "images.image_16": [
+          "IMAGE"
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING",
+      "LATENT"
+    ],
+    "output_name": [
+      "positive",
+      "negative",
+      "latent"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ]
+  },
+  "UNETLoader": {
+    "name": "UNETLoader",
+    "display_name": "UNETLoader",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/loaders",
+    "function": "load_unet",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "unet_name",
+        "weight_dtype"
+      ]
+    },
+    "input_order_all": [
+      "unet_name",
+      "weight_dtype"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 992,
+    "source_kind": "static_ast",
+    "unresolved": [
+      {
+        "input": "unet_name",
+        "field": "choices",
+        "expression": "folder_paths.get_filename_list('diffusion_models')",
+        "status": "dynamic choice; do not imply any model/file exists"
+      }
+    ],
+    "input": {
+      "required": {
+        "unet_name": [
+          [
+            "qwen_image_2.1_turbo_int8_convrot.safetensors"
+          ]
+        ],
+        "weight_dtype": [
+          [
+            "default",
+            "fp8_e4m3fn",
+            "fp8_e4m3fn_fast",
+            "fp8_e5m2"
+          ],
+          {
+            "advanced": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_name": [
+      "Model"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "VAEDecode": {
+    "name": "VAEDecode",
+    "display_name": "VAEDecode",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/latent",
+    "function": "decode",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "samples",
+        "vae"
+      ]
+    },
+    "input_order_all": [
+      "samples",
+      "vae"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 321,
+    "source_kind": "static_ast",
+    "unresolved": [],
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {
+            "tooltip": "The latent to be decoded."
+          }
+        ],
+        "vae": [
+          "VAE",
+          {
+            "tooltip": "The VAE model used for decoding the latent."
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "Image"
+    ],
+    "output_is_list": [
+      false
+    ]
+  },
+  "VAELoader": {
+    "name": "VAELoader",
+    "display_name": "VAELoader",
+    "description": "Statically derived from exact upstream source; no runtime capture.",
+    "category": "model/loaders",
+    "function": "load_vae",
+    "pack": "comfy_core",
+    "pack_version": "zz-official-426f5eea",
+    "python_module": "nodes",
+    "input_order": {
+      "required": [
+        "vae_name"
+      ]
+    },
+    "input_order_all": [
+      "vae_name"
+    ],
+    "output_node": false,
+    "source_commit": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+    "source_sha256": "4cfd9be3754f9dc25213febdf96b690d6e32007c2e539d37e799d82226d758c5",
+    "source_url": "https://raw.githubusercontent.com/Comfy-Org/ComfyUI/426f5eea52a7ece1dd599fff4cb6cd1f352ddd24/nodes.py",
+    "source_line": 776,
+    "source_kind": "static_ast",
+    "unresolved": [
+      {
+        "input": "vae_name",
+        "field": "choices",
+        "expression": "s.vae_list(s)",
+        "status": "dynamic choice; do not imply any model/file exists"
+      }
+    ],
+    "input": {
+      "required": {
+        "vae_name": [
+          [
+            "qwen_image_2.1_vae_bf16.safetensors"
+          ]
+        ]
+      }
+    },
+    "output": [
+      "VAE"
+    ],
+    "output_name": [
+      "Vae"
+    ],
+    "output_is_list": [
+      false
+    ]
+  }
+}

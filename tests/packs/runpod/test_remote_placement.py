@@ -215,6 +215,24 @@ def _provider(sources, volume=None):
     return FakeProvider(f"{rp.BOOTSTRAP_ROOT}/{digest}/ok", volume)
 
 
+def test_bootstrap_archive_and_actual_extract_command_agree_on_source_layout(tmp_path, sources):
+    provider = _provider(sources)
+    pod = FakePod({}, provider.marker)
+    _wrapper(provider, sources).prepare_claimed(Claim("pod-1", pod, {}), out=tmp_path / "out", deadline_seconds=120)
+    archive = next(data for path, data in pod.files.items() if path.endswith("sources.tar.gz"))
+    work = tmp_path / "unpack"
+    work.mkdir()
+    (work / "sources.tar.gz").write_bytes(archive)
+    # Execute the production extraction command with only the expensive
+    # bootstrap body replaced by assertions over the CPU source fixture.
+    checks = "\n".join("test -f " + directory + "/mod.py" for directory in rp.SOURCE_DIRS)
+    (work / "pod_bootstrap.sh").write_text("set -eu\n" + checks + "\n")
+    command = next(command for command in pod.job_log if "pod_bootstrap.sh" in command)
+    result = subprocess.run(["bash", "-c", "tar -xzf" + command.split("tar -xzf", 1)[1]],
+                            cwd=work, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp_path, sources):
     provider = _provider(sources)
     claim = provider.claim(rp.ClaimSpec())

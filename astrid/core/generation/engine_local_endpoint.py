@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine_contracts import (
-    EngineEndpoint, EngineError, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
+    EngineEndpoint, EngineError, EngineReinstallRequired, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
     LocalAttestation, UnsafePathError,
 )
 
@@ -59,10 +59,22 @@ class EngineNotInstalled(EngineError):
         super().__init__(f"engine {engine} is not ready locally ({reason}); run: {self.next_action}")
 
 
+class EntryAssetsNotReady(EngineError):
+    code = 'missing_model'
+
+    def __init__(self, entry_id: str, assets: list[str]):
+        from .asset_gaps import align_argv
+        import shlex
+        self.entry_id, self.assets = entry_id, assets
+        super().__init__(f"Declared entry assets are unavailable: {', '.join(assets)}; run: "
+                         + shlex.join(align_argv(entry_id)))
+
+
 @dataclass(frozen=True)
 class LocalEngine:
     endpoint: EngineEndpoint
     comfy_output_dir: str
+    model_root_binding: Any = None
 
 
 def _engines_dir() -> Path:
@@ -174,6 +186,14 @@ def _installed_receipt(
         raise EngineNotInstalled(engine, "no install receipt")
     if receipt.status == "failed" and getattr(receipt, "error_code", None) == EndpointOwnershipError.code:
         raise EndpointOwnershipError("engine port or supervisor is not owned by this installation")
+    if receipt.status == "failed" and getattr(receipt, "error_code", None) == EngineReinstallRequired.code:
+        from .engine_recipe import load_recipe
+        recipe = load_recipe(engine, platform)
+        step = getattr(receipt, "failed_step_id", None)
+        environment = next((e.name for e in recipe.environments if step == "environment:" + e.name),
+                           recipe.primary_environment)
+        raise EngineReinstallRequired.for_install(engine=engine, platform=platform, root=root,
+            environment=environment, step_id=step)
     health = receipt.health
     if (receipt.status != "installed" or health is None or health.status != "healthy"
             or health.required_nodes_present is not True or not health.object_info_sha256):
@@ -189,6 +209,7 @@ def local_engine_endpoint(
     deadline_seconds: float = 120.0,
     context: Any = None,
     status: Callable[..., Any] | None = None,
+    entry_id: str | None = None,
 ) -> LocalEngine:
     """Return the loopback endpoint of an installed, healthy local engine.
 
@@ -228,7 +249,79 @@ def local_engine_endpoint(
     from .engine_endpoint import endpoint_to_dict
     endpoint_to_dict(endpoint)  # closed-shape validation (parse_endpoint round trip)
     comfy = next(s.relative_path for s in recipe.sources if s.name == "comfyui")
-    return LocalEngine(endpoint, posixpath.join(root, comfy, "output"))
+    binding = composed_model_root_binding(receipt, root, engine=engine, entry_id=entry_id,
+        deadline=time.monotonic() + deadline_seconds) if getattr(receipt, "models", ()) else None
+    return LocalEngine(endpoint, posixpath.join(root, comfy, "output"), binding)
+
+
+def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
+                                entry_id: str | None = None, deadline: float):
+    """Join receipt custody with verified, pinned entry declarations in this root.
+
+    Declarations remain owned by their canonical workflows. No inventory is
+    persisted and disk discovery never grants authority to an unknown file.
+    """
+    from .asset_gaps import declared_model_specs
+    from .entries import ready_entries
+    from .engine_contracts import IntegrityError
+    from .model_downloader import _matches, _root_and_destination, _validate_model
+    from .model_root import canonical_model_inventory_digest, validate_model_root_binding
+
+    binding = model_root_binding_from_receipt(receipt, root, engine=engine)
+    inventory = {(row['subdir'], row['name']): row for row in binding.inventory}
+    for entry in ready_entries():
+        if entry.get('ambiguity') == 'ready workflow metadata could not be loaded':
+            continue
+        for model in declared_model_specs(entry.get('model_assets', []), require_complete=False):
+            relative, _url = _validate_model(model)
+            _, path = _root_and_destination(str(binding.path), relative)
+            if not path.exists():
+                continue
+            row = {'name': relative.name, 'subdir': str(relative.parent) if str(relative.parent) != '.' else '',
+                   'size': model.bytes, 'sha256': 'sha256:' + model.sha256}
+            key = (row['subdir'], row['name'])
+            previous = inventory.get(key)
+            if previous is not None and previous != row:
+                raise IntegrityError(f'entry declaration conflicts with managed inventory: {model.destination}')
+            if not _matches(path, model, deadline=deadline):
+                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
+            inventory[key] = row
+    if entry_id is not None:
+        from .asset_alignment import catalog_manifests
+        from .entries import find_entry
+        from astrid.core.model_catalog.registry import ModelRegistry
+
+        entry = find_entry(entry_id)
+        if entry is not None:
+            # Selection can use receipt custody even when a ready workflow's
+            # declarations cannot provision bytes. User entries never supply
+            # inventory authority, including when their IDs shadow pinned IDs.
+            required_models = (declared_model_specs(entry.get('model_assets', []), require_complete=False)
+                               if entry.get('source') == 'ready-template' else ())
+        else:
+            try:
+                ModelRegistry.load_default().get(entry_id)
+            except KeyError:
+                # An unsaved workflow has no discoverable entry. Its models
+                # still have to pass the same receipt/exact-root custody gate.
+                required_models = ()
+            else:
+                required_models = tuple(model for manifest in catalog_manifests(entry_id)
+                                        for mode in manifest['modes'] for model in mode['models'])
+        missing = []
+        for model in required_models:
+            relative, _url = _validate_model(model)
+            _, path = _root_and_destination(str(binding.path), relative)
+            if not path.exists():
+                missing.append(model.destination)
+            elif not _matches(path, model, deadline=deadline):
+                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
+        if missing:
+            raise EntryAssetsNotReady(entry_id, sorted(set(missing)))
+    document = binding.as_dict()
+    document['inventory'] = sorted(inventory.values(), key=lambda row: (row['subdir'], row['name']))
+    document['inventory_digest'] = canonical_model_inventory_digest(document['inventory'])
+    return validate_model_root_binding(document, verify_files=False)
 
 
 MODELS_RELATIVE_PATH = "models"
@@ -299,4 +392,5 @@ def local_model_root_binding(
     receipt = _installed_receipt(
         engine, platform=platform, root=root, deadline_seconds=deadline_seconds,
         context=context, status=status)
-    return model_root_binding_from_receipt(receipt, root, engine=engine)
+    return composed_model_root_binding(receipt, root, engine=engine,
+        deadline=time.monotonic() + deadline_seconds)

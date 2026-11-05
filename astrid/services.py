@@ -11,6 +11,83 @@ from pathlib import Path
 from typing import Any
 
 
+def prepare_pack_host_shutdown(*, support_root: Path, source_checkout: Path,
+                               runtime_instance_id: str | None):
+    """Bind Runtime down to this owner's registered host, before any effects.
+
+    Canonical services are reaped by Runtime's supervisor. The SDK can also
+    launch a resident host; its existing registration/retirement owner handles
+    that process, under the same lock used by host startup.
+    """
+    from astrid.sdk import host_bootstrap as hosts
+    from runtime_protocol import platform
+
+    support_root = support_root.resolve()
+    state_path = support_root / "generic-host.json"
+
+    def read_state():
+        value = hosts._read_object(state_path)
+        if value is None and (state_path.exists() or state_path.is_symlink()):
+            raise hosts.PackHostBootstrapError("pack host registration is unreadable; shutdown unresolved")
+        return value
+
+    state = read_state()
+    kernel_host = None
+    managed = bool(state and state.get("runtime_service_launch_id"))
+    if state is not None:
+        if (not runtime_instance_id or state.get("runtime_instance_id") != runtime_instance_id
+                or state.get("support_root") != str(support_root)
+                or state.get("source_checkout") != str(source_checkout.resolve())):
+            raise hosts.PackHostBootstrapError("pack host registration differs from the selected Runtime owner")
+        status = hosts._registered_host_status(state)
+        if status == "foreign":
+            raise hosts.PackHostBootstrapError("registered process is not this pack host; shutdown refused")
+        if status != "ours":
+            # The legacy registration has no PID-namespace scope. An
+            # unreachable PID is not evidence that its host exited.
+            raise hosts.PackHostBootstrapError(
+                f"registered host process scope is unverified at {state_path}; "
+                "retry down from the owning launcher after host readiness"
+            )
+        kernel_host = platform.process_identity(int(state["pid"]))
+        if (kernel_host is None or not kernel_host.get("birth_id")
+                or platform.process_birth_matches(kernel_host["birth_id"], kernel_host["birth_id"]) is not True
+                or hosts._registered_host_status(state) != "ours"):
+            raise hosts.PackHostBootstrapError("pack host kernel identity changed before Runtime shutdown")
+
+    def verify_exit():
+        if kernel_host is not None:
+            observed = platform.process_identity(int(kernel_host["pid"]))
+            if (observed is not None
+                    and platform.process_birth_matches(kernel_host["birth_id"], observed.get("birth_id", "")) is not False):
+                raise hosts.PackHostBootstrapError("pack host exit remains unverified after Runtime shutdown")
+
+    def stop():
+        with (support_root / "generic-host.lock").open("a+") as lock:
+            platform.owner_only(lock.fileno())
+            platform.lock_file(lock.fileno())
+            current = read_state()
+            # A supervised host can remove its own registration while Runtime
+            # drains it. An independent replacement must pass a fresh down.
+            if current is not None and current != state:
+                raise hosts.PackHostBootstrapError("pack host registration changed during Runtime shutdown")
+            if state is not None:
+                if hosts._registered_host_status(state) == "foreign":
+                    raise hosts.PackHostBootstrapError("registered process changed during Runtime shutdown")
+                if managed:
+                    # Runtime owns the supervised Job. Its next foreground
+                    # service owns consumption of the existing drain receipt.
+                    verify_exit()
+                else:
+                    hosts._terminate_old_host(state)
+                    verify_exit()
+                    # Keep registration custody until exit is positively
+                    # observed, then let its existing owner remove markers.
+                    hosts._retire_host_locked(state)
+
+    return stop
+
+
 def service_declaration(
     *, source_checkout: Path, data_root: Path, python: str | None = None, bun: str | None = None,
     chat_cwd: Path | None = None,

@@ -64,7 +64,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
     return targets
 
 
-def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
+def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *, client: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
@@ -76,7 +76,7 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    client = client if client is not None else ComfyTargetClient(ComfyTarget(url, "attached"))
     targets = _uploaded_media_targets(bundle, run_inputs)
 
     class UploadedTargetSchema(TargetSchemaProvider):
@@ -90,21 +90,40 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                 inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
             return dataclasses.replace(schema, inputs=inputs)
 
+    def read_object_info():
+        observed = client.object_info()
+        if not isinstance(observed, Mapping):
+            raise ProductionEngineError('ComfyUI object_info is not an object')
+        for node in bundle.workflow.runtime_nodes().values():
+            if node.class_type not in observed:
+                continue  # The missing-node report below owns this case.
+            row = observed[node.class_type]
+            inputs = row.get('input', row.get('inputs')) if isinstance(row, Mapping) else None
+            outputs = row.get('output', row.get('outputs')) if isinstance(row, Mapping) else None
+            if (not isinstance(inputs, Mapping) or not isinstance(outputs, list)
+                    or any(group in inputs and not isinstance(inputs[group], Mapping)
+                           for group in ('required', 'optional'))):
+                raise ProductionEngineError(f'invalid live schema for {node.class_type}')
+        return observed
+
     provider = UploadedTargetSchema.from_object_info(
-        client.object_info(), server_url=url, model_availability="target",
-        refresh_object_info=client.object_info,
+        read_object_info(), server_url=url, model_availability="target",
+        refresh_object_info=read_object_info,
     )
-    # Inspect an unapproved projection first, so a missing live class gets
-    # our actionable gap report before the approval gate can reject it.
-    api = bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
     provider.object_info()
-    issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)]
     missing_nodes = sorted({
-        node["class_type"] for node in api.values()
-        if provider.get_schema(node["class_type"]) is None
+        node.class_type for node in bundle.workflow.runtime_nodes().values()
+        if provider.get_schema(node.class_type) is None
     })
+    # The pinned projection compiler consults per-node socket schemas even
+    # when bundle approval receives an explicit provider. Capture the selected
+    # target's schemas as transient metadata; graph values/revision stay sealed.
+    # Missing classes must fail here, before ambient/on-demand authoring lookup.
+    _capture_live_schemas(bundle, provider)
+    api = {} if missing_nodes else bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
+    issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)] if api else []
     missing_models: list[str] = []
     for node_id, node in api.items():
         schema = provider.get_schema(node["class_type"])
@@ -157,7 +176,15 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
     """Approve canonically against the selected target's exact model choices."""
     bundle.require_canonical_authority("attached target execution")
+    _capture_live_schemas(bundle, provider)
     return bundle.compile(run_inputs=bindings, schema_provider=provider)
+
+
+def _capture_live_schemas(bundle: Any, provider: Any) -> None:
+    for node in bundle.workflow.nodes.values():
+        schema = provider.get_schema(node.class_type)
+        if schema is not None:
+            node.metadata['schema'] = schema
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
