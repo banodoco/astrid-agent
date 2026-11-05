@@ -308,6 +308,20 @@
    "required_packages": []
   },
   {
+   "id": "fal.sprite_upscale",
+   "disposition": "optional",
+   "evidence_reason": "Optional hosted FAL sprite-sheet upscale (moved from pixel into fal by M4-07); truthful credential preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "foley.foley_map",
    "disposition": "required",
    "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",

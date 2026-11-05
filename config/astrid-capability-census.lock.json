@@ -24,6 +24,7 @@
     "editorial.validate",
     "fal.fal_foley",
     "fal.h3_video",
+    "fal.sprite_upscale",
     "foley.foley_map",
     "foley.foley_review",
     "foley.tile_video",
