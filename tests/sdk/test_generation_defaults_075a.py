@@ -1,4 +1,6 @@
 """Bounded default dispatch, canonical snapshot custody and CPU refusals."""
+import copy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,9 +20,40 @@ from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
 def test_failed_qwen_default_surfaces_own_error_without_z_image(network, monkeypatch, failure):
     info = target_info()
     if failure == 'pin':
-        spec = ModelRegistry.load_default().get('qwen-image-2.1-turbo').modes['t2i'].backends['local']
+        from vibecomfy.porting.object_info import get_class
+        from vibecomfy.registry.ready import workflow_from_ready
+
+        registry = ModelRegistry.load_default()
+        preferred = registry.get('qwen-image-2.1-turbo')
+        spec = preferred.modes['t2i'].backends['local']
+        # The shared target fixture advertises Z-Image. The pin scenario must
+        # advertise Qwen's required nodes before it can reach byte validation.
+        for node in workflow_from_ready(spec.template).runtime_nodes().values():
+            if node.class_type in info:
+                continue
+            entry = get_class(node.class_type)
+            assert entry is not None
+            info[node.class_type] = {
+                'input': copy.deepcopy(entry['inputs']),
+                'input_order': copy.deepcopy(entry['input_order']),
+                'output': [item['type'] for item in entry['outputs']],
+                'output_name': [item['name'] for item in entry['outputs']],
+                'output_is_list': [item['is_list'] for item in entry['outputs']],
+            }
         for role in spec.model_roles.values():
             info[role.node_class]['input']['required'][role.input][0].extend(role.names)
+        # Supply an actual bad catalog pin. A complete compatible target and
+        # the untampered producer template are otherwise a valid dry run.
+        bad_mode = replace(preferred.modes['t2i'], backends={
+            **preferred.modes['t2i'].backends,
+            'local': replace(spec, template_hash='sha256:' + '0' * 64),
+        })
+        bad_preferred = replace(preferred, modes={**preferred.modes, 't2i': bad_mode})
+        registry = ModelRegistry([
+            bad_preferred if row.id == preferred.id else row
+            for row in registry.list_all(include_closed=True)
+        ])
+        monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
     client, calls = install_target(network, info)
     with pytest.raises(AstridError) as caught:
         GenerationFacade().image(target=client.target.url, prompt='boat', dry_run=True)
