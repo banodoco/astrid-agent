@@ -15,6 +15,7 @@ import uuid
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
@@ -72,6 +73,25 @@ def _last_service_log(log: Path, *, tail: int = 8192) -> str | None:
         return value or None
     except OSError:
         return None
+
+
+def _door_endpoint_for_diagnostic(endpoint: object) -> str:
+    """Return only a loopback host and port; never include URL secrets or paths."""
+    if not isinstance(endpoint, str):
+        return "<unavailable endpoint>"
+    try:
+        parsed = urlsplit(endpoint)
+        # Accessing .port can raise for malformed or out-of-range ports.
+        port = parsed.port
+    except ValueError:
+        return "<unparseable endpoint>"
+    if parsed.hostname != "127.0.0.1":
+        return "<non-loopback endpoint>"
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return "<unsupported-scheme endpoint>"
+    suffix = str(port) if port is not None else "<no-port>"
+    return f"{scheme}://127.0.0.1:{suffix}"
 
 
 def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, dict | None]:
@@ -1212,7 +1232,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 discovery = read_json(data / "runtime" / "discovery.json")
                 endpoint = discovery.get("door_endpoint", "")
                 if hosted and endpoint != f"http://127.0.0.1:{port}":
-                    raise ValueError("Astrid's recorded door is not on the configured loopback port.")
+                    expected_endpoint = f"http://127.0.0.1:{port}"
+                    raise ValueError(
+                        "Astrid's recorded door is not on the configured loopback port "
+                        f"(expected endpoint: {_door_endpoint_for_diagnostic(expected_endpoint)}; "
+                        f"observed endpoint: {_door_endpoint_for_diagnostic(endpoint)})."
+                    )
 
                 def get(path):
                     if not hosted:
