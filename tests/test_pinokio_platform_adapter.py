@@ -1,7 +1,7 @@
 """Disposable local checks for the Pinokio platform command adapter.
 
 These prove adapter behavior only. Hosted lifecycle evidence still requires
-the authentic macos-14, ubuntu-24.04, and windows-2022 runners.
+the authentic hosted runners.
 """
 
 from __future__ import annotations
@@ -225,6 +225,15 @@ def test_runner_identity_requires_authentic_platform_and_hosted_provenance():
             env=env,
             **identity_kwargs,
         )
+
+
+@pytest.mark.parametrize("runner,image", [("macos-14", "macos14"), ("macos-15", "macos15")])
+def test_macos_hosted_runner_requires_matching_image(runner, image):
+    platform = {"os": "macos", "runner": runner, "hosted": True}
+    env = {"RUNNER_OS": "macOS", "ImageOS": image, "ImageVersion": "2026"}
+    assert adapter.validate_runner_identity(platform, observed_platform="darwin", env=env)["hosted"]
+    with pytest.raises(adapter.AdapterError, match="provenance"):
+        adapter.validate_runner_identity(platform, observed_platform="darwin", env={**env, "ImageOS": "macos14" if image == "macos15" else "macos15"})
 
 
 def test_windows_powershell_requirement_is_explicit_and_fail_closed():
