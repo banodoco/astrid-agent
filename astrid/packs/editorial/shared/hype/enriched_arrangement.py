@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from astrid.core import timeline
+from astrid.pack_api import load_arrangement, load_metadata, load_pool, load_timeline
 
 from .text_match import segments_in_range
 
@@ -109,10 +109,10 @@ def load(run_dir: Path) -> EnrichedArrangement:
     metadata_path = run_dir / "hype.metadata.json"
     pool_path = run_dir.parent.parent / "pool.json"
 
-    arrangement = timeline.load_arrangement(arrangement_path, assign_missing_uuids=True)
-    timeline_data = timeline.load_timeline(timeline_path) if timeline_path.exists() else None
-    metadata = timeline.load_metadata(metadata_path)
-    pool = timeline.load_pool(pool_path)
+    arrangement = load_arrangement(arrangement_path, assign_missing_uuids=True)
+    timeline_data = load_timeline(timeline_path) if timeline_path.exists() else None
+    metadata = load_metadata(metadata_path)
+    pool = load_pool(pool_path)
     pool_by_id = {
         str(entry["id"]): dict(entry)
         for entry in pool.get("entries", [])

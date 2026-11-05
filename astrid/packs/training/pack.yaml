@@ -41,6 +41,36 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    generation_availability:
+      actions:
+        training.checkpoint_review_sampler:
+          available: false
+          public_action: training.training_run
+          error:
+            code: generation_action_unavailable
+            message: Training checkpoint review sample generation is not implemented
+    output_result_exemptions:
+      actions:
+        search_loras:
+          reasons:
+          - paid
+          note: Searches Hugging Face Hub for LoRA adapters requiring HF_TOKEN/HUGGING_FACE_HUB_TOKEN.
+        dataset_build:
+          reasons:
+          - paid
+          note: Builds a training dataset with captioning delegated to paid understanding
+            executors; writes final.manifest.json and quality_report.json but not the
+            universal result manifest.
+        training_run:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: Coordinates RunPod GPU training through registry-declared backends and
+            a paid RunPod account; writes its own run state and registered_lora.json,
+            not the universal result manifest.
 actions:
   pool_build:
     name: Pool Build

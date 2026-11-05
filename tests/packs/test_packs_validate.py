@@ -39,6 +39,10 @@ def _write(path: Path, content: str) -> None:
 
 
 def _mirror_first_party_packs_root(dest: Path) -> None:
+    # Mirror the canonical asset declaration together with its selected files.
+    # A directory-only copy silently loses the engine resource authority.
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_FIRST_PARTY_PACKS_ROOT / "engine-index.json", dest / "engine-index.json")
     for child in sorted(_FIRST_PARTY_PACKS_ROOT.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -1496,6 +1500,50 @@ agent:
             ),
             errors,
         )
+
+    def test_inventory_validates_manifest_bearing_cli_and_rejects_manifestless_content(self) -> None:
+        from astrid.core.pack.validate_first_party import _first_party_inventory
+
+        root = self.make_pack_root() / "packs"
+        core = root / "_core" / "docs"
+        core.mkdir(parents=True)
+        _write(core / "SKILL.md", "# Core shell\n")
+
+        manifest_cli = root / "manifest_cli"
+        manifest_cli.mkdir()
+        _write(manifest_cli / "cli.py", "def main(): pass\n")
+        _write(manifest_cli / "pack.yaml", "id: manifest_cli\n")
+
+        mount = root / "runtime_mount"
+        mount.mkdir()
+        _write(mount / "cli.py", "def main(): pass\n")
+
+        unexpected = root / "unmanifested_data"
+        unexpected.mkdir()
+        _write(unexpected / "data.txt", "must be surfaced\n")
+
+        empty = root / "empty_unexpected"
+        empty.mkdir()
+
+        errors, selected, excluded, runtime_mounts = _first_party_inventory(
+            root, pack_roots=None
+        )
+
+        self.assertEqual(selected, (manifest_cli,))
+        self.assertEqual(excluded, [])
+        self.assertEqual(runtime_mounts, ["runtime_mount"])
+        self.assertIn(
+            "unexpected manifestless top-level directory: unmanifested_data", errors
+        )
+        self.assertIn("unexpected top-level directory: empty_unexpected", errors)
+        self.assertNotIn("unexpected manifestless top-level directory: manifest_cli", errors)
+
+    def test_manifest_bearing_cli_roots_are_in_real_validation_report(self) -> None:
+        report = validate_first_party_packs_root_report(_FIRST_PARTY_PACKS_ROOT)
+        self.assertTrue({"h3_av", "timeline"} <= {result.path.name for result in report.results})
+        self.assertFalse({"h3_av", "timeline"} & set(report.runtime_mounts))
+        # The existing index, rather than a copied pack-ID list, declares assets.
+        self.assertIn("comfyui", report.excluded)
 
     def test_non_temporary_layout_exception_cannot_defer_to_future_milestone(self) -> None:
         root = self.make_pack_root()

@@ -6,7 +6,7 @@ SDK call**, returns exact envelopes and keys, persists ``select`` as the
 non-authoritative preference, and provides executable help.
 
 Task T28 (plan step 26) proves the ``timelines`` product family
-(``astrid/packs/timeline/cli.py``): the planned timeline verbs are
+(``astrid/core/cli/domain_timelines.py``): the planned timeline verbs are
 reachable through one-call SDK adapters, legacy aliases and
 migration/push/pull/sync/audit/erase/repair are absent, ``copy`` is
 absent (deferred past m6), all help is executable, and the gateway
@@ -646,7 +646,7 @@ def test_projects_help_is_executable(argv: list[str]) -> None:
 
 
 def test_timelines_parser_has_visualize_and_no_aliases() -> None:
-    from astrid.packs.timeline.cli import COMMANDS, build_parser
+    from astrid.core.cli.domain_timelines import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
         "import",
@@ -735,7 +735,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
 
 
 def test_timelines_render_help_includes_copyable_flat_profile(capsys) -> None:
-    from astrid.packs.timeline.cli import build_parser
+    from astrid.core.cli.domain_timelines import build_parser
 
     parser = build_parser(_FakeClient())
     with pytest.raises(SystemExit) as exc_info:
@@ -920,7 +920,7 @@ def test_timelines_render_without_ref_surfaces_typed_runtime_error(capsys) -> No
 def test_timelines_visualize_help_describes_filmstrip_navigation(
     capsys,
 ) -> None:
-    from astrid.packs.timeline.cli import build_parser
+    from astrid.core.cli.domain_timelines import build_parser
 
     parser = build_parser(_FakeClient())
     with pytest.raises(SystemExit) as exc_info:
@@ -953,7 +953,7 @@ def test_timelines_visualize_help_describes_filmstrip_navigation(
     ],
 )
 def test_timelines_forbidden_and_legacy_verbs_are_absent(forbidden: str) -> None:
-    from astrid.packs.timeline.cli import build_parser
+    from astrid.core.cli.domain_timelines import build_parser
 
     parser = build_parser(_FakeClient())
     with pytest.raises(SystemExit) as excinfo:
@@ -2186,7 +2186,7 @@ def test_visualization_artifact_summary_groups_deduplicated_filmstrip_refs() -> 
     ],
 )
 def test_timelines_help_is_executable(argv: list[str]) -> None:
-    from astrid.packs.timeline.cli import build_parser
+    from astrid.core.cli.domain_timelines import build_parser
 
     parser = build_parser(_FakeClient())
     with pytest.raises(SystemExit) as excinfo:
@@ -2541,7 +2541,7 @@ def test_shots_unknown_verb_is_a_usage_error() -> None:
     ],
 )
 def test_timelines_shots_help_is_executable(argv: list[str]) -> None:
-    from astrid.packs.timeline.cli import build_parser
+    from astrid.core.cli.domain_timelines import build_parser
 
     parser = build_parser(_FakeClient())
     with pytest.raises(SystemExit) as excinfo:

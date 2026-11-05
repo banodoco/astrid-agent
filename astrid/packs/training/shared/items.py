@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.pack_api import utc_now_iso as _utc_now_iso
 
 UNKNOWN_RIGHTS = {
@@ -45,7 +48,7 @@ def deterministic_id(*parts: object, prefix: str | None = None, length: int = 16
     return f"{prefix}_{digest}" if prefix else digest
 
 
-def repo_relative_path(path: str | Path, *, repo_root: Path = REPO_ROOT) -> str:
+def repo_relative_path(path: str | Path, *, repo_root: Path = CHECKOUT_ROOT) -> str:
     resolved = Path(path).expanduser().resolve()
     root = repo_root.expanduser().resolve()
     try:
@@ -80,7 +83,7 @@ def make_candidate_item(
     clip_end_s: float | None = None,
     scene_index: int | None = None,
     derived_from: Mapping[str, Any] | None = None,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = CHECKOUT_ROOT,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "source_type": source_type,
@@ -115,7 +118,7 @@ def make_review_item(
     caption_file: str | Path | None = None,
     filter_results: Mapping[str, Any] | None = None,
     review_status: str = "pending",
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = CHECKOUT_ROOT,
 ) -> dict[str, Any]:
     review_item = dict(candidate)
     review_item["item_id"] = item_id or deterministic_id(

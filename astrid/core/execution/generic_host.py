@@ -6239,8 +6239,8 @@ class GenericPackHost:
         # process environment fallback available so shared astrid.env still
         # wins over stale process values and fills an empty mapping.
         self._credential_source_is_explicit = credential_source is not None
-        self.ledger = load_capability_ledger(self.capability_matrix_path) if self.capability_matrix_path else {"capabilities": [], "sources": {}}
-        self.matrix: dict[str, dict[str, Any]] = self._load_matrix(self.capability_matrix_path)
+        self.ledger = load_capability_ledger(self.capability_matrix_path, pack_roots=self.pack_roots) if self.capability_matrix_path else {"capabilities": [], "sources": {}}
+        self.matrix: dict[str, dict[str, Any]] = self._load_matrix(self.capability_matrix_path, ledger=self.ledger)
         self.source_epoch = "uninitialized"
         self.source_inventory_identity = str(source_inventory_identity or "")
         self.runtime_state: dict[str, Any] = {}
@@ -6899,11 +6899,11 @@ class GenericPackHost:
             raise HostError("Astrid capability matrix is missing; reinstall or update Astrid") from exc
 
     @staticmethod
-    def _load_matrix(path: Path | None) -> dict[str, dict[str, Any]]:
+    def _load_matrix(path: Path | None, *, ledger: Mapping[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         if path is None:
             return {}
         try:
-            payload = load_capability_ledger(path)
+            payload = ledger if ledger is not None else load_capability_ledger(path)
         except ValueError as exc:
             raise HostError(
                 "capability matrix could not be loaded",

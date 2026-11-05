@@ -575,7 +575,11 @@ class PackValidator:
             agent=dict(data.get("agent", {})) if isinstance(data.get("agent", {}), dict) else {},
             aliases=_optional_pack_aliases(data.get("aliases"), path="pack.aliases"),
             permissions=_normalize_pack_permissions(data.get("permissions")),
-            extensions=_optional_pack_extensions(data.get("extensions"), path="pack.extensions"),
+            extensions=_optional_pack_extensions(
+                data.get("extensions"), path="pack.extensions",
+                pack_id=str(data.get("id") or self.pack_root.name),
+                actions=data.get("actions", {}),
+            ),
             **taxonomy,
         )
 

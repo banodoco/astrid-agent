@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from astrid.core._shared.result_manifest import (
     HarvestError,
@@ -276,22 +277,104 @@ def test_build_manifest_copies_inputs_and_outputs() -> None:
 def test_output_result_registry_conformance_covers_default_registry() -> None:
     registry = load_default_registry()
     registry_ids = {definition.id for definition in registry.list()}
+    from astrid.core.execution.orchestrator.registry import (
+        OrchestratorRegistry,
+        load_default_registry as load_default_orchestrator_registry,
+    )
+    from astrid.core.execution.capability_ledger import _executor_inventory
 
-    exemptions_path = Path("astrid/core/contracts/output_result_exemptions.json")
-    payload = json.loads(exemptions_path.read_text(encoding="utf-8"))
-    non_exempt_ids = set(payload["non_exempt"])
-    exempted_ids = set(payload["exemptions"])
-
+    default_parent_registry = load_default_orchestrator_registry(executor_registry=registry)
+    local_parent_definitions = tuple(
+        definition for definition in default_parent_registry.list()
+        if definition.metadata.get("local_orchestrator") is True
+    )
+    parent_registry = OrchestratorRegistry(
+        local_parent_definitions, executor_registry=registry
+    )
+    parent_ids = {definition.id for definition in parent_registry.list()}
+    runnable_ids = registry_ids | parent_ids
+    rows = {
+        row["id"]: row for row in _executor_inventory(
+            Path.cwd(), executor_registry=registry, orchestrator_registry=parent_registry
+        )
+        if row["id"] in runnable_ids or row["id"].startswith("hivemind.")
+    }
+    non_exempt_ids = {key for key, row in rows.items() if row["result_contract"] == "manifest"}
+    exempted_ids = {key for key, row in rows.items() if row["result_contract"] == "exempted"}
     listed_ids = non_exempt_ids | exempted_ids
     assert non_exempt_ids.isdisjoint(exempted_ids)
-    assert registry_ids.issubset(listed_ids)
+    assert runnable_ids <= listed_ids
+    assert parent_ids.isdisjoint(registry_ids)
+    assert set(rows[capability_id]["kind"] for capability_id in parent_ids) == {"orchestrator"}
+    for parent_id in parent_ids:
+        parent = parent_registry.get(parent_id)
+        parent_pack_id, parent_action_id = parent_id.split(".", 1)
+        owning_manifest = Path(parent.metadata["pack_root"]) / "pack.yaml"
+        owning_pack = yaml.safe_load(owning_manifest.read_text(encoding="utf-8"))
+        assert owning_pack["id"] == parent_pack_id
+        parent_action = owning_pack["actions"][parent_action_id]
+        exemptions = (
+            owning_pack.get("extensions", {}).get("astrid", {})
+            .get("output_result_exemptions", {}).get("actions", {})
+        )
+        expected_policy = "exempted" if parent_action_id in exemptions else "manifest"
+        assert parent_action["metadata"].get("output_result_manifest") is True or expected_policy == "exempted"
+        assert rows[parent_id]["result_contract"] == expected_policy
     assert "h3_av.publication_finalizer" in non_exempt_ids
     assert registry.get("h3_av.publication_finalizer").metadata.get("output_result_manifest") is True
 
-    # The matrix is the explicit inventory for optional external routes; it
-    # must not be mistaken for bundled default-registry discovery.  Keep this
-    # exact set source-backed so a newly listed absent ID cannot silently turn
-    # into a blanket exemption.
+    # Independently read the selected pack manifests instead of treating the
+    # inventory reader as the authority for first-party adoption.
+    manifest_adopters: set[str] = set()
+    declared_exemptions: set[str] = set()
+    for manifest_path in sorted(Path("astrid/packs").glob("*/pack.yaml")):
+        pack = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        declared_exemptions.update(
+            f"{pack['id']}.{local_id}"
+            for local_id in pack.get("extensions", {}).get("astrid", {})
+                .get("output_result_exemptions", {}).get("actions", {})
+        )
+        for local_id, action in (pack.get("actions") or {}).items():
+            if not isinstance(action, dict):
+                continue
+            metadata = action.get("metadata", {})
+            if action.get("output_result_manifest") is True or (
+                isinstance(metadata, dict)
+                and metadata.get("output_result_manifest") is True
+            ):
+                manifest_adopters.add(f"{pack['id']}.{local_id}")
+    assert manifest_adopters <= runnable_ids
+    # An explicit exemption remains authoritative even when the action also
+    # declares a manifest output. Check both cases against independently read
+    # authored facts, retaining the independent examples below.
+    strict_adopters = manifest_adopters - declared_exemptions
+    exempted_adopters = manifest_adopters & declared_exemptions
+    assert strict_adopters <= non_exempt_ids
+    assert {"runpod.exec", "runpod.session", "fal.fal_foley"} <= exempted_adopters
+    assert exempted_adopters <= exempted_ids
+    assert "h3_av.publication_finalizer" in strict_adopters
+    assert "video_editing.hype" in strict_adopters
+    hype_manifest = yaml.safe_load(
+        Path("astrid/packs/video_editing/pack.yaml").read_text(encoding="utf-8")
+    )
+    hype_action = hype_manifest["actions"]["hype"]
+    assert hype_action["metadata"]["local_orchestrator"] is True
+    assert hype_action["metadata"]["output_result_manifest"] is True
+    assert rows["video_editing.hype"]["kind"] == "orchestrator"
+    assert rows["video_editing.hype"]["result_contract"] == "manifest"
+
+    # Pin both sides of the classification with representative authored facts:
+    # the pack manifest declares adoption, while these known non-adopters need
+    # explicit exemption reasons.
+    assert "understanding.audio_understand" in manifest_adopters
+    assert "h3_av.publication_finalizer" in manifest_adopters
+    assert rows["blender.render"]["result_contract"] == "exempted"
+    assert rows["blender.render"]["reasons"] == ["GPU", "external-escape-hatch"]
+    assert rows["editorial.human_review"]["result_contract"] == "exempted"
+    assert rows["editorial.human_review"]["reasons"] == ["no-artifact"]
+
+    # The matrix is the authority for optional external routes; it must not be
+    # mistaken for bundled default-registry discovery.
     matrix = json.loads(
         Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8")
     )
@@ -300,9 +383,7 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
         for entry in matrix["capabilities"]
         if str(entry["id"]).startswith("hivemind.")
     }
-    # discord_local and seedance_local are bundled packs in the default registry
-    # (71d43e00) and declare output_result_manifest, so they are non-exempt and no
-    # longer an external escape hatch; only the Hivemind routes remain external.
+    # Optional project packs remain bundled and declare their own result policy.
     for bundled_id in ("discord_local.command", "seedance_local.reference_video"):
         assert bundled_id in registry_ids
         assert bundled_id in non_exempt_ids
@@ -315,14 +396,31 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
         "hivemind.refresh_media",
         "hivemind.search",
     }
-    assert listed_ids - registry_ids == external_ids
+    assert listed_ids - runnable_ids == external_ids
     assert external_ids.isdisjoint(registry_ids)
     for executor_id in external_ids:
-        assert payload["exemptions"][executor_id]["reasons"] == ["external-escape-hatch"]
+        assert rows[executor_id]["reasons"] == ["external-escape-hatch"]
 
-    assert payload["total_executors"] == len(listed_ids)
-    assert payload["m1_adopters"] == len(non_exempt_ids)
-    assert payload["exempted"] == len(exempted_ids)
+    # Independent, authored classifications keep the census meaningful even
+    # if the policy reader and its output change together. These examples pin
+    # each live contract class and the key boundary routes without copying the
+    # complete policy table into a second authority.
+    expected_classifications = {
+        "h3_av.publication_finalizer": ("manifest", ()),
+        "editorial.human_review": ("exempted", ("no-artifact",)),
+        "foley.foley_map": ("exempted", ("paid",)),
+        "rendering.render": ("exempted", ("GPU",)),
+        "training.training_run": (
+            "exempted",
+            ("paid", "GPU", "external-escape-hatch"),
+        ),
+        "vibecomfy.edit": ("exempted", ("external-escape-hatch",)),
+        "hivemind.search": ("exempted", ("external-escape-hatch",)),
+    }
+    for executor_id, (contract, reasons) in expected_classifications.items():
+        assert executor_id in rows, executor_id
+        assert rows[executor_id]["result_contract"] == contract
+        assert tuple(rows[executor_id]["reasons"]) == reasons
 
     allowed_reasons = {"paid", "GPU", "external-escape-hatch", "no-artifact"}
     for definition in registry.list():
@@ -330,27 +428,21 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
             assert definition.metadata.get("output_result_manifest") is True
             continue
 
-        exemption = payload["exemptions"][definition.id]
+        exemption = rows[definition.id]
         assert exemption["reasons"]
         assert set(exemption["reasons"]).issubset(allowed_reasons)
-        assert isinstance(exemption["note"], str)
-        assert exemption["note"].strip()
-
-    for executor_id in sorted(listed_ids - registry_ids):
-        assert payload["exemptions"][executor_id]["reasons"] == ["external-escape-hatch"]
-
+        assert isinstance(exemption["reason"], str)
+        assert exemption["reason"].strip()
 
 def test_output_result_registry_explicitly_covers_understanding_trio() -> None:
     registry = load_default_registry()
-    payload = json.loads(Path("astrid/core/contracts/output_result_exemptions.json").read_text(encoding="utf-8"))
-    non_exempt_ids = set(payload["non_exempt"])
 
     # The understanding pack declares its concrete outputs in pack.yaml
     # (schema_version 3); each trio member's declared output names are pinned here.
     audio = registry.get("understanding.audio_understand")
     assert tuple(output.name for output in audio.outputs) == ("analysis", "manifest")
     assert audio.metadata.get("output_result_manifest") is True
-    assert "understanding.audio_understand" in non_exempt_ids
+    assert registry.get("understanding.audio_understand").metadata.get("output_result_manifest") is True
 
     expected_outputs = {
         "understanding.visual_understand": (
@@ -367,7 +459,6 @@ def test_output_result_registry_explicitly_covers_understanding_trio() -> None:
         definition = registry.get(executor_id)
         assert tuple(output.name for output in definition.outputs) == output_names
         assert definition.metadata.get("output_result_manifest") is True
-        assert executor_id in non_exempt_ids
 
 
 # ---------------------------------------------------------------------------

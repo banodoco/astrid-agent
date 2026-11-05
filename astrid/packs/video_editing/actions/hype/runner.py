@@ -5,6 +5,8 @@ Extracted from ``run.py``.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 import argparse
 import hashlib
 import json
@@ -21,7 +23,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from astrid.core import timeline
+from astrid.pack_api import load_arrangement, save_arrangement
 from astrid.pack_api import PARENT_IDS_ENV, AuditContext
 from astrid.pack_api import AstridError, render_astrid_error
 from astrid.pack_api import sha256_file
@@ -247,7 +249,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
             internal_worker = os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1"
             env = os.environ.copy()
             env["ASTRID_INTERNAL_INVOCATION"] = "1"
-            package_parent = str(Path(__file__).resolve().parents[5])
+            package_parent = str(checkout_root())
             existing_pythonpath = env.get("PYTHONPATH")
             env["PYTHONPATH"] = (
                 package_parent
@@ -533,7 +535,7 @@ def _apply_trim_deltas_to_arrangement(
     This is a pure worker-side artifact transform. It never writes a runtime
     timeline; applying a resulting timeline remains an explicit client action.
     """
-    arrangement = timeline.load_arrangement(path, assign_missing_uuids=True)
+    arrangement = load_arrangement(path, assign_missing_uuids=True)
     clips_by_order = {int(clip["order"]): clip for clip in arrangement.get("clips", [])}
     clips_by_uuid = {str(clip["uuid"]): clip for clip in arrangement.get("clips", []) if isinstance(clip.get("uuid"), str)}
     for note in notes:
@@ -569,7 +571,7 @@ def _apply_trim_deltas_to_arrangement(
 
     # Persist only the attempt-local arrangement artifact for downstream
     # worker steps.
-    timeline.save_arrangement(arrangement, path)
+    save_arrangement(arrangement, path)
 
 def _rotate_editor_review(brief_out: Path, iteration: int) -> None:
     review_path = brief_out / "editor_review.json"

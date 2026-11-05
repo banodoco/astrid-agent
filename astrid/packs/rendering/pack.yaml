@@ -52,6 +52,17 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    skills:
+      default: true
+    output_result_exemptions:
+      actions:
+        render:
+          reasons:
+          - GPU
+          note: Renders brief timeline to video through Remotion with GPU-accelerated
+            rendering.
 actions:
   assemble_timeline:
     name: Assemble Canonical Timeline

@@ -1,13 +1,10 @@
 """Unavailable thumbnail generation is declared and fails with its stable code."""
 
 import argparse
-import json
-from pathlib import Path
-
 import pytest
 
 from astrid.core.contracts.errors import AstridError
-from astrid.core.generation.availability import action_availability
+from astrid.core.generation.availability import action_availability, availability_declaration
 from astrid.packs.video_editing.actions.thumbnail_maker.run import (
     _exec_discover_video_evidence,
     _exec_build_reference_pack,
@@ -37,9 +34,7 @@ def test_generate_thumbnails_raises():
 
 
 def test_thumbnail_action_declaration_is_shared_and_unavailable():
-    declaration = json.loads(
-        Path("astrid/core/generation/availability.json").read_text(encoding="utf-8")
-    )
+    declaration = availability_declaration()
     record = action_availability("video_editing.thumbnail_maker")
     assert record["available"] is False
     assert record["error"]["code"] == "generation_action_unavailable"

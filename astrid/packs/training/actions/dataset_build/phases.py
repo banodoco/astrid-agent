@@ -6,6 +6,10 @@ focused on `main()` and `run_pipeline()` adapter glue.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import copy
 import json
 import shutil
@@ -208,9 +212,8 @@ def _confine_candidate_media(candidate: Mapping[str, Any], run_dir: Path) -> dic
     item = dict(candidate)
     source_path = Path(str(item["media_path"])).expanduser()
     if not source_path.is_absolute():
-        from astrid.core.foundation.paths import REPO_ROOT
 
-        source_path = (REPO_ROOT / source_path).resolve()
+        source_path = (PACK_ROOT / source_path).resolve()
     clips_dir = run_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
     stem = _item_id(item)

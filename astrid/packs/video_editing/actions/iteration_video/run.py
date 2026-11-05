@@ -1,6 +1,10 @@
 """Render one admitted iteration selection through the public Rendering action."""
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('video_editing')
+
 
 from astrid.pack_api import owned_by_current_user
 from astrid.pack_api import canonical_runtime_entrypoint, guard_canonical_entrypoint, run_pack_main
@@ -19,7 +23,6 @@ from runtime_protocol.dirfd import filesystem as os
 
 from astrid import invoke
 from astrid.pack_api import build_manifest, write_manifest
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.packs.video_editing.shared.iteration_inputs import (
     MAX_DOCUMENT_BYTES,
     assembly_inputs,
@@ -96,7 +99,7 @@ def run(*, project_id: str, target_run_id: str, frozen_inputs: Path,
     materialized = {binding["name"]: {"path": str(staged_media), **{
         name: binding[name] for name in ("object_id", "sha256", "size", "media_type", "filename")}}}
     kwargs = assembly_inputs(frozen, materialized, project=project_id, target_run_id=target_run_id)
-    assembled = assemble_iteration(out_path=root / "assembly", repo_root=REPO_ROOT,
+    assembled = assemble_iteration(out_path=root / "assembly", repo_root=PACK_ROOT,
                                    force=force, **kwargs)
     timeline_source = Path(assembled["hype_timeline_path"]).absolute()
     registry_source = Path(assembled["hype_assets_path"]).absolute()

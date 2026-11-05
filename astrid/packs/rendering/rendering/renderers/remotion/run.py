@@ -8,6 +8,10 @@ structured error file.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import argparse
 import hashlib
 import hmac
@@ -25,11 +29,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 from typing import Any, Callable, Mapping, Sequence
 
-from astrid.core import timeline
+from astrid.pack_api import save_registry, timeline_duration_frames, timeline_render_duration_frames
 from astrid.pack_api import load_default_registry
 from astrid.core.element.schema import ElementDefinition
 from astrid.pack_api import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import assets as _rendering_assets
 from astrid.core.rendering import remotion_runtime
 from astrid.core.rendering.artifacts import validate_render_result
@@ -88,8 +91,8 @@ _RangeHTTPRequestHandler = _rendering_assets.RangeHTTPRequestHandler
 # Keep these helpers bound on this module because direct backend tests and
 # protocol callers use them as the Remotion provenance/theme seam.
 def _active_pack_order_for_provenance() -> list[dict[str, Any]]:
-    """Pack order bound to THIS module's REPO_ROOT (patchable in tests)."""
-    return _shared._active_pack_order_for_provenance(project_root=REPO_ROOT)
+    """Pack order bound to THIS module's CHECKOUT_ROOT (patchable in tests)."""
+    return _shared._active_pack_order_for_provenance(project_root=CHECKOUT_ROOT)
 
 
 _active_theme_for_provenance = _shared._active_theme_for_provenance
@@ -454,9 +457,9 @@ def _regenerate_element_registries_locked(
     ):
         return
 
-    generator = REPO_ROOT / "scripts" / "gen_effect_registry.py"
+    generator = CHECKOUT_ROOT / "scripts" / "gen_effect_registry.py"
     cmd = [sys.executable, "-X", "utf8", str(generator)]
-    cwd = REPO_ROOT
+    cwd = CHECKOUT_ROOT
     if installed:
         from astrid.core.rendering import _registry_origin
         cmd = _registry_origin.installed_argv(sys.executable, remotion_runtime.__file__, generate=True)
@@ -590,7 +593,7 @@ def _effect_registry_for_assets(
     # visual/generation props and cannot alter the executable registry.
     del theme_path
     if registry is None:
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = load_default_registry(project_root=CHECKOUT_ROOT)
     effects = {element.id: element for element in registry.list(kind="effects")}
     aliases: dict[str, str] = {}
     if "text-card" in effects:
@@ -634,7 +637,7 @@ def _resolve_timeline_element_references(
     """
     if registry is None:
         del theme_path
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = load_default_registry(project_root=CHECKOUT_ROOT)
     clips = timeline_data.get("clips")
     if not isinstance(clips, list):
         return {"animations": [], "transitions": []}
@@ -770,7 +773,7 @@ def _stage_effect_assets_for_timeline(
     # registry twice here also made the combined render path needlessly
     # discover every local pack twice.
     if registry is None:
-        registry = load_default_registry(project_root=REPO_ROOT)
+        registry = load_default_registry(project_root=CHECKOUT_ROOT)
     effects, aliases = _effect_registry_for_assets(theme_path, registry=registry)
     resolved_elements = _resolve_timeline_element_references(
         timeline_data,
@@ -1004,7 +1007,7 @@ def _native_window_argument(
         raise ValueError("Remotion window FPS must exactly match the canonical composition FPS")
     fps = profile.fps_rational[0] / profile.fps_rational[1]
     if composition_duration_frames is not None:
-        total = timeline.timeline_duration_frames(timeline_data, fps)
+        total = timeline_duration_frames(timeline_data, fps)
         app = timeline_data.get("app")
         if isinstance(app, Mapping) and "astrid_render_clock" in app:
             clock = app["astrid_render_clock"]
@@ -1023,7 +1026,7 @@ def _native_window_argument(
         # This is the service's invocation fact, not authored/source authority.
         total = composition_duration_frames
     else:
-        total = timeline.timeline_render_duration_frames(timeline_data, fps)
+        total = timeline_render_duration_frames(timeline_data, fps)
     if window.end_frame > total:
         raise ValueError("Remotion window extends beyond the full composition")
     return f"--frames={window.start_frame}-{window.end_frame - 1}"
@@ -1460,7 +1463,7 @@ def _settings_from_request(request: RenderRequest, workspace: Path) -> _RenderSe
     # environment through the public render request.
     project_value = config.get(
         "project_dir",
-        os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or (REPO_ROOT / "remotion"),
+        os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or (CHECKOUT_ROOT / "remotion"),
     )
     if not isinstance(project_value, (str, os.PathLike)):
         raise TypeError("project_dir must be a path string")
@@ -1513,7 +1516,7 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
         settings = _settings_from_request(request, workspace)
     except (TypeError, ValueError) as exc:
         settings = _RenderSettings(
-            project_dir=REPO_ROOT / "remotion",
+            project_dir=CHECKOUT_ROOT / "remotion",
             composition_id=DEFAULT_COMPOSITION_ID,
             theme_path=None,
             min_free_gb=None,
@@ -1593,7 +1596,7 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
                 try:
                     temporary = selected_lifecycle.enter_context(TemporaryDirectory(prefix="project-elements-support-"))
                     selected_registry, _ = stage_project_elements(
-                        timeline_data, Path(temporary), registry=load_default_registry(project_root=REPO_ROOT),
+                        timeline_data, Path(temporary), registry=load_default_registry(project_root=CHECKOUT_ROOT),
                     )
                     registry_options["registry"] = selected_registry
                 except ValueError as exc:
@@ -1710,7 +1713,7 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                 TemporaryDirectory(prefix=".remotion-empty-assets-", dir=str(workspace))
             )
             assets_path = Path(empty_assets_tmp) / "assets.json"
-            timeline.save_registry({"assets": {}}, assets_path)
+            save_registry({"assets": {}}, assets_path)
         else:
             assets_path = requested_assets_path
         assets_data = _load_registry_mapping(assets_path)

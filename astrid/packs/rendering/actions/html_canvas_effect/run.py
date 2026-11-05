@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 from astrid.pack_api import AstridError, AstridValueError
 from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
@@ -22,7 +26,6 @@ from typing import Any
 import yaml
 
 from astrid.pack_api import build_manifest, write_manifest
-from astrid.core.foundation.paths import REPO_ROOT
 
 _EFFECT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates" / "card"
@@ -288,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--label", help="Human-readable effect label.")
     parser.add_argument("--description", help="Short effect description.")
-    parser.add_argument("--project-root", type=Path, default=REPO_ROOT, help="Astrid project root.")
+    parser.add_argument("--project-root", type=Path, default=CHECKOUT_ROOT, help="Astrid project root.")
     parser.add_argument("--out", type=Path, required=True, help="Report JSON output path.")
     parser.add_argument("--timeline", type=Path, help="Preview timeline JSON output path.")
     parser.add_argument("--assets", type=Path, help="Preview assets JSON output path.")

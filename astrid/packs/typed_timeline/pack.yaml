@@ -29,6 +29,10 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    skills:
+      default: true
 actions:
   map:
     name: Typed Timeline Map

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core import timeline
+from astrid.pack_api import validate_registry, validate_timeline
 from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.hash import validate_digest
 from astrid.core.timeline.duration import render_clock
@@ -794,7 +794,7 @@ def validate_managed_render_snapshot(snapshot: ManagedRenderSnapshot) -> None:
                 "Either omit config.output or provide resolution, fps, and file, then retry"
             )
     try:
-        timeline.validate_timeline(config)
+        validate_timeline(config)
     except Exception as exc:
         raise _schema_validation_error(snapshot, exc) from exc
     _validate_pinned_element_references(snapshot, config)
@@ -802,7 +802,7 @@ def validate_managed_render_snapshot(snapshot: ManagedRenderSnapshot) -> None:
 
     registry = dict(snapshot.registry)
     try:
-        timeline.validate_registry(registry)
+        validate_registry(registry)
     except Exception as exc:
         raise ValueError(
             f"canonical timeline {snapshot.timeline_slug!r} asset registry is not renderable: {exc}"

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core import timeline
+from astrid.pack_api import load_registry, load_timeline
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.pack_api import AstridError
 from astrid.pack_api import write_json_atomic
@@ -725,8 +725,8 @@ def build_storyboard(
     assets_registry_path = assets_registry_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
 
-    timeline_config = timeline.load_timeline(timeline_path)
-    asset_registry = timeline.load_registry(assets_registry_path)
+    timeline_config = load_timeline(timeline_path)
+    asset_registry = load_registry(assets_registry_path)
     view_model = build_view_model(
         timeline_config,
         asset_registry,

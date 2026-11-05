@@ -39,6 +39,16 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        upload:
+          reasons:
+          - paid
+          - external-escape-hatch
+          note: Uploads finished video to YouTube via Zapier integration requiring paid
+            API access.
 actions:
   youtube_audio:
     name: YouTube Audio

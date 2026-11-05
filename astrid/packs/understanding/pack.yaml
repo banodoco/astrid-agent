@@ -44,6 +44,15 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        understand:
+          reasons:
+          - paid
+          note: Dispatch router delegating to paid audio/visual/video understanding
+            executors (OpenAI, etc.).
 actions:
   audio_understand:
     name: Audio Understand

@@ -29,19 +29,19 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
-def _fixture_repo(root: Path, *, schema_version: int = 2, pack_id: str = "demo") -> str:
+def _fixture_repo(root: Path, *, schema_version: int = 2, pack_id: str = "demo", pack_subpath: str | None = None) -> str:
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "fixture@example.test")
     _git(root, "config", "user.name", "Astrid fixture")
-    pack = root
+    pack = root / pack_subpath if pack_subpath is not None else root
+    pack.mkdir(parents=True, exist_ok=True)
     executor = pack / "executors" / "echo"
     executor.mkdir(parents=True)
-    (pack / "pack.yaml").write_text(
-        f"schema_version: {schema_version}\nid: {pack_id}\nname: Demo Pack\nversion: 1.0.0\n"
-        "capabilities: [testing]\n",
-        encoding="utf-8",
-    )
+    manifest = f"schema_version: {schema_version}\nid: {pack_id}\nname: Demo Pack\nversion: 1.0.0\n"
+    if schema_version == 3:
+        manifest += 'pack_api: "1.0"\ndocumentation: {kind: none, reason: Test source fixture.}\n'
+    (pack / "pack.yaml").write_text(manifest + "capabilities: [testing]\n", encoding="utf-8")
     (executor / "executor.yaml").write_text(
         json.dumps(
             {
@@ -126,11 +126,16 @@ def test_source_declaration_preserves_relative_posix_subpath() -> None:
 
 def test_local_git_v2_source_is_staged_once_and_shared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     repository = tmp_path / "repository"
-    revision = _fixture_repo(repository)
+    revision = _fixture_repo(repository, schema_version=3, pack_subpath="demo")
     state_path = tmp_path / "state" / "pack-sources.json"
     data_root = tmp_path / "data"
     declaration = SourceDeclaration.from_mapping(
-        {"pack_id": "demo", "repository": str(repository), "revision": revision}
+        {
+            "pack_id": "demo",
+            "repository": str(repository),
+            "revision": revision,
+            "pack_subpath": "demo",
+        }
     )
     monkeypatch.setenv("ASTRID_SOURCE_STATE", str(state_path))
 

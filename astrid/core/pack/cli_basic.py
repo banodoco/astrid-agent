@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -18,13 +17,14 @@ from typing import Any
 import yaml
 
 from astrid.core.contracts.errors import AstridError
-from astrid.core.env_vars import ASTRID_PACKS_PATH
 from astrid.core.pack import (
     PackDefinition,
+    PackValidationError,
     discover_packs,
     packs_root,
 )
 from astrid.core.pack.loader import scan_packs
+from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.core.pack.validate import (
     is_first_party_packs_root_candidate,
     validate_first_party_packs_root,
@@ -471,15 +471,10 @@ def _validation_errors(pack_root: Path, schema_errors: list[str]) -> list[str]:
     errors = list(schema_errors)
     if is_first_party_packs_root_candidate(pack_root.resolve()):
         return errors
-    from astrid.core.pack.loader import scan_configured_packs
-    from astrid.core.pack.source_setup import active_source_inventory
+    from astrid.core.pack.loader import _default_pack_roots, scan_pack_roots
 
-    inventory = active_source_inventory()
-    managed_roots = {source.pack_root.resolve() for source in inventory.sources}
-    # A managed checkout may contain other, unselected packs. An ordinary
-    # authoring directory keeps the existing sibling dependency context.
-    candidate = pack_root if pack_root.resolve() in managed_roots else pack_root.parent
-    compatibility_scan = scan_configured_packs((candidate,), include_hidden=True)
+    compatibility_scan = scan_pack_roots(
+        (*_default_pack_roots(), pack_root.parent), include_hidden=True)
     incompatible = next(
         (record for record in compatibility_scan.quarantined if record.pack_dir.resolve() == pack_root.resolve()),
         None,
@@ -521,12 +516,18 @@ def _filtered_packs(
     args: argparse.Namespace, *, include_hidden: bool | None = None
 ) -> list[PackDefinition]:
     show_hidden = bool(getattr(args, "show_hidden", False))
-    from astrid.core.pack.loader import scan_configured_packs
+    personal_root = resolve_personal_packs_root()
+    raw_roots = list(getattr(args, "pack_roots", None) or ())
+    if personal_root is not None:
+        raw_roots.append(str(personal_root))
+    from astrid.core.pack.discovery import discover_pack_metadata
 
-    roots = tuple(getattr(args, "pack_roots", None) or ())
-    packs = list(scan_configured_packs(
-        roots, include_hidden=show_hidden if include_hidden is None else include_hidden,
-    ).packs)
+    inventory = discover_pack_metadata(
+        extra_pack_roots=tuple(raw_roots),
+        include_hidden=show_hidden if include_hidden is None else include_hidden,
+        personal_packs_root=personal_root,
+    )
+    packs = [record.pack for record in inventory]
     category = getattr(args, "category", None)
     status = getattr(args, "status", None)
     visibility = getattr(args, "visibility", None)
@@ -700,7 +701,7 @@ def cmd_new(argv: list[str]) -> int:
 
 def _list_discovered_packs() -> int:
     """Render the source/manifest pack list."""
-    for pack in discover_packs():
+    for pack in discover_packs(packs_root()):
         if pack.visibility != "hidden":
             print(f"{pack.id}\t{pack.name}\t{pack.version}")
     return 0
@@ -751,7 +752,8 @@ def _format_list_row(row: dict[str, Any]) -> None:
     taxonomy = row.get("taxonomy", {})
     print(
         f"{row['id']}\t{row['name']}\t{row['version']}\t"
-        f"origin={taxonomy.get('origin', '')}\t"
+        f"origin={row.get('origin', taxonomy.get('origin', ''))}\t"
+        f"modified={'unknown' if row.get('modified') is None else str(row['modified']).lower()}\t"
         f"tier={taxonomy.get('install_tier', '')}\t"
         f"type={taxonomy.get('pack_type', '')}\t"
         f"stability={taxonomy.get('stability', '')}\t"
@@ -834,8 +836,18 @@ def _handle_new(args: argparse.Namespace) -> int:
 
 def _handle_list(args: argparse.Namespace) -> int:
     """Handler for ``packs list``."""
-    packs = _filtered_packs(args)
-    rows = [_pack_payload(pack) for pack in packs]
+    try:
+        packs = _filtered_packs(args)
+    except PackValidationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    from .cli_manage import origin_and_modified
+
+    rows = []
+    for pack in packs:
+        row = _pack_payload(pack)
+        row["origin"], row["modified"] = origin_and_modified(pack)
+        rows.append(row)
     if args.json:
         print(json.dumps(_with_grouped_payload(rows), indent=2, sort_keys=True))
         return 0

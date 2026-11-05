@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ....shared.items import deterministic_id
 
@@ -135,7 +138,7 @@ def nested_metadata(item: Mapping[str, Any], path: str | Sequence[str], default:
 def resolve_media_path(
     item: Mapping[str, Any],
     *,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = PACK_ROOT,
     required: bool = False,
     must_exist: bool = False,
 ) -> Path | None:

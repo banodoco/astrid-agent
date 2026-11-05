@@ -15,14 +15,13 @@ from astrid.core.execution.orchestrator.registry import (
 )
 from astrid.core.pack import discover_packs
 from astrid.core.pack.canonical import BundledCatalog, validate_canonical_pack
-from astrid.core.pack.validate_first_party import _FIRST_PARTY_PACK_IDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKS = ROOT / "astrid/packs"
 # One source of truth for the shipped pack ids: the first-party validator inventory.
-PACK_IDS = tuple(sorted(_FIRST_PARTY_PACK_IDS))
-RETIRED = {"builtin", "references", "astrid", "runaway", "shots", "timeline"}
+PACK_IDS = tuple(sorted(path.parent.name for path in (ROOT / "astrid/packs").glob("*/pack.yaml")))
+RETIRED = {"builtin", "references", "astrid", "runaway", "shots"}
 
 
 def test_current_catalog_is_exact_strict_v3_capability_set() -> None:
@@ -51,12 +50,29 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     orchestrators = load_orchestrators(executor_registry=executors)
     elements = load_elements()
     assert tuple(pack.id for pack in packs) == PACK_IDS
+    # Keep the intended executor/parent split independent of the current
+    # parser result. The 108 action declarations must project to 107 executors
+    # and one local parent; observing 108/0 does not satisfy that role contract.
+    # Installed local-parent projection is asserted separately. The 45 element
+    # descriptors contain 44 distinct qualified IDs.
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
-        28,
+        30,
         107,
         1,
         44,
     )
+
+    hype = orchestrators.get("video_editing.hype")
+    assert hype.metadata["source_pack"] == "video_editing"
+    assert hype.metadata["runtime_module"] == "astrid.packs.video_editing.actions.hype.entrypoint"
+    assert hype.child_executors == (
+        "editorial.transcribe", "editorial.scenes", "editorial.quality_zones",
+        "editorial.shots", "editorial.triage", "understanding.scene_describe",
+        "editorial.quote_scout", "training.pool_build", "training.pool_merge",
+        "editorial.arrange", "video_editing.cut", "editorial.refine",
+        "rendering.render", "editorial.editor_review", "editorial.validate",
+    )
+    assert hype.metadata["local_orchestrator"] is True
 
 
 def test_bundled_resources_are_confined_and_readable() -> None:

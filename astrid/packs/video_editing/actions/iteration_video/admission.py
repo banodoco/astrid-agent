@@ -15,7 +15,7 @@ from typing import Any
 
 import astrid
 from astrid.packs.video_editing.shared.iteration_inputs import freeze_inputs, serialize_frozen_inputs
-from astrid.sdk._child_bridge import _validate_child_policy
+from astrid.sdk import validate_child_policy
 from astrid.sdk.capability_selection import select_capability_row
 from astrid.sdk.exceptions import CapabilityValidationError
 
@@ -172,7 +172,7 @@ def admit_iteration_video(
     if not isinstance(rendering_policy, Mapping) or "discovery_grant" in rendering_policy:
         raise IterationAdmissionError("discovery grant must be supplied separately")
     try:
-        policy = _validate_child_policy({**rendering_policy, "discovery_grant": dict(discovery_grant)})
+        policy = validate_child_policy({**rendering_policy, "discovery_grant": dict(discovery_grant)})
     except (CapabilityValidationError, ValueError, TypeError) as exc:
         raise IterationAdmissionError("invalid discovery grant or Rendering policy") from exc
     if policy["capabilities"] != [pins[1]] or policy["input_object_ids"] != []:

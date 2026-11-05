@@ -547,6 +547,7 @@ def test_view_sync_retains_selection_and_migrates_old_installs():
     try:
         old = state._empty_state()
         old.pop("skills")
+        old["installs"]["claude"]["chiptune"] = {"target": "old", "mechanism": "symlink"}
         old["installs"]["claude"]["foley"] = {"target": "old", "mechanism": "symlink"}
         fx.state_path.write_text(json.dumps(old), encoding="utf-8")
         skills.sync(harness_names=["claude"], state_path=fx.state_path)

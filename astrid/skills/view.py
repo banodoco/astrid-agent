@@ -30,7 +30,7 @@ from typing import Iterable
 from astrid.core.contracts.errors import AstridError
 
 from .commands import rewrite_commands
-from .discovery import SkillDescriptor
+from .discovery import SkillDescriptor, capability_index
 from .harnesses.base import PlannedStep
 from .links import DROP, iter_link_targets, iter_markdown_files, rewrite_links, split_target
 
@@ -39,6 +39,7 @@ from .links import DROP, iter_link_targets, iter_markdown_files, rewrite_links, 
 _CORE_FILES = (
     "creative-work/SKILL.md",
     "pack-builder/SKILL.md",
+    "pack-builder/references/writing-skills.md",
     "pack-testing/SKILL.md",
     "references/capabilities.md",
 )
@@ -240,28 +241,8 @@ def view_descriptors(root: Path, packs: list[SkillDescriptor]) -> list[SkillDesc
 
 
 def route_pack_ids(core: SkillDescriptor, packs: Iterable[SkillDescriptor]) -> set[str]:
-    """Return ids of the packs that the gateway or the creative-work router links to.
-
-    These routes must resolve in the default view, so the packs are composed
-    into it even when no per-pack harness link (``astrid-<pack>``) was asked for.
-    """
-    core_dir = Path(os.path.realpath(core.skill_dir))
-    pack_dirs = {
-        d.pack_id: Path(os.path.realpath(d.skill_dir)) for d in packs if d.pack_id != "_core"
-    }
-    found: set[str] = set()
-    for source in (core_dir / "SKILL.md", core_dir / "creative-work" / "SKILL.md"):
-        if not source.is_file():
-            continue
-        for _line, raw in iter_link_targets(source.read_text(encoding="utf-8")):
-            path, _tail = split_target(raw)
-            if path is None or os.path.isabs(path):
-                continue
-            target = Path(os.path.normpath(source.parent / path))
-            for pack_id, skill_dir in pack_dirs.items():
-                if _relative_within(target, skill_dir) is not None:
-                    found.add(pack_id)
-    return found
+    """Core guidance never implicitly selects an optional pack."""
+    return set()
 
 
 def compose_view(
@@ -371,7 +352,10 @@ def compose_view(
             if not source.is_file():
                 continue
             pre = _PACK_BUILDER_DOC_REWRITES if rel in _PACK_AUTHORING_FILES else None
-            _materialise(source, root / rel, links, pre=pre)
+            if rel == "references/capabilities.md":
+                _write_view_file(root / rel, capability_index(packs) + "\n")
+            else:
+                _materialise(source, root / rel, links, pre=pre)
         # The registry is regenerated in place by sync, so copy it only once.
         source_packs = core_dir / _PACKS_REGISTRY
         if source_packs.is_file() and not (root / _PACKS_REGISTRY).exists():

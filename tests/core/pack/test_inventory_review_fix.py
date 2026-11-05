@@ -5,7 +5,7 @@ import yaml
 
 from astrid.core.pack import loader
 from astrid.core.pack._common import PackValidationError
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import discover_pack_metadata, pack_discovery_scope
 
 
 def _make(root: Path, pack_id: str, *, dependencies=(), source="") -> Path:
@@ -29,6 +29,35 @@ def test_dependency_resolves_across_configured_roots(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(second))
     result = discover_pack_metadata(project_root=tmp_path, extra_pack_roots=(str(first),))
     assert {item.id for item in result} == {"consumer", "provider"}
+
+
+@pytest.mark.parametrize("call_order", [(True, False), (False, True)])
+def test_discovery_cache_separates_hidden_policy_in_both_call_orders(tmp_path, monkeypatch, call_order):
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    external = tmp_path / "external"
+    _make(external, "visible")
+    hidden = _make(external, "hidden")
+    manifest = yaml.safe_load((hidden / "pack.yaml").read_text(encoding="utf-8"))
+    manifest["visibility"] = "hidden"
+    (hidden / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", "")
+
+    observed = {}
+    with pack_discovery_scope():
+        for include_hidden in call_order:
+            observed[include_hidden] = {
+                item.id for item in discover_pack_metadata(
+                    project_root=tmp_path,
+                    extra_pack_roots=(str(external),),
+                    include_hidden=include_hidden,
+                )
+            }
+
+    assert observed[False] == {"visible"}
+    assert observed[True] == {"visible", "hidden"}
 
 
 def test_checker_refuses_forbidden_import(tmp_path, monkeypatch):
@@ -98,6 +127,39 @@ def test_default_scan_collects_roots_before_closure(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(extra))
     assert {pack.id for pack in loader.discover_packs()} == {"consumer", "provider"}
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_runtime_discovery_binds_default_and_configured_personal_root(tmp_path, monkeypatch, configured):
+    from astrid.core.pack.personal import ensure_personal_pack
+
+    home = tmp_path / "home"
+    canonical_root = (tmp_path / "configured-packs") if configured else (home / "Astrid" / "packs")
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    ensure_personal_pack(canonical_root)
+    monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    if configured:
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(canonical_root))
+    else:
+        monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    discovered = discover_pack_metadata(project_root=tmp_path, personal_packs_root=canonical_root)
+    personal = next(item for item in discovered if item.id == "personal")
+    assert personal.source_kind == "personal"
+    assert personal.pack.root == canonical_root / "personal"
+
+
+def test_core_id_reuse_is_refused_at_shared_inventory_boundary(tmp_path, monkeypatch):
+    bundled, extra = (tmp_path / name for name in ("bundled", "extra"))
+    bundled.mkdir()
+    _make(bundled, "shared")
+    _make(extra, "shared")
+    monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    monkeypatch.setenv("ASTRID_PACKS_PATH", "")
+    with pytest.raises(PackValidationError, match="conflicts with a core pack"):
+        discover_pack_metadata(project_root=tmp_path, extra_pack_roots=(str(extra),))
 
 
 def test_rejected_dependency_quarantines_dependent(tmp_path, monkeypatch):

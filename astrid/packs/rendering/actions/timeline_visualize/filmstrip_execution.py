@@ -1,6 +1,10 @@
 """Attempt-local rendering of an SDK-admitted, immutable filmstrip snapshot."""
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import hashlib
 import json
 import math
@@ -1743,7 +1747,6 @@ def execute_filmstrip(args, *, authority=None):
                 'include_media is unavailable for composed frame capture without an exact managed video attachment.'
             )
         options['frame_extension'] = 'png'
-        from astrid.core.foundation.paths import REPO_ROOT
         from .composed_frame import RemotionFrameProvider
         timeline_path = getattr(args, 'timeline', None)
         assets_path = getattr(args, 'assets_registry', None)
@@ -1754,7 +1757,7 @@ def execute_filmstrip(args, *, authority=None):
             timeline_path=timeline_path,
             assets_path=assets_path,
             theme_path=getattr(args, 'theme_path', None),
-            project_dir=Path(os.environ.get('ASTRID_REMOTION_PROJECT_DIR') or (REPO_ROOT / 'remotion')),
+            project_dir=Path(os.environ.get('ASTRID_REMOTION_PROJECT_DIR') or (CHECKOUT_ROOT / 'remotion')),
             materialized_root=getattr(args, 'materialized_root', None),
             materialized_objects=getattr(args, 'materialized_objects', None),
         )

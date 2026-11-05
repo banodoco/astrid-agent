@@ -33,6 +33,17 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        moirae:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: External Moirae screenplay-to-video tool requiring paid API access and
+            GPU infrastructure.
 actions:
   moirae:
     name: Moirae

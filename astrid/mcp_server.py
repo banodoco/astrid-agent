@@ -376,6 +376,29 @@ def _comfy_workflow_import(arguments: dict[str, Any], workdir: Path) -> dict[str
 
 def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
     """Admit one capability through astrid.omp_invoke, Astrid's own agent tool boundary."""
+    from astrid.skills import _sync_descriptors_for_harness, state
+    from astrid.skills.discovery import list_skills
+    from astrid.core.pack import load_pack_manifest, pack_manifest_path
+
+    selected = _sync_descriptors_for_harness(list_skills(), state.load(), "claude", deep=False)
+    capability_id = arguments.get("capability_id")
+    kind = arguments.get("kind", "executor")
+    admitted = False
+    for descriptor in selected:
+        if descriptor.pack_id == "_core":
+            continue
+        manifest = pack_manifest_path(descriptor.skill_dir.parent)
+        if manifest is None:
+            continue
+        pack = load_pack_manifest(manifest)
+        for action_id, action in pack.actions.items():
+            qualified = action_id if action_id.startswith(pack.id + ".") else f"{pack.id}.{action_id}"
+            action_kind = "orchestrator" if (action.get("metadata") or {}).get("local_orchestrator") else "executor"
+            if qualified == capability_id and kind == action_kind:
+                admitted = True
+    if not admitted:
+        return _text(f"capability {capability_id!r} is unavailable in the selected declarations", error=True,
+                     structured={"ok": False, "error": {"code": "capability_unavailable", "capability_id": capability_id}})
     request = {key: arguments[key] for key in ("capability_id", "kind", "project", "inputs", "execution_request")
                if arguments.get(key) is not None}
     request.setdefault("kind", "executor")
@@ -486,11 +509,10 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"name": {"type": "string", "description": "Skill name from skills_list."}}, ["name"],
              kind="skill_get"),
         tool("invoke",
-             "Admit one capability run (an executor or orchestrator, e.g. vibecomfy.run or "
-             "generation.generate_video), the way Astrid's own agent does. Returns after admission "
+             "Admit one selected manifest-declared executor or orchestrator. Returns after admission "
              "with the task id; poll it with tasks_show. Render runs detached, so poll its task the same way. "
-             "Read the capability's skill (skill_get) for its inputs first.",
-             {"capability_id": {"type": "string", "description": "Capability id, e.g. vibecomfy.run."},
+             "Read the selected capability's skill (skill_get) for its inputs first.",
+             {"capability_id": {"type": "string", "description": "Qualified id from the selected capability declaration."},
               "kind": {"type": "string", "enum": ["executor", "orchestrator"],
                        "description": "Capability kind (default executor)."},
               "project": {"type": "string", "description": "Project slug or ID."},
@@ -576,31 +598,59 @@ def _frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
-def build_prompts(*, developer: bool = False) -> dict[str, dict[str, Any]]:
-    """Expose pack skills as prompts; developer-only skills only with *developer*.
+def build_prompts(*, developer: bool = False, selected_pack_ids=None) -> dict[str, dict[str, Any]]:
+    """Expose selected declared skills, plus developer extras when requested.
 
-    Mirrors ``astrid skills sync --developer``: a SKILL.md that declares
+    For a selected pack, a SKILL.md that declares
     ``metadata.astrid.audience: developer`` is served only when the server was
     started with ``--developer``.
     """
-    import astrid
-    from astrid.skills.discovery import DEVELOPER_AUDIENCE, text_audience
+    from astrid.skills import _sync_descriptors_for_harness, registry, state
+    from astrid.skills.discovery import (DEVELOPER_AUDIENCE, capability_index,
+                                         list_extras, list_skills, text_audience)
+    from astrid.skills.links import rewrite_links, split_target
 
-    packs = Path(astrid.__file__).resolve().parent / "packs"
+    mains = list_skills()
+    if selected_pack_ids is None:
+        selected = _sync_descriptors_for_harness(mains, state.load(), "claude", deep=False)
+    else:
+        requested = set(selected_pack_ids) | {"_core"}
+        selected = [d for d in mains if d.pack_id in requested]
+    core = next(d for d in selected if d.pack_id == "_core")
+    packs = [d for d in selected if d.pack_id != "_core"]
     prompts: dict[str, dict[str, Any]] = {}
-    for path in sorted(packs.rglob("SKILL.md")):
-        if any(part in {"tests", "fixtures"} for part in path.parts):
+    extras = [d for d in list_extras(packs) if developer or not d.developer_only]
+    paths = [(core.skill_md, "astrid")]
+    paths.extend((core.skill_dir / relative / "SKILL.md", relative)
+                 for relative in ("creative-work", "pack-builder", "pack-testing"))
+    paths.extend((d.skill_md, d.skill_id) for d in [*packs, *extras])
+    directory = registry.render_registry_block(packs, view_root=core.skill_dir)
+    for path, fallback in paths:
+        if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
         if not developer and text_audience(text) == DEVELOPER_AUDIENCE:
             continue
         meta, body = _frontmatter(text)
-        name = re.sub(r"[^A-Za-z0-9_-]+", "-", meta.get("name") or "").strip("-")
-        if not name or name in prompts:
-            name = re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(path.relative_to(packs).parts[:-1]))
+        if fallback in {"pack-builder", "pack-testing"}:
+            from astrid.skills.view import _PACK_BUILDER_DOC_REWRITES
+            for before, after in _PACK_BUILDER_DOC_REWRITES.items():
+                body = body.replace(before, after)
+        def installed_link(raw):
+            relative, tail = split_target(raw)
+            if relative is None or Path(relative).is_absolute():
+                return None
+            return str((path.parent / relative).resolve()) + tail
+        body = rewrite_links(body, installed_link)
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", meta.get("name") or fallback).strip("-")
+        if name in prompts:
+            name = fallback
+        if fallback in {"astrid", "creative-work"}:
+            body += "\n\n" + directory + "\n\n" + capability_index(packs)
         prompts[name] = {"definition": {"name": name, "title": f"Astrid skill: {name}",
                                         "description": meta.get("description", "")[:1000], "arguments": []},
                          "text": body.strip()}
+
     return prompts
 
 
@@ -622,7 +672,7 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
             "serverInfo": {"name": "astrid", "title": "Astrid", "version": "0.1.0"},
             "instructions": ("Astrid's product commands (projects, documents, media, tasks, runs, timelines, "
                              "preferences) as tools; each returns Astrid's JSON envelope. Load the matching "
-                             "Astrid skill prompt (e.g. creative-work, vibecomfy) before multi-step work."),
+                             "Astrid skill prompt before multi-step work."),
         })
     if method == "ping":
         return ok({})

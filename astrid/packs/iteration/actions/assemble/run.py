@@ -8,6 +8,10 @@ never opens or mutates workspace timeline authority.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('iteration')
+
 from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('iteration.assemble')
@@ -21,9 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core import modalities, timeline
+from astrid.pack_api import canonical_timeline_config, inspect_renderer, resolve_artifact, save_registry, save_timeline
 from astrid.pack_api import write_manifest
-from astrid.core.foundation.paths import REPO_ROOT
 
 SCHEMA_VERSION = 1
 
@@ -49,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--theme", default=None, help="Optional theme slug/path for style precedence.")
     parser.add_argument("--style-preset", default=None, help="Optional style preset label.")
     parser.add_argument("--audio-bed", default="auto", help="auto, iterations-as-bed, theme-declared-bed, or silence-room-tone.")
-    parser.add_argument("--repo-root", default=str(REPO_ROOT), help="Repository root for resolving artifact paths.")
+    parser.add_argument("--repo-root", default=str(PACK_ROOT), help="Repository root for resolving artifact paths.")
     return parser
 
 
@@ -79,7 +82,7 @@ def assemble_iteration(
     *,
     prepare_dir: Path | None = None,
     out_path: Path,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = PACK_ROOT,
     force: bool = False,
     direction: str | None = None,
     mode: str = "chaptered",
@@ -135,12 +138,12 @@ def assemble_iteration(
     quality_path = out_path / "iteration.quality.json"
     report_path = out_path / "iteration.report.html"
     assets_path = out_path / "hype.assets.json"
-    timeline_config = timeline.canonical_timeline_config(assembly["timeline"])
+    timeline_config = canonical_timeline_config(assembly["timeline"])
     assembly["timeline"] = timeline_config
 
-    timeline.save_timeline(timeline_config, timeline_path)
-    timeline.save_timeline(timeline_config, hype_timeline_path)
-    timeline.save_registry(assembly["assets"], assets_path)
+    save_timeline(timeline_config, timeline_path)
+    save_timeline(timeline_config, hype_timeline_path)
+    save_registry(assembly["assets"], assets_path)
     _write_json(manifest_path, assembly["manifest"])
     _write_json(quality_path, assembly["quality"])
     report_path.write_text(assembly["report_html"], encoding="utf-8")
@@ -225,7 +228,7 @@ def build_assembly(
                 ordinal=len(clips),
             )
             duration = float(artifact.get("duration") or DEFAULT_CLIP_SECONDS)
-            resolution = modalities.resolve_artifact(dict(artifact))
+            resolution = resolve_artifact(dict(artifact))
             unresolved = artifact.get("_resolution_error")
             if unresolved:
                 unresolved_runtime_output = True
@@ -238,7 +241,7 @@ def build_assembly(
                     "html_aside": f'<aside class="renderer-fallback">{html.escape(diagnostic)}</aside>',
                 }
             renderer_id = str(resolution["renderer"])
-            renderer_info = modalities.inspect_renderer(renderer_id)
+            renderer_info = inspect_renderer(renderer_id)
             asset_id = f"asset_{run.get('run_id')}_{artifact_index}"
             clip = _clip_for_artifact(
                 artifact,

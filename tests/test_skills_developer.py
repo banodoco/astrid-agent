@@ -185,6 +185,9 @@ def test_registry_advertises_the_developer_flag_for_unselected_developer_skills(
 
 
 def test_mcp_serves_developer_skills_only_with_developer_flag(monkeypatch, capsys):
+    current = state._empty_state()
+    skills._select_units(current, "claude", [discovery.get("developer")])
+    monkeypatch.setattr(state, "load", lambda *args: current)
     default = mcp_server.build_prompts()
     developer = mcp_server.build_prompts(developer=True)
     assert "developing-astrid" in default

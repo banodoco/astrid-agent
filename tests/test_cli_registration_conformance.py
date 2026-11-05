@@ -40,7 +40,7 @@ _ALLOWLISTED: tuple[str, ...] = (
     "astrid.core.cli.domain_media",
     "astrid.core.cli.domain_tasks",
     "astrid.core.cli.domain_runs",
-    "astrid.packs.timeline.cli",
+    "astrid.core.cli.domain_timelines",
     "astrid.core.cli.domain_shots",
     "astrid.core.cli.domain_references",
 )
@@ -214,6 +214,39 @@ class ProductRegistryConformanceTest(unittest.TestCase):
     and backup stay outside the product census and product dispatch
     (m6 cutover); handlers receive the composed AstridClient.
     """
+
+    def test_mcp_parser_construction_does_not_import_optional_packs(self) -> None:
+        """MCP enumerates every family before any optional handler is invoked."""
+        import os
+        import subprocess
+        import sys
+
+        script = """
+import importlib.abc
+import sys
+
+class NoOptionalPacks(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("astrid.packs.") and not fullname.startswith("astrid.packs._core"):
+            raise AssertionError("parser construction imported optional pack: " + fullname)
+
+sys.meta_path.insert(0, NoOptionalPacks())
+from astrid.core.cli.domain_product import PRODUCT_FAMILIES, family_parsers
+from astrid.mcp_server import build_tools
+parsers = family_parsers()
+assert set(parsers) == set(PRODUCT_FAMILIES)
+tools = build_tools()
+assert {"timelines_show", "timelines_edit", "timelines_render", "timelines_shots_list"} <= tools.keys()
+assert not any(name.startswith("astrid.packs.timeline") for name in sys.modules)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=dict(os.environ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_product_census_is_exactly_seven_families(self) -> None:
         from astrid.core.cli.domain_product import (

@@ -686,9 +686,9 @@ def _now_iso() -> str:
 
 
 def _inherited_bridge() -> Any | None:
-    from astrid.sdk import _child_bridge
+    from astrid.sdk import inherited_child_bridge
 
-    return _child_bridge._bridge
+    return inherited_child_bridge()
 
 
 _RECEIVER_SESSION_NAME = ".astrid-human-review-session.json"
@@ -701,9 +701,9 @@ def _managed_receiver_path(out_path: Path) -> Path | None:
     bridge = _inherited_bridge()
     if bridge is None:
         return None
-    from astrid.sdk._child_bridge import ChildBridge
+    from astrid.sdk import child_bridge_is_live
 
-    if not isinstance(bridge, ChildBridge) or bridge._closed or bridge._channel.fileno() < 0:
+    if not child_bridge_is_live(bridge):
         raise HumanReviewInputError("managed review requires its live inherited bridge")
     raw = os.environ.get("ASTRID_PROGRESS_PATH", "")
     progress = Path(raw)
