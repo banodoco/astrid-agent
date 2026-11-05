@@ -165,6 +165,7 @@ def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state,
 def test_admission_is_not_task_settlement(monkeypatch, stub_installed_profile_binding, state, outputs, expected):
     def cli(module, argv, name, **kwargs):
         if module == "astrid.omp_invoke":
+            assert name == "release1-task-sdk-invocation.json"
             return sdk_invocation(argv)
         if argv[:2] == ["tasks", "show"]:
             return json.dumps({"ok": True, "data": {"state": state, "result": {"outputs": outputs}}})
