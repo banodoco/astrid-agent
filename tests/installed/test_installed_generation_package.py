@@ -268,6 +268,12 @@ def installed(tmp_path_factory) -> Installed:
         patch.setattr("astrid.installer.backend.install_tools",
                       lambda _manifest, folder, _target, _run: _tool_stand_ins(folder))
         patch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
+        # The installed timeline-schema check refuses group/other-writable inputs
+        # (astrid/core/rendering/_local_schema.py, forbidden=0o022), and uv writes
+        # site-packages files with the process umask. Stage with the conventional
+        # 022 so a group-writable default umask (0002) does not decide the result;
+        # restored right after staging.
+        previous_umask = os.umask(0o022)
         try:
             version = backend.stage(manifest, program, data, copy_from=None)
         except subprocess.CalledProcessError as exc:
@@ -279,6 +285,8 @@ def installed(tmp_path_factory) -> Installed:
         except (ValueError, RuntimeError, OSError) as exc:
             _guard_download("installer stage", str(exc))
             pytest.fail(f"Backend.stage refused the candidate: {exc}", pytrace=False)
+        finally:
+            os.umask(previous_umask)
 
     return Installed(version, Path(version.python), _installed_env(version), manifest)
 
