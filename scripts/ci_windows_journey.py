@@ -93,63 +93,92 @@ def run_bootstrap_process(argv, log_path, mode, *, env=None, timeout=3600):
         "stdout": {"file": stdout_path.name, "status": "not_started"},
         "stderr": {"file": stderr_path.name, "status": "not_started"},
     }
-    save(receipt_path.name, receipt)
+    diagnostic_errors = []
+
+    def diagnostic_failure(operation, exc):
+        detail = f"{operation}: {type(exc).__name__}: {exc}"
+        diagnostic_errors.append(detail)
+        # A broken reporting stream must not replace the lifecycle outcome.
+        try:
+            print(f"Bootstrap diagnostics failed: {detail}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+    def save_receipt():
+        try:
+            save(receipt_path.name, receipt)
+        except Exception as exc:
+            diagnostic_failure("receipt save", exc)
+
+    save_receipt()
     process = None
     error = None
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-            receipt["started_at"] = datetime.now(timezone.utc).isoformat()
-            process = subprocess.Popen([str(arg) for arg in argv], env=env,
-                                       stdout=stdout, stderr=stderr)
-            receipt["pid"] = process.pid
-            receipt["stdout"]["status"] = "captured"
-            receipt["stderr"]["status"] = "captured"
-            save(receipt_path.name, receipt)
-            receipt["exit_code"] = process.wait(timeout=timeout)
-            receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
-    except subprocess.TimeoutExpired as exc:
-        receipt["timed_out"] = True
-        receipt["launch_or_wait_error"] = type(exc).__name__
-        if process is not None:
-            if process.poll() is None:
-                process.kill()
-            receipt["exit_code"] = process.wait()
-            receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
-        for stream in (receipt["stdout"], receipt["stderr"]):
-            if stream["status"] == "not_started":
-                stream["status"] = "unavailable"
-        error = exc
-    except Exception as exc:
-        receipt["launch_or_wait_error"] = type(exc).__name__
-        if process is not None:
-            if process.poll() is None:
-                process.kill()
-            receipt["exit_code"] = process.wait()
-            if receipt["exit_code"] is not None:
+            try:
+                receipt["started_at"] = datetime.now(timezone.utc).isoformat()
+                process = subprocess.Popen([str(arg) for arg in argv], env=env,
+                                           stdout=stdout, stderr=stderr)
+                receipt["pid"] = process.pid
+                receipt["stdout"]["status"] = "captured"
+                receipt["stderr"]["status"] = "captured"
+                save_receipt()
+                receipt["exit_code"] = process.wait(timeout=timeout)
                 receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+            except BaseException as exc:
+                # Preserve this exception if closing a capture stream also fails.
+                error = exc
+                raise
+    except BaseException as exc:
+        if error is not None and error is not exc:
+            error.add_note(f"Bootstrap stream close failed: {type(exc).__name__}: {exc}")
+            exc = error
+        error = exc
+        receipt["launch_or_wait_error"] = type(exc).__name__
+        if isinstance(exc, subprocess.TimeoutExpired):
+            receipt["timed_out"] = True
+        if process is not None:
+            # Match subprocess.run ownership on every exceptional exit, including
+            # KeyboardInterrupt and SystemExit. Never act on a receipt PID.
+            try:
+                process.kill()
+            except BaseException as cleanup_error:
+                exc.add_note(f"Bootstrap child kill failed: {type(cleanup_error).__name__}: {cleanup_error}")
+            else:
+                try:
+                    receipt["exit_code"] = process.wait()
+                    receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+                except BaseException as cleanup_error:
+                    exc.add_note(f"Bootstrap child wait failed: {type(cleanup_error).__name__}: {cleanup_error}")
         for stream in (receipt["stdout"], receipt["stderr"]):
             if stream["status"] == "not_started":
                 stream["status"] = "unavailable"
-        error = exc
     for stream in (receipt["stdout"], receipt["stderr"]):
         path = EVIDENCE / stream["file"]
         try:
             stream["bytes"] = path.stat().st_size
         except OSError as exc:
             stream.update(status="unavailable", error=type(exc).__name__)
-    # Retain the familiar bootstrap log for existing readers while the
-    # timestamped streams above preserve channel identity.
-    with log_path.open("wb") as combined:
-        combined.write(b"=== stdout ===\n")
-        combined.write(stdout_path.read_bytes())
-        combined.write(b"\n=== stderr ===\n")
-        combined.write(stderr_path.read_bytes())
-    save(receipt_path.name, receipt)
+    # Retain the familiar combined log, but finalize the receipt even if this
+    # ancillary operation fails. Separate streams are snapshots at this point.
+    output = ""
+    try:
+        with log_path.open("wb") as combined:
+            combined.write(b"=== stdout ===\n")
+            combined.write(stdout_path.read_bytes())
+            combined.write(b"\n=== stderr ===\n")
+            combined.write(stderr_path.read_bytes())
+        output = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        diagnostic_failure("combined log", exc)
+    if diagnostic_errors:
+        receipt["diagnostic_errors"] = diagnostic_errors
+    save_receipt()
     if error is not None:
         raise error
     if receipt["exit_code"]:
         raise RuntimeError(f"{mode}-bootstrap.log: exit {receipt['exit_code']}")
-    return log_path.read_text(encoding="utf-8", errors="replace")
+    return output
 
 
 def run(argv, name, *, env=None, timeout=300, show=True):
