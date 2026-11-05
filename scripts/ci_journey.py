@@ -1285,7 +1285,10 @@ def hosted_windows_runner() -> bool:
     return (sys.platform == "win32"
             and os.environ.get("GITHUB_ACTIONS", "").casefold() == "true"
             and os.environ.get("ASTRID_CI_EXPECTED_RUNNER") == "windows-2022"
-            and bool(os.environ.get("ImageOS")))
+            and bool(os.environ.get("ImageOS"))
+            # The upgrade-refusal leg runs after the fresh leg on the same runner; it keeps
+            # the isolated sandbox profile so the fresh leg's real-profile state can't leak in.
+            and os.environ.get("ASTRID_CI_SANDBOX_PROFILE") != "1")
 
 
 def _windows_local_application_data() -> Path:
