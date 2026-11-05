@@ -782,13 +782,14 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         continue
                     installed_pin = read_pin(installed_pin_path)
                     installed_source = installed_pin.get("source", "")
+                    requested_source = source_text
                     if revision is None:
-                        expected_source = _directory(Path(source) / subpath).as_uri()
+                        # Folder PINs identify the selected directory, including its subpath.
+                        requested_source = _directory(Path(source) / subpath).as_uri()
                     else:
-                        expected_source = source_text
                         installed_source = installed_source.split("#", 1)[0]
                     if (installed_pin.get("origin") != origin
-                            or installed_source != expected_source):
+                            or installed_source != requested_source):
                         raise PackInstallError("pin_mismatch", f"Pack {pack_id} has a conflicting source PIN; update from its installed source.")
             for index, (pack_id, subpath) in enumerate(sorted(packs.items())):
                 prepared = work / str(index)
