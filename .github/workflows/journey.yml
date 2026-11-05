@@ -1040,6 +1040,7 @@ jobs:
             ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/evidence
             ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/work/*.log
             ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/home/.local/state/astrid-runtime/logs
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/pinokio-home/api/astrid-row/app/astrid/*.log
           if-no-files-found: warn
 
   release2:
