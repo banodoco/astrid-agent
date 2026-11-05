@@ -84,9 +84,15 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "windows-service-log-status.json",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
+    "windows-real-profile-pack-host-before-cleanup.json",
+    "windows-real-profile-pack-host-after-cleanup.json",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+WINDOWS_PROFILE_SERVICE_LOG_LIMIT = 64 * 1024
+_WINDOWS_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:[a-z]:\\|\\\\[^\\\s]+\\[^\\\s]+\\|/(?:[^/\s]+/)+)[^\s\"'<>|,;]*"
+)
 SDK_CAPTURE_LIMIT = 128 * 1024
 SDK_CAPTURE_STATUS_NAMES = ("project-create-capture-status.json", "sdk-capture-status.json")
 SDK_CAPTURE_RECEIPTS: dict[Path, dict[str, dict]] = {}
@@ -654,6 +660,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
             print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     if sys.platform == "win32":
+        _capture_windows_profile_pack_host_log(evidence, run_root, phase)
         # These two exact files are the useful Windows service outputs: the
         # pack-host log named by installer failures and the native Runtime log.
         # Record absence explicitly so an omitted artifact is not ambiguous.
@@ -687,6 +694,69 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         except Exception as exc:
             print(f"Journey Windows service-log status capture ({phase}) failed: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+def _capture_windows_profile_pack_host_log(evidence: Path, run_root: Path, phase: str) -> None:
+    """Capture only this run's scheduled-task pack-host log from the user profile."""
+    status = {"schema_version": 1, "phase": phase, "status": "unavailable"}
+    try:
+        expected_root = str(run_root.resolve())
+        expected_data = str((run_root / "data").resolve())
+        script = r"""
+$task = Get-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\' -ErrorAction SilentlyContinue
+if ($null -eq $task) { exit 0 }
+$root = __RUN_ROOT__
+$data = __DATA_ROOT__
+$root = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+$owned = @($task.Actions | Where-Object {
+    $null -ne $_.Execute -and $_.Execute.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+    $_.Arguments -and $_.Arguments.IndexOf($data, [StringComparison]::OrdinalIgnoreCase) -ge 0
+})
+if ($owned.Count -eq 1) { [Environment]::GetFolderPath('LocalApplicationData') }
+""".replace("__RUN_ROOT__", windows._powershell_quote(expected_root)).replace(
+            "__DATA_ROOT__", windows._powershell_quote(expected_data))
+        profile_local = windows.powershell(
+            script, "windows-real-profile-log-probe.log", show=False, timeout=30).strip()
+        if not profile_local:
+            status["status"] = "not_owned"
+        else:
+            source = Path(profile_local) / "Astrid Runtime" / "logs" / "service-pack-host.log"
+            info = source.lstat()
+            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            unsafe_parent = any(
+                parent.is_symlink() or
+                getattr(parent.lstat(), "st_file_attributes", 0) & reparse
+                for parent in source.parents
+            )
+            if (stat.S_ISLNK(info.st_mode) or
+                    getattr(info, "st_file_attributes", 0) & reparse or
+                    not stat.S_ISREG(info.st_mode) or
+                    unsafe_parent):
+                status["status"] = "unsafe_type"
+            else:
+                with source.open("rb") as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    stream.seek(max(0, size - WINDOWS_PROFILE_SERVICE_LOG_LIMIT))
+                    raw = stream.read(WINDOWS_PROFILE_SERVICE_LOG_LIMIT)
+                decoded = raw.decode("utf-8", errors="replace")
+                safe = windows._diagnostic_text(decoded)
+                safe = _WINDOWS_ABSOLUTE_PATH.sub("<path>", safe)
+                encoded = safe.encode("utf-8")[-WINDOWS_PROFILE_SERVICE_LOG_LIMIT:]
+                evidence_name = f"runtime-service-service-pack-host-real-profile-{phase}.log"
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / evidence_name).write_bytes(encoded)
+                status.update(status="captured", source_bytes=size, captured_bytes=len(encoded),
+                              evidence=evidence_name,
+                              truncated=size > len(raw) or len(safe.encode("utf-8")) > len(encoded))
+    except FileNotFoundError:
+        status["status"] = "missing"
+    except Exception as exc:
+        status.update(status="error", error=type(exc).__name__)
+    try:
+        write_json(evidence / f"windows-real-profile-pack-host-{phase}.json", status)
+    except OSError as exc:
+        print(f"Journey Windows profile log status capture ({phase}) failed: {type(exc).__name__}",
+              file=sys.stderr, flush=True)
 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
