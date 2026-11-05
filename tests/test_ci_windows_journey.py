@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -42,6 +43,187 @@ def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
     assert "& 'C:\\Program Files\\nodejs\\node.exe'" in command[-1]
     assert "process.exit(0)" in command[-1]
     assert "pwsh" not in command[0].lower()
+
+
+def test_bootstrap_process_capture_keeps_identity_exit_and_streams_separate(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    log = tmp_path / "update-bootstrap.log"
+    with pytest.raises(RuntimeError, match="update-bootstrap.log: exit 7"):
+        journey.run_bootstrap_process(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(7)"],
+            log, "update",
+        )
+
+    evidence = tmp_path / "evidence"
+    receipt = json.loads((evidence / "update-bootstrap-process.json").read_text())
+    assert receipt["pid"] > 0
+    assert receipt["executable"] == sys.executable
+    assert receipt["started_at"] and receipt["exited_at"]
+    assert receipt["exit_code"] == 7
+    assert receipt["timeout_seconds"] == 3600
+    assert receipt["stdout"]["status"] == receipt["stderr"]["status"] == "captured"
+    assert (evidence / "update-bootstrap-stdout.log").read_text().strip() == "out"
+    assert (evidence / "update-bootstrap-stderr.log").read_text().strip() == "err"
+    assert "=== stdout ===" in log.read_text() and "=== stderr ===" in log.read_text()
+
+
+def test_bootstrap_process_timeout_cleans_up_and_keeps_receipt_and_streams(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    original_popen = subprocess.Popen
+    processes = []
+
+    def tracked_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(journey.subprocess, "Popen", tracked_popen)
+    log = tmp_path / "install-bootstrap.log"
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        journey.run_bootstrap_process(
+            [sys.executable, "-c",
+             "import sys, time; print('before timeout', flush=True); "
+             "print('error before timeout', file=sys.stderr, flush=True); time.sleep(30)"],
+            log, "install", timeout=0.2,
+        )
+
+    assert failure.value.timeout == 0.2
+    assert len(processes) == 1 and processes[0].poll() is not None
+    evidence = tmp_path / "evidence"
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["pid"] == processes[0].pid
+    assert receipt["started_at"] and receipt["exited_at"]
+    assert receipt["timed_out"] is True
+    assert receipt["timeout_seconds"] == 0.2
+    assert receipt["exit_code"] == processes[0].returncode
+    assert receipt["stdout"]["status"] == receipt["stderr"]["status"] == "captured"
+    assert (evidence / "install-bootstrap-stdout.log").read_text().strip() == "before timeout"
+    assert (evidence / "install-bootstrap-stderr.log").read_text().strip() == "error before timeout"
+    assert "before timeout" in log.read_text() and "error before timeout" in log.read_text()
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_bootstrap_interruption_stops_owned_child(tmp_path, monkeypatch, interruption):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    started, completed = tmp_path / "started", tmp_path / "completed"
+    original_popen = subprocess.Popen
+    processes = []
+
+    def interrupted_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        real_wait = process.wait
+        def wait(*args, **kwargs):
+            if kwargs.get("timeout") is not None:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert started.exists(), "child did not start"
+                raise interruption("cancelled")
+            return real_wait(*args, **kwargs)
+        process.wait = wait
+        return process
+
+    monkeypatch.setattr(journey.subprocess, "Popen", interrupted_popen)
+    code = ("import pathlib, sys, time; pathlib.Path(sys.argv[1]).touch(); "
+            "time.sleep(2); pathlib.Path(sys.argv[2]).touch()")
+    with pytest.raises(interruption, match="cancelled"):
+        journey.run_bootstrap_process([sys.executable, "-c", code, str(started), str(completed)],
+                                      tmp_path / "install-bootstrap.log", "install")
+    assert processes[0].poll() is not None
+    assert not completed.exists()
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["launch_or_wait_error"] == interruption.__name__
+    assert receipt["exit_code"] == processes[0].returncode
+    assert receipt["exited_at"]
+
+
+def test_bootstrap_receipt_write_failure_does_not_stop_healthy_child(tmp_path, monkeypatch, capsys):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    real_save = journey.save
+    calls = []
+    def save(name, receipt):
+        calls.append(name)
+        if len(calls) == 2:
+            raise PermissionError("receipt locked")
+        real_save(name, receipt)
+    monkeypatch.setattr(journey, "save", save)
+    completed = tmp_path / "completed"
+    code = "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('done'); print('finished')"
+    output = journey.run_bootstrap_process([sys.executable, "-c", code, str(completed)],
+                                            tmp_path / "install-bootstrap.log", "install")
+    assert completed.read_text() == "done"
+    assert "finished" in output
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["exit_code"] == 0
+    assert receipt["diagnostic_errors"] == ["receipt save: PermissionError: receipt locked"]
+    assert "receipt locked" in capsys.readouterr().err
+
+
+def test_bootstrap_timeout_keeps_final_receipt_if_combined_log_fails(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    log = tmp_path / "install-bootstrap.log"
+    original_open = Path.open
+    def open_with_locked_log(path, *args, **kwargs):
+        if path == log:
+            raise PermissionError("combined log locked")
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", open_with_locked_log)
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        journey.run_bootstrap_process(
+            [sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(30)"],
+            log, "install", timeout=0.2)
+    assert failure.value.timeout == 0.2
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["timed_out"] is True
+    assert receipt["exit_code"] is not None and receipt["exited_at"]
+    assert receipt["stdout"]["bytes"] == len(b"partial\n")
+    assert receipt["diagnostic_errors"] == ["combined log: PermissionError: combined log locked"]
+
+
+def test_bootstrap_timeout_survives_stream_close_failure(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    original_open = Path.open
+    class BrokenClose:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            return self.stream
+        def __exit__(self, *args):
+            self.stream.close()
+            raise OSError("stream close failed")
+    def open_with_broken_close(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name == "install-bootstrap-stderr.log" and args and args[0] == "wb":
+            return BrokenClose(stream)
+        return stream
+    monkeypatch.setattr(Path, "open", open_with_broken_close)
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        journey.run_bootstrap_process([sys.executable, "-c", "import time; time.sleep(30)"],
+                                      tmp_path / "install-bootstrap.log", "install", timeout=0.2)
+    assert any("stream close failed" in note for note in failure.value.__notes__)
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["timed_out"] is True and receipt["exit_code"] is not None
+
+
+def test_bootstrap_receipt_and_cleanup_failures_do_not_mask_lifecycle_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey, "save", lambda *args: (_ for _ in ()).throw(OSError("receipt locked")))
+    class FailedProcess:
+        pid = 123
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("bootstrap", timeout) if timeout is not None else OSError("wait failed")
+        def kill(self):
+            raise OSError("kill failed")
+    monkeypatch.setattr(journey.subprocess, "Popen", lambda *args, **kwargs: FailedProcess())
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        journey.run_bootstrap_process(["bootstrap"], tmp_path / "install-bootstrap.log", "install", timeout=1)
+    assert any("kill failed" in note for note in failure.value.__notes__)
 
 
 @pytest.fixture

@@ -7,6 +7,7 @@ is an explicit test mode for candidate Agent and Runtime Git commits.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -68,6 +69,8 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "live-release1-snapshot-failure.json",
     "release1-task-sdk-invocation.json", "release1-task-installed-source.json",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
+    "install-bootstrap-process.json", "install-bootstrap-stdout.log", "install-bootstrap-stderr.log",
+    "update-bootstrap-process.json", "update-bootstrap-stdout.log", "update-bootstrap-stderr.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "verify-observe.json", "verify-observe.log", "windows-update-manifest.json",
     "windows-update-SHA256SUMS", "windows-update-scheduler-events.json", "windows-update-process-capture.json", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
@@ -664,7 +667,8 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         # These two exact files are the useful Windows service outputs: the
         # pack-host log named by installer failures and the native Runtime log.
         # Record absence explicitly so an omitted artifact is not ambiguous.
-        status = {"schema_version": 1, "phase": phase, "logs": {}}
+        status = {"schema_version": 1, "phase": phase,
+                  "captured_at_utc": datetime.now(timezone.utc).isoformat(), "logs": {}}
         for source_name, evidence_name in (
                 ("service-pack-host.log", "service-pack-host.log"),
                 ("runtime-service.log", "runtime-service-native.log")):
@@ -1057,6 +1061,17 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
             if status_path.is_file():
                 status = read_json(status_path)
                 diagnostic["windows_service_logs"] = status.get("logs", {})
+            bootstrap_processes = {}
+            for mode in ("install", "update"):
+                name = f"{mode}-bootstrap-process.json"
+                path = destination / name
+                if path.is_file():
+                    bootstrap_processes[mode] = {
+                        "status": "captured", "path": path.relative_to(run_root).as_posix(),
+                        "receipt": read_json(path),
+                    }
+            if bootstrap_processes:
+                diagnostic["bootstrap_processes"] = bootstrap_processes
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
@@ -1706,9 +1721,10 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
         # the cache file's ACL into the protected installed version. Copy into
         # the destination so installed files inherit the version directory ACL.
         env["UV_LINK_MODE"] = "copy"
-        run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-File", app / "public" / "install.ps1", *flags], evidence / f"{mode}-bootstrap.log",
-            env=env)
+        argv = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", app / "public" / "install.ps1", *flags]
+        windows.EVIDENCE = evidence
+        windows.run_bootstrap_process(argv, evidence / f"{mode}-bootstrap.log", mode, env=env)
     else:
         run([shell, app / "public" / "install", *flags],
             evidence / f"{mode}-bootstrap.log", env=env)

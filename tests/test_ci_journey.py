@@ -900,9 +900,16 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     monkeypatch.setenv("UV_LINK_MODE", "hardlink")
     monkeypatch.setattr(journey.sys, "platform", system)
     monkeypatch.setattr(journey, "run", lambda argv, log, **kwargs: calls.append(
-        ([str(part) for part in argv], kwargs)))
+        ("shared", [str(part) for part in argv], log, kwargs)))
+    monkeypatch.setattr(journey.windows, "run_bootstrap_process", lambda argv, log, mode, **kwargs: calls.append(
+        (mode, [str(part) for part in argv], log, kwargs)))
     journey.bootstrap(app, manifest, shell, "update", tmp_path / "evidence", root, data)
-    argv, kwargs = calls[0]
+    assert len(calls) == 1
+    route, argv, log, kwargs = calls[0]
+    assert route == ("update" if system == "win32" else "shared")
+    assert log == tmp_path / "evidence" / "update-bootstrap.log"
+    if system == "win32":
+        assert journey.windows.EVIDENCE == tmp_path / "evidence"
     assert argv[argv.index("--root") + 1] == str(root)
     assert argv[argv.index("--data-root") + 1] == str(data)
     assert argv[argv.index("--manifest") + 1] == str(manifest)
