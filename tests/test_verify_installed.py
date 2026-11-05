@@ -249,14 +249,14 @@ def _legacy_identity_fixture(tmp_path):
     return fixture, version_path, runtime
 
 
-# Observed on the R1 candidate of CI run 41918361034; never pinned by the verifier.
-CANDIDATE_AGENT = '9360824b' + '1' * 32
-CANDIDATE_RUNTIME = '9fc53b77' + '2' * 32
-CANDIDATE_DIGEST = 'sha256:9628bb5f' + '3' * 56
-DEFAULT_VIBECOMFY = 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'
+# Exact post240 candidate pins from outbox/inputs/post240-direct-20261105-0134.json.
+CANDIDATE_AGENT = 'c6ab0144bccb745e51b588b9f4aa25cc43bd8bed'
+CANDIDATE_RUNTIME = '9fc53b771134940aaac901e4cfc5d03c1db1a20a'
+CANDIDATE_DIGEST = 'sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c'
+DEFAULT_VIBECOMFY = 'e2905d068d5851b9c32856d32b8251852a01d6dd'
 
 
-def _identity_aware_fixture(tmp_path, *, agent=None, runtime_sha=None, digest=None, workspace=31,
+def _identity_aware_fixture(tmp_path, *, agent=None, runtime_sha=None, digest=None, workspace=33,
                             launcher=True, label=None):
     source = json.loads((Path(__file__).parent / 'fixtures/upgrade/identity_aware_version_v1.json').read_text())
     manifest = json.loads(json.dumps(source['manifest']))

@@ -45,26 +45,21 @@
     "reason": "Initial review of workspace schema, upgrade journal, and version record formats.",
     "supported_runtime_schemas": [
       {
-        "id": "r1-identity-aware-installed-tree",
+        "id": "r1-direct-aedfef1-c6ab014-9fc53b7",
         "mode": "identity-aware-version-record",
         "reviewed_source_refs": {
-          "app_manifest": "fcf33d82234183d54dd537ad7752ec71b9e9f819",
-          "agent": "e8d0415100c48ef3836231d26f156d0e320e63ed",
-          "runtime": "d8704b7a590bf0e74d2ab410f8fceab989cbee6d"
+          "app_manifest": "aedfef1d903292a44c8a0f0ca818d1142c014a64",
+          "agent": "c6ab0144bccb745e51b588b9f4aa25cc43bd8bed",
+          "runtime": "9fc53b771134940aaac901e4cfc5d03c1db1a20a"
         },
-        "installed_manifest_sha256": "41d33bd6cbe886fdf6958e11182f131d4c9e3d7e88fa5604c1998c36a499c92b",
-        "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
+        "installed_manifest_sha256": "034132e71dfe5a8bba5255e2baef21d4aabae614e46c51bfe0ad7abc9adb3afd",
+        "installed_manifest_vibecomfy_default_sha": "e2905d068d5851b9c32856d32b8251852a01d6dd",
         "install_manifest_schema_version": 1,
         "manifest_release": 1,
         "protocol": "workspace.v1",
-        "schema_digest": "sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194",
-        "workspace_schema_version": 31,
-        "installed_layout": {
-          "version_root": "versions/<current>",
-          "current_file": "current",
-          "launcher": "bin/runtime",
-          "launcher_target": "dispatches-current-to-selected-version"
-        },
+        "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+        "workspace_schema_version": 33,
+        "version_id_prefix": "c6ab0144-9fc53b77-",
         "version_record_keys": ["env", "identity", "profile", "python", "root"],
         "health_identity_emitted": true,
         "discovery_identity_emitted": true
