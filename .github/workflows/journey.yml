@@ -818,7 +818,7 @@ jobs:
             'update-bootstrap-process.json', 'update-bootstrap-stdout.log', 'update-bootstrap-stderr.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'verify-observe.json', 'verify-observe.log', 'windows-update-manifest.json',
-            'windows-update-SHA256SUMS', 'windows-update-scheduler-events.json', 'windows-update-process-capture.json', 'update-task-labels.log', 'update-task-state.log', 'update-service-labels.log',
+            'windows-update-SHA256SUMS', 'windows-update-scheduler-events.json', 'windows-update-process-capture.json', 'windows-update-stop-task-state.json', 'update-task-labels.log', 'update-task-state.log', 'update-service-labels.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
             'scheduled-task-before.xml', 'scheduled-task-after.xml',
@@ -826,6 +826,7 @@ jobs:
             'runtime-owner-workspace.json',
             'runtime-owner-selection-context.json', 'runtime-service-runtime.log', 'runtime-service-native.log', 'service-pack-host.log', 'windows-service-log-status.json',
             'windows-real-profile-pack-host-before-cleanup.json', 'windows-real-profile-pack-host-after-cleanup.json',
+            'windows-pack-host-update-before.json', 'windows-pack-host-update-after.json',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'

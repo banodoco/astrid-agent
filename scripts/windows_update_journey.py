@@ -27,6 +27,7 @@ from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISIO
 
 MARKER = "M-RT UPDATE TEST STAND-IN"
 SCHEDULER_EVENTS = "windows-update-scheduler-events.json"
+STOP_TASK_STATE = "windows-update-stop-task-state.json"
 
 
 def capture_update_scheduler_events(evidence, started):
@@ -135,6 +136,41 @@ def assert_running_task():
         "update-task-state.log", show=False, timeout=30).strip()
     if state != "Running":
         raise RuntimeError("Astrid Runtime scheduled task is not running")
+    return state
+
+
+def capture_stop_task_state(evidence, phase, state=None):
+    """Record observed task state around update without changing update outcome."""
+    path = evidence / STOP_TASK_STATE
+    record = {"schema_version": 1, "stop_outcome": {"status": "not_observed", "value": None},
+              "task_states": {}}
+    try:
+        prior = json.loads(path.read_text(encoding="utf-8"))
+        if (isinstance(prior, dict) and prior.get("schema_version") == 1 and
+                isinstance(prior.get("task_states"), dict)):
+            record = prior
+    except (OSError, ValueError, TypeError):
+        pass
+    observation = {"status": "unavailable"}
+    if state is None:
+        try:
+            output = windows.powershell(
+                "(Get-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\' -ErrorAction Stop).State.ToString()",
+                "update-task-state.log", show=False, timeout=30,
+            ).strip()
+            if output in {"Unknown", "Disabled", "Queued", "Ready", "Running"}:
+                state = output
+            else:
+                observation = {"status": "malformed"}
+        except Exception as exc:
+            observation = {"status": "error", "error": type(exc).__name__}
+    if state is not None:
+        observation = {"status": "observed", "state": state}
+    record["task_states"][phase] = observation
+    try:
+        path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def assert_no_boundary(journey, root, data, boundary):
@@ -156,7 +192,8 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     before_health = journey.healthy(data)
     before_runtime_instance_id = before_health["runtime_instance_id"]
     journey.assert_direct_service_ownership(root, data, release=0)
-    assert_running_task()
+    task_state_before = assert_running_task()
+    capture_stop_task_state(evidence, "before", task_state_before)
     labels_before = task_labels()
     services_before = service_names()
     if ("\\", "Astrid Runtime") not in labels_before:
@@ -177,6 +214,13 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     except Exception:
         capture_pid, capture_before = None, None
     started = datetime.now(timezone.utc)
+    # The direct Windows update path has its own lifecycle helper; keep the
+    # bounded #277 pack-host snapshots around this actual update as well.
+    # These are diagnostics only and must never affect the update guard/result.
+    try:
+        journey._capture_windows_pack_host_update_state(evidence, data, "before")
+    except Exception:
+        pass
     try:
         journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
     except Exception:
@@ -190,6 +234,12 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
         except Exception:
             pass  # Diagnostics must never replace the update failure.
         raise
+    finally:
+        try:
+            journey._capture_windows_pack_host_update_state(evidence, data, "after")
+        except Exception:
+            pass  # Diagnostics must never replace the update result.
+        capture_stop_task_state(evidence, "after")
     code = 0
     version_path, selected_data, version = journey.installation(root, data)
     new_id = version_path.parent.name
