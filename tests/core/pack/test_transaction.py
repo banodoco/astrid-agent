@@ -283,9 +283,18 @@ def test_interrupt_after_kernel_exchange_keeps_new_root_and_retired_old_generati
         target_line = next(index for index, line in enumerate(lines, 1)
                            if line.lstrip().startswith('published = True'))
         interrupted = []
+        # Line-trace only transaction.py frames: the global hook returns None
+        # for every other code object (decided once per code object), so git,
+        # hashing and pathlib frames run untraced (LB-TXN r1 finding 7 / PE4).
+        in_transaction = {}
         def trace(frame, event, arg):
-            if (event == 'line' and Path(frame.f_code.co_filename).resolve() == transaction_file
-                    and frame.f_lineno == target_line):
+            code = frame.f_code
+            hit = in_transaction.get(code)
+            if hit is None:
+                hit = in_transaction[code] = Path(code.co_filename).resolve() == transaction_file
+            if not hit:
+                return None
+            if (event == 'line' and frame.f_lineno == target_line):
                 interrupted.append(frame.f_lineno)
                 sys.settrace(None)
                 raise KeyboardInterrupt('after atomic exchange')
