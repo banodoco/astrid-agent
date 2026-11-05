@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -15,17 +16,21 @@ from astrid.core.pack._common import (
     PackValidationError,
     _optional_string,
 )
-from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.canonical import (
-    CanonicalPackValidationError,
     LEGACY_MANIFEST_NAMES,
+    CanonicalPackValidationError,
     canonical_manifest_path,
     validate_canonical_pack,
 )
+from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.permissions import (
     _normalize_pack_permissions,
     _optional_pack_extensions,
 )
+from astrid import pack_api
+from astrid.pack_api import VERSION as PACK_API_VERSION
+from astrid.pack_imports import ImportContract, check_pack_imports
+from astrid.pack_validation import validate_pack as validate_pack_compatibility
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,6 +108,8 @@ def scan_packs(
     include_hidden: bool = False,
     strict: bool = True,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    _validate: bool = True,
+    personal_packs_root: str | Path | None = None,
 ) -> PackScan:
     """Scan a pack root without importing pack code.
 
@@ -112,21 +119,60 @@ def scan_packs(
     neighbours.  Required and runtime-owned folders remain fail-closed in both
     modes.
     """
-    source_root = Path(root) if root is not None else packs_root()
+    if root is None:
+        from astrid.core.pack.source_setup import active_source_inventory
+
+        inventory = active_source_inventory()
+        sources = inventory.sources if inventory is not None else ()
+        roots = (*_default_pack_roots(), *(source.pack_root for source in sources))
+        return scan_pack_roots(roots, include_hidden=include_hidden, strict=strict,
+                               required_pack_ids=required_pack_ids, _validate=_validate,
+                               source_records={source.pack_id: source for source in sources},
+                               personal_packs_root=personal_packs_root)
+    source_root = Path(root)
+    from astrid.core.pack.transaction import group_read_lock
+
+    with group_read_lock(source_root):
+        return _scan_packs_locked(source_root, include_hidden=include_hidden,
+                                  strict=strict, required_pack_ids=required_pack_ids,
+                                  _validate=_validate, personal_packs_root=personal_packs_root)
+
+
+def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
+                       required_pack_ids: frozenset[str], _validate: bool,
+                       personal_packs_root: str | Path | None = None) -> PackScan:
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
     quarantined: list[QuarantinedPack] = []
     seen: dict[str, Path] = {}
-    for child in sorted(source_root.iterdir(), key=lambda path: path.name):
+    children = ((source_root,) if (source_root / "pack.yaml").is_file()
+                else sorted(source_root.iterdir(), key=lambda path: path.name))
+    for child in children:
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
+        manifest_path: Path | None = None
         try:
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
             pack = load_pack_manifest(manifest_path)
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
+            if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):
+                reason = (
+                    "Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again."
+                    if legacy_version in {1, 2} else
+                    "Pack manifest schema is not supported. Use a supported pack schema version."
+                )
+                record = QuarantinedPack(
+                    pack_id=child.name, pack_dir=child,
+                    manifest_path=(child / "pack.yaml") if (child / "pack.yaml").is_file() else None,
+                    error=reason,
+                )
+                quarantined.append(record)
+                _quarantine_warning(record)
+                continue
             if strict or _fail_closed(child.name, required_pack_ids):
                 if isinstance(exc, PackValidationError):
                     raise
@@ -135,7 +181,7 @@ def scan_packs(
                 pack_id=child.name,
                 pack_dir=child,
                 manifest_path=(child / "pack.yaml") if (child / "pack.yaml").is_file() else None,
-                error=str(exc),
+                error=" ".join(str(exc).split()),
             )
             quarantined.append(record)
             _quarantine_warning(record)
@@ -146,7 +192,189 @@ def scan_packs(
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
         seen[pack.id] = manifest_path
         packs.append(pack)
+    if _validate:
+        packs, compatibility_quarantine = _isolate_incompatible_packs(
+            packs, required_pack_ids=required_pack_ids, personal_packs_root=personal_packs_root)
+        quarantined.extend(compatibility_quarantine)
     return PackScan(tuple(packs), tuple(quarantined))
+
+
+
+def scan_pack_roots(
+    roots: tuple[str | Path, ...], *, include_hidden: bool = False,
+    strict: bool = False, required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    _validate: bool = True, source_records: dict[str, Any] | None = None,
+    personal_packs_root: str | Path | None = None,
+) -> PackScan:
+    """Collect and collision-check all roots before resolving dependencies."""
+    if source_records is None:
+        from astrid.core.pack.source_setup import active_source_inventory
+        inventory = active_source_inventory()
+        source_records = {source.pack_id: source for source in inventory.sources} if inventory else {}
+    scans = [scan_packs(path, include_hidden=include_hidden, strict=strict,
+                        required_pack_ids=required_pack_ids, _validate=False)
+             for path in dict.fromkeys(Path(root).expanduser().resolve() for root in roots)]
+    packs = list({pack.root.resolve(): pack for scan in scans for pack in scan.packs}.values())
+    quarantined = [record for scan in scans for record in scan.quarantined]
+    if _validate:
+        packs, rejected = _isolate_incompatible_packs(
+            packs, required_pack_ids=required_pack_ids, source_records=source_records,
+            personal_packs_root=personal_packs_root)
+        quarantined.extend(rejected)
+    return PackScan(tuple(packs), tuple(quarantined))
+
+
+def scan_configured_packs(
+    extra_roots: tuple[str | Path, ...] = (), *, include_hidden: bool = False,
+) -> PackScan:
+    """Scan configured and managed roots together with optional caller roots."""
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    inventory = active_source_inventory()
+    sources = inventory.sources if inventory is not None else ()
+    return scan_pack_roots(
+        (*_default_pack_roots(), *(source.pack_root for source in sources), *extra_roots),
+        include_hidden=include_hidden, source_records={source.pack_id: source for source in sources},
+    )
+
+def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
+    if manifest_path is None:
+        return None
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    version = raw.get("schema_version")
+    if type(version) is int and version != 3:
+        return version
+    return None
+
+
+def _isolate_incompatible_packs(
+    packs: list[PackDefinition],
+    *,
+    required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    source_records: dict[str, Any] | None = None,
+    personal_packs_root: str | Path | None = None,
+) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
+    """Apply the shared pure compatibility validator to external pack inventory."""
+    seen: dict[str, Path] = {}
+    for pack in packs:
+        root = pack.root.resolve()
+        if pack.id in seen and seen[pack.id] != root:
+            raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {root}")
+        seen[pack.id] = root
+    executable: list[PackDefinition] = []
+    quarantined: list[QuarantinedPack] = []
+    for pack in packs:
+        if pack.schema_version != "3":
+            record = QuarantinedPack(
+                pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
+                error="Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.",
+            )
+            if _fail_closed(pack.id, required_pack_ids):
+                raise PackValidationError(record.error)
+            quarantined.append(record)
+            _quarantine_warning(record)
+        else:
+            executable.append(pack)
+    packs = executable
+    bundled_root = packs_root().resolve()
+    # Core Hivemind ships inside core (astrid/core/hivemind, foundation chain),
+    # not under the bundled packs root: it is core-owned, never external inventory.
+    core_hivemind_root = (Path(__file__).resolve().parents[1] / "hivemind").resolve()
+    external = [pack for pack in packs if not pack.root.resolve().is_relative_to(bundled_root)
+                and pack.root.resolve() != core_hivemind_root]
+    external_ids = {pack.id for pack in external}
+    if not external:
+        return packs, quarantined
+    python_packages = {
+        dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
+        for dist in importlib_metadata.distributions()
+        if dist.metadata.get("Name")
+    }
+    from packaging.markers import default_environment
+
+    python_environment = dict(default_environment())
+    # The existing managed-source policy is the only default pin authority on
+    # this base; the release-manifest packs mechanism is a later integration.
+    from astrid.core.pack.source_setup import declarations_from_json
+    release_pins = {item.pack_id: {"commit": item.revision, "digest": item.tree_sha256 or ""}
+                    for item in declarations_from_json()}
+    from astrid import sdk
+    contract = ImportContract(
+        facade_exports=frozenset(pack_api.__all__), facade_version=PACK_API_VERSION,
+        sdk_names=frozenset(sdk.__all__),
+        core_pack_apis={pack.id: f"astrid.packs.{pack.id}.api" for pack in packs
+                        if pack.root.resolve().is_relative_to(bundled_root)
+                        and (pack.root / "api.py").is_file()},
+    )
+    source_records = source_records or {}
+    if personal_packs_root is None:
+        from astrid.core.pack.personal import resolve_personal_packs_root
+        personal_packs_root = resolve_personal_packs_root()
+    canonical_personal_root = (
+        str((Path(personal_packs_root) / "personal").expanduser().resolve())
+        if personal_packs_root is not None else None
+    )
+    def identity_root(pack) -> str:
+        # A managed source (g2 source_setup) lives at <data>/<id>/<revision>[/<subpath>];
+        # its identity directory is <data>/<id>, which carries the pack id the
+        # basename rule (g4 validator) checks. Every other pack is its own root.
+        root = pack.root.resolve()
+        record = source_records.get(pack.id)
+        if record is not None and Path(record.pack_root).resolve() == root:
+            for parent in (root, *root.parents):
+                if parent.name == record.revision and parent.parent.name == pack.id:
+                    return str(parent.parent)
+        return str(root)
+
+    active = packs
+    while True:
+        selected = {
+            pack.id: {
+                "id": pack.id,
+                "canonical_root": identity_root(pack),
+                "schema_version": int(pack.schema_version),
+                "pack_api": pack.pack_api or "",
+                "dependencies": pack.dependencies,
+                "commit": source_records[pack.id].revision if pack.id in source_records and source_records[pack.id].pack_root.resolve() == pack.root.resolve() else "",
+                "installed_digest": source_records[pack.id].tree_sha256 if pack.id in source_records and source_records[pack.id].pack_root.resolve() == pack.root.resolve() else "",
+            }
+            for pack in active
+        }
+        rejected: dict[str, QuarantinedPack] = {}
+        for pack in active:
+            if pack.id not in external_ids:
+                continue
+            manifest = pack.to_dict()
+            manifest["schema_version"] = int(pack.schema_version)
+            result = validate_pack_compatibility(
+                mode="inventory", manifest=manifest, candidate=selected[pack.id],
+                selected=selected, core_api=PACK_API_VERSION, release_pins=release_pins,
+                python_packages=python_packages,
+                import_violations=check_pack_imports(pack.root, contract=contract, manifest=manifest),
+                canonical_personal_root=canonical_personal_root,
+                # The inventory is judged for this interpreter (the one that
+                # executes admitted packs): supply its PEP 508 marker facts.
+                python_environment=python_environment,
+            )
+            if not result["ok"]:
+                reason = f"{result['reason']} {result['fix']}"
+                rejected[pack.id] = QuarantinedPack(
+                    pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
+                    error=" ".join(reason.split()),
+                )
+        if not rejected:
+            return active, quarantined
+        for record in rejected.values():
+            if _fail_closed(record.pack_id, required_pack_ids):
+                raise PackValidationError(record.error)
+            quarantined.append(record)
+            _quarantine_warning(record)
+        active = [pack for pack in active if pack.id not in rejected]
 
 
 def discover_packs(
@@ -154,13 +382,12 @@ def discover_packs(
     *,
     include_hidden: bool = False,
 ) -> tuple[PackDefinition, ...]:
-    """Return packs admitted by the strict canonical V3/V2 source parser.
+    """Return packs admitted by the canonical v3 source parser.
 
-    Optional quarantine is deliberately available only through the explicit
-    non-strict :func:`scan_packs` diagnostic seam; registries cannot silently
-    downgrade source admission to a folder walk.
+    Optional schema/compatibility failures are quarantined individually by
+    :func:`scan_packs`; malformed required manifests remain fail-closed.
     """
-    return scan_packs(root, include_hidden=include_hidden, strict=True).packs
+    return scan_packs(root, include_hidden=include_hidden, strict=False).packs
 
 
 def _raw_declared_capabilities(manifest_path: Path | None) -> tuple[str, ...]:
@@ -187,15 +414,14 @@ def quarantined_pack_for_capability(
     and never changes the strict registry result.
     """
     scan_roots = roots if roots is not None else _default_pack_roots()
-    for root in scan_roots:
-        for record in scan_packs(root, strict=False).quarantined:
-            if capability_id.startswith(f"{record.pack_id}."):
-                return record
-            labels = _raw_declared_capabilities(record.manifest_path)
-            if capability_id in labels or any(
-                capability_id == f"{record.pack_id}.{label}" for label in labels
-            ):
-                return record
+    for record in scan_pack_roots(scan_roots).quarantined:
+        if capability_id.startswith(f"{record.pack_id}."):
+            return record
+        labels = _raw_declared_capabilities(record.manifest_path)
+        if capability_id in labels or any(
+            capability_id == f"{record.pack_id}.{label}" for label in labels
+        ):
+            return record
     return None
 
 
@@ -205,20 +431,15 @@ def _default_pack_roots() -> tuple[Path, ...]:
         for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep)
         if item
     )
-    return tuple(dict.fromkeys((packs_root(), *env_roots)))
+    return tuple(dict.fromkeys(path.resolve() for path in (packs_root(), Path.home() / "Astrid" / "packs", *env_roots)))
 
 
 def pack_quarantine_report(
     roots: tuple[str | Path, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Return read-only JSON-shaped optional-pack quarantine records."""
-    scan_roots = roots if roots is not None else _default_pack_roots()
-    records: list[dict[str, Any]] = []
-    for root in scan_roots:
-        records.extend(
-            record.to_dict() for record in scan_packs(root, strict=False).quarantined
-        )
-    return records
+    scan = scan_pack_roots(roots) if roots is not None else scan_configured_packs()
+    return [record.to_dict() for record in scan.quarantined]
 
 
 def pack_quarantine_section() -> dict[str, Any]:
@@ -261,12 +482,19 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         schema_version=str(definition.schema_version),
         aliases=tuple(dict(alias) for alias in data["aliases"]),
         permissions=_normalize_pack_permissions(data["permissions"]),
-        extensions=_optional_pack_extensions(data.get("extensions", {}), path="pack.extensions"),
+        extensions=_optional_pack_extensions(
+            data.get("extensions", {}), path="pack.extensions", pack_id=definition.id,
+            actions=dict(data.get("actions", {})),
+        ),
         actions=dict(data.get("actions", {})),
         ui=dict(data.get("ui", {})),
         rendering=dict(data.get("rendering", {})),
         documents=dict(data.get("documents", {})),
         documentation=dict(data.get("documentation", {})),
+        pack_api=data.get("pack_api"),
+        dependencies=dict(data.get("dependencies", {})),
+        cli=dict(data.get("cli", {})),
+        engines=dict(data.get("engines", {})),
         **taxonomy,
     )
 

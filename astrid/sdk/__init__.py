@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib
 
 _EXPORTS = {
+    "child_bridge_is_live": ("_child_bridge", "child_bridge_is_live"),
+    "inherited_child_bridge": ("_child_bridge", "inherited_child_bridge"),
+    "validate_child_policy": ("_child_bridge", "validate_child_policy"),
     "AstridClient": ("client", "AstridClient"),
     "AliasRecord": ("dto", "AliasRecord"),
     "Capability": ("dto", "Capability"),

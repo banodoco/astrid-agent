@@ -19,13 +19,13 @@ from astrid.core.timeline.events.schema import (
 )
 from astrid.core.timeline.projection import project_to_assembly
 from astrid.core.timeline.resolution import classify_asset
-from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
+from astrid.core.timeline.snapshot_digest import (
     SNS_SCHEMA_VERSION,
     canonical_json_bytes,
     sha256_bytes,
     sns_digest,
 )
-from astrid.packs.rendering.actions.timeline_visualize.validate import (
+from astrid.core.timeline.validate import (
     validate_structural,
 )
 

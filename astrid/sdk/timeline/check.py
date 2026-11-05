@@ -439,14 +439,14 @@ class _CheckMixin:
         import numpy as np
         from PIL import Image
 
-        from astrid.packs.pixel.actions import _common as pixel
+        from astrid.core.media import load_rgba, outline_integrity
 
         try:
-            rgba = pixel.load_rgba(source) if isinstance(source, str) else np.asarray(Image.open(source).convert("RGBA"))
+            rgba = load_rgba(source) if isinstance(source, str) else np.asarray(Image.open(source).convert("RGBA"))
         except (OSError, ValueError):  # an unreadable or non-image file: nothing to measure
             return None
         if (rgba[..., 3] < 255).any():
-            return float(pixel.outline_integrity(rgba)["fraction"])
+            return float(outline_integrity(rgba)["fraction"])
         return None
 
     def _stale_whys(self) -> list[str]:

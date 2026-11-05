@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import importlib.abc
-import importlib.util
 import keyword
-import uuid
 import os
 import shutil
 import subprocess
@@ -41,9 +38,10 @@ from astrid.core.contracts.run_status import RunStatus
 from astrid.core.contracts.scoped_config import SCOPE_REGISTRY, ScopeRequest
 from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION
 from astrid.core.foundation.hash import executor_definition_digest
-from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.foundation.paths import PACKAGE_ROOT
 from astrid.core.generation.vibecomfy_dependency import dependency_pythonpath
 from astrid.core.media import require_runtime_materialized_file
+from astrid.core.pack.imports import install_pack_imports, pack_module_path
 from astrid.core.project.guidance import (
     format_project_required_guidance,
     selected_project,
@@ -183,10 +181,8 @@ class ExecutorRunResult:
 class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunResult, ExecutorDefinition]):
     """Executor binding of the shared :class:`CapabilityRunner` skeleton."""
 
-    def __init__(self, *, admission: Mapping[str, Any] | None = None,
-                 captured_source: Mapping[str, bytes] | None = None) -> None:
+    def __init__(self, *, admission: Mapping[str, Any] | None = None) -> None:
         self._admission = admission
-        self._captured_source = captured_source
 
     def load_default_registry(self) -> ExecutorRegistry:
         return load_default_registry()
@@ -244,8 +240,7 @@ class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunR
         return _prepare_dry_run_request(request)
 
     def run_inner(self, request: ExecutorRunRequest, definition: ExecutorDefinition) -> ExecutorRunResult:
-        return _run_executor_inner(request, definition, _admission=self._admission,
-                                   _captured_source=self._captured_source)
+        return _run_executor_inner(request, definition, _admission=self._admission)
 
     def finalize_project(
         self,
@@ -271,15 +266,13 @@ _EXECUTOR_RUNNER = ExecutorCapabilityRunner()
 
 
 def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None = None,
-                 *, _admission: Mapping[str, Any] | None = None,
-                 _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
-    runner = ExecutorCapabilityRunner(admission=_admission, captured_source=_captured_source) if _admission is not None else _EXECUTOR_RUNNER
+                 *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
+    runner = ExecutorCapabilityRunner(admission=_admission) if _admission is not None else _EXECUTOR_RUNNER
     return runner.run(request, registry)
 
 
 def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition,
-                        *, _admission: Mapping[str, Any] | None = None,
-                        _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
+                        *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
     _validate_scoped_configs_at_dispatch(executor)
     invocation = executor.metadata.get("action_invocation")
     python_action = isinstance(invocation, Mapping) and invocation.get("kind") == "python"
@@ -320,8 +313,7 @@ def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinitio
         )
 
     if python_action:
-        return _run_python_action(executor, request, values, _admission=_admission,
-                                  _captured_source=_captured_source)
+        return _run_python_action(executor, request, values, _admission=_admission)
     if executor.kind == "built_in" and "pipeline_step" in executor.metadata:
         return _run_builtin_executor(executor, request)
     return _run_external_executor(executor, request, values)
@@ -338,80 +330,10 @@ def _action_input_values(executor: ExecutorDefinition, request: ExecutorRunReque
     return values
 
 
-class _PackSourceLoader(importlib.abc.Loader):
-    """Compile admitted Python source directly; never consult pack bytecode."""
-
-    def __init__(self, source: Path | None, directory: Path, data: bytes | None = None) -> None:
-        self.data = data
-        self.source = source
-        self.directory = directory
-
-    def create_module(self, spec):
-        return None
-
-    def get_code(self, fullname):
-        if self.source is None:
-            return compile("", str(self.directory), "exec")
-        data = self.source.read_bytes() if self.data is None else self.data
-        return compile(data, str(self.source), "exec")
-
-    def exec_module(self, module) -> None:
-        if self.source is not None:
-            module.__file__ = str(self.source)
-            exec(self.get_code(module.__name__), module.__dict__)
-
-
-class _PackSourceFinder(importlib.abc.MetaPathFinder):
-    """Own only one opaque pack prefix, including package initializers."""
-
-    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str],
-                 contents: Mapping[str, bytes] | None = None, *, include_prefix: bool = False) -> None:
-        self.include_prefix = include_prefix
-        self.prefix, self.root, self.path_names = prefix, root, path_names
-        self.contents = contents
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
-            return None
-        parts = fullname.split(".") if self.include_prefix else fullname.split(".")[1:]
-        if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
-            raise ExecutorRunnerError("invalid private action module name")
-        base = self.root.joinpath(*(self.path_names.get(part, part) for part in parts))
-        directory = base if self.contents is not None else base.resolve()
-        relative = base.relative_to(self.root).as_posix()
-        relative = "" if relative == "." else relative + "/"
-        source = None
-        package = (any(name.startswith(relative) for name in self.contents)
-                   if self.contents is not None else directory.is_dir())
-        if package:
-            initializer = base / "__init__.py"
-            if (relative + "__init__.py" in self.contents if self.contents is not None else initializer.exists()):
-                source = initializer if self.contents is not None else initializer.resolve()
-        else:
-            source = Path(str(base) + ".py")
-            if self.contents is None:
-                source = source.resolve()
-            if (source.relative_to(self.root).as_posix() not in self.contents
-                    if self.contents is not None else not source.is_file()):
-                # Do not let the default finder pick up cached/native modules.
-                raise ModuleNotFoundError(f"no admitted Python source for {fullname!r}")
-        if not directory.is_relative_to(self.root) or (source is not None and not source.is_relative_to(self.root)):
-            raise ExecutorRunnerError("private action import escapes admitted pack root")
-        data = self.contents[source.relative_to(self.root).as_posix()] if self.contents is not None and source else None
-        loader = _PackSourceLoader(source, directory, data)
-        spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
-        if source is not None and spec is not None:
-            spec.origin = str(source)
-            spec.has_location = True
-        if package:
-            spec.submodule_search_locations = [str(directory)]
-        return spec
-
 
 def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest,
-                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None,
-                       _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
-    from astrid.core.execution.generic_host import _verify_action_admission, _verify_admitted_source
+                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None) -> ExecutorRunResult:
+    from astrid.core.execution.generic_host import _verify_action_admission
     from astrid.sdk.actions import validate_action_output_definition
 
     invocation = executor.metadata["action_invocation"]
@@ -434,29 +356,16 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
     if os.environ.get(ASTRID_INTERNAL_INVOCATION) != "1" or _admission is None:
         raise ExecutorRunnerError("Python actions require the admitted internal host worker")
     _verify_action_admission(executor.to_dict(), _admission)
-    _verify_admitted_source(_admission)
-    prefix = "_astrid_pack_" + uuid.uuid4().hex
-    path_names = {}
-    module_parts = []
-    for part in (*relative.parts[:-1], relative.stem):
-        name = part if part.isidentifier() and not keyword.iskeyword(part) else "_path_" + uuid.uuid4().hex
-        if name != part:
-            path_names[name] = part
-        module_parts.append(name)
-    finder = _PackSourceFinder(prefix, root, path_names, _captured_source)
-    sys.meta_path.insert(0, finder)
-    try:
-        module = import_module(prefix + "." + ".".join(module_parts))
-        function = getattr(module, function_name, None)
-        if not callable(function):
-            raise ExecutorRunnerError(f"Python action function {function_name!r} is missing or not callable")
-        action_result = function(**dict(values))
-        validate_action_output_definition(executor, action_result)
-    finally:
-        sys.meta_path.remove(finder)
-        for name in tuple(sys.modules):
-            if name == prefix or name.startswith(prefix + "."):
-                del sys.modules[name]
+    module_path, path_names = pack_module_path(relative)
+    prefix = install_pack_imports(str(executor.metadata.get("source_pack") or root.name), root, path_names,
+                                  source_digest=str(_admission["source_digest"]),
+                                  selected_map=_admission.get("selected_pack_map"))
+    module = import_module(prefix + "." + module_path)
+    function = getattr(module, function_name, None)
+    if not callable(function):
+        raise ExecutorRunnerError(f"Python action function {function_name!r} is missing or not callable")
+    action_result = function(**dict(values))
+    validate_action_output_definition(executor, action_result)
     return ExecutorRunResult(executor_id=executor.id, kind=executor.kind,
                              payload={"action_result": action_result}, returncode=0,
                              outputs=_resolve_declared_outputs(executor, request),
@@ -1096,7 +1005,7 @@ def _external_pack_pythonpath_env(
     if not isinstance(pack_root_raw, str) or not pack_root_raw:
         return {}
     pack_root = Path(pack_root_raw).expanduser().resolve()
-    builtin_root = (REPO_ROOT / "astrid" / "packs" / pack_id).resolve()
+    builtin_root = (PACKAGE_ROOT / "packs" / pack_id).resolve()
     if pack_root == builtin_root:
         return {}
     pack_parent = str(pack_root.parent)

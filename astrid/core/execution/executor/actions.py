@@ -103,6 +103,7 @@ def _action_definition(discovered_pack: Any, local_id: str, action: Mapping[str,
         "priority": 30,
         "action_declaration": declaration,
         "action_invocation": invocation,
+        "declared_secrets": list(declaration.get("secrets", ())),
     })
     if "external_runtime" in declaration:
         metadata["external_runtime"] = declaration["external_runtime"]
