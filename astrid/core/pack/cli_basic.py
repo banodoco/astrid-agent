@@ -471,10 +471,16 @@ def _validation_errors(pack_root: Path, schema_errors: list[str]) -> list[str]:
     errors = list(schema_errors)
     if is_first_party_packs_root_candidate(pack_root.resolve()):
         return errors
-    from astrid.core.pack.loader import _default_pack_roots, scan_pack_roots
+    from astrid.core.pack.loader import scan_configured_packs
+    from astrid.core.pack.source_setup import active_source_inventory
 
-    compatibility_scan = scan_pack_roots(
-        (*_default_pack_roots(), pack_root.parent), include_hidden=True)
+    inventory = active_source_inventory()
+    managed_roots = {source.pack_root.resolve() for source in inventory.sources}
+    # A managed checkout may contain other, unselected packs. An ordinary
+    # authoring directory keeps the existing sibling dependency context.
+    # (g2 c3c6680cd; scan_configured_packs also covers g4's default roots.)
+    candidate = pack_root if pack_root.resolve() in managed_roots else pack_root.parent
+    compatibility_scan = scan_configured_packs((candidate,), include_hidden=True)
     incompatible = next(
         (record for record in compatibility_scan.quarantined if record.pack_dir.resolve() == pack_root.resolve()),
         None,
