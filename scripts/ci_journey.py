@@ -73,7 +73,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "update-bootstrap-process.json", "update-bootstrap-stdout.log", "update-bootstrap-stderr.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "verify-observe.json", "verify-observe.log", "windows-update-manifest.json",
-    "windows-update-SHA256SUMS", "windows-update-scheduler-events.json", "windows-update-process-capture.json", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
+    "windows-update-SHA256SUMS", "windows-update-scheduler-events.json", "windows-update-process-capture.json", "windows-update-stop-task-state.json", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "scheduled-task-before.xml", "scheduled-task-after.xml",

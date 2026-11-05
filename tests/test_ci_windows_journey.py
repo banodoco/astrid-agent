@@ -10,6 +10,7 @@ import pytest
 
 from scripts import ci_windows_journey as journey
 from scripts import ci_journey as shared_journey
+from scripts import windows_update_journey as update_journey
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows-journey.yml"
@@ -33,6 +34,22 @@ def test_tst_b1_windows_alias_returns_shared_driver_failure(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey"])
     monkeypatch.setattr(shared_journey, "main", lambda unused: 1)
     assert journey.main() == 1
+
+
+def test_windows_update_stop_context_records_task_states_without_inferring_stop_outcome(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    monkeypatch.setattr(update_journey.windows, "powershell", lambda *args, **kwargs: "Ready")
+
+    update_journey.capture_stop_task_state(evidence, "before", "Running")
+    update_journey.capture_stop_task_state(evidence, "after")
+
+    receipt = json.loads((evidence / update_journey.STOP_TASK_STATE).read_text(encoding="utf-8"))
+    assert receipt["task_states"] == {
+        "before": {"status": "observed", "state": "Running"},
+        "after": {"status": "observed", "state": "Ready"},
+    }
+    assert receipt["stop_outcome"] == {"status": "not_observed", "value": None}
 
 
 def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
@@ -363,6 +380,8 @@ def test_windows_update_pack_host_capture_is_bounded_read_only_and_scrubbed(tmp_
     receipt = json.loads((evidence / "windows-pack-host-update-before.json").read_text(encoding="utf-8"))
     assert receipt["status"] == "captured"
     assert receipt["files"]["generic-host.json"]["content"]["executor_id"] == "astrid-pack-host"
+    assert (receipt["files"]["generic-host.json"]["content"]
+            ["runtime_service_launch_id"] == "launch-1")
     assert receipt["files"]["generic-host.json"]["content"]["support_root"] == "<path>"
     assert receipt["files"]["generic-host.json"]["content"]["credential_file"] == "<redacted>"
     assert receipt["files"]["generic-host.json"]["content"]["display_path"] == "<path>"
