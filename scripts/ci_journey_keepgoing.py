@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import sys
 
 if __package__:
@@ -22,6 +23,40 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
 
 FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
                 "release1-verify-install", "release1-task", "sentinel")
+
+
+FAILED_CAPABILITY_ID_LIMIT = 32
+_CAPABILITY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}\Z")
+
+
+def failed_capability_details(receipt: dict, failures: list) -> list[dict]:
+    """Project bounded capability IDs from failed verifier checks only.
+
+    The full verifier receipt may include paths, environment, identities, and
+    live service data. Keep only the two fixed capability check projections.
+    """
+    if not isinstance(receipt, dict) or not isinstance(failures, list):
+        return []
+    details = receipt.get("details")
+    if not isinstance(details, dict):
+        return []
+    allowed = {
+        "capabilities.required": "unready",
+        "capabilities.approval": "unapproved",
+    }
+    projected = []
+    for check, field in allowed.items():
+        if check not in failures:
+            continue
+        value = details.get(check)
+        values = value.get(field) if isinstance(value, dict) else None
+        if not isinstance(values, list):
+            continue
+        ids = sorted({item for item in values
+                      if isinstance(item, str) and _CAPABILITY_ID.fullmatch(item)})
+        projected.append({"check": check, "ids": ids[:FAILED_CAPABILITY_ID_LIMIT],
+                          "omitted_count": max(0, len(ids) - FAILED_CAPABILITY_ID_LIMIT)})
+    return projected
 
 
 def release0_owner(root: Path, data: Path) -> dict:
@@ -284,8 +319,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if type(passed) is not bool or not isinstance(failures, list):
             raise RuntimeError("Release-0 observation receipt has invalid passed or failures fields")
         state["verified0"] = True
+        observation = {"passed": passed, "failures": failures}
+        failed_details = failed_capability_details(receipt, failures)
+        if failed_details:
+            observation["failed_check_details"] = failed_details
         return {"result": "observed-passed" if passed else "observed-failed",
-                "observation": {"passed": passed, "failures": failures}}
+                "observation": observation}
     def verify_update():
         journey.verify("update", state["version_path"], jumps.selected_data_root(root, data), evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
     def verify_install():
