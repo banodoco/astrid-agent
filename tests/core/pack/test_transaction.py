@@ -2447,3 +2447,43 @@ def test_personal_pack_writers_take_exclusive_collection_custody(
     assert done.is_set()
     assert (root / "personal" / "rendering" / "elements" / "effects" / "locked-effect" / "element.yaml").is_file()
 
+
+def test_equal_byte_update_of_a_built_pack_is_a_no_op(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LB-TXN r1 finding 2/3 (new): admission.json carries transaction identity
+    only; identical sources and outputs publish nothing and retire nothing."""
+    from astrid.core.pack import transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    first = install(repo, packs_root, builds=contract_builds(), refresh=accepted_refresh)
+    before_tree = tree_bytes(packs_root)
+    before = read_group(packs_root)
+    result = install_group(source=repo.bare, revision=repo.commit, packs=GROUP, packs_root=packs_root,
+                           python_packages={}, intent="update", builds=contract_builds(),
+                           refresh=accepted_refresh)
+    after = read_group(packs_root)
+    assert (after.transaction_id, after.revision) == (before.transaction_id, before.revision)
+    assert result.transaction_id == first.transaction_id
+    assert result.changed_ids == ()
+    assert result.retired_root is None
+    assert tree_bytes(packs_root) == before_tree
+
+
+def test_real_update_command_reports_an_equal_byte_update_as_unchanged(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """LB-TXN r1 finding 3 (new): a no-op update never prints "Updated ..."."""
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    # Acknowledged commit: a pending refresh outbox disables the no-op path.
+    first = install(repo, packs_root, refresh=accepted_refresh)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    capsys.readouterr()
+    result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                             "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                             "--pack", "shared=packs/shared"])
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "Updated" not in out
+    assert f"alpha, shared unchanged (generation {first.transaction_id})." in out
+    assert read_group(packs_root).transaction_id == first.transaction_id

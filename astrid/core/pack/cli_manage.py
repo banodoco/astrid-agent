@@ -283,6 +283,10 @@ def _handle_update(args: argparse.Namespace) -> int:
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if not result.changed_ids:
+        # Equal-byte update: nothing was published or retired.
+        print(f"{', '.join(sorted(packs))} unchanged (generation {result.transaction_id}).")
+        return 0
     print(f"Updated {', '.join(sorted(packs))} in committed generation {result.transaction_id}.")
     return 0
 

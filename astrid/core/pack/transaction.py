@@ -67,7 +67,11 @@ class GroupResult:
     changed_ids: tuple[str, ...]
     paths: Mapping[str, Path]
     refresh_pending: bool
-    retired_root: Path
+    # The generation this call retired (now restorable by rollback). ``None``
+    # when the call published nothing (``changed_ids == ()``, an equal-byte
+    # update): nothing was retired, and the live rollback source is not this
+    # call's to dispose of (LB-TXN r1 finding 3).
+    retired_root: Path | None
 
 
 class GroupCommitError(RuntimeError):
@@ -783,8 +787,18 @@ def _running_interpreter_environment(packages: Mapping[str, str]) -> LockedPytho
     return LockedPythonEnvironment(interpreter=Path(sys.executable).resolve(), inventory=inventory)
 
 
+_TRANSACTION_IDENTITY_FIELDS = frozenset({"transactionId", "committedRevision"})
+
+
 def _same_tree_bytes(left: Path, right: Path) -> bool:
-    """Byte equality of two pack trees (paths, file bytes, symlink targets)."""
+    """Byte equality of two pack trees (paths, file bytes, symlink targets).
+
+    The build admission record ``.build/admission.json`` names the transaction
+    that admitted it; it is compared with ``transactionId`` and
+    ``committedRevision`` ignored, so identical sources and build outputs are
+    equal across transactions (LB-TXN r1 finding 2). Every other byte,
+    including the artifact manifest, is compared exactly.
+    """
     if not left.is_dir() or not right.is_dir():
         return False
 
@@ -797,7 +811,17 @@ def _same_tree_bytes(left: Path, right: Path) -> bool:
             elif path.is_dir():
                 result[key] = ("dir", None)
             else:
-                result[key] = ("file", path.read_bytes())
+                data = path.read_bytes()
+                if key == ".build/admission.json":
+                    try:
+                        record = json.loads(data)
+                    except ValueError:
+                        record = None
+                    if isinstance(record, dict):
+                        result[key] = ("admission", _json({name: value for name, value in record.items()
+                                                           if name not in _TRANSACTION_IDENTITY_FIELDS}))
+                        continue
+                result[key] = ("file", data)
         return result
 
     return entries(left) == entries(right)
@@ -1048,8 +1072,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 # nothing. The live generation, its revision and receipts stay;
                 # the unpublished candidate is discarded by the finally below.
                 mark("unchanged")
-                return GroupResult(old["transaction_id"], old["revision"], (), _paths(root), False,
-                                   retired / old["transaction_id"])
+                return GroupResult(old["transaction_id"], old["revision"], (), _paths(root), False, None)
             # A newer inventory revision subsumes an unacknowledged one. Carry
             # its changed ids forward so a delta consumer cannot miss a commit.
             pending_ids = old["refresh"]["changed_ids"] if old["refresh"] else ()
