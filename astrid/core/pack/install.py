@@ -467,6 +467,10 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     if root is None or not Path(raw_root).expanduser().is_absolute():
         raise PackInstallError("unsafe_path", "No absolute packs root is configured.")
     _directory(Path(raw_root), create=True)
+    # The collection this call publishes into (and whose parent holds the
+    # group lock file) is ``root``; create it with its parents safely before
+    # the lock is opened with O_CREAT (LB-TXN r1 finding 11).
+    _directory(root, create=True)
     destination = root / pack_id
     source_text = _git_source(str(source)) if revision is not None else _directory(Path(source)).as_uri()
     if revision is None:
