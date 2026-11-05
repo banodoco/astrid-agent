@@ -70,6 +70,17 @@ def test_strict_direct_matrix_preserves_original_leg_and_artifact_names(tmp_path
     assert 'name: journey-manager-${{ matrix.job_id }}' + suffix in WORKFLOW
 
 
+def test_windows_diagnostic_does_not_run_deferred_release0_task(tmp_path):
+    result, outputs = config(tmp_path, DIAGNOSTIC_LEG='release0-to-release1')
+    assert result.returncode == 0, result.stderr
+    rows = json.loads(outputs['matrix'])['include']
+    assert {(row['job_id'], row['leg']) for row in rows} == {
+        ('direct-linux', 'release0-to-release1'),
+        ('direct-macos', 'release0-to-release1'),
+        ('direct-windows', 'fresh-install'),
+    }
+
+
 @pytest.mark.parametrize('overrides,message', [
     ({'DIAGNOSTIC_KEEP_GOING': 'false'}, 'requires diagnostic_keep_going'),
     ({'DIRECT_ONLY': 'false', 'JOURNEY_ROW': ''}, 'requires direct_only'),
