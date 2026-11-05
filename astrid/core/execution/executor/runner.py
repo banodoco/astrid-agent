@@ -546,7 +546,9 @@ def _run_builtin_executor(executor: ExecutorDefinition, request: ExecutorRunRequ
         )
     if args.brief.exists():
         pipeline.prepare_brief_artifacts(args)
-    returncode = pipeline.run_step(step, list(command), args)
+    from astrid.core.execution.pipeline_step import run_step
+
+    returncode = run_step(step, list(command), args)
     return ExecutorRunResult(
         executor_id=executor.id,
         kind=executor.kind,

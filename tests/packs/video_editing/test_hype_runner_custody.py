@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.packs.video_editing.actions.hype import runner
+from astrid.core.execution import pipeline_step as runner
 from astrid.packs.video_editing.actions.hype.steps import Step
 
 

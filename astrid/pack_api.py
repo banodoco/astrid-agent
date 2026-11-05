@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from importlib import import_module as _import_module
 
-VERSION = (1, 1)
+VERSION = (2, 0)
 
 # Public name -> implementation module. No pack may be a dependency here.
 _EXPORTS = {
@@ -24,6 +24,21 @@ _EXPORTS = {
     'CapabilityDescriptor': 'astrid.core.execution.managed_tool_session',
     'CapabilityIdentity': 'astrid.core.contracts.runtime_orchestration',
     'ClaudeClient': 'astrid.core.util.llm_clients',
+    'GeminiClient': 'astrid.core.util.llm_clients',
+    'build_gemini_client': 'astrid.core.util.llm_clients',
+    'step_output_root': 'astrid.core.execution.pipeline_step',
+    'log_dir_for_step': 'astrid.core.execution.pipeline_step',
+    'sentinel_paths': 'astrid.core.execution.pipeline_step',
+    'print_log_tail': 'astrid.core.execution.pipeline_step',
+    'run_step': 'astrid.core.execution.pipeline_step',
+    'signal_pipeline_process_group': 'astrid.core.execution.pipeline_step',
+    'pipeline_process_group_exists': 'astrid.core.execution.pipeline_step',
+    'terminate_pipeline_process_group': 'astrid.core.execution.pipeline_step',
+    'pipeline_callback_cancelled': 'astrid.core.execution.pipeline_step',
+    'asset_kind_for_sentinel': 'astrid.core.execution.pipeline_step',
+    'register_step_outputs': 'astrid.core.execution.pipeline_step',
+    'redact_pipeline_command': 'astrid.core.execution.pipeline_step',
+
     'CommandSpec': 'astrid.core.cli.registration',
     'CredentialsScope': 'astrid.core.util.credentials_scope',
     'DEFAULT_OUTPUT_MAX_BYTES': 'astrid.core.util.generation_helpers',
@@ -168,6 +183,16 @@ _EXPORTS = {
     'timeline_render_duration_frames': 'astrid.core.timeline',
 }
 
+_ALIASES = {
+    "signal_pipeline_process_group": "_signal_process_group",
+    "pipeline_process_group_exists": "_process_group_exists",
+    "terminate_pipeline_process_group": "_terminate_process_group",
+    "pipeline_callback_cancelled": "_callback_cancelled",
+    "asset_kind_for_sentinel": "_asset_kind_for_sentinel",
+    "register_step_outputs": "_register_step_outputs",
+    "redact_pipeline_command": "_redact_command",
+}
+
 __all__ = ("VERSION", *_EXPORTS)
 
 
@@ -176,7 +201,7 @@ def __getattr__(name: str):
         module = _EXPORTS[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    return getattr(_import_module(module), name)
+    return getattr(_import_module(module), _ALIASES.get(name, name))
 
 
 def __dir__() -> list[str]:
