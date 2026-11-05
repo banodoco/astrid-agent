@@ -389,7 +389,11 @@ jobs:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg == "release0-to-release1":
               for row in matrix:
-                  row["leg"] = diagnostic_leg
+                  # Windows R0 upgrades are deferred. Keep its diagnostic on
+                  # the supported fresh-install path; the refusal is captured
+                  # separately by the strict Windows lifecycle.
+                  if row["job_id"] != "direct-windows":
+                      row["leg"] = diagnostic_leg
           if diagnostic_leg == "fresh-install":
               for row in matrix:
                   row["leg"] = diagnostic_leg
