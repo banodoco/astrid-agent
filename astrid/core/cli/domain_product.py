@@ -283,7 +283,7 @@ FAMILY_PARSER_MODULES: dict[str, str] = {
     "projects": "astrid.core.cli.domain_projects",
     "documents": "astrid.core.cli.domain_documents",
     "preferences": "astrid.core.cli.domain_preferences",
-    "timelines": "astrid.core.cli.domain_timelines",
+    "timelines": "astrid.packs.timeline.cli",
     "shots": "astrid.core.cli.domain_shots",
     "media": "astrid.core.cli.domain_media",
     "references": "astrid.core.cli.domain_references",
@@ -292,11 +292,19 @@ FAMILY_PARSER_MODULES: dict[str, str] = {
 }
 
 
+# Declaration-only parser modules for enumeration (MCP tool listing, help
+# census). Dispatch still uses FAMILY_PARSER_MODULES, which binds handlers.
+FAMILY_DECLARATION_MODULES: dict[str, str] = {
+    **FAMILY_PARSER_MODULES,
+    "timelines": "astrid.core.cli.domain_timelines",
+}
+
+
 def family_parsers() -> dict[str, argparse.ArgumentParser]:
     """Build the product-family parsers used by the CLI surface and MCP server."""
     parsers = {}
     for family in sorted(PRODUCT_FAMILIES):
-        module = importlib.import_module(FAMILY_PARSER_MODULES[family])
+        module = importlib.import_module(FAMILY_DECLARATION_MODULES[family])
         kwargs = {}
         if family == "media":
             references = importlib.import_module(FAMILY_PARSER_MODULES["references"])

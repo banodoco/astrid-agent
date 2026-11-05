@@ -2228,3 +2228,66 @@ def test_unrelated_update_refuses_corrupt_retained_browser_admission(
     assert read_group(packs_root).revision == 2
     assert read_group(packs_root).transaction_id == initial.transaction_id
     assert not notifications
+
+
+def test_refresh_runs_after_custody_release_so_an_independent_reader_is_not_blocked(
+        repo: Repository, packs_root: Path) -> None:
+    """PK-4R (new): the host's acknowledgment path reads the committed group from
+    its own context (another thread or process). The writer must have released
+    exclusive custody (transaction.py group_read_lock) before notifying, or that
+    reader waits on the writer while the writer waits on the acknowledgment."""
+    import contextvars
+    import threading
+
+    observed: list[object] = []
+
+    def refresh(**kwargs):
+        done = threading.Event()
+
+        def read() -> None:
+            try:
+                observed.append(read_group(packs_root))
+            except BaseException as exc:  # recorded for the assertions below
+                observed.append(exc)
+            finally:
+                done.set()
+
+        # A fresh context: no in-process re-entrancy shortcut, a real shared flock.
+        threading.Thread(target=contextvars.Context().run, args=(read,), daemon=True).start()
+        if not done.wait(timeout=5):
+            observed.append("blocked")
+            raise TimeoutError("independent reader blocked behind the writer's exclusive custody")
+        return accepted_refresh(**kwargs)
+
+    result = install(repo, packs_root, refresh=refresh)
+    assert "blocked" not in observed, "refresh ran while the writer still held exclusive collection custody"
+    snapshot = observed[0]
+    assert not isinstance(snapshot, BaseException), snapshot
+    assert (snapshot.transaction_id, snapshot.revision, snapshot.refresh_pending) == (
+        result.transaction_id, result.revision, True)
+    assert result.refresh_pending is False
+    assert read_group(packs_root).refresh_pending is False
+
+
+def test_late_ack_does_not_clear_a_newer_commit_outbox(
+        repo: Repository, packs_root: Path) -> None:
+    """PK-4R (new): with notification outside custody, another writer can commit
+    before the first acknowledgment is recorded. The late acknowledgment must not
+    clear the newer outbox, which carries the earlier changed ids forward."""
+    repo.write_pack("extra", "extra-v1\n")
+    newer_commit = repo.publish()
+    newer: list[object] = []
+
+    def refresh(**kwargs):
+        if not newer:
+            newer.append(install(repo, packs_root, packs={"extra": "packs/extra"}, revision=newer_commit))
+        return accepted_refresh(**kwargs)
+
+    first = install(repo, packs_root, refresh=refresh)
+    assert newer, "a writer could not commit while the first notification was in flight"
+    second = newer[0]
+    assert second.revision == first.revision + 1
+    assert first.refresh_pending is True
+    snapshot = read_group(packs_root)
+    assert (snapshot.transaction_id, snapshot.refresh_pending) == (second.transaction_id, True)
+    assert set(second.changed_ids) >= {"alpha", "extra", "shared"}

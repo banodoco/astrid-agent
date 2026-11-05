@@ -102,6 +102,9 @@ def _root(value: str | Path) -> Path:
     return root
 
 
+_SHIPPED_PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
+
+
 @contextmanager
 def group_read_lock(root: str | Path, *, exclusive: bool = False):
     """Hold collection custody across a read or publication.
@@ -116,6 +119,11 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
         raise PackInstallError("atomic_swap_unsupported", "Group custody requires a supported POSIX filesystem.") from exc
     path = Path(root)
     lock = path.parent / ("." + path.name + ".transaction.lock")
+    if not exclusive and lock.parent.resolve() == _SHIPPED_PACKS_ROOT:
+        # The shipped core packs are never a transaction collection; a read of
+        # them takes (and even probes) no collection lock (PK-4R).
+        yield
+        return
     key = str(lock.absolute())
     held = _HELD.get()
     if key in held:
@@ -618,8 +626,16 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
     return records
 
 
-def _refresh(root: Path, state: dict[str, Any], refresh: Refresh | None) -> bool:
-    pending = state["refresh"]
+def _refresh(root: Path, pending: Mapping[str, Any] | None, refresh: Refresh | None) -> bool:
+    """Notify the host about one committed outbox entry; never under custody.
+
+    The caller must NOT hold this collection's exclusive custody: the host's
+    acknowledgment path reads the committed group (often from another thread
+    or process), and a shared reader must be able to take the lock. The
+    acknowledgment is recorded under a short exclusive section and only when
+    the committed outbox still names this transaction and revision; a newer
+    commit supersedes it and stays pending.
+    """
     if pending is None:
         return False
     if refresh is None:
@@ -627,17 +643,24 @@ def _refresh(root: Path, state: dict[str, Any], refresh: Refresh | None) -> bool
     try:
         ack = refresh(transaction_id=pending["transaction_id"], committed_revision=pending["revision"],
                       changed_ids=tuple(pending["changed_ids"]))
-        if (not isinstance(ack, Mapping) or type(ack.get("version")) is not int or ack.get("version") != 1 or ack.get("accepted") is not True
-                or type(ack.get("revision")) is not int or ack["revision"] != pending["revision"]
-                or not isinstance(ack.get("reason"), str)):
-            return True
-        state["refresh"] = None
-        _write_state(root, state)
-        return False
     except Exception:  # noqa: BLE001 - arbitrary host notification failure is retryable after commit
         # Notification/acknowledgment failure cannot turn a committed install
         # into a rollback. The committed outbox remains retryable and idempotent.
         return True
+    if (not isinstance(ack, Mapping) or type(ack.get("version")) is not int or ack.get("version") != 1 or ack.get("accepted") is not True
+            or type(ack.get("revision")) is not int or ack["revision"] != pending["revision"]
+            or not isinstance(ack.get("reason"), str)):
+        return True
+    with group_read_lock(root, exclusive=True):
+        current = _state(root)
+        if current["refresh"] is None:
+            return False
+        if current["refresh"] != dict(pending):
+            # A later commit carried these ids forward; its own outbox is pending.
+            return True
+        current["refresh"] = None
+        _write_state(root, current)
+        return False
 
 
 def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
@@ -655,7 +678,9 @@ def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
             if retired.exists():
                 _sync_directory(retired)
             _sync_directory(root.parent)
-        return _refresh(root, state, refresh)
+        pending = dict(state["refresh"]) if state["refresh"] is not None else None
+    # Custody is released: the host may read the committed group while it acknowledges.
+    return _refresh(root, pending, refresh)
 
 
 def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: str | Path,
@@ -919,11 +944,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             except OSError as exc:
                 raise GroupCommitError(tx, state["revision"]) from exc
             mark("durable")
-            mark("before_refresh")
-            pending = _refresh(root, state, refresh)
-            mark("refreshed")
-            return GroupResult(tx, state["revision"], changed_ids,
-                               _paths(root), pending, candidate)
+            committed_paths = _paths(root)
         finally:
             # On success candidate now owns the complete previous generation.
             # Only an unpublished candidate belongs to this failed attempt.
@@ -943,6 +964,11 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
             except OSError:
                 pass  # Housekeeping cannot mask a publication/durability result.
+    # Exclusive custody is released before the host is notified (see _refresh).
+    mark("before_refresh")
+    pending = _refresh(root, state["refresh"], refresh)
+    mark("refreshed")
+    return GroupResult(tx, state["revision"], changed_ids, committed_paths, pending, candidate)
 
 
 def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str],
@@ -1138,8 +1164,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)
-            pending = _refresh(root, new_state, refresh)
-            return GroupResult(tx, new_state["revision"], changed_ids, _paths(root), pending, candidate)
+            committed_paths = _paths(root)
         finally:
             if not published:
                 try:
@@ -1153,6 +1178,9 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
             except OSError:
                 pass
+    # Exclusive custody is released before the host is notified (see _refresh).
+    pending = _refresh(root, new_state["refresh"], refresh)
+    return GroupResult(tx, new_state["revision"], changed_ids, committed_paths, pending, candidate)
 
 
 __all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",

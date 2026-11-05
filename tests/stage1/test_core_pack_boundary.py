@@ -346,3 +346,57 @@ def test_guard_rule_core_packs_exact_names_and_pinned_loader_exemption():
     loader = guard.scan_source("astrid/core/pack/loader.py", source, names, set())
     assert loader[("astrid/core/pack/loader.py", "dynamic_pack_import", "astrid.packs.")] == 0
     assert loader[("astrid/core/pack/loader.py", "pack_import", "astrid.packs")] == 0
+
+
+def test_core_cli_adds_no_pack_import_findings():
+    """PK-4R (new): product parsers in astrid/core/cli never import pack modules
+    beyond the baselined dispatch table. Reproduces the composed-head failure
+    (park g4 astrid/core/cli/domain_timelines.py:23-82 name astrid.packs.timeline.*
+    42 times) without running the whole ratchet."""
+    from collections import Counter
+
+    guard = _guard_module()
+    source = Path(__file__).resolve().parents[2]
+    names, capabilities = guard._pack_inventory(source)
+    found: Counter = Counter()
+    for path in sorted((source / "astrid" / "core" / "cli").glob("*.py")):
+        relative = path.relative_to(source).as_posix()
+        for key, count in guard.scan_source(relative, path.read_text(encoding="utf-8"), names, capabilities).items():
+            if key[1] in ("pack_import", "dynamic_pack_import"):
+                found[key] += count
+    baseline = json.loads(guard.BASELINE.read_text(encoding="utf-8"))["findings"]
+    allowed = Counter({(row["file"], row["kind"], row["value"]): int(row["count"]) for row in baseline
+                       if row["file"].startswith("astrid/core/cli/")})
+    grown = found - allowed
+    assert not grown, sorted(grown)
+
+
+def test_timelines_dispatch_parser_prints_help_with_core_packs_only(tmp_path):
+    """PK-4R (new, behaviour guard): `astrid timelines --help` still works and its
+    parser construction imports no non-core pack. Equivalent to the plan's
+    `python -m astrid timelines --help` check minus Runtime/client composition."""
+    script = r'''
+import importlib, importlib.abc, sys
+CORE = ("generation", "rendering", "timeline", "vibecomfy")
+class OnlyCorePacks(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        parts = fullname.split(".")
+        if parts[:2] == ["astrid", "packs"] and len(parts) > 2 and parts[2] not in CORE + ("_core",):
+            raise AssertionError("timelines parser imported a non-core pack: " + fullname)
+sys.meta_path.insert(0, OnlyCorePacks())
+from astrid.core.cli.domain_product import FAMILY_PARSER_MODULES
+parser = importlib.import_module(FAMILY_PARSER_MODULES["timelines"]).build_parser(None)
+try:
+    parser.parse_args(["--help"])
+except SystemExit as exc:
+    assert exc.code == 0, exc.code
+else:
+    raise AssertionError("--help did not exit")
+'''
+    source = Path(__file__).resolve().parents[2]
+    env = {key: os.environ[key] for key in ("PATH", "TMPDIR", "SYSTEMROOT", "ASTRID_RUNTIME_CHECKOUT") if key in os.environ}
+    env.update(PYTHONPATH=os.pathsep.join(filter(None, (str(source), os.environ.get("ASTRID_RUNTIME_CHECKOUT")))),
+               PYTHONDONTWRITEBYTECODE="1", HOME=str(tmp_path))
+    result = subprocess.run([sys.executable, "-c", script], cwd=source, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert "shots" in result.stdout and "render" in result.stdout

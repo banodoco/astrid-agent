@@ -3286,3 +3286,58 @@ from astrid.core.cli.domain_timelines import (  # noqa: F401,E402
     _visualize_format_argument,
     build_parser,
 )
+
+# PK-4R: this core pack provides the execution handlers for the core-owned
+# declarations (dependency direction pack -> core).
+from astrid.packs.timeline import cli_find as _cli_find  # noqa: E402
+from astrid.packs.timeline import cli_log as _cli_log  # noqa: E402
+from astrid.packs.timeline import cli_pending as _cli_pending  # noqa: E402
+from astrid.packs.timeline import cli_working as _cli_working  # noqa: E402
+from astrid.core.cli import domain_timelines as _core_timelines  # noqa: E402
+
+_core_timelines.provide_handlers({
+    '_as_timeline_verb': _as_timeline_verb,
+    '_cmd_apply': _cmd_apply,
+    '_cmd_archive': _cmd_archive,
+    '_cmd_assets': _cmd_assets,
+    '_cmd_check': _cmd_check,
+    '_cmd_checkout': _cmd_checkout,
+    '_cmd_commit': _cmd_commit,
+    '_cmd_create': _cmd_create,
+    '_cmd_diff': _cmd_diff,
+    '_cmd_edit': _cmd_edit,
+    '_cmd_elements': _cmd_elements,
+    '_cmd_export': _cmd_export,
+    '_cmd_history': _cmd_history,
+    '_cmd_import': _cmd_import,
+    '_cmd_inspect': _cmd_inspect,
+    '_cmd_list': _cmd_list,
+    '_cmd_place_element': _cmd_place_element,
+    '_cmd_recover': _cmd_recover,
+    '_cmd_redo': _cmd_redo,
+    '_cmd_render': _cmd_render,
+    '_cmd_replace_parent_media': _cmd_replace_parent_media,
+    '_cmd_script': _cmd_script,
+    '_cmd_show': _cmd_show,
+    '_cmd_status': _cmd_status,
+    '_cmd_undo': _cmd_undo,
+    '_cmd_update_element': _cmd_update_element,
+    '_cmd_visualize': _cmd_visualize,
+    '_find_run_find': _cli_find.run_find,
+    '_guarded': _guarded,
+    '_log_run_log': _cli_log.run_log,
+    '_pending_cmd_drop': _cli_pending._cmd_drop,
+    '_pending_cmd_list': _cli_pending._cmd_list,
+    '_pending_cmd_retry': _cli_pending._cmd_retry,
+    '_pending_cmd_show': _cli_pending._cmd_show,
+    '_pending_run': _cli_pending._run,
+    '_with_steps': _with_steps,
+    '_working_cmd_discard': _cli_working._cmd_discard,
+    '_working_cmd_duplicate': _cli_working._cmd_duplicate,
+    '_working_cmd_lines': _cli_working._cmd_lines,
+    '_working_cmd_lint': _cli_working._cmd_lint,
+    '_working_cmd_rename': _cli_working._cmd_rename,
+    '_working_cmd_restructure': _cli_working._cmd_restructure,
+    '_working_cmd_transcripts_sync': _cli_working._cmd_transcripts_sync,
+    '_working_cmd_words': _cli_working._cmd_words,
+})

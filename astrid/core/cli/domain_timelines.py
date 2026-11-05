@@ -7,79 +7,109 @@ constructing all product parsers never imports an optional pack.
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.timeline import audio_curves
 
-__all__ = ["COMMANDS", "build_parser"]
+__all__ = ["COMMANDS", "TimelineHandlersUnavailable", "build_parser", "provide_handlers"]
 
 
-def _pack_handler(module: str, name: str):
+# Execution handlers are provided by the Timeline core pack, which imports
+# this module (packs may use core; core never imports a pack). Declarations
+# here bind handler *names*; a name resolves only when a command runs. Product
+# dispatch reaches the pack through the declared table in domain_product, so
+# ``astrid timelines ...`` always provides the handlers before parsing.
+_HANDLERS: dict[str, Any] = {}
+
+
+class TimelineHandlersUnavailable(RuntimeError):
+    """A declaration-only parser (e.g. MCP enumeration) was asked to execute."""
+
+
+def provide_handlers(handlers: Mapping[str, Any]) -> None:
+    """Bind the Timeline pack's execution handlers (called by the pack only)."""
+    unknown = set(handlers) - _HANDLER_NAMES
+    missing = _HANDLER_NAMES - set(handlers)
+    if unknown or missing:
+        raise ValueError(f"handler table mismatch for the timelines family: unknown={sorted(unknown)} missing={sorted(missing)}")
+    _HANDLERS.update(handlers)
+
+
+def _lookup(name: str):
+    try:
+        return _HANDLERS[name]
+    except KeyError:
+        raise TimelineHandlersUnavailable(
+            f"timelines handler {name!r} is provided by the Timeline core pack; run it through `astrid timelines`"
+        ) from None
+
+
+def _provided(name: str):
     """Resolve an execution helper at invocation, after argument construction."""
     def run(*args, **kwargs):
-        return getattr(importlib.import_module(module), name)(*args, **kwargs)
+        return _lookup(name)(*args, **kwargs)
     run.__name__ = name
     return run
 
 
-def _deferred_wrapper(name: str):
+def _provided_wrapper(name: str):
     def configure(*args):
         def run(parsed):
-            wrapper = getattr(importlib.import_module("astrid.packs.timeline.cli"), name)
-            return wrapper(*args)(parsed)
+            return _lookup(name)(*args)(parsed)
         return run
     return configure
 
-_as_timeline_verb = _deferred_wrapper('_as_timeline_verb')
-_cmd_apply = _pack_handler('astrid.packs.timeline.cli', '_cmd_apply')
-_cmd_archive = _pack_handler('astrid.packs.timeline.cli', '_cmd_archive')
-_cmd_assets = _pack_handler('astrid.packs.timeline.cli', '_cmd_assets')
-_cmd_check = _pack_handler('astrid.packs.timeline.cli', '_cmd_check')
-_cmd_checkout = _pack_handler('astrid.packs.timeline.cli', '_cmd_checkout')
-_cmd_commit = _pack_handler('astrid.packs.timeline.cli', '_cmd_commit')
-_cmd_create = _pack_handler('astrid.packs.timeline.cli', '_cmd_create')
-_cmd_diff = _pack_handler('astrid.packs.timeline.cli', '_cmd_diff')
-_cmd_edit = _pack_handler('astrid.packs.timeline.cli', '_cmd_edit')
-_cmd_elements = _pack_handler('astrid.packs.timeline.cli', '_cmd_elements')
-_cmd_export = _pack_handler('astrid.packs.timeline.cli', '_cmd_export')
-_cmd_history = _pack_handler('astrid.packs.timeline.cli', '_cmd_history')
-_cmd_import = _pack_handler('astrid.packs.timeline.cli', '_cmd_import')
-_cmd_inspect = _pack_handler('astrid.packs.timeline.cli', '_cmd_inspect')
-_cmd_list = _pack_handler('astrid.packs.timeline.cli', '_cmd_list')
-_cmd_place_element = _pack_handler('astrid.packs.timeline.cli', '_cmd_place_element')
-_cmd_recover = _pack_handler('astrid.packs.timeline.cli', '_cmd_recover')
-_cmd_redo = _pack_handler('astrid.packs.timeline.cli', '_cmd_redo')
-_cmd_render = _pack_handler('astrid.packs.timeline.cli', '_cmd_render')
-_cmd_replace_parent_media = _pack_handler('astrid.packs.timeline.cli', '_cmd_replace_parent_media')
-_cmd_script = _pack_handler('astrid.packs.timeline.cli', '_cmd_script')
-_cmd_show = _pack_handler('astrid.packs.timeline.cli', '_cmd_show')
-_cmd_status = _pack_handler('astrid.packs.timeline.cli', '_cmd_status')
-_cmd_undo = _pack_handler('astrid.packs.timeline.cli', '_cmd_undo')
-_cmd_update_element = _pack_handler('astrid.packs.timeline.cli', '_cmd_update_element')
-_cmd_visualize = _pack_handler('astrid.packs.timeline.cli', '_cmd_visualize')
-_find_run_find = _pack_handler('astrid.packs.timeline.cli_find', 'run_find')
-_guarded = _deferred_wrapper('_guarded')
-_log_run_log = _pack_handler('astrid.packs.timeline.cli_log', 'run_log')
-_pending_cmd_drop = _pack_handler('astrid.packs.timeline.cli_pending', '_cmd_drop')
-_pending_cmd_list = _pack_handler('astrid.packs.timeline.cli_pending', '_cmd_list')
-_pending_cmd_retry = _pack_handler('astrid.packs.timeline.cli_pending', '_cmd_retry')
-_pending_cmd_show = _pack_handler('astrid.packs.timeline.cli_pending', '_cmd_show')
-_pending_run = _pack_handler('astrid.packs.timeline.cli_pending', '_run')
-_with_steps = _deferred_wrapper('_with_steps')
-_working_cmd_discard = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_discard')
-_working_cmd_duplicate = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_duplicate')
-_working_cmd_lines = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_lines')
-_working_cmd_lint = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_lint')
-_working_cmd_rename = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_rename')
-_working_cmd_restructure = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_restructure')
-_working_cmd_transcripts_sync = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_transcripts_sync')
-_working_cmd_words = _pack_handler('astrid.packs.timeline.cli_working', '_cmd_words')
+_as_timeline_verb = _provided_wrapper('_as_timeline_verb')
+_cmd_apply = _provided('_cmd_apply')
+_cmd_archive = _provided('_cmd_archive')
+_cmd_assets = _provided('_cmd_assets')
+_cmd_check = _provided('_cmd_check')
+_cmd_checkout = _provided('_cmd_checkout')
+_cmd_commit = _provided('_cmd_commit')
+_cmd_create = _provided('_cmd_create')
+_cmd_diff = _provided('_cmd_diff')
+_cmd_edit = _provided('_cmd_edit')
+_cmd_elements = _provided('_cmd_elements')
+_cmd_export = _provided('_cmd_export')
+_cmd_history = _provided('_cmd_history')
+_cmd_import = _provided('_cmd_import')
+_cmd_inspect = _provided('_cmd_inspect')
+_cmd_list = _provided('_cmd_list')
+_cmd_place_element = _provided('_cmd_place_element')
+_cmd_recover = _provided('_cmd_recover')
+_cmd_redo = _provided('_cmd_redo')
+_cmd_render = _provided('_cmd_render')
+_cmd_replace_parent_media = _provided('_cmd_replace_parent_media')
+_cmd_script = _provided('_cmd_script')
+_cmd_show = _provided('_cmd_show')
+_cmd_status = _provided('_cmd_status')
+_cmd_undo = _provided('_cmd_undo')
+_cmd_update_element = _provided('_cmd_update_element')
+_cmd_visualize = _provided('_cmd_visualize')
+_find_run_find = _provided('_find_run_find')
+_guarded = _provided_wrapper('_guarded')
+_log_run_log = _provided('_log_run_log')
+_pending_cmd_drop = _provided('_pending_cmd_drop')
+_pending_cmd_list = _provided('_pending_cmd_list')
+_pending_cmd_retry = _provided('_pending_cmd_retry')
+_pending_cmd_show = _provided('_pending_cmd_show')
+_pending_run = _provided('_pending_run')
+_with_steps = _provided_wrapper('_with_steps')
+_working_cmd_discard = _provided('_working_cmd_discard')
+_working_cmd_duplicate = _provided('_working_cmd_duplicate')
+_working_cmd_lines = _provided('_working_cmd_lines')
+_working_cmd_lint = _provided('_working_cmd_lint')
+_working_cmd_rename = _provided('_working_cmd_rename')
+_working_cmd_restructure = _provided('_working_cmd_restructure')
+_working_cmd_transcripts_sync = _provided('_working_cmd_transcripts_sync')
+_working_cmd_words = _provided('_working_cmd_words')
+
+_HANDLER_NAMES = frozenset({'_as_timeline_verb', '_cmd_apply', '_cmd_archive', '_cmd_assets', '_cmd_check', '_cmd_checkout', '_cmd_commit', '_cmd_create', '_cmd_diff', '_cmd_edit', '_cmd_elements', '_cmd_export', '_cmd_history', '_cmd_import', '_cmd_inspect', '_cmd_list', '_cmd_place_element', '_cmd_recover', '_cmd_redo', '_cmd_render', '_cmd_replace_parent_media', '_cmd_script', '_cmd_show', '_cmd_status', '_cmd_undo', '_cmd_update_element', '_cmd_visualize', '_find_run_find', '_guarded', '_log_run_log', '_pending_cmd_drop', '_pending_cmd_list', '_pending_cmd_retry', '_pending_cmd_show', '_pending_run', '_with_steps', '_working_cmd_discard', '_working_cmd_duplicate', '_working_cmd_lines', '_working_cmd_lint', '_working_cmd_rename', '_working_cmd_restructure', '_working_cmd_transcripts_sync', '_working_cmd_words'})
 
 
 def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
@@ -720,9 +750,6 @@ def _pending_configure_pending(parser):
         configure(action)
 
 
-def _pending_configure_pending(parser):
-    _pending_configure_pending(parser)
-
 
 def _pending_configure_retry(parser):
     parser.add_argument("ref", help="Timeline id or slug.")
@@ -733,9 +760,6 @@ def _pending_configure_retry(parser):
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(handler=lambda p: _pending_run(p, _pending_cmd_retry))
 
-
-def _pending_configure_retry(parser):
-    _pending_configure_retry(parser)
 
 
 def _configure_pending_verb(name: str):
