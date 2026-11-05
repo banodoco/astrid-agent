@@ -481,7 +481,8 @@ def discover_pack_metadata(
                 continue
             if previous.resolve().parent == canonical_core or child.resolve().parent == canonical_core:
                 raise PackValidationError(
-                    f"pack {child.name!r} conflicts with a core pack across {previous} and {child}"
+                    f"duplicate pack id {child.name!r}: pack {child.name!r} conflicts with a core pack "
+                    f"across {previous} and {child}"
                 )
             if child.name == "personal" and selected_personal_root is not None:
                 canonical_personal = (selected_personal_root / "personal").resolve()
@@ -544,7 +545,8 @@ def discover_pack_metadata(
                     if (previous_root == _resolve_pack_root(loader.packs_root())
                             or current_root == _resolve_pack_root(loader.packs_root())):
                         raise PackValidationError(
-                            f"pack {child.name!r} conflicts with a core pack across {previous[0]} and {child}"
+                            f"duplicate pack id {child.name!r}: pack {child.name!r} conflicts with a core pack "
+                            f"across {previous[0]} and {child}"
                         )
                     raise PackValidationError(
                         f"duplicate pack id/directory name {child.name!r} across {previous[0]} and {child}"
