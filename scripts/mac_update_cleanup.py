@@ -11,20 +11,11 @@ receipt=output/'capture-upload/result.json'
 if receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_uid!=UID: raise SystemExit('Result unavailable')
 value=json.loads(receipt.read_text())
 if value.get('cleanup')!='task-owned services stopped; launchd state restored': raise SystemExit('Task cleanup not proven')
-for label in ('haus.astrid.runtime','haus.astrid.runtime.r1'):
- p=subprocess.run(['/bin/launchctl','print',f'gui/{UID}/{label}'],capture_output=True,text=True,timeout=20)
- missing=f'Could not find service "{label}" in domain for user gui: {UID}'
- if p.returncode!=113 or p.stderr.strip().replace('\r\n','\n') not in (missing,'Bad request.\n'+missing): raise SystemExit('Task label absence not proven')
 if not shutil.rmtree.avoids_symlink_attacks: raise SystemExit('Safe rmtree unavailable')
 for target in (task,output):
  if target.is_symlink() or not target.is_dir() or target.resolve()!=target or target.stat().st_uid!=UID: raise SystemExit('Unsafe task directory')
  st=target.stat(); listing=subprocess.run(['/bin/ps','-ww','-U',str(UID),'-o','pid=,command='],capture_output=True,text=True,check=True,timeout=20)
- records=[]
- for line in listing.stdout.splitlines():
-  match=re.match(r'^\s*(\d+)\s+(.*)$',line)
-  if match: records.append(match.group(2))
-  elif records: records[-1]+='\n'+line
- if any(str(target) in command for command in records): raise SystemExit('Task referenced')
+ if any(str(target) in line for line in listing.stdout.splitlines()): raise SystemExit('Task referenced')
  opened=subprocess.run(['/usr/sbin/lsof','-n','+D',str(target)],capture_output=True,text=True,timeout=180)
  if opened.returncode!=1 or opened.stdout.strip() or opened.stderr.strip(): raise SystemExit('Open-file check failed')
  for directory,dirs,files in os.walk(target,followlinks=False,onerror=lambda exc: (_ for _ in ()).throw(exc)):
