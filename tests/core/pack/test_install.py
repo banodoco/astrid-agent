@@ -14,6 +14,7 @@ import pytest
 from astrid.core.pack.identity import pack_digest, read_pin, write_pin
 from astrid.core.pack.install import PackInstallError, PublicationPolicy, install_pack
 from astrid.core.pack.personal import ensure_personal_pack
+from astrid.pack_api import VERSION as PACK_API_VERSION
 
 
 def git(root: Path, *args: str) -> str:
@@ -162,7 +163,8 @@ def test_pin_mismatches_preserve_old_install(repo, root, kind):
     ("", "2.0", "api_major"),
     ("dependencies: {packs: [absent]}\n", "1.0", "missing_dep"),
     ("dependencies: {python_requirements: [no-such-installed-distribution]}\n", "1.0", "missing_python"),
-    ("", "1.1", "api_minor"),
+    # One minor newer than this core's pack API (core is 1.1 since park g4's bump).
+    ("", f"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1] + 1}", "api_minor"),
 ])
 def test_real_pure_validator_refusals_preserve_install(repo, root, extra, api, code):
     install(repo, root)
