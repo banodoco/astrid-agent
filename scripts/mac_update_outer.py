@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Run a stopped-owner R0-to-R1 test in a runner-owned sandbox."""
-import base64
 import hashlib
 import json
 import os
@@ -40,15 +39,6 @@ def host_owners_exist():
     return any(owner_match(command) for command in records)
 
 
-def runner_updaters_exist():
-    result=subprocess.run(['/bin/ps','-ww','-u',str(UID),'-o','pid=,command='],capture_output=True,text=True,timeout=20,check=True)
-    commands=[]
-    for line in result.stdout.splitlines():
-        match=re.match(r'^\s*(\d+)\s+(.*)$',line)
-        if match: commands.append(match.group(2))
-        elif commands: commands[-1]+='\n'+line
-    return any(re.search(r'(?:^|\s)\S*/public/install(?:\s|$)',c) or re.search(r'(?:^|\s)-m\s+astrid\s+install(?:\s|$)',c) for c in commands)
-
 def service_absent():
     out = subprocess.run(["/bin/launchctl", "print", "gui/503/haus.astrid.runtime"],
                          capture_output=True, text=True, timeout=20)
@@ -80,8 +70,6 @@ def guard_host(home, port=17340):
     if r1status.returncode != 113 or r1status.stderr.strip().replace("\r\n", "\n") not in {missing, "Bad request.\n" + missing}: raise RuntimeError("Runner R1 service present or absence unverified")
     if host_owners_exist():
         raise RuntimeError("Host has existing Runtime owner; no installation attempted")
-    if runner_updaters_exist():
-        raise RuntimeError("Runner updater is active; no installation attempted")
     if shutil.disk_usage(home).free < 10_000_000_000:
         raise RuntimeError("Insufficient disk")
 
@@ -112,6 +100,21 @@ def environment(home, root, py):
     return env
 
 
+def stop_job_children(driver_pid):
+    listed = subprocess.run(["/bin/ps", "-axo", "uid=,pid=,pgid=,stat="], capture_output=True,
+                            text=True, timeout=10, check=True)
+    sent = []
+    for line in listed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 4: raise RuntimeError("Process census malformed")
+        uid, pid, pgid = map(int, fields[:3])
+        if uid == UID and pgid == driver_pid and pid != driver_pid and not fields[3].startswith("Z"):
+            try:
+                if os.getpgid(pid) == driver_pid:
+                    os.kill(pid, signal.SIGTERM); sent.append(pid)
+            except ProcessLookupError: pass
+    return sent
+
 
 def run_process(argv, cwd, env, logfile, home, is_driver=False):
     with logfile.open("wb") as log:
@@ -119,10 +122,11 @@ def run_process(argv, cwd, env, logfile, home, is_driver=False):
         abort = False; census_failed = False; grace_expired = False; started = None
         while proc.poll() is None:
             if not abort and shutil.disk_usage(home).free < 3_000_000_000:
-                # Do not signal a product installer with unknown handlers.
-                # For preparatory commands, terminate only our direct child.
-                if not is_driver:
-                    try: proc.terminate()
+                if is_driver:
+                    try: stop_job_children(proc.pid)
+                    except Exception: census_failed = True
+                else:
+                    try: os.killpg(proc.pid, signal.SIGTERM)
                     except ProcessLookupError: pass
                 abort = True; started = time.monotonic()
             elif abort and not grace_expired and time.monotonic() - started >= 300:
@@ -145,21 +149,32 @@ def redact(data, home, root):
 
 
 def export_capture(root, home, output, status):
-    target=output/'capture-upload';target.mkdir(mode=0o700)
-    value={}
+    original = root / "evidence" if root is not None else None
+    source_rows = []
+    if original is not None and original.is_dir() and not original.is_symlink():
+        for source in sorted(original.rglob("*")):
+            if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(original): continue
+            name = source.relative_to(original)
+            if name.name == "SHA256SUMS": continue
+            if source.stat().st_size > 16_000_000: raise RuntimeError("Evidence exceeds safe export limit")
+            data = source.read_bytes()
+            dest = output / "capture-upload" / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(redact(data, home, root))
+            source_rows.append(hashlib.sha256(data).hexdigest() + "  " + (Path("capture-upload") / name).as_posix())
     if root is not None:
-        receipt=root/'evidence/result.json'
-        if receipt.is_file() and not receipt.is_symlink():
-            v=json.loads(receipt.read_text())
-            value={k:v.get(k) for k in ('stages','outcome','cleanup','uninstall','recovery_stop','launch_admission_refusal','private_service_log_retained','private_service_log_state','private_service_log_sha256','candidate_manifest_sha256','error_type','error_frames','recorded_door_mismatch','rollback_unknown_state','initial_label_states')}
-            (target/'result.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
-        diag=root/'evidence/sanitized-lock-diagnostic.json'
-        if diag.is_file() and not diag.is_symlink() and diag.stat().st_size<1000000:
-            (target/'sanitized-lock-diagnostic.json').write_bytes(diag.read_bytes())
-    safe={'status':status.get('status'),'service_absent_after':status.get('service_absent_after'),'disk_free_after':status.get('disk_free_after'),'receipt':value}
-    (output/'custody.json').write_text(json.dumps(safe,indent=2,sort_keys=True)+'\n')
-    rows=[digest(p)+'  '+p.relative_to(output).as_posix() for p in sorted(output.rglob('*')) if p.is_file() and not p.is_symlink() and p.name!='SHA256SUMS']
-    (output/'SHA256SUMS').write_text('\n'.join(rows)+'\n')
+        private_log = root / "private-logs/capture-private.log"
+        if private_log.is_file() and not private_log.is_symlink():
+            data = private_log.read_bytes()[-1_000_000:]
+            (output / "driver.log").write_bytes(redact(data, home, root))
+    (output / "SOURCE-SHA256SUMS").write_text("\n".join(source_rows) + ("\n" if source_rows else ""))
+    (output / "custody.json").write_bytes(redact((json.dumps(status, indent=2, sort_keys=True) + "\n").encode(), home, root))
+    rows=[]
+    for path in sorted(output.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.name != "SHA256SUMS":
+            rows.append(digest(path) + "  " + path.relative_to(output).as_posix())
+    (output / "SHA256SUMS").write_text("\n".join(rows) + "\n")
+
 
 def main():
     if os.getuid()!=UID or os.environ.get('RUNNER_NAME')!='hannah-mac' or sys.platform!='darwin': raise RuntimeError('Runner identity differs')
@@ -186,10 +201,14 @@ def main():
             head=subprocess.check_output(['/usr/bin/git','-C',str(root/name),'rev-parse','HEAD'],env=env,text=True,timeout=20).strip()
             if head!=sha:raise RuntimeError('Source checkout identity differs')
             status['stages']['checkout-'+name]='pass'
-        raw=base64.b64decode('ewogICJzY2hlbWFfdmVyc2lvbiI6IDEsCiAgInJlbGVhc2UiOiAyLAogICJhZ2VudCI6IHsKICAgICJzaGEiOiAiNTdjYWJlNTdmODI5NGVkZWQxMmM1NTVkOGViM2Q1ZTFmMWQyMDM2OCIKICB9LAogICJydW50aW1lIjogewogICAgInNoYSI6ICIyNzc2YmE5NzNiNmM4ZjM1NTViNTYyOWIwODQwZDk2OTFhOThkM2MyIiwKICAgICJzY2hlbWFfZGlnZXN0IjogInNoYTI1Njo5NjI4YmI1ZmQ2ZTFkYmJlYzM5MmRkMzlmMmUwMTAzMTYyMmRjZjUyZDdjY2ZmN2NkMWYwYWQxMDc0M2RjYjFjIgogIH0sCiAgInRvb2xzIjogewogICAgInV2IjogewogICAgICAidmVyc2lvbiI6ICIwLjExLjMyIgogICAgfSwKICAgICJweXRob24iOiB7CiAgICAgICJ2ZXJzaW9uIjogIjMuMTEuMTMiCiAgICB9LAogICAgImJ1biI6IHsKICAgICAgInZlcnNpb24iOiAiMS4zLjE0IiwKICAgICAgImFzc2V0cyI6IHsKICAgICAgICAibGludXgteDY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL2dpdGh1Yi5jb20vb3Zlbi1zaC9idW4vcmVsZWFzZXMvZG93bmxvYWQvYnVuLXYxLjMuMTQvYnVuLWxpbnV4LXg2NC56aXAiLAogICAgICAgICAgInNoYTI1NiI6ICI5NTFlZTJhZWU4NTVmMDg1OTVhZWVjNjIyNTIyNmEyOThkM2ZlYTgzYTNkY2Q2NDY1YzA5Y2JjY2RmN2U4NDhmIgogICAgICAgIH0sCiAgICAgICAgImxpbnV4LWFybTY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL2dpdGh1Yi5jb20vb3Zlbi1zaC9idW4vcmVsZWFzZXMvZG93bmxvYWQvYnVuLXYxLjMuMTQvYnVuLWxpbnV4LWFhcmNoNjQuemlwIiwKICAgICAgICAgICJzaGEyNTYiOiAiYTI3ZmZiNjNhODMxMDM3NTgzNmUwZDZmNjY4YWUxN2ZhOGQ4ZDE4Yjg4YzM3YzgyMWM2NTMzMTk3M2ExOWEzYiIKICAgICAgICB9LAogICAgICAgICJtYWNvcy14NjQiOiB7CiAgICAgICAgICAidXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9vdmVuLXNoL2J1bi9yZWxlYXNlcy9kb3dubG9hZC9idW4tdjEuMy4xNC9idW4tZGFyd2luLXg2NC56aXAiLAogICAgICAgICAgInNoYTI1NiI6ICI0MTgzZGYzMzc0NjIzZTViYWIzMTVjNTQ3Y2ZhMDk3NDUzM2NkNDU3ZDg2YjczYjYzOWY3YTg3OTc0Y2Q2NjMzIgogICAgICAgIH0sCiAgICAgICAgIm1hY29zLWFybTY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL2dpdGh1Yi5jb20vb3Zlbi1zaC9idW4vcmVsZWFzZXMvZG93bmxvYWQvYnVuLXYxLjMuMTQvYnVuLWRhcndpbi1hYXJjaDY0LnppcCIsCiAgICAgICAgICAic2hhMjU2IjogImQ4Yjk2MjIxODI4YWQ2Zjk3YWM3YWMwYWI3ZTk1ODcyMzQxYWY3NjMwMDFlODgwM2U4MjY3NjUyYzI2NTI2MjAiCiAgICAgICAgfSwKICAgICAgICAid2luZG93cy14NjQiOiB7CiAgICAgICAgICAidXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9vdmVuLXNoL2J1bi9yZWxlYXNlcy9kb3dubG9hZC9idW4tdjEuMy4xNC9idW4td2luZG93cy14NjQuemlwIiwKICAgICAgICAgICJzaGEyNTYiOiAiMGEwNjIwOTMwYjY2NzVkN2JhNDQwZTgxZjRlMGUwMGQzY2ZiZTA5NmM0YjE0MGQzZmZmMDIyMDVlOWUxODkyMiIKICAgICAgICB9CiAgICAgIH0KICAgIH0sCiAgICAib21wIjogewogICAgICAic291cmNlIjogewogICAgICAgICJyZXBvIjogImh0dHBzOi8vZ2l0aHViLmNvbS9wZXRlcm9tYWxsZXQvb2gtbXktcGkiLAogICAgICAgICJzaGEiOiAiNzhmMGUwOTYwZjQ3MWMyYzYyYjk0MzI3MmE0OGMzMzM2NmYyMzlmZSIKICAgICAgfQogICAgfSwKICAgICJub2RlIjogewogICAgICAidmVyc2lvbiI6ICIyMC4xOS40IiwKICAgICAgImFzc2V0cyI6IHsKICAgICAgICAibGludXgteDY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL25vZGVqcy5vcmcvZGlzdC92MjAuMTkuNC9ub2RlLXYyMC4xOS40LWxpbnV4LXg2NC50YXIuZ3oiLAogICAgICAgICAgInNoYTI1NiI6ICJkODBhMzM3MDc2MDVjZWQ5YTMxYjhmNTQzY2VhOWFiNTEyYmMzZDJmZWYyYzE0OGYzMWE1MGU5MzlmZjA3NTYwIgogICAgICAgIH0sCiAgICAgICAgImxpbnV4LWFybTY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL25vZGVqcy5vcmcvZGlzdC92MjAuMTkuNC9ub2RlLXYyMC4xOS40LWxpbnV4LWFybTY0LnRhci5neiIsCiAgICAgICAgICAic2hhMjU2IjogImQyMDA3OTgzMzJiN2E1NmQzNTU4ODhjZTU4ZTZhNjM5ZmFjNzkzOWE0ODMzZTViYzg3ODBjNjY4ODhlMWNlNGQiCiAgICAgICAgfSwKICAgICAgICAibWFjb3MteDY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL25vZGVqcy5vcmcvZGlzdC92MjAuMTkuNC9ub2RlLXYyMC4xOS40LWRhcndpbi14NjQudGFyLmd6IiwKICAgICAgICAgICJzaGEyNTYiOiAiY2M0N2VkMDk0YzE4NzZiMjExYTkwOTFkMDlhNzg1MzdjMWNiYmIwZjhjZjVhNDljOWZkNzk5MzNlZThmZDdmZCIKICAgICAgICB9LAogICAgICAgICJtYWNvcy1hcm02NCI6IHsKICAgICAgICAgICJ1cmwiOiAiaHR0cHM6Ly9ub2RlanMub3JnL2Rpc3QvdjIwLjE5LjQvbm9kZS12MjAuMTkuNC1kYXJ3aW4tYXJtNjQudGFyLmd6IiwKICAgICAgICAgICJzaGEyNTYiOiAiOGI4OTgwMWY1MjdhODVlM2Y3ZGU1Mzk1MTJjOWRkZTA4NjczYWM5OWRiNjQ1OGNjN2NjNjI3ZTA1ZDcwNzA1NCIKICAgICAgICB9LAogICAgICAgICJ3aW5kb3dzLXg2NCI6IHsKICAgICAgICAgICJ1cmwiOiAiaHR0cHM6Ly9ub2RlanMub3JnL2Rpc3QvdjIwLjE5LjQvbm9kZS12MjAuMTkuNC13aW4teDY0LnppcCIsCiAgICAgICAgICAic2hhMjU2IjogIjFiZjgzZTU5NTgxNTdkMTM2NzM1MDczNDkyMzgyMzZhZWM0ZjZlZmM5NWNmNDI2Y2JlMTI2YTk5OWEzZTRjMGIiCiAgICAgICAgfSwKICAgICAgICAid2luZG93cy1hcm02NCI6IHsKICAgICAgICAgICJ1cmwiOiAiaHR0cHM6Ly9ub2RlanMub3JnL2Rpc3QvdjIwLjE5LjQvbm9kZS12MjAuMTkuNC13aW4tYXJtNjQuemlwIiwKICAgICAgICAgICJzaGEyNTYiOiAiMTU1NDI1MTAyN2Q3NzdkM2RiYjI3NmFmMDU1M2IyZTlmODk4MjJhMTU3OTA2NzIxNmJjMGI5NTIyYTNhMjJkMyIKICAgICAgICB9CiAgICAgIH0KICAgIH0sCiAgICAiZmZtcGVnIjogewogICAgICAidmVyc2lvbiI6ICI3LjAuMiIsCiAgICAgICJhc3NldHMiOiB7CiAgICAgICAgImxpbnV4LXg2NCI6IHsKICAgICAgICAgICJ1cmwiOiAiaHR0cHM6Ly9naXRodWIuY29tL2Jhbm9kb2NvL2FzdHJpZC1hZ2VudC9yZWxlYXNlcy9kb3dubG9hZC9kZXBzLWZmbXBlZy03LjAuMi0yMDI2MTEwNC9mZm1wZWctNy4wLjItYW1kNjQtc3RhdGljLnRhci54eiIsCiAgICAgICAgICAic2hhMjU2IjogImFiZGE4ZDc3Y2U4MzA5MTQxZjgzYWI4ZWRmMDU5NjgzNDA4N2M1MjQ2N2Y2YmFkZjM3NmE2YTJhNGM4N2NmNjciCiAgICAgICAgfSwKICAgICAgICAibGludXgtYXJtNjQiOiB7CiAgICAgICAgICAidXJsIjogImh0dHBzOi8vam9obnZhbnNpY2tsZS5jb20vZmZtcGVnL3JlbGVhc2VzL2ZmbXBlZy03LjAuMi1hcm02NC1zdGF0aWMudGFyLnh6IiwKICAgICAgICAgICJzaGEyNTYiOiAiZjQxNDliYjJiMDc4NGUzMGU5OWJkZGE4NTQ3MWM5YjU5MzBkMzQwMjAxNGU5MzRhNTA5OGI0MWQwZjcyMDFiMSIKICAgICAgICB9LAogICAgICAgICJtYWNvcy14NjQiOiB7CiAgICAgICAgICAidXJscyI6IFsKICAgICAgICAgICAgImh0dHBzOi8vZmZtcGVnLm1hcnRpbi1yaWVkbC5kZS9kb3dubG9hZC9tYWNvcy9hbWQ2NC8xNzI2MDc1ODMzXzcuMC4yL2ZmbXBlZy56aXAiLAogICAgICAgICAgICAiaHR0cHM6Ly9mZm1wZWcubWFydGluLXJpZWRsLmRlL2Rvd25sb2FkL21hY29zL2FtZDY0LzE3MjYwNzU4MzNfNy4wLjIvZmZwcm9iZS56aXAiCiAgICAgICAgICBdLAogICAgICAgICAgInNoYTI1NiI6IFsKICAgICAgICAgICAgIjJiMTFmMWFkMzVhNjdiOWJiZTBiZjcyNmEzZWIwMTcxZDRlZWFiZjk1MDgxYmIzNGFmMWIzNzFlY2FhMWM2MDciLAogICAgICAgICAgICAiZWZiOWIyMTUzZGQ3NzQ4ZGM4ZTA5MDI3YmRkYjEzZjRhMTQ3MmFlNDM4MTk2NmYzZDJlNjY0NmU0MzUwZGYzNyIKICAgICAgICAgIF0KICAgICAgICB9LAogICAgICAgICJtYWNvcy1hcm02NCI6IHsKICAgICAgICAgICJ1cmxzIjogWwogICAgICAgICAgICAiaHR0cHM6Ly9mZm1wZWcubWFydGluLXJpZWRsLmRlL2Rvd25sb2FkL21hY29zL2FybTY0LzE3MjYwNzMzMTNfNy4wLjIvZmZtcGVnLnppcCIsCiAgICAgICAgICAgICJodHRwczovL2ZmbXBlZy5tYXJ0aW4tcmllZGwuZGUvZG93bmxvYWQvbWFjb3MvYXJtNjQvMTcyNjA3MzMxM183LjAuMi9mZnByb2JlLnppcCIKICAgICAgICAgIF0sCiAgICAgICAgICAic2hhMjU2IjogWwogICAgICAgICAgICAiY2IwYzA3MWU1ODk0NTIzMWFlOTU5NmNlMjFjNDZiOTQ4MTAxNDJkMGE2NjRlZDFkY2MyZTljNmYxYjI1MjVjNCIsCiAgICAgICAgICAgICI3N2E4Njc4ZWExZTQ3YTg0OTVkZGViZjY1NjFhMTQyYWJmZDgxMDVjMTI4NmJmZGEwODBkYmE1ZjViMDY0ZWUyIgogICAgICAgICAgXQogICAgICAgIH0sCiAgICAgICAgIndpbmRvd3MteDY0IjogewogICAgICAgICAgInVybCI6ICJodHRwczovL2dpdGh1Yi5jb20vR3lhbkQvY29kZXhmZm1wZWcvcmVsZWFzZXMvZG93bmxvYWQvNy4wLjIvZmZtcGVnLTcuMC4yLWZ1bGxfYnVpbGQuemlwIiwKICAgICAgICAgICJzaGEyNTYiOiAiMGFhNjIzZmVlYzk1MDY2ODM5ZGI0MTI1Njc5Y2QwNGQ0YThmYzEwMzllZDg4NzdhY2NhOTgyNjExM2U0Mjc2OCIKICAgICAgICB9CiAgICAgIH0KICAgIH0KICB9Cn0K',validate=True)
-        if hashlib.sha256(raw).hexdigest()!='582741c3378d1a652c0b9615d53351b4e6ab527f816621a99fd33b2655b9a197':raise RuntimeError('Baseline manifest bytes differ')
-        (root/'app/public/install-manifest.json').write_bytes(raw)
-        status['stages']['verified-baseline']='pass';guard_host(home,port);env.pop('RUNNER_TEMP',None);env['ASTRID_RUNTIME_DOOR_PORT']=str(port)
+        archive=root/'node.tar.gz'
+        args=['/usr/bin/curl','-q','--proto','=https','--proto-redir','=https','-fsSL','--retry','3','--output',str(archive),'https://nodejs.org/dist/v20.19.4/node-v20.19.4-darwin-arm64.tar.gz']
+        if run_process(args,root,env,logs/'node-download.log',home)['exit']!=0 or digest(archive)!='8b89801f527a85e3f7de539512c9dde08673ac99db6458cc7cc627e05d707054':raise RuntimeError('Node download or checksum failed')
+        if run_process(['/usr/bin/tar','-xzf',str(archive),'-C',str(root)],root,env,logs/'node-extract.log',home)['exit']!=0:raise RuntimeError('Node extraction failed')
+        node=root/'node-v20.19.4-darwin-arm64/bin/node'
+        if not node.is_file() or not node.resolve().is_relative_to(root) or node.stat().st_uid!=UID:raise RuntimeError('Node executable identity differs')
+        if run_process([str(node),'scripts/installer/pin.mjs',REFS['agent'][1]],root/'app',env,logs/'pin.log',home)['exit']!=0:raise RuntimeError('Candidate pin command failed')
+        status['stages']['pin']='pass';guard_host(home,port);env.pop('RUNNER_TEMP',None);env['ASTRID_RUNTIME_DOOR_PORT']=str(port)
         inner=Path(__file__).with_name('mac_update_inner.py')
         status['inner']=run_process([str(py),'-u',str(inner),str(root)],root,env,logs/'capture-private.log',home,is_driver=True)
         status['status']='diagnostic-exited'
@@ -206,7 +225,7 @@ def main():
     finally:
         status['service_absent_after']=service_absent();status['disk_free_after']=shutil.disk_usage(home).free
         export_capture(root,home,output,status)
-        print(json.dumps({'status':status['status'],'service_absent_after':status['service_absent_after']}))
+        print(redact(json.dumps({'status':status['status'],'receipt':status.get('receipt'),'service_absent_after':status['service_absent_after']}).encode(),home,root).decode())
     if (status.get('receipt',{}).get('outcome')!='pass' or status.get('receipt',{}).get('uninstall')!='pass' or status.get('receipt',{}).get('cleanup')!='task-owned services stopped; launchd state restored' or not status['service_absent_after']):raise SystemExit(1)
 if __name__=='__main__':
     try:main()

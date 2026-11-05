@@ -17,11 +17,6 @@ class Guards(unittest.TestCase):
  def test_redaction(self):
   raw=b'/Users/example/private abc ghp_123456 https://x/';out=m.redact(raw,pathlib.Path('/Users/example'),pathlib.Path('/Users/example/private'))
   self.assertNotIn(b'/Users/example',out);self.assertNotIn(b'ghp_123456',out)
- def test_updater_census_is_runner_only(self):
-  active=Result(0,'42 /bin/sh /task/app/public/install --update\n')
-  with patch.object(m.subprocess,'run',return_value=active) as call:
-   self.assertTrue(m.runner_updaters_exist());self.assertEqual(call.call_args.args[0][2:4],['-u','503'])
-  with patch.object(m.subprocess,'run',return_value=Result(0,'44 python harmless\n')):self.assertFalse(m.runner_updaters_exist())
  def test_owner_detection(self):
   self.assertTrue(m.owner_match('python -m runtime_protocol start'))
   self.assertFalse(m.owner_match('python unrelated'))
