@@ -17,7 +17,8 @@ from typing import Any, Mapping, Sequence
 
 from PIL import Image, ImageDraw
 
-from astrid.core.timeline.cuts import find_cut, occurrences_from_snapshot, picture_cuts
+from astrid.pack_api import picture_cuts
+from astrid.core.timeline.cuts import find_cut, occurrences_from_snapshot
 
 from ..layers.base import PALETTE, LayerContext, LayerResult, draw_text, resolve_layers, text_width
 from . import model

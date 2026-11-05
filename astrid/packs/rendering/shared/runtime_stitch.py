@@ -14,14 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from astrid.core.contracts.runtime_orchestration import (
-    CapabilityIdentity,
-    OrchestrationContractError,
-    RuntimeAdmission,
-    SCHEMA_VERSION,
-    STITCH_CAPABILITIES,
-    STITCH_FAMILY,
-)
+from astrid.pack_api import CapabilityIdentity, OrchestrationContractError, RuntimeAdmission, SCHEMA_VERSION, STITCH_CAPABILITIES, STITCH_FAMILY
 
 
 def build_stitch_admission(

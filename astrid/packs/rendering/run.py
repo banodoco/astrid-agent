@@ -15,7 +15,16 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-_CHECKOUT_ROOT = Path(__file__).resolve().parents[3]
+def _checkout_root() -> Path:
+    candidate = Path(__file__).resolve().parent
+    while candidate.parent != candidate:
+        if (candidate / "astrid").is_dir():
+            return candidate
+        candidate = candidate.parent
+    raise RuntimeError("could not locate the Astrid source package for the raw renderer")
+
+
+_CHECKOUT_ROOT = _checkout_root()
 if str(_CHECKOUT_ROOT) not in sys.path:
     sys.path.insert(0, str(_CHECKOUT_ROOT))
 

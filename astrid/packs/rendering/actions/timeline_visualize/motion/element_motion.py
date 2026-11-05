@@ -10,6 +10,8 @@ the renderer's own Node and esbuild (~0.1 s). Without Node the hand mirror in
 
 from __future__ import annotations
 
+from importlib.resources import files
+
 import json
 import hashlib
 import math
@@ -19,7 +21,6 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack.manifest import ManifestParseError, load_manifest_mapping
 
 SCRIPT = Path(__file__).with_name("element_motion.mjs")
@@ -27,7 +28,6 @@ MOTION_FILE = "motion.ts"
 TIMEOUT_S = 30.0
 MAX_FRAMES = 20_000  # per clip; a longer clip falls back to the mirror
 
-_DEFAULT_MOTION_PACKS = ("astrid_motion", "local")
 _KIND_ALIASES = {
     "animation": "animations",
     "animations": "animations",
@@ -83,7 +83,7 @@ def canonical_element_identity(reference: Mapping[str, Any] | None) -> str | Non
 def _packs_root(root: Path | None) -> Path:
     """Return the checkout's declared pack root; never search beneath it."""
     if root is None:
-        return (Path(REPO_ROOT) / "astrid" / "packs").resolve()
+        return Path(str(files("astrid.packs"))).resolve()
     candidate = Path(root).resolve()
     checkout_packs = candidate / "astrid" / "packs"
     return checkout_packs if checkout_packs.is_dir() else candidate
@@ -132,11 +132,11 @@ def _declared_contract(
     return None
 
 
-def _pack_declarations(packs_root: Path, pack_id: str) -> tuple[dict[str, Any], ...]:
+def _pack_declarations(pack_root: Path, pack_id: str) -> tuple[dict[str, Any], ...]:
     """Project one named V3 pack's rendering declarations and resources."""
     if not pack_id or "/" in pack_id or "\\" in pack_id:
         return ()
-    pack_root = (packs_root / pack_id).resolve()
+    pack_root = pack_root.resolve()
     pack_manifest_path = pack_root / "pack.yaml"
     try:
         pack = load_manifest_mapping(pack_manifest_path, manifest_kind="V3 pack")
@@ -173,10 +173,27 @@ def _pack_declarations(packs_root: Path, pack_id: str) -> tuple[dict[str, Any], 
 
 
 def _default_declarations(packs_root: Path) -> tuple[dict[str, Any], ...]:
-    """Read only the two current V3 packs that declare motion resources."""
+    """Read motion declarations only from packs admitted by the element registry."""
+    from astrid.core.element.registry import load_default_registry
+
+    project_root = packs_root.parent.parent
+    registry = load_default_registry(project_root=project_root)
+    installed_roots: dict[tuple[str, Path], None] = {}
+    for element in registry.list(include_shadowed=True):
+        pack_id = str(element.metadata.get("pack_id") or element.source.removeprefix("pack:"))
+        if not pack_id:
+            continue
+        pack_root = element.root.parents[3]
+        # An explicit non-checkout root keeps the historical custom-root
+        # boundary for bundled packs while registry-selected external roots
+        # remain discoverable even when that checkout root is absent.
+        source_packs_root = (Path(REPO_ROOT) / "astrid" / "packs").resolve()
+        if packs_root.resolve() != source_packs_root and _within(pack_root, source_packs_root):
+            continue
+        installed_roots[(pack_id, pack_root)] = None
     rows: list[dict[str, Any]] = []
-    for pack_id in _DEFAULT_MOTION_PACKS:
-        rows.extend(_pack_declarations(packs_root, pack_id))
+    for pack_id, pack_root in sorted(installed_roots, key=lambda item: (item[0], str(item[1]))):
+        rows.extend(_pack_declarations(pack_root, pack_id))
     return tuple(rows)
 
 
@@ -400,9 +417,9 @@ def modules(
 
     ``declarations`` is the action/context handoff: each row contains
     ``pack_id``, ``kind``, ``id``, ``pack_root``, ``manifest_path`` and the
-    V3 rendering item's ``resources`` list.  With no handoff, ``modules()``
-    reads the two named current motion packs' ``pack.yaml`` declarations only
-    so existing callers retain a read-only discovery view.  Passing ``elements``
+    V3 rendering item's ``resources`` list. With no handoff, ``modules()``
+    reads declarations from packs admitted by the selected element registry.
+    Passing ``elements``
     makes that same declaration set resolve only the packs named by canonical
     ``elementRef.packId`` values; no directory scan or legacy fallback occurs.
 
@@ -420,10 +437,11 @@ def modules(
                 for element in elements
                 if (reference := _element_ref(element)).get("packId", reference.get("pack_id"))
             })
-            rows = tuple(
-                declaration
-                for pack_id in (pack_ids or list(_DEFAULT_MOTION_PACKS))
-                for declaration in _pack_declarations(packs_root, pack_id)
+            installed = _default_declarations(packs_root)
+            rows = (
+                tuple(declaration for declaration in installed if declaration.get("pack_id") in pack_ids)
+                if pack_ids
+                else installed
             )
     elif isinstance(declarations, Mapping):
         rows = (declarations,)
