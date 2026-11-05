@@ -49,7 +49,14 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
     assert {"runtime-owner-selection.json", "runtime-owner-selection-context.json"} <= collector_names
-    assert collector_names <= staged_names
+    bootstrap_captures = {
+        "install-bootstrap-process.json", "install-bootstrap-stdout.log", "install-bootstrap-stderr.log",
+        "update-bootstrap-process.json", "update-bootstrap-stdout.log", "update-bootstrap-stderr.log",
+    }
+    assert bootstrap_captures <= collector_names
+    assert bootstrap_captures <= staged_names
+    missing_guard_names = collector_names - staged_names
+    assert not missing_guard_names, f"collector evidence rejected by workflow guard: {sorted(missing_guard_names)}"
     assert "^runtime-service-service-.+\\.log$" in guard
     assert "Unexpected staged evidence path" in guard
     assert "Unexpected staged evidence filename" in guard
