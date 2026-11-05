@@ -17,12 +17,12 @@ on:
         required: true
         type: string
       old_launcher_ref:
-        description: Full SHA for the approved pre-self-pull Pinokio backend action
-        required: true
+        description: Full SHA for the approved pre-self-pull Pinokio backend action (direct rows only; not used by pinokio-* rows)
+        required: false
         type: string
       stopped_path_agent_ref:
-        description: Full candidate Agent SHA containing the integrated A/B stopped path
-        required: true
+        description: Full candidate Agent SHA containing the integrated A/B stopped path (direct rows only; not used by pinokio-* rows)
+        required: false
         type: string
       m4_4a_executor_configs:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
@@ -89,12 +89,12 @@ on:
         required: true
         type: string
       old_launcher_ref:
-        description: Full SHA for the approved pre-self-pull Pinokio backend action
-        required: true
+        description: Full SHA for the approved pre-self-pull Pinokio backend action (direct rows only; not used by pinokio-* rows)
+        required: false
         type: string
       stopped_path_agent_ref:
-        description: Full candidate Agent SHA containing the integrated A/B stopped path
-        required: true
+        description: Full candidate Agent SHA containing the integrated A/B stopped path (direct rows only; not used by pinokio-* rows)
+        required: false
         type: string
       m4_4a_executor_configs:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
@@ -155,7 +155,7 @@ on:
         required: false
         type: string
       row:
-        description: Run one direct journey row, all five direct rows, or the three R1.1 Pinokio rows
+        description: Run one direct journey row, all five direct rows, one pinokio-* row, or all three R1.1 Pinokio rows
         required: false
         default: direct
         type: choice
@@ -166,6 +166,9 @@ on:
           - direct-linux-fresh
           - direct-macos-fresh
           - direct
+          - pinokio-linux
+          - pinokio-macos
+          - pinokio-windows
           - pinokio
 
 concurrency:
@@ -187,6 +190,7 @@ jobs:
       m4_4a_executor_configs: ${{ steps.config.outputs.m4_4a_executor_configs }}
       m4_4a_backend_only: ${{ steps.config.outputs.m4_4a_backend_only }}
       pinokio_only: ${{ steps.config.outputs.pinokio_only }}
+      pinokio_job_ids: ${{ steps.config.outputs.pinokio_job_ids }}
       m4_5_enabled: ${{ steps.config.outputs.m4_5_enabled }}
       m4_5_only: ${{ steps.config.outputs.m4_5_only }}
       m4_5_boundary: ${{ steps.config.outputs.m4_5_boundary }}
@@ -275,7 +279,8 @@ jobs:
           CANDIDATE: ${{ steps.automatic_candidate.outputs.candidate || inputs.candidate }}
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
+          # The pinned default is for automatic push/schedule runs only; a dispatched or called direct row must name it.
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || ((github.event_name == 'push' || github.event_name == 'schedule') && 'bbba620e3d89eeff8021417f365e6ea584203105') || '' }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
@@ -309,15 +314,20 @@ jobs:
               raise SystemExit("the reviewed Agent workflow SHA is required")
           if os.environ["WORKFLOW_REPOSITORY"] != "banodoco/astrid-agent":
               raise SystemExit("the receipt harness must run from banodoco/astrid-agent")
+          journey_row = os.environ["JOURNEY_ROW"].strip()
+          pinokio_job_ids = tuple(row["job_id"] for row in journey_matrix.RELEASE1_1_PINOKIO_MATRIX)
+          # Pinokio-only rows run the launcher's own commands and need no old-launcher provenance.
+          pinokio_only = journey_row == "pinokio" or journey_row in pinokio_job_ids
           old_launcher = os.environ["OLD_LAUNCHER_REF"]
-          if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105":
-              raise SystemExit("the approved old_launcher_ref SHA is required")
           stopped_path = os.environ["STOPPED_PATH_AGENT_REF"]
           m4_5_only = os.environ["M4_5_ONLY"].lower() == "true"
-          if stopped_path != candidate["agent"]:
-              raise SystemExit("stopped_path_agent_ref must equal the frozen candidate Agent SHA")
-          if not m4_5_only and stopped_path == "3cc84be5d8c565f1a4a500dcf713478498e34885":
-              raise SystemExit("the provisional Agent base lacks the integrated A/B stopped path")
+          if not pinokio_only:
+              if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105":
+                  raise SystemExit("the approved old_launcher_ref SHA is required")
+              if stopped_path != candidate["agent"]:
+                  raise SystemExit("stopped_path_agent_ref must equal the frozen candidate Agent SHA")
+              if not m4_5_only and stopped_path == "3cc84be5d8c565f1a4a500dcf713478498e34885":
+                  raise SystemExit("the provisional Agent base lacks the integrated A/B stopped path")
           try:
               executor_configs = json.loads(os.environ["M4_4A_EXECUTOR_CONFIGS"])
           except json.JSONDecodeError as exc:
@@ -327,8 +337,7 @@ jobs:
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
-          journey_row = os.environ["JOURNEY_ROW"].strip()
-          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio"}
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio", *pinokio_job_ids}
           if journey_row not in valid_rows:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
@@ -339,9 +348,8 @@ jobs:
           if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
               raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
-          pinokio_only = journey_row == "pinokio"
           if pinokio_only and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
-              raise SystemExit("row=pinokio does not support non-proof keep-going diagnostics")
+              raise SystemExit("pinokio rows do not support non-proof keep-going diagnostics")
           if os.environ.get("DIAGNOSTIC_KEEP_GOING", "false").lower() == "true" and not direct_only:
               raise SystemExit("diagnostic_keep_going requires direct_only")
           if direct_only and (backend_only or m4_5_only):
@@ -371,7 +379,7 @@ jobs:
           m4_4b_enabled = os.environ["M4_4B_ENABLED"].lower() == "true"
           m4_6_enabled = os.environ["M4_6_ENABLED"].lower() == "true"
           if pinokio_only and (backend_only or m4_5_enabled or m4_5_only or m4_4b_enabled or m4_6_enabled):
-              raise SystemExit("row=pinokio runs only the three R1.1 Pinokio journey rows")
+              raise SystemExit("pinokio rows run only the R1.1 Pinokio journey rows")
           m4_6_candidate = None
           if m4_6_enabled:
               try:
@@ -422,6 +430,7 @@ jobs:
                                   ("m4_4a_executor_configs", executor_configs),
                                   ("m4_4a_backend_only", str(backend_only).lower()),
                                   ("pinokio_only", str(pinokio_only).lower()),
+                                  ("pinokio_job_ids", ",".join(row["job_id"] for row in matrix) if pinokio_only else ""),
                                   ("m4_5_enabled", str(m4_5_enabled).lower()),
                                   ("m4_5_only", str(m4_5_only).lower()),
                                   ("m4_5_boundary", boundary),
@@ -717,6 +726,7 @@ jobs:
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
+        if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
@@ -788,6 +798,23 @@ jobs:
             if ($refusalExit -ne 0) { exit $refusalExit }
           }
           if ($freshExit -ne 0) { exit $freshExit }
+      - name: Run the Pinokio launcher row driver
+        if: ${{ startsWith(matrix.job_id, 'pinokio-') }}
+        shell: bash
+        timeout-minutes: 120
+        env:
+          JOB_ID: ${{ matrix.job_id }}
+          JOB_OS: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          # Writes the single pinokio-row-v1 receipt where the evidence boundary expects it.
+          run_root="$RUNNER_TEMP/astrid-r1-$JOB_ID"
+          receipt="$run_root/evidence-upload/after-cleanup/journey-result.json"
+          python3 -u agent/scripts/pinokio_row_driver.py \
+            --job-id "$JOB_ID" --os "$JOB_OS" \
+            --candidate "$RUNNER_TEMP/candidate.json" \
+            --pinokio-checkout "$PWD/pinokio" --agent-checkout "$PWD/agent" --app-checkout "$PWD/app" \
+            --run-root "$run_root" --receipt "$receipt"
       - name: Publish diagnostic table or pre-driver failure
         if: always() && inputs.diagnostic_keep_going == true
         shell: pwsh
@@ -1318,14 +1345,15 @@ jobs:
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-m4-4a
-      - name: Aggregate the exact R1.1 Pinokio receipt matrix
+      - name: Aggregate the exact selected Pinokio receipts
         if: needs.config.outputs.pinokio_only == 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
+          PINOKIO_JOB_IDS: ${{ needs.config.outputs.pinokio_job_ids }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
-          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1-1-pinokio
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1-1-pinokio --pinokio-job-ids "$PINOKIO_JOB_IDS"
       - name: Reject skipped M4-5 matrix dependencies
         if: needs.config.outputs.m4_5_enabled == 'true'
         shell: bash

@@ -520,7 +520,7 @@ def _sidecar_json(path: Path, *, expected_os: str, mode: str) -> tuple[dict | No
     return value, errors
 
 
-def _evaluate_pinokio_backend_matrix(candidate, results, matrix, gate_name, *, reject_unknown=False):
+def _evaluate_pinokio_backend_matrix(candidate, results, matrix, gate_name):
     """Check one exact hosted Pinokio backend receipt matrix."""
     errors = []
     expected = {row["job_id"]: row for row in matrix}
@@ -536,8 +536,6 @@ def _evaluate_pinokio_backend_matrix(candidate, results, matrix, gate_name, *, r
             continue
         job_id = row.get("job_id")
         if job_id not in expected:
-            if reject_unknown:
-                errors.append(f"{path}: unknown or absent {gate_name} job id")
             continue
         if job_id in found:
             errors.append(f"{job_id}: duplicate {gate_name} receipt")
@@ -697,10 +695,77 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
         candidate, results, M4_4A_BACKEND_MATRIX, "M4-4a backend")
 
 
-def evaluate_release1_1_pinokio_matrix(candidate, results):
-    """Check the separate three-row R1.1 Pinokio hosted journey gate."""
-    return _evaluate_pinokio_backend_matrix(
-        candidate, results, RELEASE1_1_PINOKIO_MATRIX, "R1.1 Pinokio", reject_unknown=True)
+PINOKIO_ROW_STEPS = ("install", "start_task", "stop_start", "busy_stop_data",
+                     "update_ready_task", "uninstall_data")
+PINOKIO_ROW_OS = {row["job_id"]: row["os"] for row in RELEASE1_1_PINOKIO_MATRIX}
+
+
+def _pinokio_row_errors(job_id, row, candidate_sha):
+    """Return the errors in one pinokio-row-v1 receipt, if any."""
+    errors = []
+    if set(row) != {"schema", "job_id", "os", "pinokio_sha", "steps"}:
+        errors.append(f"{job_id}: receipt fields do not match pinokio-row-v1")
+    if row.get("schema") != "pinokio-row-v1":
+        errors.append(f"{job_id}: schema is not 'pinokio-row-v1'")
+    if row.get("job_id") != job_id or row.get("os") != PINOKIO_ROW_OS[job_id]:
+        errors.append(f"{job_id}: job id and OS do not match")
+    pinokio_sha = row.get("pinokio_sha")
+    if not isinstance(pinokio_sha, str) or not SHA.fullmatch(pinokio_sha):
+        errors.append(f"{job_id}: pinokio_sha must be a full commit SHA")
+    elif candidate_sha is not None and pinokio_sha != candidate_sha:
+        errors.append(f"{job_id}: pinokio SHA differs from candidate")
+    steps = row.get("steps")
+    if not isinstance(steps, list):
+        return errors + [f"{job_id}: steps must be a list"]
+    names = [step.get("name") if isinstance(step, dict) else None for step in steps]
+    if sorted(n for n in names if n is not None) != sorted(PINOKIO_ROW_STEPS) or len(names) != len(PINOKIO_ROW_STEPS):
+        errors.append(f"{job_id}: step names are missing, extra or duplicated")
+    for step in steps:
+        if not isinstance(step, dict) or set(step) != {"name", "status", "detail"} or not isinstance(step.get("detail"), str):
+            errors.append(f"{job_id}: step is not a name/status/detail object")
+            continue
+        if step["status"] != "pass":
+            errors.append(f"{job_id}: {step['name']} status is not pass")
+    return errors
+
+
+def evaluate_release1_1_pinokio_matrix(candidate, results, job_ids=None):
+    """Check the exact selected Pinokio row receipts (all three when job_ids is None)."""
+    expected_ids = set(PINOKIO_ROW_OS) if job_ids is None else set(job_ids)
+    if not expected_ids or not expected_ids <= set(PINOKIO_ROW_OS):
+        return ["pinokio job ids must be a non-empty subset of the three Pinokio rows"]
+    candidate_sha = None
+    if candidate is not None:
+        if not isinstance(candidate, dict):
+            return ["candidate: expected an object"]
+        candidate_sha = candidate.get("pinokio")
+        if not isinstance(candidate_sha, str) or not SHA.fullmatch(candidate_sha):
+            return ["candidate: pinokio SHA must be a full commit SHA"]
+    errors = []
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        job_id = row.get("job_id")
+        if job_id not in PINOKIO_ROW_OS:
+            errors.append(f"{path}: unknown or absent Pinokio job id")
+            continue
+        if job_id not in expected_ids:
+            errors.append(f"{path}: Pinokio job {job_id} was not selected for this run")
+            continue
+        if job_id in found:
+            errors.append(f"{job_id}: duplicate Pinokio receipt")
+            continue
+        found[job_id] = row
+    for job_id in sorted(expected_ids):
+        if job_id not in found:
+            errors.append(f"{job_id}: missing Pinokio receipt")
+            continue
+        errors.extend(_pinokio_row_errors(job_id, found[job_id], candidate_sha))
+    return errors
 
 
 def _m4_5_row_errors(row):
@@ -1077,7 +1142,9 @@ def main():
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact five direct Release-1 job receipts under --results")
     parser.add_argument("--aggregate-release1-1-pinokio", action="store_true",
-                        help="require the exact three R1.1 Pinokio hosted journey receipts under --results")
+                        help="require the exact selected pinokio-row-v1 receipts under --results")
+    parser.add_argument("--pinokio-job-ids", default=None,
+                        help="comma-separated pinokio job ids selected for this run (default: all three)")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
@@ -1133,7 +1200,8 @@ def main():
                 raise ValueError("--results is required with --aggregate-release1-1-pinokio")
             if args.allow_source_override:
                 raise ValueError("R1.1 Pinokio aggregate never admits a source override")
-            errors.extend(evaluate_release1_1_pinokio_matrix(candidate, args.results))
+            selected = None if args.pinokio_job_ids is None else args.pinokio_job_ids.split(",")
+            errors.extend(evaluate_release1_1_pinokio_matrix(candidate, args.results, selected))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
