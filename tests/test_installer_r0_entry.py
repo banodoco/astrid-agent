@@ -619,3 +619,40 @@ def test_captures_match_real_r0_evidence():
     for system in ("linux", "macos", "windows"):
         actual = evidence / f"journey-receipt-direct-{system}" / "before-cleanup" / "unit-file-before-cleanup.txt"
         assert (FIXTURES / f"{system}.txt").read_text() == actual.read_text()
+
+
+@pytest.mark.parametrize("mode", [["--update"], []], ids=["update", "install"])
+def test_public_cli_windows_r0_refuses_with_exact_line_before_any_change(tmp_path, monkeypatch, capsys, mode):
+    from astrid.installer import boundary_handoff, boundary_registration
+
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    made = []
+
+    def windows_backend(*args, **kwargs):
+        backend = Backend(*args, **kwargs)
+        # Only the manager identity is Windows; every Windows mutation is forbidden.
+        backend.service.system = "win32"
+        backend.service.powershell = lambda script: pytest.fail("Task Scheduler must not be called")
+        for name in ("stage", "runtime", "preflight_stop", "register", "recover_r1_registration"):
+            setattr(backend, name, lambda *a, _name=name, **kw: pytest.fail(f"{_name} ran before refusal"))
+        made.append(backend)
+        return backend
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a stop, registration or copy ran before the Windows refusal")
+
+    monkeypatch.setattr(cli, "Backend", windows_backend)
+    monkeypatch.setattr(boundary_handoff, "BoundaryHandoff", forbidden)
+    monkeypatch.setattr(boundary_registration, "BoundaryRegistration", forbidden)
+    monkeypatch.setattr(r0_stop, "stop_r0_and_wait", forbidden)
+    monkeypatch.setattr(Installer, "run", forbidden)
+    before = snapshot(root), snapshot(data), service.selection.read_bytes(), service.path.read_bytes()
+    assert cli.main([*mode, "--root", str(root), "--uv", sys.executable]) == 1
+    output = capsys.readouterr().out.splitlines()
+    assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in output
+    assert ("Upgrading from an earlier Windows version isn't supported yet. "
+            "Your data was kept; reinstall to get the new version.") in output
+    assert made and all(backend.service.system == "win32" for backend in made)
+    assert (snapshot(root), snapshot(data), service.selection.read_bytes(), service.path.read_bytes()) == before
+    assert state(manager)["calls"] == []
+    assert not r0_stop._marker_path(made[-1].service).exists()

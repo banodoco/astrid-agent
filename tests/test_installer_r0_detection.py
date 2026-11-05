@@ -104,3 +104,90 @@ def test_windows_task_query_uncertainty_never_means_absent(tmp_path, output):
 def test_missing_service_interface_refuses(tmp_path):
     with pytest.raises(r0_stop.R0StopError, match="Cannot determine"):
         r0_stop.is_r0_installation(tmp_path, None)
+
+
+WINDOWS_REFUSAL = ("Upgrading from an earlier Windows version isn't supported yet. "
+                   "Your data was kept; reinstall to get the new version.")
+
+
+def _tree(root):
+    return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(root.rglob("*"))}
+
+
+def _forbid_mutations(monkeypatch, calls):
+    """Every stop, registration, copy and legacy path records a call and fails."""
+    def forbidden(name):
+        def call(*args, **kwargs):
+            calls.append(name)
+            raise AssertionError(f"{name} ran before the Windows refusal")
+        return call
+    monkeypatch.setattr(boundary_handoff, "BoundaryHandoff", forbidden("BoundaryHandoff"))
+    monkeypatch.setattr(boundary_handoff.registration, "BoundaryRegistration", forbidden("BoundaryRegistration"))
+    for name in ("stop_r0_and_wait", "_disable_and_stop", "_reenable", "_write_marker"):
+        monkeypatch.setattr(r0_stop, name, forbidden(name))
+    monkeypatch.setattr(Installer, "run", forbidden("Installer.run"))
+    return SimpleNamespace(service=None, stage=forbidden("stage"), runtime=forbidden("runtime"),
+                           recover_r1_registration=forbidden("recover_r1_registration"),
+                           preflight_stop=forbidden("preflight_stop"))
+
+
+def _windows_r0(tmp_path, *, selected):
+    service = Service(tmp_path / "program", tmp_path / "log", None,
+                      home=tmp_path / "home", system="win32")
+    root, data = service.root, tmp_path / "data"
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    if selected:
+        folder = root / "versions" / "release0"
+        write_json(folder / "version.json", Version(folder, folder / "py/python.exe",
+                                                    folder / "profile.json", {}, release=0).document())
+        (root / "current").write_text("release0\n")
+    write_json(service.selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    (data / "runtime").mkdir(parents=True)
+    (data / "runtime/marker.txt").write_text("R0 workspace")
+    return service, root, data
+
+
+@pytest.mark.parametrize("selected", [True, False], ids=["selected-r0-version", "r0-task-only"])
+def test_windows_r0_upgrade_refuses_with_exact_text_before_any_change(tmp_path, monkeypatch, selected):
+    service, root, data = _windows_r0(tmp_path, selected=selected)
+    queries = []
+    service.powershell = lambda script: queries.append(script) or "ASTRID_TASK_COUNT=1\n"
+    calls = []
+    backend = _forbid_mutations(monkeypatch, calls)
+    backend.service = service
+    before = _tree(tmp_path)
+    with pytest.raises(ValueError) as refused:
+        boundary_handoff.handle(root, data, backend, manifest_loader=lambda: calls.append("manifest"))
+    assert str(refused.value) == WINDOWS_REFUSAL == boundary_handoff.WINDOWS_UPGRADE_REFUSAL
+    assert calls == []
+    assert _tree(tmp_path) == before
+    # Only the read-only existence query may reach Task Scheduler.
+    assert len(queries) == (0 if selected else 1)
+    assert all("Get-ScheduledTask" in script for script in queries)
+
+
+
+@pytest.mark.parametrize("system", ["linux", "darwin"])
+def test_posix_r0_still_reaches_the_copy_only_handoff(tmp_path, monkeypatch, system):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    service = Service(tmp_path / "program", tmp_path / "log", None, home=tmp_path / "home", system=system)
+    root, data = service.root, tmp_path / "data"
+    folder = root / "versions" / "release0"
+    write_json(folder / "version.json", Version(folder, folder / "py/bin/python",
+                                                folder / "profile.json", {}, release=0).document())
+    (root / "current").write_text("release0\n")
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    reached = []
+
+    class Handoff:
+        def __init__(self, backend):
+            reached.append(backend.service.system)
+
+        def run(self, run_data, loader, *, say):
+            reached.append((run_data, loader()))
+
+    monkeypatch.setattr(boundary_handoff, "BoundaryHandoff", Handoff)
+    backend = SimpleNamespace(service=service)
+    assert boundary_handoff.handle(root, data, backend, manifest_loader=lambda: "manifest") is True
+    assert reached == [system, (data, "manifest")]
