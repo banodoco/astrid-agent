@@ -120,6 +120,12 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "assert_no_boundary", lambda *args: None)
     monkeypatch.setattr(update.windows, "wait_for", lambda *a, **kw: None)
     calls = []
+    monkeypatch.setattr(update.process_capture, "host_pid", lambda data: 42)
+    monkeypatch.setattr(update.process_capture, "observe", lambda: (calls.append("observe-processes") or {}))
+    def process_failure(*args):
+        calls.append("capture-processes")
+        raise OSError("private diagnostic failure")
+    monkeypatch.setattr(update.process_capture, "capture_failure", process_failure)
     def capture(*args):
         calls.append("capture")
         raise OSError("capture failure")
@@ -151,7 +157,7 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
     assert result["outcome"] == "updated" and not gate._windows_fresh_update_errors(result, "direct-windows")
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
     assert len(bootstraps) == 1
-    assert "capture" not in calls
+    assert "capture" not in calls and "capture-processes" not in calls
     app, candidate_path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data = bootstraps[0]
     assert app == tmp_path and candidate_path == evidence / "windows-update-manifest.json"
     assert shell == "powershell.exe" and mode == "update"
@@ -165,4 +171,5 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
         with pytest.raises(RuntimeError, match=output):
             update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
         assert "verify-update" not in calls and "task" not in calls
-        assert "capture" in calls
+        assert calls.count("observe-processes") == 2
+        assert calls.index("capture-processes") < calls.index("capture")

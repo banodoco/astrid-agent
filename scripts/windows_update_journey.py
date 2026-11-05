@@ -19,8 +19,10 @@ if str(ROOT) not in sys.path:
 
 if __package__:
     from . import ci_windows_journey as windows
+    from . import windows_update_process_capture as process_capture
 else:
     import ci_windows_journey as windows
+    import windows_update_process_capture as process_capture
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 MARKER = "M-RT UPDATE TEST STAND-IN"
@@ -169,10 +171,20 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     manifest_path.write_bytes(raw)
     sha = hashlib.sha256(raw).hexdigest()
     (evidence / "windows-update-SHA256SUMS").write_text(f"{sha}  {manifest_path.name}\n", encoding="utf-8")
+    try:
+        capture_pid = process_capture.host_pid(data)
+        capture_before = process_capture.observe()
+    except Exception:
+        capture_pid, capture_before = None, None
     started = datetime.now(timezone.utc)
     try:
         journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
     except Exception:
+        try:
+            if capture_before is not None:
+                process_capture.capture_failure(evidence, capture_pid, capture_before, process_capture.observe())
+        except Exception:
+            pass  # Diagnostics must never replace the update failure.
         try:
             capture_update_scheduler_events(evidence, started)
         except Exception:
