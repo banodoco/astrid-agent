@@ -24,7 +24,7 @@ from .core import (
     separate_roots,
     write_json,
 )
-from .service import LABEL, default_program_root, default_uv, installer_lock_path, pinokio_owned
+from .service import LABEL, _lock_trace, default_program_root, default_uv, installer_lock_path, pinokio_owned
 from .support import FAILURE_MESSAGE, default_doctor_bundle
 from .tools import download, validate_manifest
 
@@ -249,9 +249,11 @@ def main(argv: list[str] | None = None) -> int:
         with lock_path.open("a+b") as lock:
             locked = False
             if mode != "doctor":
+                _lock_trace("updater", "acquire_begin", lock_path, lock.fileno())
                 try:
                     platform.lock_file(lock.fileno(), blocking=False)
                 except BlockingIOError:
+                    _lock_trace("updater", "acquire_contended", lock_path, lock.fileno())
                     # These reads only explain contention. Ownership and all
                     # mutations are checked below, after obtaining the lock.
                     prior = read_json(root / "install.json")
@@ -267,7 +269,11 @@ def main(argv: list[str] | None = None) -> int:
                     if pinokio_live:
                         raise ValueError(PINOKIO_UPDATE_UNINSTALL_REFUSAL) from None
                     raise
+                except Exception:
+                    _lock_trace("updater", "acquire_error", lock_path, lock.fileno())
+                    raise
                 locked = True
+                _lock_trace("updater", "acquire_success", lock_path, lock.fileno())
             try:
                 # Re-read after acquiring the same installer lock, before any
                 # manager operation, diagnostic preparation or selection write.
@@ -460,7 +466,13 @@ def main(argv: list[str] | None = None) -> int:
                     installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
             finally:
                 if locked:
-                    platform.unlock_file(lock.fileno())
+                    _lock_trace("updater", "release_begin", lock_path, lock.fileno())
+                    try:
+                        platform.unlock_file(lock.fileno())
+                    except Exception:
+                        _lock_trace("updater", "release_error", lock_path, lock.fileno())
+                        raise
+                    _lock_trace("updater", "release_success", lock_path, lock.fileno())
         return 0
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         try:

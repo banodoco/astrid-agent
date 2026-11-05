@@ -60,11 +60,12 @@ def _launch_prelude_source() -> str:
         current,
         default_program_root,
         installer_lock_path,
+        _lock_trace,
         activation_lock_held,
         launch_admission,
     )
     return (
-        "import json,os,re,stat,sys\n"
+        "import json,os,re,stat,sys,time\n"
         "from dataclasses import dataclass\n"
         "from pathlib import Path\n"
         + "\n".join(inspect.getsource(definition) for definition in definitions)
@@ -159,6 +160,30 @@ def pinokio_owned(record: dict) -> bool:
     return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
 
 
+def _lock_trace(role: str, event: str, path: Path, fd: int) -> None:
+    """Task-only lock evidence: emit no pathname or exception text."""
+    try:
+        def identity(value):
+            try:
+                info = os.stat(value)
+                return [info.st_dev, info.st_ino]
+            except OSError:
+                return None
+
+        home = Path.home()
+        info = os.fstat(fd)
+        record = {
+            "role": role, "event": event, "time_ns": time.time_ns(),
+            "pid": os.getpid(), "platform": sys.platform,
+            "home": identity(home), "lock_parent": identity(path.parent),
+            "lock_file": [info.st_dev, info.st_ino],
+            "home_relative_default": path == home / ".local" / "share" / "astrid-install.lock",
+        }
+        print("ASTRID_LOCK_DIAG " + json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+    except Exception:
+        pass  # Diagnostic failure must not alter lock or admission behavior.
+
+
 def activation_lock_held(root: Path, version: Version) -> bool:
     """Return whether this unfinished update's activation lock is held."""
     from runtime_protocol import platform
@@ -167,11 +192,23 @@ def activation_lock_held(root: Path, version: Version) -> bool:
             else installer_lock_path(Path.home(), sys.platform))
     platform.private_directory(path.parent)
     with path.open("a+b") as lock:
+        _lock_trace("candidate", "acquire_begin", path, lock.fileno())
         try:
             platform.lock_file(lock.fileno(), blocking=False)
         except BlockingIOError:
+            _lock_trace("candidate", "acquire_contended", path, lock.fileno())
             return True
-        platform.unlock_file(lock.fileno())
+        except Exception:
+            _lock_trace("candidate", "acquire_error", path, lock.fileno())
+            raise
+        _lock_trace("candidate", "acquire_success", path, lock.fileno())
+        _lock_trace("candidate", "release_begin", path, lock.fileno())
+        try:
+            platform.unlock_file(lock.fileno())
+        except Exception:
+            _lock_trace("candidate", "release_error", path, lock.fileno())
+            raise
+        _lock_trace("candidate", "release_success", path, lock.fileno())
     return False
 
 
