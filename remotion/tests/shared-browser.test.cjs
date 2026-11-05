@@ -139,3 +139,39 @@ test('reinstall reuses the shared browser without downloading it again', () => {
   assert.match(second.stdout, /shared browser already present/);
   assert.equal(fs.readFileSync(marker, 'utf8'), '1', 'reinstall must not download a second browser');
 });
+
+test('cross-volume staging copies the downloaded browser after rename returns EXDEV', () => {
+  const fixture = path.join(tmp, 'cross-volume');
+  const remotion = path.join(fixture, 'remotion');
+  const renderer = path.join(remotion, 'node_modules', '@remotion', 'renderer');
+  const downloaded = path.join(remotion, 'node_modules', '.remotion', 'chrome-headless-shell');
+  const downloadedExecutable = path.join(downloaded, browserRelativePath().replace(/^chrome-headless-shell[/\\]/, ''));
+  const sharedRoot = path.join(fixture, 'home', 'Library', 'Caches', 'astrid-remotion-browser');
+  const sharedBrowserDir = path.join(sharedRoot, '4.0.509', 'chrome-headless-shell');
+  const expectedSharedExecutable = path.join(sharedBrowserDir, browserRelativePath().replace(/^chrome-headless-shell[/\\]/, ''));
+  const preload = path.join(fixture, 'exdev.cjs');
+  fs.mkdirSync(path.join(remotion, 'scripts'), {recursive: true});
+  fs.mkdirSync(renderer, {recursive: true});
+  fs.writeFileSync(path.join(remotion, 'package.json'), '{"type":"module"}');
+  fs.writeFileSync(path.join(renderer, 'package.json'), JSON.stringify({name: '@remotion/renderer', version: '4.0.509', type: 'module', exports: './index.js'}));
+  fs.writeFileSync(path.join(renderer, 'index.js'), `import fs from 'node:fs'; import path from 'node:path'; export async function ensureBrowser() { fs.mkdirSync(path.dirname(${JSON.stringify(downloadedExecutable)}), {recursive: true}); fs.writeFileSync(${JSON.stringify(downloadedExecutable)}, 'fake browser'); return {path: 'fake'}; }`);
+  fs.copyFileSync(path.join(__dirname, '..', 'scripts', 'fetch-shared-browser.mjs'), path.join(remotion, 'scripts', 'fetch-shared-browser.mjs'));
+  fs.copyFileSync(path.join(__dirname, '..', 'shared-browser.mjs'), path.join(remotion, 'shared-browser.mjs'));
+  fs.writeFileSync(preload, [
+    `require('node:os').homedir = () => ${JSON.stringify(path.join(fixture, 'home'))};`,
+    "const fs = require('node:fs');",
+    'const renameSync = fs.renameSync.bind(fs);',
+    `fs.renameSync = (source, target) => { if (String(source) === ${JSON.stringify(downloaded)} && String(target) === ${JSON.stringify(sharedBrowserDir)}) { const error = new Error('cross-device link not permitted'); error.code = 'EXDEV'; throw error; } return renameSync(source, target); };`,
+  ].join('\n'));
+  const result = spawnSync(process.execPath, ['--require', preload, 'scripts/fetch-shared-browser.mjs'], {
+    cwd: remotion,
+    encoding: 'utf8',
+    env: {...process.env, HOME: path.join(fixture, 'home'), USERPROFILE: path.join(fixture, 'home')},
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /shared browser ready/);
+  assert.equal(fs.existsSync(expectedSharedExecutable), true, JSON.stringify({stdout: result.stdout, stderr: result.stderr, expectedSharedExecutable, downloadedExecutable}));
+  assert.equal(fs.readFileSync(expectedSharedExecutable, 'utf8'), 'fake browser');
+  assert.equal(fs.readFileSync(downloadedExecutable, 'utf8'), 'fake browser');
+});
