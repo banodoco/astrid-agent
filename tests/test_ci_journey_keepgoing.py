@@ -35,8 +35,13 @@ def setup_diagnostic(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(journey, 'assert_one_runtime', lambda *a: calls.append('one'))
     def verify(mode, *args, **kwargs):
         calls.append('verify-' + mode)
+        receipt = evidence / ('verify-' + mode + '.json')
+        receipt.parent.mkdir(parents=True, exist_ok=True)
         if failure == 'verify' and mode == 'observe':
-            raise RuntimeError('verification exact failure')
+            receipt.write_text(json.dumps({'passed': False, 'failures': ['capabilities.approval', 'capabilities.required']}))
+        else:
+            receipt.write_text(json.dumps({'passed': True, 'failures': []}))
+        return receipt
     monkeypatch.setattr(journey, 'verify', verify)
     monkeypatch.setattr(jumps, 'direct_workspace', lambda *a: {'project': 'p'} if a[4] == 'seed' else {'snapshot': True})
     monkeypatch.setattr(jumps, 'task_after_update', lambda *a: 'task')
@@ -59,10 +64,18 @@ def test_failed_verification_is_labelled_and_independent_update_runs(tmp_path, m
     args.job_id = 'direct-' + runner
     report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
     row = next(row for row in report['stages'] if row['stage'] == 'release0-verify')
-    assert row['result'] == 'fail' and row['first_error'] == 'RuntimeError: verification exact failure'
+    assert row['result'] == 'fail'
+    assert row['first_error'] == 'RuntimeError: release-0 verification failed: capabilities.approval, capabilities.required'
+    assert 'verified0' not in row['postconditions']
     assert row['forced_continuation_used'] is True and 'FORCED' in row['continuation']
     assert 'update' in calls
     assert next(row for row in report['stages'] if row['stage'] == 'release1-task')['result'] == 'pass'
+    dependent = next(row for row in report['stages'] if row['stage'] == 'release1-verify-update')
+    assert dependent['result'] == 'not-run'
+    assert dependent['failure_class'] == 'diagnostic-tainted:release0-verify'
+    assert next(item for item in dependent['preconditions'] if item['name'] == 'verified0')['source'] == 'unavailable'
+    assert 'verify-update' not in calls
+    assert next(row for row in report['stages'] if row['stage'] == 'release1-verify-install')['result'] == 'pass'
     receipt = json.loads((evidence / 'journey-result.json').read_text())
     assert receipt['proof_mode'] == keepgoing.PROOF_MODE and receipt['status'] == 'fail'
     assert receipt['qualification']['eligible'] is False and receipt['classification'] == 'NON-PROOF'
@@ -139,21 +152,20 @@ def test_keepgoing_log_retention_preserves_error_path_and_bounded_tail(tmp_path,
     assert artifact.read_text() == "specific underlying installer error"
 
 
-def test_failed_downstream_verification_after_bypass_is_suspect(tmp_path, monkeypatch):
+def test_failed_upstream_verification_taints_dependent_check_without_running_it(tmp_path, monkeypatch):
     args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'verify')
-    def fail_both(mode, *args, **kwargs):
-        if mode in ('observe', 'update'):
-            raise RuntimeError(mode + ' failed')
-    monkeypatch.setattr(journey, 'verify', fail_both)
     report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
     rows = {row['stage']: row for row in report['stages']}
     assert rows['release0-verify']['failure_class'] == 'real'
-    assert rows['release1-verify-update']['failure_class'] == 'suspect:release0-verify'
-    assert any(item['source'] == 'forced-by:release0-verify' for item in rows['release1-verify-update']['preconditions'])
+    assert rows['release1-verify-update']['result'] == 'not-run'
+    assert rows['release1-verify-update']['failure_class'] == 'diagnostic-tainted:release0-verify'
+    assert any(item['name'] == 'verified0' and item['source'] == 'unavailable'
+               for item in rows['release1-verify-update']['preconditions'])
+    assert 'verify-update' not in calls
     text = (evidence / 'keepgoing-report.md').read_text()
     assert 'REAL failures: release0-verify' in text
-    assert 'SUSPECT failures: release1-verify-update (suspect:release0-verify)' in text
-    assert '-.->' in text
+    assert 'SUSPECT failures: none' in text
+    assert 'diagnostic-tainted:release0-verify' in text
 
 
 def test_fresh_install_continues_independent_checks_after_verify_failure(tmp_path, monkeypatch):

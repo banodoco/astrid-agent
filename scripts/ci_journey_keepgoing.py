@@ -162,6 +162,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                                          "source": "genuine" if key in state else "forced-by:" + producer})
         if missing:
             row.update(result="not-run", first_error="Unsafe or unavailable prerequisites: " + ", ".join(missing))
+            tainted_by = sorted({producers[item] for item in missing
+                                 if any(previous["stage"] == producers[item] and previous["result"] == "fail"
+                                        for previous in report["stages"])})
+            if tainted_by:
+                row["failure_class"] = "diagnostic-tainted:" + ",".join(tainted_by)
         else:
             try:
                 action()
@@ -305,7 +310,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
             raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
     def verify0():
-        journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
+        receipt_path = journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
+        receipt = journey.read_json(receipt_path)
+        if receipt.get("passed") is not True:
+            failures = receipt.get("failures", [])
+            raise RuntimeError("release-0 verification failed: " + ", ".join(map(str, failures)))
         state["verified0"] = True
     def verify_update():
         journey.verify("update", state["version_path"], data, evidence, before=evidence / "release0-api-seed" / "verify-observe.json")
@@ -341,7 +350,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("release1-release", ["version"], check_release1, evidence / "release1")
         stage("release1-service", ["version"], lambda: journey.assert_direct_service_ownership(root, data), evidence / "release1")
         stage("release1-health", ["version", "health0"], check_health1, evidence / "release1")
-    stage("release1-verify-update", ["version"], verify_update, evidence / "verify-update.log", forced_dependencies=(("verified0", "release0-verify"),))
+    stage("release1-verify-update", ["version", "verified0"], verify_update, evidence / "verify-update.log")
     stage("release1-verify-install", ["version"], verify_install, evidence / "verify-install.log")
     stage("release1-snapshot", ["version", "task0"], snap1, evidence / "release1-api-observe")
     stage("semantic-preservation", ["before", "after"], preserve, evidence / "release1-api-observe")
