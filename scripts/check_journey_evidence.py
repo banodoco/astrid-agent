@@ -213,6 +213,51 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
+def _windows_fresh_update_errors(update, job_id):
+    errors = []
+    if not isinstance(update, dict):
+        return [f"{job_id}: Windows fresh update receipt is absent"]
+    if (update.get("from_release") != 1 or update.get("to_release") != 2
+            or update.get("marker") != "M-RT UPDATE TEST STAND-IN"
+            or not isinstance(update.get("manifest_sha256"), str)
+            or not DIGEST.fullmatch(update["manifest_sha256"])):
+        errors.append(f"{job_id}: Windows update stand-in identity is invalid")
+    old, current = update.get("old_version"), update.get("current_version")
+    if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
+               and value not in {".", ".."} for value in (old, current)):
+        errors.append(f"{job_id}: Windows update version identities are invalid")
+    labels = update.get("task_labels")
+    if not isinstance(labels, list) or {"name": "Astrid Runtime", "path": "\\"} not in labels:
+        errors.append(f"{job_id}: Windows update owned task label is absent")
+    services = update.get("service_names")
+    if not isinstance(services, list) or any(not isinstance(name, str) for name in services):
+        errors.append(f"{job_id}: Windows update service labels are absent")
+    checks = update.get("checks") if isinstance(update.get("checks"), dict) else {}
+    for check in ("running_before", "owned_task", "healthy", "same_labels", "no_r0_handoff",
+                  "workspace", "sentinel", "prior_version"):
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: Windows update {check} did not pass")
+    outcome, code = update.get("outcome"), update.get("exit_code")
+    if outcome == "updated":
+        if (type(code) is not int or code != 0 or not old or not current or old == current
+                or update.get("refusal") is not None or not isinstance(update.get("task_id"), str)
+                or not update["task_id"].strip()):
+            errors.append(f"{job_id}: Windows update success identity is invalid")
+        for check in ("verify_update", "task_settled"):
+            if checks.get(check) != "pass":
+                errors.append(f"{job_id}: Windows update {check} did not pass")
+    elif outcome == "refused":
+        message = update.get("refusal")
+        if (type(code) is not int or code == 0 or not old or old != current
+                or not isinstance(message, str) or not re.fullmatch(
+                    r"(?:Error: )?[^.!?\r\n]*(?:locked|in use|being used by another process)[^.!?\r\n]*[.!?]",
+                    message, re.IGNORECASE)):
+            errors.append(f"{job_id}: Windows update refusal is invalid")
+    else:
+        errors.append(f"{job_id}: Windows update outcome is invalid")
+    return errors
+
+
 def _release1_row_errors(candidate, contract, row):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
@@ -275,7 +320,10 @@ def _release1_row_errors(candidate, contract, row):
             for check in ("task_settled", "workspace_content", "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
                     errors.append(f"{job_id}: fresh {check} assertion did not pass")
+        if job_id in {"direct-linux-fresh", "direct-macos-fresh"}:
+            errors.extend(fresh_update_errors(job_id, row.get("update")))
         if job_id == "direct-windows":
+            errors.extend(_windows_fresh_update_errors(row.get("update"), job_id))
             refusal = row.get("windows_upgrade_refusal")
             if not isinstance(refusal, dict):
                 errors.append(f"{job_id}: separate Windows upgrade refusal receipt is absent")
@@ -353,6 +401,36 @@ def _release1_row_errors(candidate, contract, row):
           or prerequisite.get("managed_by") != "pinokio"
           or prerequisite.get("foreground_fallback") is not False):
         errors.append(f"{job_id}: Pinokio ownership prerequisite is not explicit")
+    return errors
+
+
+def fresh_update_errors(job_id, update):
+    """Require a completed, same-label R1 update for the two fresh rows."""
+    errors = []
+    if not isinstance(update, dict) or update.get("status") != "pass":
+        return [f"{job_id}: fresh update receipt is absent or did not pass"]
+    if update.get("release_from") != 1 or update.get("release_to") != 2:
+        errors.append(f"{job_id}: fresh update release transition is invalid")
+    old, new = update.get("old_version"), update.get("new_version")
+    if (not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
+                for value in (old, new)) or old == new):
+        errors.append(f"{job_id}: fresh update version transition is invalid")
+    if not DIGEST.fullmatch(str(update.get("manifest_sha256", ""))):
+        errors.append(f"{job_id}: fresh update manifest digest is invalid")
+    service = update.get("service")
+    names = update.get("service_names")
+    if (not isinstance(service, dict) or service.get("foreground_fallback") is not False
+            or not isinstance(service.get("service_path"), str)
+            or not isinstance(names, list) or not names
+            or Path(service["service_path"]).name not in names):
+        errors.append(f"{job_id}: fresh update service evidence is invalid")
+    checks = update.get("checks")
+    if not isinstance(checks, dict):
+        checks = {}
+    for check in ("new_version", "old_version_retained", "same_service", "no_boundary_handoff",
+                  "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled"):
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: fresh update {check} assertion did not pass")
     return errors
 
 

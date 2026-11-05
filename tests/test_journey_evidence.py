@@ -55,7 +55,22 @@ def release1_receipts(tmp_path):
                                                     "managed_by": "pinokio", "foreground_fallback": False}
         if contract["leg"] == "fresh-install":
             row["checks"]["workspace_content"] = "pass"
+        if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
+            name = "astrid.service" if contract["job_id"] == "direct-linux-fresh" else "haus.astrid.runtime.plist"
+            row["update"] = {"status": "pass", "release_from": 1, "release_to": 2,
+                             "old_version": "old", "new_version": "new", "manifest_sha256": "c" * 64,
+                             "service": {"service_path": "/service/" + name, "foreground_fallback": False},
+                             "service_names": [name],
+                             "checks": {name: "pass" for name in ("new_version", "old_version_retained", "same_service", "no_boundary_handoff", "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled")}}
         if contract["job_id"] == "direct-windows":
+            row["update"] = {
+                "outcome": "updated", "from_release": 1, "to_release": 2,
+                "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
+                "old_version": "old", "current_version": "new", "exit_code": 0,
+                "refusal": None, "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
+                "checks": {key: "pass" for key in ("running_before", "owned_task", "healthy", "same_labels",
+                           "no_r0_handoff", "workspace", "sentinel", "prior_version", "verify_update", "task_settled")},
+            }
             row["windows_upgrade_refusal"] = {
                 "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
                 "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
@@ -374,3 +389,23 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
     assert "direct-linux: scenario does not match the required matrix leg" in errors
     assert "direct-linux: direct receipt did not run the authentic release-0 to release-1 leg" in errors
     assert "direct-linux: release-0 to release-1 transition is absent or wrong" in errors
+
+
+def test_both_fresh_rows_require_complete_update_receipt(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    for job in ("direct-linux-fresh", "direct-macos-fresh"):
+        path = tmp_path / job / "journey-result.json"
+        row = json.loads(path.read_text())
+        original = row["update"]
+        del row["update"]
+        path.write_text(json.dumps(row))
+        assert any(job + ": fresh update receipt" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+        row["update"] = copy.deepcopy(original)
+        row["update"]["checks"]["verify_update"] = "not-run"
+        path.write_text(json.dumps(row))
+        assert any(job + ": fresh update verify_update" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+        row["update"] = original
+        path.write_text(json.dumps(row))
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
