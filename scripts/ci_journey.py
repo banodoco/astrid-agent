@@ -1349,7 +1349,8 @@ def windows_task_owned(output: str, root: Path) -> bool:
 
 
 def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False,
-                          release: int = 0) -> None:
+                          release: int = 0,
+                          related_uninstalled_selection: tuple[Path, Path] | None = None) -> None:
     """Reject an existing real login install before changing any service."""
     if release not in {0, 1}:
         raise ValueError("Host availability supports only release 0 or release 1")
@@ -1363,6 +1364,14 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
                          and selection.get("data_root") == str(data)
                          and selection.get("uninstalled") is True
                          and not selection.get("foreground"))
+    related_uninstalled = (leg == "windows-upgrade-refusal"
+                           and related_uninstalled_selection is not None
+                           and isinstance(selection, dict)
+                           and selection.get("owner") == "haus.astrid.runtime"
+                           and selection.get("program_root") == str(related_uninstalled_selection[0])
+                           and selection.get("data_root") == str(related_uninstalled_selection[1])
+                           and selection.get("uninstalled") is True
+                           and not selection.get("foreground"))
     owned_r1_cleanup = False
     if r1_cleanup and isinstance(selection, dict):
         try:
@@ -1387,7 +1396,8 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
         except (OSError, RuntimeError, TypeError, KeyError, ValueError):
             owned_r1_cleanup = False
     if ((default / "install.json").exists() or (default / "current").exists()
-            or (selection is not None and not owned_uninstalled and not owned_r1_cleanup)):
+            or (selection is not None and not owned_uninstalled and not related_uninstalled
+                and not owned_r1_cleanup)):
         raise RuntimeError("A non-journey Astrid login installation is present")
     if r1_cleanup:
         if not owned_r1_cleanup:
@@ -2340,7 +2350,10 @@ def execute(args: argparse.Namespace) -> dict:
                 raise
         host_leg = "fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg
         if narrow_refusal:
-            assert_host_available(host_leg, root, data, skip_process_check=True)
+            prior_run = run_root.with_name("astrid-r1-direct-windows")
+            related_selection = (prior_run / "program", prior_run / "data")
+            assert_host_available(host_leg, root, data, skip_process_check=True,
+                                  related_uninstalled_selection=related_selection)
         else:
             assert_host_available(host_leg, root, data)
     except Exception as exc:
