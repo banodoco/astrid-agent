@@ -259,73 +259,14 @@ def test_windows_bootstrap_forwards_core_refusal_and_keeps_scriptblock_open():
     assert "# Throw instead of exit: irm | iex must never close the user's shell." in script
 
 
-@pytest.mark.parametrize("case", ["source", "unreadable", "changed", "legacy_birth", "legacy_unknown"])
-def test_selected_r0_refuses_before_preflight_or_stop(tmp_path, monkeypatch, capsys, case):
-    from astrid.installer.backend import Backend
-    from astrid.installer.core import current, write_json
-    from astrid_runtime.paths import RuntimePaths
-    from runtime_protocol import platform
-
-    home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "data"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
-    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
-    # The R0 Linux/macOS service captures launch versions/<id>/py/bin/python
-    # with versions/<id>/profile.json. Reconstruct the R0 record format.
-    version = root / "versions" / "3204bb00-6d53a190-a813c6d5"
-    python = version / "py" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.write_text("fixture, never executed")
-    write_json(version / "version.json", {"root": str(version), "python": str(python),
-                                         "profile": str(version / "profile.json"), "env": {}})
-    write_json(version / "manifest.json", {"release": 0})
-    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
-    (root / "current").write_text(version.name + "\n")
-    assert current(root).release == 0
-    paths = RuntimePaths.current(data_root=data)
-    birth = "proc-start-ticks:12812" if case in {"legacy_birth", "legacy_unknown"} else "birth"
-    discovery = {"pid": 4242, "process_birth_id": birth, "runtime_instance_id": "instance",
-                 "endpoint": "http://127.0.0.1:12345"}
-    write_json(paths.discovery_path, discovery)
-    before = {path: path.read_bytes() for path in (root / "current", root / "install.json",
-                                                     version / "version.json", paths.discovery_path)}
-    observed = {"legacy_birth": "proc-start-ticks:12812;boot:00000000-0000-0000-0000-000000000001;pidns:7",
-                "legacy_unknown": None}.get(case, "birth")
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": observed})
-    source = {"release": 0, "managed_by": "source", "runtime_head": "a" * 40,
-              "agent_head": "b" * 40, "dirty": False, "dirty_hash": "c" * 64}
-    def health(*_args, **_kwargs):
-        if case == "changed":
-            write_json(paths.discovery_path, {**discovery, "runtime_instance_id": "replacement"})
-        return {"runtime_instance_id": "instance", "identity": source}
-    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity", health)
-    if case == "unreadable":
-        read_bytes = Path.read_bytes
-        def read(path):
-            if path == paths.discovery_path:
-                raise PermissionError("simulated unreadable discovery")
-            return read_bytes(path)
-        monkeypatch.setattr(Path, "read_bytes", read)
-    calls = []
-    monkeypatch.setattr(Backend, "preflight_stop", lambda *_args: calls.append("preflight"))
-    monkeypatch.setattr(Backend, "stop", lambda *_args: calls.append("stop"))
-    monkeypatch.setattr(cli, "write_json", lambda *_args: calls.append("write"))
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
-    assert "Your work is kept" in capsys.readouterr().out
-    assert calls == []
-    log = (tmp_path / "logs" / "install.log").read_text()
-    expected = {"source": "source identity conflicts", "unreadable": "cannot be read",
-                "changed": "Live Runtime startup identity cannot be verified",
-                "legacy_birth": "discovery owner identity changed",
-                "legacy_unknown": "discovery owner identity changed"}
-    assert expected[case] in log
-    for path, contents in before.items():
-        if path != paths.discovery_path:
-            assert path.read_bytes() == contents
-    if case != "unreadable":
-        assert (paths.discovery_path.read_bytes() != before[paths.discovery_path]) == (case == "changed")
-    assert not (home / "data" / "astrid-install.json").exists()
+# R1 handoff treats R0 discovery as opaque, so discovery identity and process
+# birth are not authority for stopping the selected service. The corresponding
+# safety boundaries are exercised by test_public_cli_wrong_manager_binding_refuses_before_stop
+# (foreign manager and unchanged root/data),
+# test_public_cli_busy_lock_refusal_reenables_and_preserves_both_roots
+# (selected realm owner and unchanged root/data), and the collision, foreign
+# launchd arguments, missing lock, and changed-unit recovery tests in
+# test_installer_r0_stop.py. A recoverable handoff journal may precede stop.
 
 
 @pytest.mark.app_checkout
