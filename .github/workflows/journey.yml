@@ -915,7 +915,7 @@ jobs:
                   'lease_fenced', 'protocol_error', 'invalid_request')
                 $allowedSnapshotFields = @('project', 'timeline', 'object_digest', 'task_id', 'id', 'slug', 'name',
                   'metadata', 'content', 'version', 'status', 'task', 'schema_version', 'target_schema_version',
-                  'project_id', 'timeline_id', 'cas_sha256')
+                  'project_id', 'timeline_id', 'head_revision_id', 'cas_sha256')
                 if ($diagnostic.schema -isnot [string] -or
                     $diagnostic.schema -cnotin @('astrid.live-workspace-failure.v1', 'astrid.live-workspace-failure.v2') -or
                     $diagnostic.error_type -isnot [string] -or

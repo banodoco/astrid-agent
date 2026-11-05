@@ -24,7 +24,8 @@ ERROR_TYPES = frozenset({"HTTPError", "URLError", "TimeoutError", "JSONDecodeErr
 FAILURE_FUNCTIONS = frozenset({"main", "execute", "selection_for", "check_selection", "request", "seed", "snapshot"})
 SNAPSHOT_FAILURE_FIELDS = frozenset({"project", "timeline", "object_digest", "task_id", "id", "slug", "name",
                                     "metadata", "content", "version", "status", "task", "schema_version",
-                                    "target_schema_version", "project_id", "timeline_id", "cas_sha256"})
+                                    "target_schema_version", "project_id", "timeline_id", "head_revision_id",
+                                    "cas_sha256"})
 
 
 def failure_diagnostic(exc):
@@ -33,9 +34,14 @@ def failure_diagnostic(exc):
               for frame in traceback.extract_tb(exc.__traceback__)
               if Path(frame.filename).name == "journey_live_workspace.py" and frame.name in FAILURE_FUNCTIONS]
     kind = type(exc).__name__
-    return {"schema": "astrid.live-workspace-failure.v1", "error_type": kind if kind in ERROR_TYPES else "other",
+    missing_field = None
+    if isinstance(exc, KeyError) and len(exc.args) == 1 and isinstance(exc.args[0], str):
+        if exc.args[0] in SNAPSHOT_FAILURE_FIELDS:
+            missing_field = exc.args[0]
+    return {"schema": "astrid.live-workspace-failure.v2", "error_type": kind if kind in ERROR_TYPES else "other",
             "frames": frames[-10:], "http_status": exc.code if isinstance(exc, HTTPError) and type(exc.code) is int and 100 <= exc.code <= 599 else None,
-            "runtime_code": getattr(exc, "safe_runtime_code", None) if isinstance(exc, HTTPError) else None}
+            "runtime_code": getattr(exc, "safe_runtime_code", None) if isinstance(exc, HTTPError) else None,
+            "missing_field": missing_field}
 
 
 def valid_failure_diagnostic(value):

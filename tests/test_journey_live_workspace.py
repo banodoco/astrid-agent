@@ -182,6 +182,32 @@ def test_failure_diagnostic_rejects_untrusted_fields():
         assert not live.valid_failure_diagnostic(bad)
 
 
+def test_live_failure_diagnostic_reports_only_allowlisted_missing_fields():
+    try:
+        raise KeyError("head_revision_id")
+    except KeyError as exc:
+        diagnostic = live.failure_diagnostic(exc)
+    assert diagnostic["schema"] == "astrid.live-workspace-failure.v2"
+    assert diagnostic["missing_field"] == "head_revision_id"
+    assert live.valid_failure_diagnostic(diagnostic)
+
+    try:
+        raise KeyError("timeline")
+    except KeyError as exc:
+        diagnostic = live.failure_diagnostic(exc)
+    assert diagnostic["missing_field"] == "timeline"
+    assert live.valid_failure_diagnostic(diagnostic)
+
+    secret = "/private/runner/.credential/token"
+    try:
+        raise KeyError(secret)
+    except KeyError as exc:
+        diagnostic = live.failure_diagnostic(exc)
+    assert diagnostic["missing_field"] is None
+    assert secret not in json.dumps(diagnostic)
+    assert live.valid_failure_diagnostic(diagnostic)
+
+
 def test_snapshot_failure_diagnostic_is_staged_only_when_sanitized(tmp_path):
     from scripts import ci_journey as journey
 
