@@ -619,6 +619,9 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
             ) from exc
         if identity is None:
             return "gone"
+        if (not isinstance(identity.get("birth_id"), str)
+                or not re.fullmatch(r"windows-creation:[0-9]+", identity["birth_id"])):
+            raise PackHostBootstrapError("host native process identity is ambiguous; field=registered_host")
         if str(identity.get("birth_id") or "") != birth:
             return "reused"
         support_root = str(state.get("support_root") or "")
@@ -635,6 +638,9 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
             ) from exc
         if after is None:
             return "gone"
+        if (not isinstance(after.get("birth_id"), str)
+                or not re.fullmatch(r"windows-creation:[0-9]+", after["birth_id"])):
+            raise PackHostBootstrapError("host native process identity is ambiguous; field=registered_host")
         if str(after.get("birth_id") or "") != birth:
             return "reused"
         expected_image = str(state.get("process_image") or "")
@@ -959,7 +965,8 @@ def _consume_runtime_cleanup_receipt(state: Mapping[str, Any]) -> None:
 
 
 def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
-                        status: str | None = None) -> bool:
+                        status: str | None = None,
+                        current_runtime_instance_id: str | None = None) -> bool:
     """Stop the registered host group and return whether shutdown sent SIGKILL."""
     status = _registered_host_status(state) if status is None else status
     if status == "foreign":
@@ -969,7 +976,12 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
         # the numeric process ID. Only the process that launched the host can
         # hold that capability; a later process cannot reconstruct it from the
         # registration or PID, even when the root has exited.
-        retained = _RETAINED_HOSTS.get((int(state["pid"]), str(state.get("process_birth_id") or "")))
+        pid = state.get("pid")
+        birth = state.get("process_birth_id")
+        try:
+            retained = _RETAINED_HOSTS.get((int(pid), str(birth or "")))
+        except (TypeError, ValueError):
+            retained = None
         if retained is not None:
             try:
                 terminate_group(retained)
@@ -979,6 +991,22 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
                 ) from exc
             return False
         if status in {"gone", "reused"} and _runtime_cleanup_receipt_matches(state, foreground=foreground):
+            return False
+        old_instance = state.get("runtime_instance_id")
+        launch_id = state.get("runtime_service_launch_id")
+        if (status in {"gone", "reused"} and foreground
+                and os.environ.get("ASTRID_RUNTIME_SERVICE_NAME") == "pack-host"
+                and type(pid) is int and pid > 1 and isinstance(birth, str)
+                and re.fullmatch(r"windows-creation:[0-9]+", birth)
+                and isinstance(launch_id, str) and re.fullmatch(r"[0-9a-f]{32}", launch_id)
+                and isinstance(old_instance, str) and bool(old_instance.strip())
+                and old_instance == old_instance.strip()
+                and isinstance(current_runtime_instance_id, str) and bool(current_runtime_instance_id.strip())
+                and current_runtime_instance_id == current_runtime_instance_id.strip()
+                and old_instance != current_runtime_instance_id):
+            # The prior supervised service belonged to a different Runtime. Its
+            # kill-on-close Job was closed when that Runtime exited. Never use
+            # the stale (or reused) PID as a termination capability.
             return False
         if status in {"gone", "reused"} and foreground:
             raise PackHostBootstrapError(
@@ -993,9 +1021,29 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
     return False
 
 
-def _retire_host_locked(state: Mapping[str, Any], *, foreground: bool = False) -> None:
-    """Caller holds the host lock. Stop the registered host, drop its markers."""
-    support = Path(str(state.get("support_root") or ""))
+def _check_locked_host_registration(state: Mapping[str, Any], support: Path) -> None:
+    """Refuse a registration that is not the one protected by this lock."""
+    root = state.get("support_root")
+    same_root = False
+    if isinstance(root, str) and root:
+        same_root = os.path.normcase(os.path.abspath(root)) == os.path.normcase(os.path.abspath(support))
+        if not same_root:
+            try:
+                same_root = os.path.samefile(root, support)
+            except (OSError, ValueError):
+                pass
+    current = _read_object(support / "generic-host.json")
+    if (not same_root or current is None
+            or json.dumps(current, sort_keys=True) != json.dumps(dict(state), sort_keys=True)):
+        raise PackHostBootstrapError(
+            "inconsistent host support directory or registration; retirement blocked"
+        )
+
+
+def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: bool = False,
+                        current_runtime_instance_id: str | None = None) -> None:
+    """Caller holds support's host lock. Stop its registered host and drop its markers."""
+    _check_locked_host_registration(state, support)
     status = _registered_host_status(state)
     used_receipt = (
         sys.platform == "win32" and status in {"gone", "reused"}
@@ -1005,7 +1053,8 @@ def _retire_host_locked(state: Mapping[str, Any], *, foreground: bool = False) -
         raise PackHostBootstrapError("registered Windows host identity is foreign; retirement blocked")
     if status != "foreign":
         if foreground:
-            _terminate_old_host(state, foreground=True, status=status)
+            _terminate_old_host(state, foreground=True, status=status,
+                                current_runtime_instance_id=current_runtime_instance_id)
         else:
             _terminate_old_host(state)
     for name in ("generic-host.ready.json", "generic-host.json"):
@@ -1021,7 +1070,7 @@ def _stop_registered_host(state: Mapping[str, Any]) -> None:
         with lock_path.open("a+") as lock:
             platform.owner_only(lock.fileno())
             platform.lock_file(lock.fileno())
-            _retire_host_locked(state)
+            _retire_host_locked(state, lock_path.parent)
     except (ImportError, OSError) as exc:
         raise PackHostBootstrapError("prior host registration lock is unavailable; retirement blocked") from exc
 
@@ -1945,6 +1994,8 @@ def ensure_pack_host(
             raise PackHostBootstrapError(f"generic Astrid pack host lock is unavailable; {reconfigure_action}") from exc
         current = _read_object(state_path)
         ready = _read_object(ready_path)
+        if current:
+            _check_locked_host_registration(current, runtime_support)
         status = _registered_host_status(current) if current else None
         if not _foreground and attach_healthy and current and ready and status == "ours":
             receipt = _attach_resident_host(
@@ -2027,9 +2078,16 @@ def ensure_pack_host(
                     "reconfiguration is deferred until its work finishes"
                 )
             if _foreground:
-                _retire_host_locked(current, foreground=True)
+                # Only matching explicit discovery and live health identities
+                # establish the current Runtime for receipt-free retirement.
+                discovery_instance = value.get("runtime_instance_id")
+                health_instance = health_value.get("runtime_instance_id")
+                current_instance = (discovery_instance if isinstance(discovery_instance, str)
+                                    and discovery_instance == health_instance else None)
+                _retire_host_locked(current, runtime_support, foreground=True,
+                                    current_runtime_instance_id=current_instance)
             else:
-                _retire_host_locked(current)
+                _retire_host_locked(current, runtime_support)
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:
@@ -2148,7 +2206,7 @@ def ensure_pack_host(
 
         def _abandon() -> None:
             try:
-                _retire_host_locked(process_state)
+                _retire_host_locked(process_state, runtime_support)
             finally:
                 process.poll()
 
