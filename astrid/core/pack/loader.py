@@ -295,6 +295,9 @@ def _isolate_incompatible_packs(
         for dist in importlib_metadata.distributions()
         if dist.metadata.get("Name")
     }
+    from packaging.markers import default_environment
+
+    python_environment = dict(default_environment())
     # The existing managed-source policy is the only default pin authority on
     # this base; the release-manifest packs mechanism is a later integration.
     from astrid.core.pack.source_setup import declarations_from_json
@@ -342,6 +345,9 @@ def _isolate_incompatible_packs(
                 python_packages=python_packages,
                 import_violations=check_pack_imports(pack.root, contract=contract, manifest=manifest),
                 canonical_personal_root=canonical_personal_root,
+                # The inventory is judged for this interpreter (the one that
+                # executes admitted packs): supply its PEP 508 marker facts.
+                python_environment=python_environment,
             )
             if not result["ok"]:
                 reason = f"{result['reason']} {result['fix']}"

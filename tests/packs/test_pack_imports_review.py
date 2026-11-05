@@ -133,3 +133,44 @@ def test_relative_facade_import_checks_exported_names(tmp_path):
     assert [(item.line, item.module, item.code) for item in found] == [
         (2, "astrid.pack_api.HiddenName", "deep_import"),
     ]
+
+
+def test_production_caller_supplies_personal_pins_markers(tmp_path, monkeypatch):
+    """PK-7: the production inventory caller hands the pure validator its trust facts.
+
+    The canonical personal root, the release default pins and the running
+    interpreter's PEP 508 marker environment are supplied by the caller (never
+    re-derived by the validator), so a marker-qualified requirement is judged
+    against the interpreter that will execute the pack.
+    """
+    import sys
+
+    import yaml
+    from packaging.markers import default_environment
+
+    from astrid.core.pack import loader
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    root = tmp_path / "external" / "demo"
+    root.mkdir(parents=True)
+    (root / "pack.yaml").write_text(yaml.safe_dump({
+        "schema_version": 3, "id": "demo", "name": "demo", "version": "1.0.0", "pack_api": "1.0",
+        "documentation": {"kind": "none", "reason": "PK-7 fixture."},
+        "dependencies": {"packs": [], "python_requirements": [f"pytest; python_version >= '{sys.version_info[0]}.0'"]},
+    }), encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    captured = []
+    real = loader.validate_pack_compatibility
+
+    def spy(**kwargs):
+        captured.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(loader, "validate_pack_compatibility", spy)
+    scan = loader.scan_packs(root.parent, strict=False, personal_packs_root=tmp_path / "home-packs")
+    assert [pack.id for pack in scan.packs] == ["demo"], [record.error for record in scan.quarantined]
+    (call,) = captured
+    assert call["canonical_personal_root"] == str((tmp_path / "home-packs" / "personal").resolve())
+    assert isinstance(call["release_pins"], dict)
+    assert call["python_environment"] == default_environment()
