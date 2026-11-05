@@ -45,10 +45,12 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote, urlsplit
 
@@ -4661,6 +4663,208 @@ def _run_source_digest(record: "CapabilityRecord") -> str:
     return _source_digest_for_roots(_admitted_source_roots(record.source_root, record.definition))
 
 
+def _pack_stat_identity(path: Path) -> tuple[int, ...] | None:
+    """Return an entry's generation token without following the selected path."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise HostError(f"cannot inspect selected pack entry: {path}") from exc
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _pack_capture_inventory(root: Path) -> dict[Path, tuple[int, ...]]:
+    """Inventory the digest's entries, including the separately associated PIN."""
+    from astrid.core.pack.identity import _EXCLUDED_DIRS
+
+    entries: dict[Path, tuple[int, ...]] = {}
+
+    def walk(path: Path) -> None:
+        identity = _pack_stat_identity(path)
+        if identity is None:
+            raise HostError("selected pack disappeared during capture")
+        mode = identity[2]
+        if stat.S_ISDIR(mode):
+            if path != root and path.name in _EXCLUDED_DIRS:
+                return
+            entries[path] = identity
+            for child in sorted(path.iterdir()):
+                walk(child)
+        elif stat.S_ISREG(mode):
+            if path.name != ".git" and not path.name.endswith((".pyc", ".pyo")):
+                entries[path] = identity
+        else:
+            raise HostError("selected pack capture requires real directories and regular files")
+
+    walk(root)
+    return entries
+
+
+@contextmanager
+def _unavailable_pack_capture(generation):
+    if generation is not None:
+        raise HostError("stable selected pack capture requires Linux file lease support")
+    yield
+
+
+def _select_pack_capture():
+    """Select the capture mechanism once for its owning host."""
+    if sys.platform.startswith("linux"):
+        try:
+            import fcntl
+        except ImportError:
+            pass
+        else:
+            return partial(_selected_pack_capture, lease_api=fcntl)
+    return _unavailable_pack_capture
+
+
+@contextmanager
+def _selected_pack_capture(generation, *, lease_api):
+    """Fence byte acquisition; unsupported or contested sources fail closed.
+
+    A second hash is not a mutation fence: an already-read file can be changed,
+    including through a writable mmap. Linux read leases exclude existing
+    writers/mappings and hold off new writers. Directory identities cover name
+    changes, which leases do not prevent. No lease survives this capture scope.
+    """
+    if generation is None:
+        yield
+        return
+    # Use a default-ignored signal on these private descriptors, without
+    # installing a process-wide handler (captures also run on host threads).
+    # Breaks are handled synchronously below: F_GETLEASE reports the pending
+    # target F_UNLCK immediately, even before a blocked writer is released.
+    if signal.getsignal(signal.SIGURG) not in (signal.SIG_DFL, signal.SIG_IGN):
+        raise HostError("selected pack capture cannot reserve its lease notification")
+    descriptors: list[int] = []
+    root = generation[2]
+    try:
+        inventory = _pack_capture_inventory(root)
+        for path, identity in inventory.items():
+            if not stat.S_ISREG(identity[2]):
+                continue
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            opened_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns)
+            if opened_identity != identity:
+                raise HostError("selected pack entry changed before capture")
+            lease_api.fcntl(descriptor, lease_api.F_SETSIG, signal.SIGURG)
+            lease_api.fcntl(descriptor, lease_api.F_SETLEASE, lease_api.F_RDLCK)
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed before capture")
+        yield
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed during capture")
+        if any(lease_api.fcntl(fd, lease_api.F_GETLEASE) != lease_api.F_RDLCK for fd in descriptors):
+            raise HostError("selected pack write attempted during capture")
+    except OSError as exc:
+        raise HostError("cannot establish stable selected pack capture") from exc
+    finally:
+        # Closing the last reference releases even a breaking lease, promptly
+        # unblocking writers on success, admission refusal, and read errors.
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _selected_pack_generation(
+    record: Any,
+) -> tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None:
+    """Hold the declared pack path and its root/PIN identities for one capture."""
+    metadata = record.definition.metadata
+    pack_id = metadata.get("source_pack")
+    raw_root = metadata.get("pack_root")
+    if (not isinstance(pack_id, str) or not pack_id
+            or not isinstance(raw_root, str) or not raw_root):
+        return None
+    declared_root = Path(raw_root).expanduser().absolute()
+    pack_root = declared_root.resolve()
+    root_identity = _pack_stat_identity(pack_root)
+    if root_identity is None or not stat.S_ISDIR(root_identity[2]):
+        raise HostError("selected pack root disappeared or is not a directory")
+    pin_identity = _pack_stat_identity(pack_root / "PIN")
+    if pin_identity is not None and not stat.S_ISREG(pin_identity[2]):
+        raise HostError("selected pack PIN is not a regular file")
+    return pack_id, declared_root, pack_root, root_identity, pin_identity
+
+
+_UNSET_PACK_GENERATION = object()
+# Standalone receipt callers have no host owner; bind their policy once too.
+_standalone_pack_capture = _select_pack_capture()
+
+
+def _run_pack_provenance(
+    record: Any,
+    observed_digest: str | None,
+    selected_generation: tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None | object = _UNSET_PACK_GENERATION,
+) -> list[dict[str, Any]] | None:
+    """Capture identity, PIN and observed digest from one stable selected generation."""
+    if selected_generation is _UNSET_PACK_GENERATION:
+        generation = _selected_pack_generation(record)
+        with _standalone_pack_capture(generation):
+            provenance = _run_pack_provenance(record, observed_digest, generation)
+        return provenance
+    generation = selected_generation
+    if generation is None:
+        return None
+    pack_id, declared_root, pack_root, root_identity, pin_identity = generation
+    metadata = record.definition.metadata
+    from astrid.core.pack.identity import pack_digest
+
+    if not isinstance(metadata.get("action_invocation"), Mapping):
+        # Legacy executor roots have an admission digest which also covers the
+        # executor directory. Receipts identify the selected pack itself.
+        observed_digest = pack_digest(pack_root)
+    if not isinstance(observed_digest, str):
+        return None
+
+    pin_path = pack_root / "PIN"
+    current_pin_identity = _pack_stat_identity(pin_path)
+    if current_pin_identity != pin_identity:
+        raise HostError("selected pack changed during provenance capture")
+    if current_pin_identity is not None:
+        from astrid.core.pack.identity import read_pin
+
+        pin = read_pin(pin_path)
+        origin = pin["origin"]
+        installed_digest = pin["digest"]
+    else:
+        # Folder-selected packs remain visibly unpinned while recording their
+        # observed source tree.
+        origin = "folder"
+        installed_digest = None
+
+    # Rehash after PIN acquisition while the caller holds the byte fence.
+    # Root/PIN checks additionally reject a changed selected association.
+    verified_digest = pack_digest(pack_root)
+    try:
+        final_declared_root = declared_root.resolve()
+    except OSError as exc:
+        raise HostError("selected pack path changed during provenance capture") from exc
+    final_root_identity = _pack_stat_identity(pack_root)
+    final_pin_identity = _pack_stat_identity(pin_path)
+    if (final_declared_root != pack_root
+            or root_identity != final_root_identity
+            or pin_identity != current_pin_identity
+            or current_pin_identity != final_pin_identity
+            or observed_digest != verified_digest):
+        raise HostError("selected pack changed during provenance capture")
+
+    return [{
+        "pack_id": pack_id,
+        "origin": origin,
+        "installed_digest": installed_digest,
+        "observed_digest": observed_digest,
+        "modified": installed_digest != observed_digest if installed_digest is not None else None,
+    }]
+
+
 def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[str, Any]) -> None:
     """Tie Python source authority to the exact admitted whole-pack root."""
     metadata = definition.get("metadata", {})
@@ -6216,7 +6420,9 @@ class GenericPackHost:
         boot_manifest_path: str | Path | None = None,
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
+        pack_capture: Callable[[Any], Any] | None = None,
     ):
+        self._pack_capture = _select_pack_capture() if pack_capture is None else pack_capture
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
         # directory. Keep it in the same admitted root set so env-only packs
@@ -10551,6 +10757,7 @@ class GenericPackHost:
             resolved_options=options, cost=cost, warnings=warnings,
             settled=terminal.get("settled"), settlement=terminal.get("settlement"),
             effect=terminal.get("effect"),
+            pack_provenance=terminal.get("pack_provenance"),
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
@@ -11254,7 +11461,7 @@ class GenericPackHost:
             raise HostError(f"capability not discovered: {capability_id}")
 
         _terminal["record"] = record
-        run_source_digest = _run_source_digest(record)
+        run_source_digest: str | None = None
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
@@ -11302,6 +11509,23 @@ class GenericPackHost:
                     "deterministic admission failure was not recorded by Runtime"
                 ) from runtime_exc
             raise HostError(str(error)) from error
+
+        try:
+            selected_generation = _selected_pack_generation(record)
+            with self._pack_capture(selected_generation):
+                run_source_digest = _run_source_digest(record)
+                # Capture the selected identity, PIN and observed tree together
+                # before execution. Publish only after the fence validates.
+                provenance = _run_pack_provenance(
+                    record, run_source_digest, selected_generation,
+                )
+            _terminal["run_source_digest"] = run_source_digest
+            _terminal["pack_provenance"] = (
+                tuple(MappingProxyType(dict(row)) for row in provenance)
+                if provenance is not None else None
+            )
+        except Exception as exc:
+            fail_admission(exc)
 
         registration_error = self._registration_admission_reason()
         if registration_error:
