@@ -83,8 +83,11 @@ def test_linux_x86_64_h3_environment_closure_before_model_stages(tmp_path):
         encoding="utf-8",
     )
     primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
-    python = adapter.venv_python(str(engine_root / primary.relative_path))
-    client = _ProcessClient(uv_cache, stop, python)
+    # The runner appends ``--venv <primary venv directory>`` to the sanity command
+    # (engine_runner._Runner.sanity); the sentinel matcher must compare that exact value.
+    venv_dir = adapter.join(str(engine_root), primary.relative_path)
+    python = adapter.venv_python(venv_dir)
+    client = _ProcessClient(uv_cache, stop, venv_dir)
     context = LocalLinuxExecutionContext(engine="vibecomfy-h3", platform=recipe.platform,
                                          root=str(engine_root), adapter=adapter,
                                          service_client=client)
@@ -138,8 +141,15 @@ for index, (name, expected) in enumerate(required.items()):
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    mapping = getattr(module, "NODE_CLASS_MAPPINGS", {})
-    assert expected <= set(mapping), f"{name} missing mappings: {sorted(expected - set(mapping))}"
+    registered = set(getattr(module, "NODE_CLASS_MAPPINGS", {}))
+    entrypoint = getattr(module, "comfy_entrypoint", None)
+    if entrypoint is not None:
+        # ComfyUI V3 extension API: the package registers its nodes through comfy_entrypoint().
+        import asyncio
+        extension = asyncio.run(entrypoint())
+        for node in asyncio.run(extension.get_node_list()):
+            registered.add(node.define_schema().node_id)
+    assert expected <= registered, f"{name} missing nodes: {sorted(expected - registered)}"
 expected = {"openai-whisper": "20250625", "argbind": "0.3.9", "randomname": "0.2.1"}
 for distribution, version in expected.items():
     metadata = md.distribution(distribution)
