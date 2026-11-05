@@ -12,7 +12,11 @@ from astrid.core.element.registry import load_default_registry
 from astrid.core.pack.discovery import discover_pack_metadata
 from astrid.core.rendering import remotion_runtime
 from astrid.core.rendering.registry import load_default_registries
-from astrid.packs.rendering.actions.render import run as facade
+from astrid.core.pack.entrypoint import canonical_runtime_entrypoint
+# The facade module refuses direct import outside the canonical runner; this
+# probe stands in for the in-process runtime, the sanctioned caller.
+with canonical_runtime_entrypoint("rendering.render"):
+    from astrid.packs.rendering.actions.render import run as facade
 
 assert sys.flags.isolated
 assert Path(astrid.__file__).is_relative_to(site)

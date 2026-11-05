@@ -24,13 +24,31 @@ PROBE = Path(__file__).with_name("installed_render_probe.py")
 
 @pytest.fixture(scope="module")
 def installed_render(tmp_path_factory):
-    root = tmp_path_factory.mktemp("installed-render-composition")
+    yield from build_installed_render(tmp_path_factory.mktemp("installed-render-composition"))
+
+
+def build_installed_render(root, *, packs=None, clip_type="am-snap-plate"):
+    """Build the release wheel (optionally with only ``packs`` under astrid/packs) into a disposable interpreter.
+
+    ``packs=None`` ships every pack of the checkout (the original fixture).
+    """
     build = root / "build-source"
     build.mkdir()
     for name in ("pyproject.toml", "LICENSE", "NOTICE", "README.md"):
         shutil.copy2(ROOT / name, build / name)
     for name in ("astrid", "astrid_runtime_client"):
-        shutil.copytree(ROOT / name, build / name, ignore=shutil.ignore_patterns("__pycache__"))
+        ignore = shutil.ignore_patterns("__pycache__")
+        if name == "astrid" and packs is not None:
+            ignore = shutil.ignore_patterns("__pycache__", "packs")
+        shutil.copytree(ROOT / name, build / name, ignore=ignore)
+    if packs is not None:
+        (build / "astrid" / "packs").mkdir()
+        for entry in (ROOT / "astrid" / "packs").iterdir():
+            if entry.is_file():
+                shutil.copy2(entry, build / "astrid" / "packs" / entry.name)
+        for owner in packs:
+            shutil.copytree(ROOT / "astrid" / "packs" / owner, build / "astrid" / "packs" / owner,
+                            ignore=shutil.ignore_patterns("__pycache__"))
     environment = {name: os.environ[name] for name in ("PATH", "TMPDIR", "LANG") if name in os.environ}
     environment.update(HOME=str(root / "home"), PYTHONDONTWRITEBYTECODE="1")
     Path(environment["HOME"]).mkdir()
@@ -95,7 +113,7 @@ elif '--input-type=module' in args:
     print((root / 'public-membership.json').read_text())
 elif len(args) >= 2 and args[1] == 'render':
     props = json.loads(pathlib.Path(args[args.index('--props') + 1]).read_text())
-    assert props['timeline']['clips'][0]['clipType'] == 'am-snap-plate'
+    assert props['timeline']['clips'][0]['clipType'] == ''' + repr(clip_type) + '''
     (root / 'rendered-props.json').write_text(json.dumps(props))
     output = args[args.index('--output') + 1]
     subprocess.run([''' + repr(ffmpeg) + ''', '-loglevel', 'error', '-y',

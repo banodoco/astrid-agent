@@ -12,7 +12,7 @@ from astrid.packs.rendering.actions.timeline_visualize import composed_frame as 
 
 
 def write_pack(collection, owner, *, element_id="sample", enabled=True,
-               element_base="elements/effects"):
+               element_base="rendering/elements/effects"):
     pack = collection / owner
     prefix = f"{element_base}/{element_id}"
     element = pack / prefix
@@ -138,9 +138,9 @@ def test_selected_edit_forces_second_capture_but_unselected_payloads_are_never_i
     assert provider.capture(cards, tmp_path / "first")["evidence_source"] == "fresh_capture"
     # Mutate denied bytes through the saved filesystem edge. The cache must
     # neither acquire those bytes nor lose the selected composition's entry.
-    for path in (unused_pack / "elements/effects/unused/geometry.json",
-                 env_pack / "elements/effects/env-unused/geometry.json",
-                 disabled_pack / "elements/effects/disabled/geometry.json",
+    for path in (unused_pack / "rendering/elements/effects/unused/geometry.json",
+                 env_pack / "rendering/elements/effects/env-unused/geometry.json",
+                 disabled_pack / "rendering/elements/effects/disabled/geometry.json",
                  foreign / "pack.yaml", selected / "undeclared.bin"):
         with real_open(path, "ab") as stream:
             stream.write(b" ")
