@@ -328,6 +328,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not recorded and prior.get("owner") == LABEL and prior.get("data_root"):
                     recorded = {"data_root": prior["data_root"]}
                 backend.managed_by = managed_by
+                # Preserve the path acquired above even if the process
+                # environment changes before service registration or replay.
+                backend.service.activation_lock_path = absolute(lock_path)
                 data = absolute(recorded.get("data_root") or args.data_root or platform.data_root())
                 protected = [root, data, absolute(str(data) + "-r1"), *_retained_r0_roots(backend.service)]
                 _check_installer_state(lock_path, *protected)
