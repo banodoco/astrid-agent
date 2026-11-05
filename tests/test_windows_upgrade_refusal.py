@@ -135,6 +135,10 @@ def test_workflow_runs_both_windows_checks_and_keeps_artifacts_separate():
     assert '$freshExit -eq 0' not in text
     assert 'if ($refusalExit -ne 0) { exit $refusalExit }' in text
     assert 'windows_upgrade_refusal -NotePropertyValue $refusal' in text
+    assert "$refusalReceipt = Join-Path $refusalRoot 'evidence-upload/after-cleanup/journey-result.json'" in text
+    assert 'if (-not (Test-Path -LiteralPath $refusalReceipt)) {' in text
+    assert "$refusalReceipt = Join-Path $refusalRoot 'evidence-upload/before-cleanup/journey-result.json'" in text
+    assert "$source = Join-Path (Split-Path $refusalReceipt) $name" in text
     download = text.split('- name: Download every per-job receipt', 1)[1].split('- name: Aggregate the exact Release-1', 1)[0]
     assert 'merge-multiple: false' in download
 
@@ -169,5 +173,10 @@ def test_refusal_driver_avoids_process_checks_even_during_cleanup(tmp_path, monk
     assert journey.execute(args)["final_cleanup"] == "pass"
     final = run_root / "evidence-upload" / "after-cleanup" / "journey-result.json"
     assert json.loads(final.read_text())["final_cleanup"] == "pass"
-    assert calls == [("fresh-install", {"skip_process_check": True}),
+    related_selection = run_root.with_name("astrid-r1-direct-windows")
+    assert calls == [("fresh-install", {
+                         "skip_process_check": True,
+                         "related_uninstalled_selection": (related_selection / "program",
+                                                           related_selection / "data"),
+                     }),
                      ("cleanup", {"skip_process_check": True})]

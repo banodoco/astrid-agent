@@ -771,6 +771,9 @@ jobs:
             $refusalExit = $LASTEXITCODE
             $freshReceipt = Join-Path $runRoot 'evidence-upload/after-cleanup/journey-result.json'
             $refusalReceipt = Join-Path $refusalRoot 'evidence-upload/after-cleanup/journey-result.json'
+            if (-not (Test-Path -LiteralPath $refusalReceipt)) {
+              $refusalReceipt = Join-Path $refusalRoot 'evidence-upload/before-cleanup/journey-result.json'
+            }
             if ((Test-Path -LiteralPath $freshReceipt) -and (Test-Path -LiteralPath $refusalReceipt)) {
               $fresh = Get-Content -LiteralPath $freshReceipt -Raw | ConvertFrom-Json
               $refusal = Get-Content -LiteralPath $refusalReceipt -Raw | ConvertFrom-Json
