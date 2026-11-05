@@ -726,6 +726,35 @@ def test_door_verification_retries_stale_discovery_until_candidate_endpoint_is_p
     assert opener.open.call_count == 2
 
 
+def test_service_log_capture_reports_bounded_tail_and_unavailable_states(tmp_path, monkeypatch):
+    from astrid.installer import backend as module
+
+    log = tmp_path / "service-pack-host.log"
+    payload = b"start\n" + b"x" * 64 + b"\nlast line\n"
+    log.write_bytes(payload)
+    captured = module._last_service_log(log, tail=16)
+    assert "bytes=" + str(len(payload)) in captured
+    assert "tail_bytes=16; truncated=True" in captured
+    assert "last line" in captured
+    assert "start" not in captured
+    assert len(captured.partition("\n")[2].encode("utf-8")) <= 16
+
+    log.unlink()
+    assert module._last_service_log(log) == "Service log capture: absent."
+    log.write_bytes(b"")
+    assert module._last_service_log(log) == "Service log capture: empty (bytes=0)."
+
+    original_open = Path.open
+
+    def denied_open(path, *args, **kwargs):
+        if path == log:
+            raise PermissionError("private machine-specific detail")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    assert module._last_service_log(log) == "Service log capture: read_error=PermissionError."
+
+
 @pytest.mark.parametrize("scenario", ["slow-ready", "crash", "failed", "hang"])
 def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkeypatch, scenario):
     from astrid.installer import backend as module
@@ -798,6 +827,8 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
             backend.verify(version, data, "selected", timeout=90)
         if scenario == "crash":
             assert "host startup detail" in str(failure.value)
+            assert "Service log capture:" in str(failure.value)
+            assert "truncated=False" in str(failure.value)
             assert "reason=host exited" in str(failure.value) and "last_exit=1" in str(failure.value)
         else:
             assert "failed_service=chat" in str(failure.value)
