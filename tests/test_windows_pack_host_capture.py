@@ -222,6 +222,12 @@ def test_profile_probe_redacts_arbitrary_action_values():
     assert len(sanitize("secret " * 10000, root, data, arguments=True)) <= 2048
 
 
+def test_windows_task_path_forms_include_exact_python_source_escape():
+    data = r"D:\a\_temp\astrid-r1-direct-windows\data"
+    assert journey._windows_task_path_forms(data) == (
+        data, r"D:\\a\\_temp\\astrid-r1-direct-windows\\data")
+
+
 def test_profile_probe_receipt_limits_actions_and_hides_task_data(capture, monkeypatch):
     _, _, evidence, _, _ = capture
     monkeypatch.setattr(journey.sys, "platform", "win32")
@@ -246,6 +252,7 @@ def test_profile_probe_receipt_limits_actions_and_hides_task_data(capture, monke
 @pytest.mark.parametrize("scenario,root_match,data_match,owned_count", [
     ("match", True, True, 1),
     ("case", True, True, 1),
+    ("python-escaped-data", True, True, 1),
     ("root-sibling", False, True, 0),
     ("wrong-data", True, False, 0),
     ("duplicate", True, True, 2),
@@ -263,6 +270,8 @@ def test_native_profile_probe_predicates(tmp_path, monkeypatch, scenario, root_m
     data = str(root / "data")
     if scenario == "case":
         executable, data = executable.upper(), data.upper()
+    if scenario == "python-escaped-data":
+        data = data.replace("\\", "\\\\")
     if scenario == "root-sibling":
         executable = str(root) + r"-other\pythonw.exe"
     if scenario == "wrong-data":
