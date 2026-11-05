@@ -453,17 +453,18 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
             'inputs': schemas[selected] if selected is not None else [],
             'mode_descriptions': {name: {'mode': name, 'inputs': fields} for name, fields in schemas.items()}}
     from astrid.core.generation.availability import (
-        availability_projection, entry_availability, model_availability,
+        availability_declaration, availability_projection, entry_availability, model_availability,
     )
+    declaration = availability_declaration()
     for name, row in description['mode_descriptions'].items():
         if base['source'] == 'catalog':
-            backends = {backend: availability_projection(model_availability(entry_id, name, backend))
+            backends = {backend: availability_projection(model_availability(entry_id, name, backend, declaration=declaration))
                         for backend in catalog.modes[name].backends}
             row['backends'] = backends
             projection = next((item for item in backends.values() if item['availability'] == 'available'),
                               next(iter(backends.values()), availability_projection({'available': True})))
         else:
-            projection = availability_projection(entry_availability(entry, name))
+            projection = availability_projection(entry_availability(entry, name, declaration=declaration))
         row.update(projection)
     rows = description['mode_descriptions']
     projection = rows[selected] if selected is not None else next(

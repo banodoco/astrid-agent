@@ -27,11 +27,12 @@ def catalog_rows() -> list[dict[str, Any]]:
         rows.append(dict(id=id, kind=kind, mode=mode, backend=backend, template=template,
                          source=source, availability=availability, reason=reason))
 
+    declaration = availability_declaration()
     registry = ModelRegistry.load_default()
     for entry in registry.list_all(include_closed=True):
         for mode, spec in entry.modes.items():
             for backend, target in spec.backends.items():
-                decision = model_availability(entry.id, mode, backend)
+                decision = model_availability(entry.id, mode, backend, declaration=declaration)
                 unavailable = decision.get("available") is not True
                 add(entry.id, entry.modality, mode, backend, target.template, "catalog",
                     "unavailable" if unavailable else "available",
@@ -48,7 +49,6 @@ def catalog_rows() -> list[dict[str, Any]]:
                    (spec.model_id, spec.mode, "local", spec.template_id) for row in rows):
                 continue
             add(spec.model_id, "image", spec.mode, "local", spec.template_id, "direct-image")
-    declaration = availability_declaration()
     actions = declaration.get("actions", {})
     discovery = discover()
     for capability in discovery.actions:
@@ -90,22 +90,22 @@ def catalog_rows() -> list[dict[str, Any]]:
                 rows[-1]["license_notice"] = entry["license_notice"]
             if entry.get("registry_id"):
                 rows[-1]["registry_id"] = entry["registry_id"]
-            decision = template_availability(entry["id"], mode, "local")
+            decision = template_availability(entry["id"], mode, "local", declaration=declaration)
             if entry.get("registry_id") and decision.get("available") is True:
-                decision = model_availability(entry["registry_id"], mode, "local")
+                decision = model_availability(entry["registry_id"], mode, "local", declaration=declaration)
             if decision.get("available") is not True:
                 rows[-1]["availability"] = "unavailable"
                 rows[-1]["reason"] = decision.get("error", {}).get("message", "")
     for row in rows:
         record = None
-        if row['source'] == 'catalog':
-            record = model_availability(row['id'], row['mode'], row['backend'])
+        if row['source'] in {'catalog', 'catalog-alias', 'direct-image'}:
+            record = model_availability(row.get('registry_id', row['id']), row['mode'], row['backend'], declaration=declaration)
         elif row['source'] in {'action', 'action-entry'}:
             record = actions.get(row['id'] if row['source'] == 'action' else row['template'])
         elif row['source'] == 'ready-template':
-            record = template_availability(row['id'], row['mode'], row['backend'])
+            record = template_availability(row['id'], row['mode'], row['backend'], declaration=declaration)
             if record.get('available') is True and row.get('registry_id'):
-                record = model_availability(row['registry_id'], row['mode'], row['backend'])
+                record = model_availability(row['registry_id'], row['mode'], row['backend'], declaration=declaration)
         if record is not None and record.get('available') is not True:
             row.update(availability_projection(record))
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
