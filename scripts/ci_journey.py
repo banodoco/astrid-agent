@@ -1325,16 +1325,16 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
     raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
 
 
-def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int) -> dict:
+def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int,
+                                    fresh_install: bool = False) -> dict:
     """Check the service contract supported by this platform during cleanup.
 
-    Windows fresh installs select Release 1, but Windows has no distinct
-    Release-1 direct-service ownership contract. Its supported Task Scheduler
-    check is the same install-root ownership check used by the normal fresh
-    install journey. Keep Release-1 ownership assertions strict on platforms
-    that implement them.
+    Fresh installs select a Release-1 manifest, but use the default service
+    identity (astrid.service / haus.astrid.runtime). The release-qualified
+    identity is reserved for an R0-to-R1 update. Windows likewise has no
+    distinct Release-1 direct-service ownership contract.
     """
-    checked_release = 0 if sys.platform == "win32" else release
+    checked_release = 0 if fresh_install or sys.platform == "win32" else release
     return assert_direct_service_ownership(root, data, release=checked_release)
 
 
@@ -2072,7 +2072,9 @@ def execute(args: argparse.Namespace) -> dict:
                                 release = None
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
-                                    assert_cleanup_service_ownership(root, data, release=release)
+                                    assert_cleanup_service_ownership(
+                                        root, data, release=release,
+                                        fresh_install=args.leg == "fresh-install")
                                 elif is_linux_macos_upgrade:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                 if is_linux_macos_upgrade and release == 1:
