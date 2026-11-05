@@ -2406,6 +2406,106 @@ def test_personal_write_racing_the_exchange_is_swapped_back(
         assert calls == 2
 
 
+@pytest.mark.parametrize("operation", ["install", "update", "rollback"])
+def test_write_into_new_generation_before_swap_back_is_kept_and_named(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    """LB-TXN r2 finding R2-1 (new): a write that lands in the newly published
+    generation while the post-swap check runs must not be deleted when the
+    exchange is reversed; the discarded generation is kept and named."""
+    from astrid.core.pack import transaction
+
+    run = _seed_personal_and_operation(repo, packs_root, operation)
+    late = b"raced the exchange\n"
+    window = b"written into the new generation before the swap-back\n"
+    original_publish = transaction._publish
+    original_verify = transaction._verify_retained_collection
+    calls = 0
+    window_hits: list[Path] = []
+
+    def racing_publish(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (packs_root / "personal" / "late.txt").write_bytes(late)
+        original_publish(stage, destination)
+
+    def verify(live: Path, changed, copied) -> None:
+        if ".astrid-retired" in Path(live).parts and not window_hits:
+            # Post-swap call: packs_root names the new generation now.
+            window_hits.append(Path(live))
+            (packs_root / "personal" / "window.txt").write_bytes(window)
+        original_verify(live, changed, copied)
+
+    monkeypatch.setattr(transaction, "_publish", racing_publish)
+    monkeypatch.setattr(transaction, "_verify_retained_collection", verify)
+    with pytest.raises(PackInstallError) as caught:
+        run()
+    assert caught.value.code == "collection_changed"
+    assert len(window_hits) == 1 and calls == 2
+    # Live is the old generation plus the write that triggered the swap-back.
+    assert (packs_root / "personal" / "late.txt").read_bytes() == late
+    assert not (packs_root / "personal" / "window.txt").exists()
+    # The discarded new generation is kept, not deleted, and the error names it.
+    kept = [p for p in (packs_root.parent / ".astrid-retired").iterdir() if p.name.startswith("refused-")]
+    assert len(kept) == 1
+    assert (kept[0] / "personal" / "window.txt").read_bytes() == window
+    assert str(kept[0]) in str(caught.value)
+
+
+def test_unchanged_discarded_generation_is_still_removed_after_swap_back(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LB-TXN r2 finding R2-1 (new): without a late write the discarded
+    generation equals what was published and is removed as before."""
+    from astrid.core.pack import transaction
+
+    run = _seed_personal_and_operation(repo, packs_root, "update")
+    original_publish = transaction._publish
+    calls = 0
+
+    def racing_publish(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (packs_root / "personal" / "late.txt").write_bytes(b"raced\n")
+        original_publish(stage, destination)
+
+    monkeypatch.setattr(transaction, "_publish", racing_publish)
+    with pytest.raises(PackInstallError) as caught:
+        run()
+    assert caught.value.code == "collection_changed"
+    retired = packs_root.parent / ".astrid-retired"
+    assert not [p for p in retired.iterdir() if p.name.startswith("refused-")]
+    assert ".astrid-retired" not in str(caught.value)
+
+
+def test_failed_swap_back_names_the_generation_holding_the_late_write(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LB-TXN r2 finding R2-1 (new): when the swap-back exchange itself fails,
+    the GroupCommitError names where the late write now lives."""
+    from astrid.core.pack import transaction
+
+    run = _seed_personal_and_operation(repo, packs_root, "update")
+    original_publish = transaction._publish
+    calls = 0
+
+    def racing_publish(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (packs_root / "personal" / "late.txt").write_bytes(b"raced\n")
+            original_publish(stage, destination)
+            return
+        raise OSError("simulated exchange failure")
+
+    monkeypatch.setattr(transaction, "_publish", racing_publish)
+    with pytest.raises(transaction.GroupCommitError) as caught:
+        run()
+    holder = getattr(caught.value, "late_write_root", None)
+    assert holder is not None
+    assert (Path(holder) / "personal" / "late.txt").read_bytes() == b"raced\n"
+    assert str(holder) in str(caught.value)
+
+
 def test_personal_pack_writers_take_exclusive_collection_custody(
         packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The core personal-effect writer serializes with group transactions."""

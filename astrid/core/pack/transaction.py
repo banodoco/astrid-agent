@@ -80,10 +80,17 @@ class GroupCommitError(RuntimeError):
     Recovery must sync the current collection before notifying. Never roll
     back individual packs or claim that the old group is still installed.
     """
-    def __init__(self, transaction_id: str, revision: int):
-        super().__init__("Group publication needs recovery; sync the collection and retry refresh.")
+    def __init__(self, transaction_id: str, revision: int, late_write_root: Path | None = None):
+        message = "Group publication needs recovery; sync the collection and retry refresh."
+        if late_write_root is not None:
+            # LB-TXN r2 R2-1: a reversed exchange failed; the generation that
+            # held a concurrent write is the retired one, not the live one.
+            message += (f" A write made to the collection during this transaction may exist only in {late_write_root};"
+                        " copy it back before discarding that generation.")
+        super().__init__(message)
         self.transaction_id = transaction_id
         self.revision = revision
+        self.late_write_root = late_write_root
 
 
 def _json(value: Any) -> bytes:
@@ -513,31 +520,74 @@ def _verify_retained_collection(live: Path, changed: frozenset[str],
 def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mapping[str, Mapping[str, Any]],
                                        paths: Mapping[str, Path], retired: Path, transaction_id: str,
                                        revision: int,
-                                       retained: Callable[[], None] | None = None) -> None:
+                                       carried_ids: frozenset[str] | None = None,
+                                       carried: Mapping[str, tuple[str, str]] | None = None,
+                                       preserve: list[Path] | None = None) -> None:
     """Publish, then restore the prior generation if an external root raced the exchange.
 
-    ``retained`` re-checks, after the exchange, the generation that was live
-    until now (``candidate`` names it after the exchange): a write that landed
-    in it between the last pre-swap check and the exchange would otherwise be
-    retired with it. Any refusal exchanges the prior generation back.
+    With ``carried`` (the retained bytes the candidate copied), the generation
+    that was live until now (``candidate`` names it after the exchange) is
+    re-checked: a write that landed in it between the last pre-swap check and
+    the exchange would otherwise be retired with it. Any refusal exchanges the
+    prior generation back. The generation discarded by that swap-back is
+    checked too (LB-TXN r2 R2-1): if its retained bytes differ from what this
+    transaction published, a write landed in it after the exchange, so it is
+    kept at ``<retired>/refused-<tx>`` and named in the error, not deleted.
+    If it cannot be moved it stays at ``candidate`` and is appended to
+    ``preserve`` so the caller's cleanup leaves it in place.
     """
     _publish(candidate, root)
     try:
         _verify_external_root_digests(facts, paths)
-        if retained is not None:
-            retained()
-    except PackInstallError:
+        if carried is not None:
+            _verify_retained_collection(candidate, carried_ids or frozenset(), carried)
+    except PackInstallError as refused:
         try:
             # candidate now names the prior complete generation. Exchanging it
             # back restores collection bytes and admission records atomically.
             _publish(candidate, root)
+        except (OSError, PackInstallError) as exc:
+            # The new generation stays live; the prior one (holding any write
+            # that triggered this swap-back) is still at candidate.
+            raise GroupCommitError(transaction_id, revision, late_write_root=candidate) from exc
+        kept = _keep_discarded_generation_if_written(candidate, retired, transaction_id, carried_ids, carried)
+        if kept == candidate and preserve is not None:
+            preserve.append(candidate)
+        try:
             _sync_directory(retired)
             _sync_directory(root.parent)
         except OSError as exc:
             raise GroupCommitError(transaction_id, revision) from exc
-        except PackInstallError as exc:
-            raise GroupCommitError(transaction_id, revision) from exc
+        if kept is not None:
+            raise PackInstallError(
+                refused.code,
+                f"{refused} The generation this transaction briefly published also changed after publication;"
+                f" it was kept at {kept} (not deleted) so that write can be recovered.") from refused
         raise
+
+
+def _keep_discarded_generation_if_written(candidate: Path, retired: Path, transaction_id: str,
+                                          carried_ids: frozenset[str] | None,
+                                          carried: Mapping[str, tuple[str, str]] | None) -> Path | None:
+    """Move the swapped-out new generation aside when it no longer matches what was published.
+
+    Only the retained entries are compared (the ids this transaction itself
+    installs, removes or restores are its own bytes, as in the pre-swap check).
+    An unreadable generation is kept, never deleted unchecked.
+    """
+    if carried is None:
+        return None
+    try:
+        if _retained_collection_bytes(candidate, carried_ids or frozenset()) == carried:
+            return None
+    except OSError:
+        pass
+    kept = retired / ("refused-" + transaction_id)
+    try:
+        os.rename(candidate, kept)
+    except OSError:
+        return candidate  # Could not move it; it stays (and is named) at candidate.
+    return kept
 
 
 def _artifact_metadata(request: Mapping[str, Any], artifact: Mapping[str, Any],
@@ -891,6 +941,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             tombstones.difference_update(packs)
         retired = _directory(root.parent / ".astrid-retired", create=True)
         candidate = retired / tx
+        preserve: list[Path] = []  # LB-TXN r2 R2-1: a discarded generation that must stay
         # Custody is acquired before any source fetch, copy, or build side effect.
         candidate.mkdir(mode=0o700)
         candidate_identity = (candidate.stat().st_dev, candidate.stat().st_ino)
@@ -1112,7 +1163,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             _verify_retained_collection(root, carried_ids, carried)
             _publish_and_verify_external_roots(
                 candidate, root, facts, _paths(candidate), retired, tx, state["revision"],
-                retained=lambda: _verify_retained_collection(candidate, carried_ids, carried))
+                carried_ids=carried_ids, carried=carried, preserve=preserve)
             published = True  # Sole terminal-transition owner for this attempt.
             mark("swapped")
             try:
@@ -1134,7 +1185,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     published = (current.st_dev, current.st_ino) == candidate_identity
                 except OSError:
                     pass
-            if not published:
+            if not published and candidate not in preserve:
                 shutil.rmtree(candidate, ignore_errors=True)
             shutil.rmtree(work, ignore_errors=True)
             try:
@@ -1236,6 +1287,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
         retired = _directory(root.parent / ".astrid-retired", create=True)
         tx = uuid4().hex
         candidate = retired / tx
+        preserve: list[Path] = []  # LB-TXN r2 R2-1: a discarded generation that must stay
         candidate.mkdir(mode=0o700)
         identity = (candidate.stat().st_dev, candidate.stat().st_ino)
         published = False
@@ -1351,7 +1403,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             _verify_retained_collection(root, carried_ids, carried)
             _publish_and_verify_external_roots(
                 candidate, root, facts, _paths(candidate), retired, tx, new_state["revision"],
-                retained=lambda: _verify_retained_collection(candidate, carried_ids, carried))
+                carried_ids=carried_ids, carried=carried, preserve=preserve)
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)
@@ -1363,7 +1415,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     published = (current.st_dev, current.st_ino) == identity
                 except OSError:
                     pass
-            if not published:
+            if not published and candidate not in preserve:
                 shutil.rmtree(candidate, ignore_errors=True)
             try:
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
