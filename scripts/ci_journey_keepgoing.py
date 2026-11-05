@@ -105,8 +105,16 @@ def write(evidence, report):
     suspect = [r for r in report["stages"] if str(r.get("failure_class", "")).startswith("suspect:")]
     lines = ["NON-PROOF: keep-going diagnostic", "", "REAL failures: " + (", ".join(r["stage"] for r in real) or "none"),
              "SUSPECT failures: " + (", ".join(r["stage"] + " (" + r["failure_class"] + ")" for r in suspect) or "none"),
-             "", "| stage | result | observation | forced-continuation-used | first error |",
+             ""]
+    driver_exit = report.get("driver_exit")
+    if isinstance(driver_exit, dict):
+        lines.append("Driver exit: {exit_code} during {phase}; diagnostic-only receipts are intentionally qualification-ineligible.".format(
+            exit_code=driver_exit["exit_code"], phase=driver_exit["phase"]))
+        lines.append("Driver command: `" + " ".join(driver_exit["command"]) + "`")
+        lines.append("")
+    lines.extend(["| stage | result | observation | forced-continuation-used | first error |",
              "| --- | --- | --- | --- | --- |"]
+    )
     for row in report["stages"]:
         error = (row.get("first_error") or "").replace("|", "\\|").replace("\n", " ")
         observation = json.dumps(row["observation"], sort_keys=True) if "observation" in row else ""
@@ -132,6 +140,31 @@ def write(evidence, report):
                 lines.append(f"  s{indexes[producer]} {edge} s{index}")
     lines.append("```")
     (evidence / "keepgoing-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def record_expected_nonzero_exit(evidence: Path, command: list[str]) -> bool:
+    """Attribute the intentional exit only after all diagnostic work passed."""
+    report_path = evidence / "keepgoing-report.json"
+    receipt_path = evidence / "journey-result.json"
+    if not report_path.is_file() or not receipt_path.is_file():
+        return False
+    report = journey.read_json(report_path)
+    receipt = journey.read_json(receipt_path)
+    stages = report.get("stages")
+    if (not isinstance(stages, list) or not stages or
+            any(not isinstance(row, dict) or row.get("result") != "pass" for row in stages) or
+            receipt.get("final_cleanup") != "pass"):
+        return False
+    report["driver_exit"] = {
+        "phase": "post-journey diagnostic qualification gate",
+        "command": command,
+        "exit_code": 1,
+        "reason": "diagnostic-only receipts are intentionally qualification-ineligible",
+    }
+    write(evidence, report)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    journey.retain_named_evidence(evidence, "after-cleanup")
+    return True
 
 
 def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):

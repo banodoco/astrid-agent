@@ -236,6 +236,55 @@ def test_failed_capability_detail_projection_is_allowlisted_and_bounded():
                             "omitted_count": 0}
 
 
+def test_expected_driver_exit_is_reported_only_after_every_stage_and_cleanup_pass(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    report = keepgoing.initial(evidence, SimpleNamespace(job_id="direct-windows", leg="fresh-install"))
+    report["stages"] = [{"stage": name, "result": "pass", "forced_continuation_used": False,
+                         "first_error": None, "preconditions": [], "postconditions": []}
+                        for name in (*keepgoing.FRESH_STAGES, "final-cleanup")]
+    keepgoing.write(evidence, report)
+    receipt_path = evidence / "journey-result.json"
+    receipt = journey.read_json(receipt_path)
+    receipt["final_cleanup"] = "pass"
+    journey.write_json(receipt_path, receipt)
+    (evidence.parent.parent / "evidence-upload" / "before-cleanup").mkdir(parents=True)
+    (evidence.parent.parent / "evidence-upload" / "after-cleanup").mkdir(parents=True)
+    command = ["python", "-u", "agent/scripts/ci_journey.py", "--diagnostic-keep-going"]
+
+    assert keepgoing.record_expected_nonzero_exit(evidence, command)
+
+    recorded = journey.read_json(evidence / "keepgoing-report.json")["driver_exit"]
+    assert recorded == {
+        "phase": "post-journey diagnostic qualification gate",
+        "command": command,
+        "exit_code": 1,
+        "reason": "diagnostic-only receipts are intentionally qualification-ineligible",
+    }
+    receipt = journey.read_json(receipt_path)
+    assert receipt["status"] == "fail" and receipt["qualification"]["eligible"] is False
+    assert "Driver exit: 1 during post-journey diagnostic qualification gate" in (
+        evidence / "keepgoing-report.md").read_text()
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = evidence.parent.parent / "evidence-upload" / phase / "keepgoing-report.json"
+        assert journey.read_json(staged)["driver_exit"] == recorded
+
+
+def test_expected_driver_exit_does_not_hide_a_real_stage_failure(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    report = keepgoing.initial(evidence, SimpleNamespace(job_id="direct-windows", leg="fresh-install"))
+    report["stages"] = [{"stage": "release1-start", "result": "fail",
+                         "forced_continuation_used": False, "first_error": "service failed",
+                         "preconditions": [], "postconditions": []}]
+    keepgoing.write(evidence, report)
+    receipt_path = evidence / "journey-result.json"
+    receipt = journey.read_json(receipt_path)
+    receipt["final_cleanup"] = "pass"
+    journey.write_json(receipt_path, receipt)
+
+    assert not keepgoing.record_expected_nonzero_exit(evidence, ["python", "ci_journey.py"])
+    assert "driver_exit" not in journey.read_json(evidence / "keepgoing-report.json")
+
+
 def test_release0_owner_captures_service_health_and_process_identity(monkeypatch, tmp_path):
     calls = []
     health = {"pid": 431, "runtime_instance_id": "r0-instance"}

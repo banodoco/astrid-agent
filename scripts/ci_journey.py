@@ -2686,6 +2686,22 @@ def main(argv: list[str] | None = None) -> int:
         with without_provider_credentials():
             execute(args)
         if args.diagnostic_keep_going:
+            if __package__:
+                from . import ci_journey_keepgoing as keepgoing
+            else:
+                import ci_journey_keepgoing as keepgoing
+            evidence = args.run_root / "evidence" / args.leg
+            command = [sys.executable, "-u", sys.argv[0], *raw_argv]
+            try:
+                recorded = keepgoing.record_expected_nonzero_exit(evidence, command)
+            except Exception as exc:
+                recorded = False
+                print(f"Intentional diagnostic exit attribution failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+            if recorded:
+                print("Intentional diagnostic exit: all stages and cleanup passed, but the NON-PROOF "
+                      "receipt is qualification-ineligible; returning exit code 1.",
+                      file=sys.stderr, flush=True)
             return 1  # Diagnostic runs are never successful proof jobs.
     except Exception as exc:
         print(f"Journey failed: {exc}", file=sys.stderr)
