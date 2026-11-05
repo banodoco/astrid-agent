@@ -25,6 +25,47 @@ def app_checkout(tmp_path):
     return app, shipped
 
 
+def test_direct_windows_failure_snapshot_prints_recursive_logs_and_matching_processes(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    evidence = tmp_path / "evidence" / "direct-windows"
+    evidence.mkdir(parents=True)
+    run_root = tmp_path / "astrid-r1-direct-windows"
+    journey.write_json(evidence / "journey-result.json", {
+        "job_id": "direct-windows", "mode": "direct", "status": "fail",
+        "scenario": "fresh-install",
+    })
+    calls = []
+
+    def capture(code, name, *, show, timeout):
+        calls.append((code, name, show, timeout))
+        return "captured log tail and process row\n"
+
+    monkeypatch.setattr(journey.windows, "powershell", capture)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "retain_named_evidence", lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    output = capsys.readouterr().out
+    assert "captured log tail and process row" in output
+    assert len(calls) == 1
+    code, name, show, timeout = calls[0]
+    assert str(run_root / "localappdata" / "Astrid Runtime" / "logs") in code
+    assert "-Filter '*.log' -File -Recurse -Force" in code
+    assert "Get-Content -LiteralPath $log.FullName -Tail 120" in code
+    assert "CommandLine -like '*astrid-r1-direct-windows*'" in code
+    assert "Select-Object ProcessId, ParentProcessId, CommandLine" in code
+    assert (name, show, timeout) == ("direct-windows-failure-diagnostics.txt", False, 60)
+
+    journey.write_json(evidence / "journey-result.json", {
+        "job_id": "direct-windows", "mode": "direct", "status": "pass",
+        "scenario": "fresh-install",
+    })
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    assert len(calls) == 1
+
+
 def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
     evidence = tmp_path / "release1-working-task"
     evidence.mkdir()

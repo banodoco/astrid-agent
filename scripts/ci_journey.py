@@ -828,6 +828,52 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             pass
 
 
+def print_direct_windows_failure_diagnostics(run_root: Path) -> None:
+    """Print the row's nested Runtime logs and matching processes before cleanup."""
+    log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    code = r"""
+$ErrorActionPreference = 'Continue'
+$logRoot = __LOG_ROOT__
+Write-Output "Direct Windows Runtime logs under: $logRoot"
+if (Test-Path -LiteralPath $logRoot -PathType Container) {
+    $logs = @(Get-ChildItem -LiteralPath $logRoot -Filter '*.log' -File -Recurse -Force -ErrorAction Continue |
+        Sort-Object -Property FullName)
+    if ($logs.Count -eq 0) { Write-Output '(no .log files found)' }
+    foreach ($log in $logs) {
+        Write-Output "=== $($log.FullName) (last 120 lines) ==="
+        Get-Content -LiteralPath $log.FullName -Tail 120 -ErrorAction Continue
+    }
+} else {
+    Write-Output '(log directory is unavailable)'
+}
+Write-Output '=== Win32_Process matching *astrid-r1-direct-windows* ==='
+$processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Continue |
+    Where-Object { $_.CommandLine -like '*astrid-r1-direct-windows*' } |
+    Select-Object ProcessId, ParentProcessId, CommandLine)
+if ($processes.Count -gt 0) {
+    $processes | Format-List ProcessId, ParentProcessId, CommandLine | Out-String -Width 4096 | Write-Output
+} else {
+    Write-Output '(no matching processes found)'
+}
+""".replace("__LOG_ROOT__", windows._powershell_quote(log_dir))
+    print("Direct Windows failure diagnostics:", flush=True)
+    try:
+        output = windows.powershell(code, "direct-windows-failure-diagnostics.txt",
+                                    show=False, timeout=60)
+        print(output, end="" if output.endswith("\n") else "\n", flush=True)
+    except Exception as exc:
+        # Diagnostics are best effort and must preserve the lifecycle error.
+        print(f"Windows failure diagnostics capture failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        partial = windows.EVIDENCE / "direct-windows-failure-diagnostics.txt"
+        try:
+            if partial.is_file():
+                print(partial.read_text(encoding="utf-8", errors="replace"), flush=True)
+        except Exception as read_error:
+            print(f"Windows failure diagnostics partial output unavailable: "
+                  f"{type(read_error).__name__}: {read_error}", file=sys.stderr, flush=True)
+
+
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
@@ -837,6 +883,10 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         retain_named_evidence(evidence, phase)
         destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
+        if (phase == "before-cleanup" and sys.platform == "win32" and
+                recorded.get("job_id") == "direct-windows" and recorded.get("mode") == "direct" and
+                recorded.get("status") == "fail"):
+            print_direct_windows_failure_diagnostics(run_root)
         diagnostic = {}
         for key, name in (("install_log", "install.log"),
                           ("service_manager", f"manager-state-{phase}.json")):
