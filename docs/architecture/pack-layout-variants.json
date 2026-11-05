@@ -31,18 +31,6 @@
   },
   "packs": [
     {
-      "id": "comfy_wrap",
-      "variant": "executor_pack",
-      "has_pack_yaml": true,
-      "executor_count": 1,
-      "orchestrator_count": 0,
-      "element_count": 0,
-      "has_skill": false,
-      "has_agents_md": false,
-      "has_init_py": false,
-      "notes": "Single-executor pack for ComfyUI wrapping. Stable pack ID: comfy_wrap. Stable capability ID: comfy_wrap.run."
-    },
-    {
       "id": "editorial",
       "variant": "executor_pack",
       "has_pack_yaml": true,
@@ -252,7 +240,6 @@
   "variant_summary": {
     "manifest_only": [],
     "executor_pack": [
-      "comfy_wrap",
       "editorial",
       "fal",
       "generation",
@@ -277,7 +264,7 @@
       "rendering"
     ],
     "mixed_full": [],
-    "total_shipped_packs": 18
+    "total_shipped_packs": 17
   },
   "documented_exceptions": {
     "description": "Every declared layout exception that keeps a pack from being purely canonical. None remain after the M2 cleanup.",

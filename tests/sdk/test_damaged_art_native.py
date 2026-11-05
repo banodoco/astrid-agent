@@ -1,7 +1,7 @@
 """DAMAGED-ART fires from the real pixel measurement on an asset with no stored provenance (the film's stickers).
 
 These tests never inject an integrity value: the check reads a real PNG and runs
-astrid.packs.pixel.actions._common.outline_integrity.
+astrid.core.media.outline_integrity.
 """
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import io
 import sys
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from astrid.sdk.timeline_checkout import Checkout
@@ -55,15 +54,12 @@ def test_intact_and_outline_free_art_is_not_flagged(tmp_path) -> None:
         assert not [line for line in _checked(png).check().problems if "DAMAGED-ART" in line], sides
 
 
-def test_a_missing_pixel_module_is_an_error_not_silence(tmp_path, monkeypatch) -> None:
+def test_native_integrity_check_does_not_import_pixel_pack(tmp_path, monkeypatch) -> None:
     png = tmp_path / "rocket.png"
     _sprite_png(png, dark_sides="tb")
-    import astrid.packs.pixel.actions as actions
-
-    monkeypatch.delattr(actions, "_common", raising=False)
-    monkeypatch.setitem(sys.modules, "astrid.packs.pixel.actions._common", None)  # import now fails
-    with pytest.raises(ImportError):
-        _checked(png).check()
+    monkeypatch.setitem(sys.modules, "astrid.packs.pixel.actions._common", None)
+    notes = _checked(png).check().problems
+    assert any("DAMAGED-ART" in line for line in notes), notes
 
 
 def test_pixel_provenance_measures_a_snap_output_the_same_way(monkeypatch, tmp_path) -> None:

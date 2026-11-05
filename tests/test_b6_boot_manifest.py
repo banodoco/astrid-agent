@@ -21,7 +21,7 @@ from astrid.core._shared.boot_manifest import (
     validate_manifest_path,
 )
 from astrid.core.receipts.contract import CommandReceipt, RECEIPT_SHAPE_KEYS
-from astrid.packs.shots.conformance import (
+from astrid.core.gateway.boot_conformance import (
     FROZEN_FIXTURE_DIGESTS,
     VIBE_PROFILE_ORDER,
     VIBE_PROFILE_REGISTRY,

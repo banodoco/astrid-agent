@@ -22,7 +22,7 @@ from astrid.packs.rendering.actions.timeline_visualize.model import (
     transition_mounted_intervals,
 )
 from astrid.packs.rendering.actions.timeline_visualize.scope import Scope, select_scope
-from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
+from astrid.core.timeline.snapshot_digest import (
     canonical_json_bytes,
     sha256_bytes,
 )

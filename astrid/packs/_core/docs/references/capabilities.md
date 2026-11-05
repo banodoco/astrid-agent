@@ -11,7 +11,6 @@
 | `chiptune.compose` | Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking. |
 | `chiptune.midi` | Play a MIDI file as an NES-style chiptune: melody on pulse 1, arpeggiated chords on pulse 2, bass on the triangle. |
 | `chiptune.sfx` | Render a retro one-shot sound effect (WAV plus JSON), or a batch of kinds as one zip. |
-| `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
 | `discord_local.command` | Preview, submit once, or recover one Discord generation as an experiment-ready run. |
 | `editorial.arrange` | Compose a brief-specific shot arrangement from runtime-materialized inputs. |
 | `editorial.boundary_candidates` | Package candidate video frames for visual scene-boundary review. |

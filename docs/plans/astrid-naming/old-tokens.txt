@@ -792,7 +792,6 @@
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/core/pack/discovery.py:41
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/_core/skill/SKILL.md
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/_core/skill/pack-builder/SKILL.md
-/Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/comfy_wrap/skill/SKILL.md
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/foley/skill/SKILL.md
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/generation/executors/generate_image/skill/SKILL.md
 /Users/peteromalley/Documents/reigh-workspace/Astrid/astrid/packs/generation/skill/SKILL.md

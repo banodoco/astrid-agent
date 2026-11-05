@@ -55,11 +55,11 @@ keep the runtime reference association for lineage. If only the managed media
 id remains, report the typed limitation instead of inventing a download,
 filesystem path, or local cache fallback.
 
-For generating new variants, follow the [generation skill](../../generation/docs/SKILL.md).
+For generating new variants, follow the [generation skill](../../../../packs/generation/docs/SKILL.md).
 For placing media in an existing video timeline, follow the [video editing
-existing-timeline route](../../video_editing/docs/SKILL.md); rendering is
+existing-timeline route](../../../../packs/video_editing/docs/SKILL.md); rendering is
 downstream evidence.
-Return to [creative work](../../_core/docs/creative-work/SKILL.md) for capability selection.
+Return to [creative work](../../../../packs/_core/docs/creative-work/SKILL.md) for capability selection.
 
 `references.set_primary` only changes which associated media is canonical for
 this reusable reference. It does not promote a generation variant and does not
