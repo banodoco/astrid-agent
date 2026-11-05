@@ -398,7 +398,11 @@ def run_row(row: Row) -> list[dict]:
             steps.append(_step(name, "pass", message or "ok"))
         except Exception as exc:  # noqa: BLE001 - every stage failure is recorded in the receipt
             failed = name
-            steps.append(_step(name, "fail", f"{type(exc).__name__}: {exc}"))
+            detail = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, json.JSONDecodeError):
+                # Show what could not be parsed, so a hosted failure is diagnosable from the receipt.
+                detail += f" | text: {exc.doc[:1500]!r}"
+            steps.append(_step(name, "fail", detail))
     return steps
 
 
