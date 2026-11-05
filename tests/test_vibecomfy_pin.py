@@ -1,9 +1,10 @@
-"""The VibeComfy pin utility follows the packaged recipe authority."""
+"""The VibeComfy pin utility reads the digest-verified recipe authority and bumps it consistently."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,7 @@ def recipe_workspace(tmp_path, monkeypatch) -> tuple[Path, ...]:
         path.write_bytes(payload)
     monkeypatch.setattr(engine_recipe, "_ROOT", root)
     monkeypatch.setattr(engine_recipe, "_INDEX_PATH", root / "packs" / "engine-index.json")
+    monkeypatch.setattr(vibecomfy_pin, "ROOT", root)
     return tuple(payloads)
 
 
@@ -64,17 +66,50 @@ def test_pin_script_rejects_unverified_pin_bytes(recipe_workspace) -> None:
         vibecomfy_pin.read()
 
 
-@pytest.mark.parametrize("revision", ["", "abc", "A" * 40, "b" * 39, "b" * 40])
-def test_pin_script_bumps_are_rejected_without_writes(recipe_workspace, revision) -> None:
+@pytest.mark.parametrize("revision", ["", "abc", "A" * 40, "b" * 39])
+def test_pin_script_rejects_malformed_bumps_without_writes(recipe_workspace, revision) -> None:
     before = {path: path.read_bytes() for path in recipe_workspace}
-    message = (
-        "direct SHA bumps are unsupported"
-        if revision == "b" * 40 else "expected a full 40-character lowercase commit sha"
-    )
-    with pytest.raises(SystemExit, match=message):
+    with pytest.raises(SystemExit, match="expected a full 40-character lowercase commit sha"):
         vibecomfy_pin.main([revision])
     assert {path: path.read_bytes() for path in recipe_workspace} == before
     assert vibecomfy_pin.read() == "a" * 40
+
+
+@pytest.fixture
+def packs_copy(tmp_path, monkeypatch) -> Path:
+    """Copy the checkout's real package-owned pins, recipes and index for a bump."""
+    root = tmp_path / "astrid"
+    shutil.copytree(engine_recipe._ROOT / "packs", root / "packs")
+    monkeypatch.setattr(engine_recipe, "_ROOT", root)
+    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", root / "packs" / "engine-index.json")
+    monkeypatch.setattr(vibecomfy_pin, "ROOT", root)
+    return root
+
+
+def test_pin_script_bump_rewrites_every_vibecomfy_pin_and_keeps_digests_verified(packs_copy, capsys) -> None:
+    revision = "b" * 40
+    assert vibecomfy_pin.main([revision]) == 0
+    # main() prints the revision read back through the digest-verified authority.
+    assert capsys.readouterr().out == revision + "\n"
+    assert vibecomfy_pin.read() == revision
+    bumped = 0
+    for path in (packs_copy / "packs").glob("*/pins.json"):
+        for name, source in json.loads(path.read_text(encoding="utf-8")).get("sources", {}).items():
+            if name in {"vibecomfy", "vibecomfy-h3"}:
+                assert source["revision"] == revision, (path, name)
+                bumped += 1
+    assert bumped >= 2
+    # Every indexed recipe still loads: the pin and recipe digest chain was rewritten together.
+    index = json.loads(engine_recipe._INDEX_PATH.read_text(encoding="utf-8"))
+    for entry in index["entries"]:
+        engine_recipe.load_recipe(entry["engine"], entry["platform"])
+
+
+def test_pin_script_bump_to_the_current_revision_changes_no_bytes(packs_copy) -> None:
+    files = sorted(path for path in (packs_copy / "packs").rglob("*") if path.is_file())
+    before = {path: path.read_bytes() for path in files}
+    vibecomfy_pin.bump(VIBECOMFY_ENGINE_REVISION)
+    assert {path: path.read_bytes() for path in files} == before
 
 
 def test_pin_script_runs_standalone_outside_checkout(tmp_path) -> None:
