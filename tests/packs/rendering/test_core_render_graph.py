@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import yaml
@@ -84,3 +85,29 @@ def test_core_only_real_timeline_renders_through_action(tmp_path: Path) -> None:
     assert manifest["kind"] == "rendering.render"
     assert manifest["outputs"][0]["path"] == output.name
     assert Path(f"{output}.provenance.json").is_file()
+
+
+def test_rendering_has_no_understanding_import_or_scorer_resource() -> None:
+    pack = yaml.safe_load((PACK / "pack.yaml").read_text(encoding="utf-8"))
+    understanding_pack = yaml.safe_load(
+        (PACK.parent / "understanding" / "pack.yaml").read_text(encoding="utf-8")
+    )
+    imported_modules = set()
+    for source in PACK.rglob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.add(node.module)
+
+    assert not any(module.startswith("astrid.packs.understanding") for module in imported_modules)
+    assert not any(
+        resource.get("path") == "actions/timeline_visualize/scorer.py"
+        for action in pack["actions"].values()
+        for resource in action.get("resources", [])
+    )
+    assert {
+        resource["path"]
+        for resource in understanding_pack["actions"]["visual_understand"]["resources"]
+    } >= {"actions/visual_understand/scorer.py"}
