@@ -54,7 +54,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     plan = engine_runner.plan_install(recipe, root="/workspace/astrid/engines/comfyui", placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
-        _selected_runtime_commit(), "b2123edfbe7b950848b5c98d575fd9554302fc73",
+        _selected_runtime_commit(), next(s for s in recipe.sources if s.name == "vibecomfy").pin.revision,
     )
     module_path = Path(rp.__file__).with_name("adapter.py")
     spec = importlib.util.spec_from_file_location("test_path_loaded_runpod_adapter", module_path)

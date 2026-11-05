@@ -71,7 +71,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "c70a8202b43099c08720ab99505f1ea4b945b6b53027322a8525f9dc922cce4f"
+    assert h3_entry.recipe.sha256 == "df8d5e26227eec00d1d10b66ff7e4b444c15bf9e2e6fe37cf91ea45beb1ce495"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -114,7 +114,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "1b2e242ce7396442c85395d3220a2481216b57c1"
+        assert bindings[0].pin.revision == "2401b8bf8c0f01ff10e87e599767cff36fbe16e6"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
@@ -131,7 +131,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].pin == pins["vibecomfy-h3"]
     expected_sources = {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "1b2e242ce7396442c85395d3220a2481216b57c1"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "2401b8bf8c0f01ff10e87e599767cff36fbe16e6"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
         "comfyui-hunyuanvideo-foley": ("https://github.com/BobRandomNumber/ComfyUI-HunyuanVideo_Foley.git", "b94f7aca877ff2be5bc264b057abee3dac682c1b"),
