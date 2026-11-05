@@ -7223,11 +7223,18 @@ class GenericPackHost:
             )
         }
 
+        # Core Hivemind joins the core selection (no explicit roots, or roots
+        # that include the bundled core packs). A host given only explicit
+        # selected roots admits exactly those roots (g2/g5 selected sources).
+        bundled_core_root = (PACKAGE_ROOT / "packs").resolve()
+        core_selected = not self.pack_roots or any(
+            bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self.pack_roots
+        )
         local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
-            if pack_root == core_hivemind_root and pack.id in explicit_pack_ids:
+            if pack_root == core_hivemind_root and (pack.id in explicit_pack_ids or not core_selected):
                 continue
             if pack_root != core_hivemind_root and not any(
                 pack_root == root or pack_root.is_relative_to(root)
