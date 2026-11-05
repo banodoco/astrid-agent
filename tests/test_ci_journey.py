@@ -468,12 +468,14 @@ def test_launchd_disabled_state_matches_only_exact_service_and_disabled_values(o
 
 @pytest.mark.parametrize("phase,returncode,stderr,absent", [
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
+    ("after-cleanup", 113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
     ("before-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
     ("after-cleanup", 113, "launchctl unavailable\n", False),
     ("after-cleanup", 1, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
     ("after-cleanup", 113, 'Could not find service "other" in domain for user gui: 501\n', False),
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 502\n', False),
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\nextra error\n', False),
+    ("after-cleanup", 113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 501\nextra error\n', False),
 ])
 @pytest.mark.parametrize("unit_exists", [True, False])
 def test_darwin_manager_state_classifies_only_expected_cleanup_absence(
