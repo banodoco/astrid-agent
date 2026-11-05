@@ -151,3 +151,15 @@ def test_job_os_map_matches_the_three_hosted_rows():
     assert driver.STEP_NAMES == ("install", "start_task", "stop_start", "busy_stop_data",
                                  "update_ready_task", "uninstall_data")
     assert driver.SCHEMA == "pinokio-row-v1"
+
+
+def test_sdk_result_tolerates_only_leading_diagnostic_lines():
+    import pytest
+    from scripts import ci_journey
+    diag = '{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe"}'
+    assert ci_journey._sdk_result('{"ok": true}') == {"ok": True}
+    assert ci_journey._sdk_result(f'{diag}\n{diag}\n{{"ok": true}}\n') == {"ok": True}
+    with pytest.raises(RuntimeError):
+        ci_journey._sdk_result('warning: something\n{"ok": true}')
+    with pytest.raises(RuntimeError):
+        ci_journey._sdk_result('{"other": 1}\n{"ok": true}')

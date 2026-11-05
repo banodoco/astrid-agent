@@ -111,7 +111,7 @@ class Row:
 
     def task_state(self, task_id: str) -> str:
         output = self.installed(["tasks", "show", task_id, "--project", PROJECT, "--json"], "task-show.json")
-        data = json.loads(output).get("data") or {}
+        data = ci_journey._sdk_result(output).get("data") or {}
         state = data.get("state")
         if not isinstance(state, str) or not state:
             raise RowError(f"task {task_id} has no readable state")
