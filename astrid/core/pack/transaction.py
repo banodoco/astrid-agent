@@ -683,6 +683,26 @@ def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
     return _refresh(root, pending, refresh)
 
 
+def _same_tree_bytes(left: Path, right: Path) -> bool:
+    """Byte equality of two pack trees (paths, file bytes, symlink targets)."""
+    if not left.is_dir() or not right.is_dir():
+        return False
+
+    def entries(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
+        result: dict[str, tuple[str, bytes | str | None]] = {}
+        for path in root.rglob("*"):
+            key = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                result[key] = ("link", os.readlink(path))
+            elif path.is_dir():
+                result[key] = ("dir", None)
+            else:
+                result[key] = ("file", path.read_bytes())
+        return result
+
+    return entries(left) == entries(right)
+
+
 def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: str | Path,
                   python_packages: Mapping[str, str], revision: str | None = None,
                   origin: Literal["user", "default", "folder"] | None = None,
@@ -913,6 +933,15 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             # cannot alter an earlier pack's admitted bytes unnoticed.
             for request, result, admitted_revision in build_records:
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
+            if (intent == "update" and packs and not remove and old["refresh"] is None
+                    and old["transaction_id"]
+                    and all(_same_tree_bytes(candidate / pack_id, root / pack_id) for pack_id in packs)):
+                # Equal-byte update (same source, PIN and build outputs): publish
+                # nothing. The live generation, its revision and receipts stay;
+                # the unpublished candidate is discarded by the finally below.
+                mark("unchanged")
+                return GroupResult(old["transaction_id"], old["revision"], (), _paths(root), False,
+                                   retired / old["transaction_id"])
             # A newer inventory revision subsumes an unacknowledged one. Carry
             # its changed ids forward so a delta consumer cannot miss a commit.
             pending_ids = old["refresh"]["changed_ids"] if old["refresh"] else ()
