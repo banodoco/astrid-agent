@@ -131,7 +131,8 @@ def test_aggregate_uses_final_receipt_from_distinct_artifact_directories(tmp_pat
 def test_workflow_runs_both_windows_checks_and_keeps_artifacts_separate():
     text = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text()
     assert '--leg windows-upgrade-refusal' in text
-    assert '$freshExit -eq 0' in text
+    assert "'${{ inputs.diagnostic_keep_going }}' -ne 'true'" in text
+    assert '$freshExit -eq 0' not in text
     assert 'if ($refusalExit -ne 0) { exit $refusalExit }' in text
     assert 'windows_upgrade_refusal -NotePropertyValue $refusal' in text
     download = text.split('- name: Download every per-job receipt', 1)[1].split('- name: Aggregate the exact Release-1', 1)[0]

@@ -51,6 +51,8 @@ def test_both_legs_cover_platforms_without_duplicate_windows_fresh_and_retain_re
     assert 'name: journey-manager-${{ matrix.job_id }}' + suffix in WORKFLOW
     assert "$runWindowsRefusal = '${{ matrix.job_id }}' -eq 'direct-windows'" in WORKFLOW
     assert "'${{ inputs.diagnostic_keep_going }}' -eq 'true' -and '${{ matrix.leg }}' -eq 'fresh-install'" in WORKFLOW
+    assert "'${{ inputs.diagnostic_keep_going }}' -ne 'true'" in WORKFLOW
+    assert '$freshExit -eq 0' not in WORKFLOW
     assert '--leg windows-upgrade-refusal' in WORKFLOW
     assert 'test "$DIAGNOSTIC_KEEP_GOING" != true' in WORKFLOW
 
