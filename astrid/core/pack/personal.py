@@ -6,6 +6,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
+from astrid.pack_api import VERSION as PACK_API_VERSION
 
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 PERSONAL_PACK_ID = "personal"
@@ -14,7 +15,7 @@ _MANIFEST = (
     "id: personal\n"
     "name: Personal\n"
     "version: 0.1.0\n"
-    'pack_api: "1.0"\n'
+    f'pack_api: "{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}"\n'
     "actions: {}\n"
 ).encode("utf-8")
 
