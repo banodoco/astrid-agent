@@ -23,6 +23,7 @@ def release1_row(contract, pinned):
         "source_override_test_mode": False, "final_cleanup": "pass", "os_build": runner_os + "-test",
         "runner_provenance": {"RUNNER_OS": runner_os, "ImageOS": image_os, "ImageVersion": "test"},
         "candidate_checkouts": {name: {"sha": sha} for name, sha in pinned.items()},
+        "run_roots": {"program": "/run/program", "data": "/run/data"},
         "sources": {name: {"sha": pinned[name]} for name in ("app", "agent", "runtime")},
         "installed_tuple": {name: pinned[name] for name in ("app", "agent", "runtime")},
         "import_origins": {"runtime": "/owned/runtime"},
@@ -43,12 +44,27 @@ def release1_row(contract, pinned):
             },
             semantic_data={"identical": True, "before_sha256": "b" * 64, "after_sha256": "b" * 64},
         )
+        if contract["job_id"] in {"direct-linux", "direct-macos"}:
+            row["upgrade_uninstall_refusal"] = {
+                "exit_code": 1,
+                "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
+                "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
+                "service_manager": {"manager": "native", "foreground_fallback": False},
+            }
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
     if contract.get("leg", "fresh-install") == "fresh-install":
         row["checks"]["workspace_content"] = "pass"
     if contract["job_id"] == "direct-windows":
+        row["update"] = {
+            "outcome": "updated", "from_release": 1, "to_release": 2,
+            "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
+            "old_version": "old", "current_version": "new", "exit_code": 0, "refusal": None,
+            "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
+            "checks": {key: "pass" for key in ("running_before", "owned_task", "healthy", "same_labels",
+                       "no_r0_handoff", "workspace", "sentinel", "prior_version", "verify_update", "task_settled")},
+        }
         row["windows_upgrade_refusal"] = {
             "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
             "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
