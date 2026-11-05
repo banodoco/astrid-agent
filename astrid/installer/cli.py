@@ -33,6 +33,9 @@ PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
 )
 PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
 RECOVERED_PREVIOUS_VERSION = "Recovered your previous version — run Update again"
+WINDOWS_UPDATE_REFUSAL = (
+    "Updating Astrid on Windows isn't supported yet. Your data was kept; reinstall to get the new version."
+)
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -42,6 +45,47 @@ def _pinokio_claim_is_live(recorded: dict) -> bool:
     if not isinstance(program_root, str) or not program_root:
         return False
     return pinokio_owned(read_json(absolute(program_root) / "install.json"))
+
+
+def _windows_r1_update_refused(args, mode: str) -> bool:
+    """Read-only guard for managed Windows install/update entry points.
+
+    Keep this before installer locks, recovery, selection repair, and service
+    preflight. A malformed or incomplete existing managed install is
+    ambiguous, so fail closed; an empty root remains a fresh install.
+    """
+    if sys.platform != "win32" or mode not in {"install", "update", "app-update"}:
+        return False
+
+    from .service import install_selection
+
+    selection_path = install_selection(Path.home(), sys.platform)
+    try:
+        default_root = absolute(args.root or default_program_root(Path.home(), sys.platform))
+    except (OSError, ValueError, KeyError, TypeError):
+        return selection_path.exists()
+    try:
+        selected = read_json(selection_path)
+        root = default_root
+        selected_root = selected.get("program_root")
+        if not args.root and selected.get("owner") == LABEL and isinstance(selected_root, str):
+            root = absolute(selected_root)
+        marker = read_json(root / "install.json")
+        if marker.get("owner") != LABEL:
+            return False
+        try:
+            installed = current(root)
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+        if installed is None:
+            return True
+        if installed.release == 1:
+            return True
+        return pending_transaction(root) is not None
+    except (OSError, ValueError, KeyError, TypeError):
+        # Existing selection or marker evidence that cannot be interpreted
+        # must not fall through into a potentially mutating recovery path.
+        return selection_path.exists() or (default_root / "install.json").exists()
 
 
 def _prepare_log(path: Path, *protected: Path) -> Path | None:
@@ -178,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.update_job and (len(args.update_job) != 32
                             or any(char not in "0123456789abcdef" for char in args.update_job)):
         parser().error("--update-job is invalid.")
+    if _windows_r1_update_refused(args, mode):
+        print(WINDOWS_UPDATE_REFUSAL)
+        return 1
     from runtime_protocol import platform
     log = None  # Unresolved selection and unsafe/unavailable logs use the console.
     try:
