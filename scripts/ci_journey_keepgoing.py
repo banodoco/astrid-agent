@@ -81,10 +81,10 @@ def assert_release0_owner(root: Path, data: Path, owner: dict) -> dict:
     return health
 
 
-def release0_workspace(root: Path, version: dict, data: Path, evidence: Path,
+def release0_workspace(root: Path, data: Path, evidence: Path,
                        action: str, request: dict) -> dict:
-    """Use the current journey helper API for offline release-0 observations."""
-    return jumps.direct_workspace(root, version, data, evidence, action, request)
+    """Use the live snapshot contract for both sides of the R0-to-R1 journey."""
+    return jumps.live_workspace(root, data, evidence, action, request, release=0)
 
 
 def initial(evidence, args):
@@ -315,12 +315,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             candidate=journey.read_json(args.candidate), version_path=path, version=old)
         state.update(old=old, old_path=path, old_tuple=old_tuple)
     def seed():
-        state["keys"] = release0_workspace(root, state["old"], data, evidence / "release0-api-seed", "seed", {"project": project, "generation": "release0", "task_id": None, "create_project": True})
+        state["keys"] = release0_workspace(root, data, evidence / "release0-api-seed", "seed", {"project": project, "generation": "release0", "task_id": None, "create_project": True})
     def task0():
         state["keys"]["task_id"] = jumps.task_after_update(state["old"], evidence / "release0-api-seed" / "release0-task", project)
         state["task0"] = True
     def snap0():
-        state["before"] = release0_workspace(root, state["old"], data, evidence / "release0-api-seed", "snapshot", state["keys"])
+        state["before"] = release0_workspace(root, data, evidence / "release0-api-seed", "snapshot", state["keys"])
     def assert_selection0():
         path, selected_data, version = journey.installation(root, data)
         if (selected_data != data or path != state["old_path"] or version != state["old"]

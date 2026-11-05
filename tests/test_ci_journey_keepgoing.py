@@ -85,7 +85,8 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     (None, 0),
     *((kind, stage) for kind in ("path", "data", "release", "version") for stage in (1, 2)),
 ])
-def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeypatch, wrong_selection, change_at):
+def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
+        tmp_path, monkeypatch, wrong_selection, change_at):
     evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
     app = tmp_path / "app"
     app.mkdir()
@@ -140,15 +141,13 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
         return receipt
     monkeypatch.setattr(journey, "verify", verify)
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **k: None)
-    def workspace(*args):
-        if state["release"] == 0:
-            state["pid"] += 1  # Each offline workspace operation restarts the Runtime.
-            if args[4] == "snapshot":
-                state["snapshot"] = True
-        return {"project": "p"} if args[4] == "seed" else {"snapshot": True}
-    monkeypatch.setattr(jumps, "direct_workspace", workspace)
     def live_workspace(root, data, evidence, action, request, *, release):
-        calls.append(("live", data, release))
+        calls.append(("live", data, release, action, dict(request)))
+        if action == "seed":
+            return {"project": "p", "timeline": "t", "revision": "r",
+                    "generation": "release0", "object_digest": "digest"}
+        if release == 0:
+            state["snapshot"] = True
         return {"snapshot": True}
     monkeypatch.setattr(jumps, "live_workspace", live_workspace)
     monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
@@ -189,8 +188,12 @@ def test_release0_restart_refreshes_owner_and_guards_selection(tmp_path, monkeyp
     assert ("verify-root", "observe", r0) in calls
     assert ("verify-root", "update", r1) not in calls
     assert ("verify-root", "install", r1) in calls
-    assert ("live", r1, 1) in calls
-    assert ("birth", 3) in calls[calls.index("update") + 1:]
+    assert any(call[:4] == ("live", r0, 0, "seed") for call in calls)
+    before_call = next(call for call in calls if call[:4] == ("live", r0, 0, "snapshot"))
+    after_call = next(call for call in calls if call[:4] == ("live", r1, 1, "snapshot"))
+    assert before_call[4]["revision"] == after_call[4]["revision"] == "r"
+    assert before_call[4]["generation"] == after_call[4]["generation"] == "release0"
+    assert ("birth", 1) in calls[calls.index("update") + 1:]
     observation = rows["release0-verify"]
     assert observation["result"] == "observed-failed"
     assert observation["observation"] == {
@@ -345,16 +348,16 @@ def test_update_preflight_rejects_changed_runtime_owner(monkeypatch, tmp_path, h
 def test_release0_workspace_uses_current_helper_signature(monkeypatch, tmp_path, action):
     calls = []
 
-    def current_helper(root, version, data, evidence, helper_action, request):
-        calls.append((root, version, data, evidence, helper_action, request))
+    def current_helper(root, data, evidence, helper_action, request, *, release):
+        calls.append((root, data, evidence, helper_action, request, release))
         return {"action": helper_action}
 
-    monkeypatch.setattr(keepgoing.jumps, "direct_workspace", current_helper)
-    args = (tmp_path / "root", {"root": "v0"}, tmp_path / "data",
-            tmp_path / "evidence", action, {"project": "diagnostic"})
+    monkeypatch.setattr(keepgoing.jumps, "live_workspace", current_helper)
+    args = (tmp_path / "root", tmp_path / "data", tmp_path / "evidence",
+            action, {"project": "diagnostic"})
 
     assert keepgoing.release0_workspace(*args) == {"action": action}
-    assert calls == [args]
+    assert calls == [(args[0], args[1], args[2], args[3], args[4], 0)]
 
 
 def test_failed_fresh_bootstrap_capture_preserves_stage_failure(tmp_path, monkeypatch):
