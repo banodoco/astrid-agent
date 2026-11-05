@@ -1696,3 +1696,42 @@ def test_windows_pack_host_log_is_retained_under_installer_named_path(tmp_path, 
     staged = run_root / "evidence-upload" / "before-cleanup"
     assert (staged / "service-pack-host.log").read_bytes() == expected
     assert not (staged / "unrelated-user-file.txt").exists()
+    status = json.loads((staged / "windows-service-log-status.json").read_text())
+    assert status["logs"]["service-pack-host.log"] == {
+        "evidence_name": "service-pack-host.log",
+        "status": "captured",
+        "source_bytes": len(contents),
+        "captured_bytes": journey.EVIDENCE_LOG_LIMIT,
+    }
+
+
+def test_windows_service_log_status_explicitly_records_missing_pack_host_and_empty_native_log(
+        tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "runtime-service.log").write_bytes(b"")
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {"scenario": "fresh-install"})
+
+    def capture_manager(_evidence, _data, phase):
+        journey.write_json(evidence / f"manager-state-{phase}.json", {"phase": phase})
+
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "capture_manager_state", capture_manager)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    status = json.loads((staged / "windows-service-log-status.json").read_text())
+    assert status["logs"]["service-pack-host.log"]["status"] == "missing"
+    assert status["logs"]["runtime-service.log"] == {
+        "evidence_name": "runtime-service-native.log",
+        "status": "captured",
+        "source_bytes": 0,
+        "captured_bytes": 0,
+    }
+    receipt = json.loads((staged / "journey-result.json").read_text())
+    assert receipt["failure_diagnostics"]["before-cleanup"]["windows_service_logs"] == status["logs"]
+    assert not (staged / "service-pack-host.log").exists()
+    assert (staged / "runtime-service-native.log").read_bytes() == b""
