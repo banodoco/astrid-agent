@@ -71,7 +71,7 @@ def save(name, value):
     (EVIDENCE / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def run_bootstrap_process(argv, log_path, mode, *, env=None):
+def run_bootstrap_process(argv, log_path, mode, *, env=None, timeout=3600):
     """Capture the Windows harness bootstrap process and its two output streams."""
     if mode not in {"install", "update", "release0"}:
         raise ValueError("Unsupported bootstrap capture mode")
@@ -89,11 +89,13 @@ def run_bootstrap_process(argv, log_path, mode, *, env=None):
         "started_at": None,
         "exited_at": None,
         "exit_code": None,
+        "timeout_seconds": timeout,
         "stdout": {"file": stdout_path.name, "status": "not_started"},
         "stderr": {"file": stderr_path.name, "status": "not_started"},
     }
     save(receipt_path.name, receipt)
     process = None
+    error = None
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             receipt["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -103,19 +105,32 @@ def run_bootstrap_process(argv, log_path, mode, *, env=None):
             receipt["stdout"]["status"] = "captured"
             receipt["stderr"]["status"] = "captured"
             save(receipt_path.name, receipt)
+            receipt["exit_code"] = process.wait(timeout=timeout)
+            receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+    except subprocess.TimeoutExpired as exc:
+        receipt["timed_out"] = True
+        receipt["launch_or_wait_error"] = type(exc).__name__
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
             receipt["exit_code"] = process.wait()
             receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
+        for stream in (receipt["stdout"], receipt["stderr"]):
+            if stream["status"] == "not_started":
+                stream["status"] = "unavailable"
+        error = exc
     except Exception as exc:
         receipt["launch_or_wait_error"] = type(exc).__name__
-        if process is not None and receipt["exit_code"] is None:
-            receipt["exit_code"] = process.poll()
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            receipt["exit_code"] = process.wait()
             if receipt["exit_code"] is not None:
                 receipt["exited_at"] = datetime.now(timezone.utc).isoformat()
         for stream in (receipt["stdout"], receipt["stderr"]):
             if stream["status"] == "not_started":
                 stream["status"] = "unavailable"
-        save(receipt_path.name, receipt)
-        raise
+        error = exc
     for stream in (receipt["stdout"], receipt["stderr"]):
         path = EVIDENCE / stream["file"]
         try:
@@ -130,6 +145,8 @@ def run_bootstrap_process(argv, log_path, mode, *, env=None):
         combined.write(b"\n=== stderr ===\n")
         combined.write(stderr_path.read_bytes())
     save(receipt_path.name, receipt)
+    if error is not None:
+        raise error
     if receipt["exit_code"]:
         raise RuntimeError(f"{mode}-bootstrap.log: exit {receipt['exit_code']}")
     return log_path.read_text(encoding="utf-8", errors="replace")

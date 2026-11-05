@@ -59,10 +59,47 @@ def test_bootstrap_process_capture_keeps_identity_exit_and_streams_separate(tmp_
     assert receipt["executable"] == sys.executable
     assert receipt["started_at"] and receipt["exited_at"]
     assert receipt["exit_code"] == 7
+    assert receipt["timeout_seconds"] == 3600
     assert receipt["stdout"]["status"] == receipt["stderr"]["status"] == "captured"
     assert (evidence / "update-bootstrap-stdout.log").read_text().strip() == "out"
     assert (evidence / "update-bootstrap-stderr.log").read_text().strip() == "err"
     assert "=== stdout ===" in log.read_text() and "=== stderr ===" in log.read_text()
+
+
+def test_bootstrap_process_timeout_cleans_up_and_keeps_receipt_and_streams(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    original_popen = subprocess.Popen
+    processes = []
+
+    def tracked_popen(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(journey.subprocess, "Popen", tracked_popen)
+    log = tmp_path / "install-bootstrap.log"
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        journey.run_bootstrap_process(
+            [sys.executable, "-c",
+             "import sys, time; print('before timeout', flush=True); "
+             "print('error before timeout', file=sys.stderr, flush=True); time.sleep(30)"],
+            log, "install", timeout=0.2,
+        )
+
+    assert failure.value.timeout == 0.2
+    assert len(processes) == 1 and processes[0].poll() is not None
+    evidence = tmp_path / "evidence"
+    receipt = json.loads((evidence / "install-bootstrap-process.json").read_text())
+    assert receipt["pid"] == processes[0].pid
+    assert receipt["started_at"] and receipt["exited_at"]
+    assert receipt["timed_out"] is True
+    assert receipt["timeout_seconds"] == 0.2
+    assert receipt["exit_code"] == processes[0].returncode
+    assert receipt["stdout"]["status"] == receipt["stderr"]["status"] == "captured"
+    assert (evidence / "install-bootstrap-stdout.log").read_text().strip() == "before timeout"
+    assert (evidence / "install-bootstrap-stderr.log").read_text().strip() == "error before timeout"
+    assert "before timeout" in log.read_text() and "error before timeout" in log.read_text()
 
 
 @pytest.fixture
