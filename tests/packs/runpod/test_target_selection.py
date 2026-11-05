@@ -300,7 +300,8 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
 
     case.owner.config_factory = lambda offer: RunPodConfig(
         api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
-        volume_mount_path=case.prefs.mount_path, storage_name="wrong", storage_volumes=("other",),
+        volume_mount_path=case.prefs.mount_path, network_volume_id=case.prefs.volume_id,
+        data_center_id=offer.datacenter_id or case.prefs.datacenter_id, gpu_type_id=offer.gpu_type_id,
         ram_tiers_enabled=True, attach_only=True,
     )
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
@@ -340,7 +341,9 @@ def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch)
 
     case.owner.config_factory = lambda offer: RunPodConfig(
         api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
-        volume_mount_path=case.prefs.mount_path, storage_name="storage", attach_only=True,
+        volume_mount_path=case.prefs.mount_path, network_volume_id=case.prefs.volume_id,
+        data_center_id=offer.datacenter_id or case.prefs.datacenter_id, gpu_type_id=offer.gpu_type_id,
+        attach_only=True,
     )
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
     monkeypatch.setattr(lifecycle, "find_gpu_type", lambda *args: {"id": "gpu-1"})
