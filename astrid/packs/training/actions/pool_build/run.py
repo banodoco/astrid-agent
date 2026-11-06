@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError, AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('training.pool_build')
 import argparse
@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.audit import register_outputs
-from astrid.core.util.time import utc_now_seconds
+from astrid.pack_api import POOL_VERSION, Pool, save_pool, validate_pool
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import register_outputs
+from astrid.pack_api import utc_now_seconds
 
 AUDIO_EVENT_RE = re.compile(r"\b(applause|laughter|cheer|audience)\b", re.IGNORECASE)
 KIND_LETTER = {"dialogue": "d", "visual": "v", "reaction": "r", "applause": "a", "music": "m"}
@@ -169,13 +169,13 @@ def build_pool(
             ),
         )
 
-    payload: timeline.Pool = {
-        "version": timeline.POOL_VERSION,
+    payload: Pool = {
+        "version": POOL_VERSION,
         "generated_at": utc_now_seconds(),
         "source_slug": source_slug,
         "entries": entries,
     }
-    timeline.validate_pool(payload)
+    validate_pool(payload)
     return payload
 
 
@@ -211,7 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_dir = args.out.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "pool.json"
-        timeline.save_pool(payload, out_path)
+        save_pool(payload, out_path)
         register_outputs(
             stage="pool_build",
             outputs=[("pool", out_path, "Candidate pool")],
