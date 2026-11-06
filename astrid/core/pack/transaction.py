@@ -118,6 +118,83 @@ def _root(value: str | Path) -> Path:
 _SHIPPED_PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
 
 
+@dataclass
+class _GroupCustody:
+    """The descriptor and context owned by one actual lock acquisition."""
+
+    fd: int
+    path: Path
+    key: str
+    exclusive: bool
+    token: Any
+    attached: bool = True
+
+    def consent(self, callback, preview, *, roots: tuple[Path, ...]) -> bool:
+        import fcntl
+
+        if not self.exclusive or not self.attached or _HELD.get().get(self.key) is not True:
+            raise PackInstallError("transaction_busy", "Consent requires this transaction's own exclusive custody.")
+        if set(_HELD.get()) != {self.key}:
+            raise PackInstallError("transaction_busy", "Release caller-owned collection custody before requesting consent.")
+        snapshots = tuple(_consent_tree_snapshot(root) for root in roots)
+        identity = os.fstat(self.fd)
+        # Remove only our context entry and unlock only our descriptor. A
+        # caller-owned outer acquisition is rejected before reaching here.
+        _HELD.reset(self.token)
+        self.attached = False
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        try:
+            accepted = callback(preview)
+        finally:
+            # A callback must not leave its own custody context open. In that
+            # case do not release it or deadlock trying to acquire against it.
+            if self.key in _HELD.get():
+                raise PackInstallError("transaction_busy", "Release callback-owned collection custody before returning consent.")
+            self._verify_descriptor(identity)
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            self.token = _HELD.set({**_HELD.get(), self.key: True})
+            self.attached = True
+            self._verify_descriptor(identity)
+        if accepted is True:
+            try:
+                current = tuple(_consent_tree_snapshot(root) for root in roots)
+            except (OSError, PackInstallError) as exc:
+                raise PackInstallError("collection_changed", "Collection or staged bytes changed during consent; retry.") from exc
+            if current != snapshots:
+                raise PackInstallError("collection_changed", "Collection or staged bytes changed during consent; retry.")
+        return accepted is True
+
+    def _verify_descriptor(self, identity) -> None:
+        try:
+            _directory(self.path.parent)
+            current = self.path.lstat()
+            held = os.fstat(self.fd)
+        except OSError as exc:
+            raise PackInstallError("unsafe_path", "Collection custody changed during consent; retry.") from exc
+        expected = (identity.st_dev, identity.st_ino)
+        if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                or (current.st_dev, current.st_ino) != expected
+                or (held.st_dev, held.st_ino) != expected or held.st_nlink != 1):
+            raise PackInstallError("unsafe_path", "Collection custody changed during consent; retry.")
+
+
+def _consent_tree_snapshot(root: Path) -> tuple[Any, ...]:
+    """Include the commit record, target packs, personal bytes and empty dirs."""
+    files = _tree(root)
+    root_info = root.lstat()
+    entries = []
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise PackInstallError("unsafe_path", "Consent snapshots cannot contain links or special files.")
+        entries.append((path.relative_to(root).as_posix(), info.st_mode,
+                        hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None))
+    # Audit through the same safe-tree gate before and after reading all bytes.
+    if files != _tree(root):
+        raise PackInstallError("collection_changed", "Collection changed while preparing consent; retry.")
+    return (root_info.st_dev, root_info.st_ino, root_info.st_mode, tuple(entries))
+
+
 @contextmanager
 def group_read_lock(root: str | Path, *, exclusive: bool = False):
     """Hold collection custody across a read or publication.
@@ -158,10 +235,12 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
             raise PackInstallError("unsafe_path", "Group lock must be a regular file with one link.")
         fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         token = _HELD.set({**held, key: exclusive})
+        custody = _GroupCustody(fd, lock, key, exclusive, token)
         try:
-            yield
+            yield custody
         finally:
-            _HELD.reset(token)
+            if custody.attached:
+                _HELD.reset(custody.token)
     finally:
         os.close(fd)
 
@@ -930,7 +1009,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     packages = dict(python_packages)
     tx = uuid4().hex
     mark = boundary or (lambda phase: None)
-    with group_read_lock(root, exclusive=True):
+    with group_read_lock(root, exclusive=True) as custody:
         root.mkdir(exist_ok=True)
         old = _state(root)
         committed_revision = old["revision"] + 1
@@ -1080,8 +1159,12 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     # omitted defaults found by reconciliation (LB-TXN r1 finding 4).
                     "removed": sorted(remove),
                 }
-                if consent(changes) is not True:
+                if not custody.consent(consent, changes, roots=(root, candidate)):
                     raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
+                if revision is None:
+                    for pack_id, subpath in packs.items():
+                        if pack_digest(_directory(Path(source) / subpath)) != identities[pack_id][0]:
+                            raise PackInstallError("pin_mismatch", "Local source changed after consent; retry the group transaction.")
             for pack_id in sorted(packs):
                 # install_pack may retain an identical source/PIN. Every named
                 # build still needs fresh outputs and this transaction's epoch;
@@ -1224,7 +1307,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     pins = {key: dict(value) for key, value in (release_pins or {}).items()}
     packages = dict(python_packages or {})
     mark = boundary or (lambda phase: None)
-    with group_read_lock(root, exclusive=True):
+    with group_read_lock(root, exclusive=True) as custody:
         state = _state(root)
         active_tx = state["transaction_id"]
         if not active_tx or (transaction_id is not None and transaction_id != active_tx):
@@ -1281,7 +1364,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                                "current_digest": pack_digest(current_paths[pack_id]) if pack_id in current_paths else None,
                                "restore_digest": pack_digest(prior_paths[pack_id]) if pack_id in prior_paths else None}
         preview = {"intent": "rollback", "packs": before, "removals": sorted(tombstones)}
-        if consent is not None and consent(preview) is not True:
+        if consent is not None and not custody.consent(consent, preview, roots=(root, prior)):
             raise PackInstallError("user_cancelled", "The pack rollback was not committed because consent was not given.")
 
         retired = _directory(root.parent / ".astrid-retired", create=True)
