@@ -18,8 +18,17 @@ def test_optional_requirement_uses_only_explicit_marker_snapshot():
     assert _requirements(manifest, {}, selected)[0] == "missing_python"
     assert _requirements(manifest, {"pyannote-audio": "2.0"}, selected)[0] == "missing_python"
     assert _requirements(manifest, {"pyannote-audio": "3.1"}, selected) is None
-    assert _requirements(manifest, {}, None)[0] == "invalid_manifest"
+    assert _requirements(manifest, {}, None) is None
     assert "extra" not in environment
+
+
+def test_extra_only_base_context_does_not_read_host_environment(monkeypatch):
+    monkeypatch.setattr("packaging.markers.default_environment", lambda: pytest.fail("ambient marker read"))
+    optional = {"dependencies": {"python_requirements": ["uninstalled>=1; extra == 'feature'"]}}
+    assert _requirements(optional, {}, None) is None
+    assert _requirements(optional, {}, {"extra": "feature"})[0] == "missing_python"
+    platform = {"dependencies": {"python_requirements": ["uninstalled>=1; python_version >= '3.11'"]}}
+    assert _requirements(platform, {}, None)[0] == "invalid_manifest"
 
 
 @pytest.mark.parametrize("requirement", [

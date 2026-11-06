@@ -92,6 +92,14 @@ def packs_root(tmp_path: Path) -> Path:
 GROUP = {"alpha": "packs/alpha", "shared": "packs/shared"}
 
 
+def test_base_group_accepts_inactive_extra_without_host_marker_snapshot(repo, packs_root):
+    (repo.work / "packs" / "alpha" / "pack.yaml").write_text(
+        manifest("alpha", ("shared",), ("not_installed>=1; extra == 'feature'",)), encoding="utf-8")
+    repo.publish()
+    result = install(repo, packs_root)
+    assert set(result.paths) == set(GROUP)
+
+
 def install(repo: Repository, root: Path, *, packs=GROUP, revision=None, **kwargs):
     return install_group(source=repo.bare, revision=revision or repo.commit, packs=packs,
                          packs_root=root, python_packages={}, **kwargs)

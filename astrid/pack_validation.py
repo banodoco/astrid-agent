@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, TypedDict
 
-from packaging.markers import UndefinedComparison, UndefinedEnvironmentName, _evaluate_markers
+from packaging.markers import UndefinedComparison, UndefinedEnvironmentName, Variable, _evaluate_markers
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -106,6 +106,16 @@ def _declared_requirement_names(manifest: Mapping[str, object]) -> list[str] | N
     return sorted(set(packages))
 
 
+def _marker_variables(nodes) -> set[str]:
+    names: set[str] = set()
+    for node in nodes:
+        if isinstance(node, list):
+            names.update(_marker_variables(node))
+        elif isinstance(node, tuple):
+            names.update(item.value for item in (node[0], node[2]) if isinstance(item, Variable))
+    return names
+
+
 def _requirements(manifest: Mapping[str, object], packages: Mapping[str, str],
                   environment: Mapping[str, str] | None) -> tuple[str, str] | None:
     """Check PEP 508 against supplied immutable interpreter facts, never the host."""
@@ -124,12 +134,15 @@ def _requirements(manifest: Mapping[str, object], packages: Mapping[str, str],
         if req.url or req.extras:
             return "invalid_manifest", f"Python requirement {item!r} cannot be verified from the locked version snapshot (URL or extras)."
         if req.marker:
-            if environment is None or not _MARKER_FIELDS.issubset(environment):
+            extra_only = _marker_variables(req.marker._markers) <= {"extra"}
+            if not extra_only and (environment is None or not _MARKER_FIELDS.issubset(environment)):
                 return "invalid_manifest", f"Python requirement {item!r} needs an explicit interpreter marker environment (including python_version)."
             try:
                 # Marker.evaluate() reads the host environment even when overrides
                 # are supplied; evaluate its parsed expression with only the snapshot.
-                marker_env = {**environment, "extra": environment.get("extra", "")}
+                # Base installs select no extras, independently of platform.
+                # Never infer interpreter/platform facts from the host here.
+                marker_env = {"extra": "", **(environment or {})}
                 if not _evaluate_markers(req.marker._markers, marker_env):
                     continue
             except (UndefinedComparison, UndefinedEnvironmentName, ValueError, TypeError) as exc:
