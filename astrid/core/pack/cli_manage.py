@@ -180,6 +180,51 @@ def _file_sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _managed_toolchain() -> Path | None:
+    """Find a descriptor only in the currently selected, executing install."""
+    from astrid.installer.core import current
+    from runtime_protocol import platform
+
+    prefix = Path(sys.prefix)
+    if not prefix.is_absolute() or prefix.name != "py":
+        return None
+    version_root = prefix.parent
+    if version_root.parent.name != "versions":
+        return None
+    install_root = version_root.parent.parent
+    descriptor = version_root / "pack-build" / "toolchain.json"
+    try:
+        # No aliases, reparse points, foreign ownership or group/world-writable
+        # selection/descriptor components may authorize an implicit default.
+        for item in (install_root, version_root.parent, version_root, prefix,
+                     install_root / "current", version_root / "version.json",
+                     descriptor.parent, descriptor):
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                return None
+            if hasattr(os, "getuid") and info.st_uid != os.getuid():
+                return None
+            if os.name == "nt":
+                if not platform.is_owner_only(item):
+                    return None
+            elif info.st_mode & 0o022:
+                return None
+        if not descriptor.is_file() or descriptor.stat().st_nlink != 1:
+            return None
+        module = Path(__file__)
+        if (not module.is_absolute() or module.resolve() != module
+                or not module.is_relative_to(prefix)):
+            return None
+        if prefix.resolve() != prefix or descriptor.resolve() != descriptor:
+            return None
+        selected = current(install_root)
+        if selected is None or selected.root != version_root or not selected.python.is_relative_to(prefix):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+    return descriptor
+
+
 def _toolchain(selected: str | None) -> dict[str, Any]:
     """Load and verify the release-pinned browser toolchain lock; refuse when unavailable.
 
@@ -193,12 +238,28 @@ def _toolchain(selected: str | None) -> dict[str, Any]:
         return PackInstallError("toolchain_unavailable", reason + " Nothing was changed.")
 
     value = selected if selected is not None else os.environ.get(TOOLCHAIN_ENV)
+    implicit = value is None
+    if implicit:
+        value = _managed_toolchain()
     if not value:
         raise refuse("This pack declares a browser ui entry, but no pinned build toolchain is selected:"
                      f" pass --toolchain <toolchain.json> or set {TOOLCHAIN_ENV}.")
     path = Path(value).expanduser()
     try:
-        lock = json.loads(path.read_text(encoding="utf-8"))
+        if implicit:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                info = os.fstat(stream.fileno())
+                actual = path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or (info.st_dev, info.st_ino) != (actual.st_dev, actual.st_ino)
+                        or (os.name != "nt" and (info.st_mode & 0o022 or info.st_uid != os.getuid()))
+                        or _managed_toolchain() != path):
+                    raise OSError("Managed descriptor changed or is unsafe")
+                lock = json.load(stream)
+        else:
+            lock = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise refuse(f"The build toolchain lock {path} is unreadable.") from exc
     if (not isinstance(lock, dict) or set(lock) != _TOOLCHAIN_FIELDS or lock["version"] != 1
