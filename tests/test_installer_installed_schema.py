@@ -29,7 +29,7 @@ from astrid.installer.service import LABEL
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-PRODUCER = "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+PRODUCER = "9fc53b771134940aaac901e4cfc5d03c1db1a20a"
 SCHEMA_SHA256 = "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
 pytestmark = pytest.mark.linux_native
 
@@ -445,3 +445,49 @@ def test_stage_rejects_foreign_object_before_declaration(staged_installer):
     candidate, = (state.root / "versions").iterdir()
     assert not (candidate / "services.json").exists()
     assert not (candidate / "profile.json").exists()
+
+
+def test_pack_build_npm_failure_stops_before_service_declaration(staged_installer, monkeypatch):
+    state = staged_installer
+    state.manifest["tools"]["node"] = {"version": "20.19.4", "assets": {
+        "linux-x64": {"url": "https://example.org/node.tar.gz", "sha256": "c" * 64}}}
+    state.manifest["pack_build"] = {"version": 1, "esbuild_version": "0.27.7",
+                                    "app_release_sha256": "a" * 64,
+                                    "shared_modules": {"url": "https://example.org/lock", "sha256": "b" * 64}}
+    monkeypatch.setattr(state.backend, "_declare_services", lambda **kwargs: pytest.fail("declared service"))
+    with pytest.raises(ValueError, match="successful frozen"):
+        state.backend.stage(state.manifest, state.root, state.data)
+
+
+def test_pack_build_environment_is_persisted_before_declaration(staged_installer, monkeypatch):
+    state = staged_installer
+    state.manifest["tools"]["node"] = {"version": "20.19.4", "assets": {
+        "linux-x64": {"url": "https://example.org/node.tar.gz", "sha256": "c" * 64}}}
+    state.manifest["pack_build"] = {"version": 1, "esbuild_version": "0.27.7",
+                                    "app_release_sha256": "a" * 64,
+                                    "shared_modules": {"url": "https://example.org/lock", "sha256": "b" * 64}}
+    monkeypatch.setattr(state.backend, "install_remotion_dependencies", lambda *_: True)
+    expected = {}
+    def stage(folder, agent, env, manifest):
+        expected["path"] = str(folder / "pack-build/toolchain.json")
+        return Path(expected["path"])
+    monkeypatch.setattr("astrid.installer.backend._stage_pack_toolchain", stage)
+    declaration = state.backend._declare_services
+    def capture(**kwargs):
+        assert kwargs["env"]["ASTRID_PACK_TOOLCHAIN"] == expected["path"]
+        return declaration(**kwargs)
+    monkeypatch.setattr(state.backend, "_declare_services", capture)
+    version = state.backend.stage(state.manifest, state.root, state.data)
+    assert version.env["ASTRID_PACK_TOOLCHAIN"] == expected["path"]
+    assert json.loads((version.root / "version.json").read_text())["env"]["ASTRID_PACK_TOOLCHAIN"] == expected["path"]
+
+
+def test_pack_build_requires_pinned_node_archive(staged_installer):
+    state = staged_installer
+    state.manifest["tools"]["node"] = {"version": "20.19.4", "assets": {
+        "linux-x64": {"url": "https://example.org/node.tar.gz"}}}
+    state.manifest["pack_build"] = {"version": 1, "esbuild_version": "0.27.7",
+                                    "app_release_sha256": "a" * 64,
+                                    "shared_modules": {"url": "https://example.org/lock", "sha256": "b" * 64}}
+    with pytest.raises(ValueError, match="SHA256-pinned"):
+        state.backend.stage(state.manifest, state.root, state.data)

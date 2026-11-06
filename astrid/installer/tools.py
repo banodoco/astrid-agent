@@ -96,7 +96,34 @@ def validate_manifest(value: dict) -> dict:
     omp_source(value["tools"]["omp"])
     if value["tools"]["node"]["version"] != "20.19.4":
         raise ValueError("Remotion requires Node 20.19.4.")
+    if "pack_build" in value:
+        validate_pack_build(value["pack_build"])
     return value
+
+
+def validate_pack_build(spec: object) -> dict:
+    """Validate the optional App release's selected compiler contract."""
+    if (not isinstance(spec, dict)
+            or set(spec) != {"version", "esbuild_version", "app_release_sha256", "shared_modules"}
+            or type(spec["version"]) is not int or spec["version"] != 1
+            or spec["esbuild_version"] != "0.27.7"
+            or not isinstance(spec["app_release_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", spec["app_release_sha256"])):
+        raise ValueError("Invalid release pack-build specification.")
+    shared = spec["shared_modules"]
+    if (not isinstance(shared, dict) or set(shared) != {"url", "sha256"}
+            or not isinstance(shared["url"], str) or not isinstance(shared["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", shared["sha256"])):
+        raise ValueError("Invalid release shared-module specification.")
+    try:
+        url = urllib.parse.urlsplit(shared["url"])
+        if (url.scheme != "https" or not url.hostname or url.username is not None
+                or url.password is not None or url.fragment or url.port == 0
+                or any(ord(c) <= 32 or ord(c) == 127 for c in shared["url"])):
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("Shared-module lock requires a valid HTTPS URL.") from exc
+    return spec
 
 
 def asset_downloads(asset: dict) -> list[tuple[str, str | None]]:
