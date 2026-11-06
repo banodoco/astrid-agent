@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -40,6 +41,78 @@ from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, clone_source, install_tools, source
+
+
+def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
+    """Secure only the new venv's guarded inputs, detaching shared file inodes."""
+    if os.name == "nt":
+        return  # Windows admission uses ACLs rather than POSIX modes.
+    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+    venv_root = folder / "py"
+    try:
+        relative_root = product_root.relative_to(venv_root)
+    except ValueError as exc:
+        raise ValueError("installed timeline schema root is outside the candidate") from exc
+    if not relative_root.parts or ".." in relative_root.parts:
+        raise ValueError("installed timeline schema root is outside the candidate")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    opened = []
+    try:
+        # Walk from the candidate itself: no resolved alias may escape it.
+        fd = os.open(folder, flags)
+        opened.append(fd)
+        for part in ("py", *relative_root.parts):
+            fd = os.open(part, flags, dir_fd=fd)
+            opened.append(fd)
+            facts = os.fstat(fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        root_fd = fd
+        dirs = {(): root_fd}
+        files = (SCHEMA_RELATIVE_PATH, *READER_INPUTS)
+        # Check all path components without following links before modifying any.
+        for relative in files:
+            parent = root_fd
+            for index, part in enumerate(relative.parts[:-1], 1):
+                key = relative.parts[:index]
+                if key not in dirs:
+                    child = os.open(part, flags, dir_fd=parent)
+                    opened.append(child)
+                    facts = os.fstat(child)
+                    if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                        raise ValueError("installed timeline schema input has a foreign owner or type")
+                    dirs[key] = child
+                parent = dirs[key]
+            leaf = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(leaf)
+            facts = os.fstat(leaf)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        for directory in dirs.values():
+            facts = os.fstat(directory)
+            os.fchmod(directory, stat.S_IMODE(facts.st_mode) & ~0o022)
+        # Each replacement is private even if uv linked its original to cache.
+        for relative in files:
+            parent = dirs[relative.parts[:-1]]
+            source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(source_fd)
+            facts = os.fstat(source_fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+            name = ".astrid-schema-" + uuid.uuid4().hex
+            dest_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o600, dir_fd=parent)
+            opened.append(dest_fd)
+            with os.fdopen(os.dup(source_fd), "rb") as src, os.fdopen(os.dup(dest_fd), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.fchmod(dest_fd, stat.S_IMODE(facts.st_mode) & ~0o022)
+            os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+    except OSError as exc:
+        raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -1058,7 +1131,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # unmodified lock beside the installed package, then admit those bytes
         # before declaring services. The source and npm trees never substitute
         # for a missing or changed wheel resource.
-        shutil.copyfile(agent / "runtime.lock.json", product_root / "runtime.lock.json")
+        _secure_installed_schema_inputs(folder, product_root)
+        # Exclusive creation refuses pre-existing objects (including symlinks).
+        with (agent / "runtime.lock.json").open("rb") as source_lock:
+            with (product_root / "runtime.lock.json").open("xb") as installed_lock:
+                shutil.copyfileobj(source_lock, installed_lock)
+                if os.name != "nt":
+                    os.fchmod(installed_lock.fileno(), 0o600)
         schema = self._verify_local_timeline_schema(product_root)
         env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema)
         self._verify_installed_timeline_schema(python, product_root, env)

@@ -63,6 +63,9 @@ def release_wheel(tmp_path_factory):
 def _damage(schema, kind, outside):
     if kind == "missing":
         schema.unlink()
+    elif kind == "fifo":
+        schema.unlink()
+        os.mkfifo(schema)
     elif kind == "symlink":
         target = outside / "identical-schema.json"
         target.write_bytes(schema.read_bytes())
@@ -147,6 +150,21 @@ print(json.dumps({name: importlib.import_module(name).__file__ for name in names
             f"real wheel imports escaped child site-packages: {escaped}\n"
             f"child pip output:\n{pip_output}"
         )
+        if os.environ.get("ASTRID_TEST_UMASK_CHILD"):
+            from astrid.core.rendering._local_schema import READER_INPUTS
+            state.cache = outside / "cache"
+            state.cache.mkdir()
+            state.cached = {}
+            for index, relative in enumerate((SCHEMA, *READER_INPUTS)):
+                installed = state.product_root / relative
+                cache = state.cache / str(index)
+                shutil.copyfile(installed, cache)
+                cache.chmod(0o664)
+                installed.unlink()
+                os.link(cache, installed)
+                state.cached[relative] = (cache, cache.read_bytes(), cache.stat().st_mode)
+        if state.damage_at == "foreign":
+            monkeypatch.setattr("astrid.installer.backend.os.geteuid", lambda: -1)
         if state.damage_at == "wheel":
             _damage(state.product_root / SCHEMA, state.damage, outside)
         return ""
@@ -370,3 +388,60 @@ print(json.dumps(rejected))
     assert core.current(state.root) == old
     assert {path: path.read_bytes() for path in preserved} == before
     assert not (state.root / "update-transaction.json").exists()
+
+
+def test_stage_umask_0002_keeps_guarded_inputs_private(staged_installer):
+    if not os.environ.get("ASTRID_TEST_UMASK_CHILD"):
+        pytest.skip("exercised by isolated umask subprocess")
+    from astrid.core.rendering._local_schema import READER_INPUTS
+    state = staged_installer
+    source_before = {p: (p.read_bytes(), p.stat().st_mode) for p in
+                     (ROOT / SCHEMA, ROOT / "runtime.lock.json", *(ROOT / p for p in READER_INPUTS))}
+    version = state.backend.stage(state.manifest, state.root, state.data)
+    for relative in (SCHEMA, Path("runtime.lock.json"), *READER_INPUTS):
+        path = state.product_root / relative
+        for part in (path, *path.parents):
+            assert not part.stat().st_mode & 0o022, part
+            if part == state.product_root:
+                break
+    for relative, (cache, content, mode) in state.cached.items():
+        assert (cache.read_bytes(), cache.stat().st_mode) == (content, mode)
+        assert not os.path.samefile(cache, state.product_root / relative)
+    assert {p: (p.read_bytes(), p.stat().st_mode) for p in source_before} == source_before
+    assert state.backend._verify_local_timeline_schema(state.product_root) == state.product_root / SCHEMA
+    assert version.profile.exists()
+
+
+def test_stage_umask_0002_subprocess(tmp_path):
+    if os.environ.get("ASTRID_TEST_UMASK_CHILD"):
+        pytest.skip("parent only")
+    env = {**os.environ, "ASTRID_TEST_UMASK_CHILD": "1"}
+    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+                             "--basetemp", str(tmp_path / "child"),
+                             __file__ + "::test_stage_umask_0002_keeps_guarded_inputs_private"],
+                            cwd=ROOT, env=env, capture_output=True, text=True,
+                            preexec_fn=lambda: os.umask(0o002), timeout=180)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_stage_rejects_foreign_guarded_directory_before_declaration(staged_installer):
+    if os.name == "nt":
+        pytest.skip("POSIX ownership")
+    state = staged_installer
+    state.damage_at = "foreign"
+    with pytest.raises(ValueError, match="foreign owner or type"):
+        state.backend.stage(state.manifest, state.root, state.data)
+    candidate, = (state.root / "versions").iterdir()
+    assert not (candidate / "services.json").exists()
+    assert not (candidate / "profile.json").exists()
+    assert not any("service_declaration" in arg for command in state.commands for arg in command)
+
+
+def test_stage_rejects_foreign_object_before_declaration(staged_installer):
+    state = staged_installer
+    state.damage_at, state.damage = "wheel", "fifo"
+    with pytest.raises(ValueError, match="foreign owner or type"):
+        state.backend.stage(state.manifest, state.root, state.data)
+    candidate, = (state.root / "versions").iterdir()
+    assert not (candidate / "services.json").exists()
+    assert not (candidate / "profile.json").exists()
