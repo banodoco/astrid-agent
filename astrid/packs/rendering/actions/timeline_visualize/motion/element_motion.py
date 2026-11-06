@@ -21,6 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from astrid.pack_api import astrid_root
 from astrid.core.pack.manifest import ManifestParseError, load_manifest_mapping
 
 SCRIPT = Path(__file__).with_name("element_motion.mjs")
@@ -187,7 +188,7 @@ def _default_declarations(packs_root: Path) -> tuple[dict[str, Any], ...]:
         # An explicit non-checkout root keeps the historical custom-root
         # boundary for bundled packs while registry-selected external roots
         # remain discoverable even when that checkout root is absent.
-        source_packs_root = (Path(REPO_ROOT) / "astrid" / "packs").resolve()
+        source_packs_root = (astrid_root() / "packs").resolve()
         if packs_root.resolve() != source_packs_root and _within(pack_root, source_packs_root):
             continue
         installed_roots[(pack_id, pack_root)] = None
