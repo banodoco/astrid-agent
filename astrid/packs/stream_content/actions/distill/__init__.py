@@ -1,2 +1,0 @@
-"""Stream-content distillation orchestrator."""
-

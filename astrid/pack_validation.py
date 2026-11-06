@@ -121,19 +121,19 @@ def _requirements(manifest: Mapping[str, object], packages: Mapping[str, str],
             req = Requirement(item)
         except InvalidRequirement as exc:
             return "invalid_manifest", f"Invalid Python requirement {item!r}: {exc}"
+        if req.url or req.extras:
+            return "invalid_manifest", f"Python requirement {item!r} cannot be verified from the locked version snapshot (URL or extras)."
         if req.marker:
             if environment is None or not _MARKER_FIELDS.issubset(environment):
                 return "invalid_manifest", f"Python requirement {item!r} needs an explicit interpreter marker environment (including python_version)."
             try:
                 # Marker.evaluate() reads the host environment even when overrides
                 # are supplied; evaluate its parsed expression with only the snapshot.
-                marker_env = {**environment, "extra": ""}
+                marker_env = {**environment, "extra": environment.get("extra", "")}
                 if not _evaluate_markers(req.marker._markers, marker_env):
                     continue
             except (UndefinedComparison, UndefinedEnvironmentName, ValueError, TypeError) as exc:
                 return "invalid_manifest", f"Python requirement {item!r} has an invalid marker environment: {exc}"
-        if req.url or req.extras:
-            return "invalid_manifest", f"Python requirement {item!r} cannot be verified from the locked version snapshot (URL or extras)."
         version = installed.get(canonicalize_name(req.name))
         if version is None:
             return "missing_python", f"Python requirement {item!r} is missing from the locked interpreter."
