@@ -124,7 +124,9 @@ def _parse_pins(raw: Any) -> dict[str, SourcePin]:
     for name, value in obj["sources"].items():
         if not isinstance(name, str) or not name:
             raise RecipeValidationError("pin keys must be non-empty strings")
-        pin = _object(value, {"repository", "revision"}, where=f"pins.sources.{name}")
+        pin = _object(value, {"repository", "revision"}, {"version"}, where=f"pins.sources.{name}")
+        if "version" in pin and (not isinstance(pin["version"], str) or not pin["version"].strip()):
+            raise RecipeValidationError(f"pins.sources.{name}.version must be a non-empty string")
         repository = _https(pin["repository"], f"pins.sources.{name}.repository")
         revision = _string(pin["revision"], f"pins.sources.{name}.revision")
         if not _REVISION.fullmatch(revision):
