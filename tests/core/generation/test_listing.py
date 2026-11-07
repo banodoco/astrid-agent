@@ -341,7 +341,9 @@ def test_gateway_and_console_dispatch(monkeypatch, capsys):
 
 def test_real_registry_consumes_availability_and_cloud(monkeypatch):
     from scripts.gen_capability_index import _in_repo_packs_only
+    from tests.core.generation.availability_fixtures import declare_wan_actions_unqualified
 
+    declaration = declare_wan_actions_unqualified(monkeypatch)
     monkeypatch.setattr(listing, "_targets", lambda: [])
     monkeypatch.delenv("FAL_KEY", raising=False)
     with _in_repo_packs_only():
@@ -349,8 +351,9 @@ def test_real_registry_consumes_availability_and_cloud(monkeypatch):
     unavailable = next(row for row in rows if row["id"] == "video_editing.thumbnail_maker")
     assert unavailable["availability"] == "unavailable" and not unavailable["ready"]
     assert "not implemented" in unavailable["reason"]
-    fixture = next(row for row in rows if row["id"] == "astrid_motion:preview/scenes.json")
-    assert fixture["availability"] == "fixture-only" and not fixture["ready"]
+    for route in declaration["fixture_only_routes"]:
+        fixture = next(row for row in rows if row["id"] == route)
+        assert fixture["availability"] == "fixture-only" and not fixture["ready"]
     cloud = next(row for row in rows if row["id"] == "z-image" and row["backend"] == "cloud")
     assert not cloud["ready"] and cloud["reason"] == "no key" and "FAL_KEY" in cloud["fix"]
 
@@ -371,13 +374,15 @@ def test_text_and_json_listings_are_deterministic(monkeypatch, capsys):
     assert capsys.readouterr().out == first_text
 
 
-def test_wan_catalog_rows_and_animate_actions_are_unavailable():
+def test_wan_catalog_rows_and_animate_actions_are_unavailable(monkeypatch):
+    from tests.core.generation.availability_fixtures import UNQUALIFIED_ACTIONS, declare_wan_actions_unqualified
+    declare_wan_actions_unqualified(monkeypatch)
     rows = listing.catalog_rows()
     wan = [row for row in rows if row['id'] == 'wan-2.2']
     assert wan and all(row['availability'] == 'unavailable' and row['reason'] for row in wan)
     templates = [row for row in rows if row['source'] == 'ready-template' and row['id'].startswith('video/wan')]
     assert templates and all(row['availability'] == 'unavailable' and row['reason'] for row in templates)
-    for action in ('wan2gp.generate_video', 'video_editing.animate_image', 'vibecomfy.character_animation'):
+    for action in UNQUALIFIED_ACTIONS:
         assert any(row['id'] == action and row['availability'] == 'unavailable' for row in rows)
 
 
@@ -391,9 +396,8 @@ def test_qualified_fake_model_remains_available(monkeypatch):
 
 
 def test_declared_qualified_synthetic_action_is_retained(monkeypatch):
-    declaration = {**listing.availability_declaration()}
-    declaration['actions'] = {**declaration['actions'], 'synthetic.qualified': {'available': True}}
-    monkeypatch.setattr(listing, 'availability_declaration', lambda: declaration)
+    from tests.core.generation.availability_fixtures import declare_wan_actions_unqualified
+    declare_wan_actions_unqualified(monkeypatch, {'synthetic.qualified': {'available': True}})
     rows = listing.catalog_rows()
     qualified = next(row for row in rows if row['id'] == 'synthetic.qualified')
     assert qualified['source'] == 'action' and qualified['availability'] == 'available'

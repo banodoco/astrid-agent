@@ -2078,7 +2078,7 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
     recipe = replace(recipe, environments=(replace(recipe.environments[0], requirements=req),))
     read_ref = recipes._read_ref
     monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
-    monkeypatch.setattr(recipes, "_read_ref", lambda value: (tmp_path / "packaged.lock", lock_bytes) if value == ref else read_ref(value))
+    monkeypatch.setattr(recipes, "_read_ref", lambda value, **kwargs: (tmp_path / "packaged.lock", lock_bytes) if value == ref else read_ref(value, **kwargs))
     payload = _helper_payload(tmp_path, recipe, environment="comfy")
     assert target.dispatch("lock-inputs", payload)["facts"] == {"lock_exists": False}
     assert target.dispatch("commit-lock", payload)["facts"] == {"requirements_lock_sha256": ref.sha256}

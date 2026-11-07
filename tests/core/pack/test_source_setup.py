@@ -11,16 +11,10 @@ import pytest
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.pack.discovery import discover_canonical_pack_metadata, discover_pack_metadata
 from astrid.core.pack.source_setup import (
-    DEFAULT_HIVEMIND_REPOSITORY,
-    DEFAULT_HIVEMIND_REVISION,
-    HIVEMIND_REPOSITORY_ENV,
-    HIVEMIND_REVISION_ENV,
     SourceDeclaration,
     SourceSetupError,
     active_source_inventory,
     declarations_from_json,
-    default_source_declarations,
-    hivemind_pin_report,
     provision,
     source_data_root,
     source_state_path,
@@ -65,16 +59,15 @@ def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
     return _git(root, "rev-parse", "HEAD")
 
 
-def test_default_source_policy_uses_full_delivery_hivemind_pin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ASTRID_SOURCE_DECLARATIONS", raising=False)
-    monkeypatch.delenv(HIVEMIND_REVISION_ENV, raising=False)
-    monkeypatch.delenv(HIVEMIND_REPOSITORY_ENV, raising=False)
-    declarations = default_source_declarations()
-    assert declarations[0].revision == DEFAULT_HIVEMIND_REVISION
-    assert declarations[0].repository == DEFAULT_HIVEMIND_REPOSITORY
-    assert hivemind_pin_report(declarations)["status"] == "configured"
+def test_hivemind_resolves_as_installed_core_pack() -> None:
+    """Hivemind ships in core (Plan 06): discovery admits it from the core package, not an external source."""
+    import astrid
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    discovered = next(item for item in discover_pack_metadata() if item.pack.id == "hivemind")
+    assert discovered.source_kind == "source"
+    core_manifest = Path(astrid.__file__).resolve().parent / "core" / "hivemind" / "pack.yaml"
+    assert Path(discovered.pack.root, "pack.yaml").resolve() == core_manifest
 
 
 def test_test_home_isolates_default_managed_source_inventory(tmp_path: Path) -> None:
@@ -96,26 +89,6 @@ def test_test_home_isolates_default_managed_source_inventory(tmp_path: Path) -> 
     with mock.patch.dict(os.environ, child, clear=True):
         assert source_state_path() == child_home / ".local/state/astrid/default/pack-sources.json"
         assert active_source_inventory().sources == ()
-
-
-def test_default_source_policy_accepts_only_a_configured_full_immutable_pin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    revision = "a" * 40
-    monkeypatch.setenv(HIVEMIND_REVISION_ENV, revision)
-    declarations = default_source_declarations()
-    assert declarations == (
-        SourceDeclaration(
-            pack_id="hivemind",
-            repository=DEFAULT_HIVEMIND_REPOSITORY,
-            revision=revision,
-        ),
-    )
-    assert hivemind_pin_report(declarations)["status"] == "configured"
-
-    monkeypatch.setenv(HIVEMIND_REVISION_ENV, "deadbeef")
-    with pytest.raises(SourceSetupError, match="full immutable Hivemind Git object id"):
-        default_source_declarations()
 
 
 @pytest.mark.parametrize("subpath", ["C:relative", "C:/absolute"])
