@@ -1,5 +1,6 @@
 """Installer admission and lock placement through the Windows permission seam."""
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -12,7 +13,7 @@ from runtime_protocol import platform, windows_security
 
 from astrid.installer import cli
 from astrid.installer.backend import Backend
-from astrid.installer.core import write_json
+from astrid.installer.core import read_json, write_json
 from astrid.installer.service import LABEL, default_program_root
 
 
@@ -121,18 +122,19 @@ def test_windows_uninstall_deletes_default_workspace_while_lock_is_held(tmp_path
     monkeypatch.setattr(platform, "sys", SimpleNamespace(platform="win32"))
     root, data = local / "Astrid", platform.data_root()
     lock_path = local / "Astrid Installer" / "astrid-install.lock"
-    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
-    (root / "owned").mkdir()
-    data.mkdir()
-    (data / "sentinel").write_text("workspace data")
 
     def private_directory(path):
         assert Path(path) != local
         Path(path).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    (root / "owned").mkdir()
+    data.mkdir()
+    (data / "sentinel").write_text("workspace data")
     backend = Backend(root, platform.log_dir() / "install.log", local / "Astrid Installer/bootstrap/uv.exe")
-    backend.service = SimpleNamespace(root=root, recorded=lambda: {}, selection=local / "astrid-install.json", system="win32", say=print,
+    backend.service = SimpleNamespace(root=root, recorded=lambda: {}, selection=lock_path.with_name("astrid-install.json"), system="win32", say=print,
                                      home=Path.home())
     monkeypatch.setattr("astrid.installer.launcher._update_user_path", Mock())
     monkeypatch.setattr(backend, "existing", Mock(return_value=None))
@@ -223,3 +225,234 @@ def test_unix_installer_retains_original_per_user_lock(tmp_path, monkeypatch, sy
     original = default_program_root(Path.home(), system).parent / "astrid-install.lock"
     assert original.is_file()
     assert not (tmp_path / "logs" / "installer").exists()
+
+
+@pytest.fixture
+def windows_dacls(monkeypatch, windows_move):
+    """Model Windows DACLs by inode, which a rename keeps: only restrict and
+    private_directory create protected owner/SYSTEM descriptors."""
+    protected = set()
+
+    def key(path_or_fd):
+        info = os.fstat(path_or_fd) if isinstance(path_or_fd, int) else os.stat(path_or_fd)
+        return info.st_dev, info.st_ino
+
+    def unsafe():
+        return PermissionError("unsafe Windows owner/DACL: a protected, non-NULL DACL is required")
+
+    def private_directory(path):
+        path = Path(path)
+        if path.exists():
+            if key(path) not in protected:
+                raise unsafe()
+            return
+        if not path.parent.exists():
+            private_directory(path.parent)
+        path.mkdir()
+        protected.add(key(path))
+
+    def read_private(path):
+        # windows_security.read_private admits the parent and then the file.
+        path = Path(path)
+        for entry in (path.parent, path):
+            if key(entry) not in protected:
+                raise unsafe()
+        return path.read_bytes()
+
+    monkeypatch.setattr(platform, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(windows_security, "restrict", lambda target: protected.add(key(target)))
+    monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "read_private", read_private)
+    return SimpleNamespace(protected=protected, key=key, private_directory=private_directory)
+
+
+def _runtime_private_read(path):
+    import importlib
+
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    return bootstrap._private_handoff_bytes(path)
+
+
+def test_windows_install_records_pass_the_runtime_private_read(tmp_path, monkeypatch, windows_dacls):
+    """pinokio-windows run 42390048122: uninstall could not read the stop binding.
+
+    Runtime reads every Pinokio stop-binding input with read_private. Records the
+    installer writes must therefore be protected, inside protected directories.
+    """
+    from astrid.installer.core import Version, switch
+    from astrid.installer.service import install_selection
+    from astrid_runtime.paths import _install_record_path
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    local.mkdir()  # LOCALAPPDATA: an inherited, unprotected DACL.
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root = tmp_path / "program"
+    platform.private_directory(root)
+
+    selection = install_selection(home, "win32")
+    assert selection == local / "Astrid Installer" / "astrid-install.json"
+    assert selection == _install_record_path(home)
+    write_json(selection, {"owner": LABEL, "managed_by": "pinokio"})
+    write_json(root / "install.json", {"owner": LABEL, "managed_by": "pinokio"})
+    folder = root / "versions" / "v1"
+    folder.mkdir(parents=True)
+    platform.owner_only(folder)
+    write_json(folder / "version.json", {"root": str(folder)})
+    switch(root, Version(folder, folder / "py" / "Scripts" / "python.exe", folder / "profile.json", {}))
+
+    for record in (selection, root / "install.json", root / "current", folder / "version.json"):
+        assert _runtime_private_read(record)
+    legacy = local / "astrid-install.json"
+    legacy.write_text("{}", encoding="utf-8")
+    with pytest.raises(Exception, match="Pinokio stop binding is unavailable"):
+        _runtime_private_read(legacy)
+
+
+def test_posix_write_json_keeps_its_permissions(tmp_path, monkeypatch):
+    restrict = Mock()
+    monkeypatch.setattr(windows_security, "restrict", restrict)
+    monkeypatch.setattr(platform, "sys", SimpleNamespace(platform="linux"))
+    path = tmp_path / "state" / "install.json"
+    old = os.umask(0o022)
+    try:
+        write_json(path, {"owner": LABEL})
+    finally:
+        os.umask(old)
+    assert path.stat().st_mode & 0o777 == 0o644
+    assert (tmp_path / "state").stat().st_mode & 0o777 == 0o755
+    restrict.assert_not_called()
+
+
+def test_windows_staged_version_folder_is_a_protected_record_parent(tmp_path, monkeypatch, windows_dacls):
+    import astrid.installer.backend as backend_module
+
+    root = tmp_path / "program"
+    platform.private_directory(root)
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv", managed_by="pinokio")
+    backend.uv.touch()
+    monkeypatch.setattr(backend, "run", lambda argv, **_kwargs: "uv 1.0.0")
+
+    class Staged(Exception):
+        pass
+
+    def source(*_args, **_kwargs):
+        raise Staged
+
+    monkeypatch.setattr(backend_module, "source", source)
+    manifest = {"agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40},
+                "tools": {"uv": {"version": "1.0.0"}, "python": {"version": "3.11.9"}}}
+    with pytest.raises(Staged):
+        backend.stage(manifest, root, tmp_path / "workspace")
+
+    (folder,) = (root / "versions").iterdir()
+    assert windows_dacls.key(folder) in windows_dacls.protected
+    assert _runtime_private_read(folder / "manifest.json")
+
+
+def _legacy_selection(local, record):
+    legacy = local / "astrid-install.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps(record), encoding="utf-8")
+    return legacy
+
+
+def test_windows_migrates_owned_legacy_selection_under_the_installer_lock(tmp_path, monkeypatch, windows_dacls):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    record = {"owner": LABEL, "managed_by": "pinokio", "program_root": str(tmp_path / "program")}
+    legacy = _legacy_selection(local, record)
+    locks = []
+    monkeypatch.setattr(platform, "lock_file", lambda fd, **kwargs: locks.append(kwargs))
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    selection = install_selection(home, "win32")
+    assert json.loads(selection.read_text(encoding="utf-8")) == record
+    assert not legacy.exists()
+    assert locks == [{"blocking": False}]
+    assert (selection.parent / "astrid-install.lock").is_file()
+    assert _runtime_private_read(selection)
+
+
+@pytest.mark.parametrize("state", ["foreign", "malformed", "link", "busy"])
+def test_windows_leaves_unowned_or_contended_legacy_selection_untouched(tmp_path, monkeypatch, windows_dacls, state):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    legacy = _legacy_selection(local, {"owner": "someone.else" if state == "foreign" else LABEL})
+    if state == "malformed":
+        legacy.write_text("[", encoding="utf-8")
+    if state == "link":
+        target = tmp_path / "elsewhere.json"
+        legacy.replace(target)
+        legacy.symlink_to(target)
+    before = legacy.read_bytes()
+
+    def lock_file(_fd, **_kwargs):
+        if state == "busy":
+            raise BlockingIOError
+
+    monkeypatch.setattr(platform, "lock_file", lock_file)
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert legacy.read_bytes() == before
+    assert not install_selection(home, "win32").exists()
+
+
+def test_windows_retained_private_selection_wins_over_legacy(tmp_path, monkeypatch, windows_dacls):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    legacy = _legacy_selection(local, {"owner": LABEL, "data_root": "stale"})
+    selection = install_selection(home, "win32")
+    write_json(selection, {"owner": LABEL, "data_root": "current"})
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert read_json(selection) == {"owner": LABEL, "data_root": "current"}
+    assert not legacy.exists()
+
+
+@pytest.mark.parametrize("system", ["linux", "darwin"])
+def test_posix_selection_is_unchanged_and_never_migrated(tmp_path, monkeypatch, system):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    home = tmp_path / "home"
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    record = home / ".local" / "share" / "astrid-install.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"owner": LABEL}), encoding="utf-8")
+    assert install_selection(home, system) == record
+    migrate_install_selection(home, system)
+    assert record.is_file()
+
+
+def test_installer_migrates_before_any_selection_read(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(platform, "log_dir", lambda: log_dir)
+    events = []
+    backend = Mock()
+    backend.service.home, backend.service.system = tmp_path / "home", "win32"
+    backend.service.recorded.side_effect = lambda: events.append("read") or {}
+    backend.source_checkout_ownership.return_value = None
+    monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
+    monkeypatch.setattr(cli, "migrate_install_selection", lambda home, system: events.append(("migrate", home, system)))
+    monkeypatch.setattr(cli, "current", lambda _: SimpleNamespace(python=Path(__file__)))
+    monkeypatch.setattr(cli, "Installer", Mock())
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    cli.main(["--root", str(tmp_path / "program"), "--data-root", str(tmp_path / "workspace")])
+
+    assert events[0] == ("migrate", tmp_path / "home", "win32")
+    assert "read" in events[1:]

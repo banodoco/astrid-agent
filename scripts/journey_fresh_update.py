@@ -77,7 +77,7 @@ def boundary_state(root: Path, data: Path) -> dict:
     names = ("astrid-r0-upgrade-in-progress.json", "astrid-r1-handoff.json",
              "astrid-r1-registration.json")
     marker = journey.read_json(root / "install.json")
-    selection = journey.read_json(parent / "astrid-install.json")
+    selection = journey.read_json(journey.selection_path())
     return {"journals": [name for name in names if os.path.lexists(parent / name)],
             "r1_data_root": marker.get("r1_data_root"),
             "selection_r1_data_root": selection.get("r1_data_root"),
