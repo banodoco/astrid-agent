@@ -43,6 +43,25 @@ BUSY_REFUSAL = re.compile(r"Astrid is busy \(\d+ tasks running\)")
 TERMINAL = ci_journey.TERMINAL
 
 
+def _pid_alive(pid: int) -> bool:
+    """Liveness probe only. On Windows os.kill(pid, 0) would terminate the process."""
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)  # SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT: still running
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 class RowError(RuntimeError):
     pass
 
@@ -300,10 +319,8 @@ class Row:
         pid = control.get("pid")
         if not isinstance(pid, int) or not control.get("token") or not control.get("port"):
             raise RowError("updater left no session controller")
-        try:
-            os.kill(pid, 0)
-        except OSError as exc:
-            raise RowError("updater's session is not running") from exc
+        if not _pid_alive(pid):
+            raise RowError("updater's session is not running")
         self.child = None
         self.adopted_pid = pid
         self.instance = self.health()["instance"]
@@ -313,9 +330,7 @@ class Row:
             # An adopted session is not our child: wait for it to exit by pid.
             deadline = time.monotonic() + 15
             while True:
-                try:
-                    os.kill(self.adopted_pid, 0)
-                except OSError:
+                if not _pid_alive(self.adopted_pid):
                     break
                 if time.monotonic() >= deadline:
                     raise RowError("adopted session did not exit after graceful stop; left running")
