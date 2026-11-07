@@ -87,4 +87,7 @@ def stub_acquisition_graphql_machine(request: pytest.FixtureRequest, monkeypatch
         lambda api_key, contract, *, timeout_seconds: (contract.gpu_type, contract.datacenter_id),
         raising=False,
     )
+    # The recorded one-GPU pods (gpuCount 1); the real reader is exercised by the tests that
+    # request real_acquisition_confirmation.
+    monkeypatch.setattr(worker_preparation, "read_acquired_gpu_count", lambda api_key, pod_id: 1, raising=False)
     yield

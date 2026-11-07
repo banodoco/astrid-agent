@@ -28,7 +28,15 @@ from astrid.core.util.time import utc_now_iso
 
 
 class TargetObservationError(RuntimeError):
-    """Provider state was absent, ambiguous, or could not be verified safely."""
+    """Provider state was absent, ambiguous, or could not be verified safely.
+
+    ``gate`` is a fixed, secret-free name of the acquisition gate that raised it
+    (volume, GPU, datacenter, rate, lifetime, machine), or None outside a gate.
+    """
+
+    def __init__(self, *args: object, gate: str | None = None) -> None:
+        super().__init__(*args)
+        self.gate = gate
 
 
 class AcquisitionUnresolvedError(TargetObservationError):
@@ -466,7 +474,8 @@ def confirm_acquired_machine(
             break
         if time.monotonic() >= deadline:
             raise TargetObservationError(
-                f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout"
+                f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout",
+                gate="machine",
             )
         time.sleep(_MACHINE_POLL_SECONDS)
 
@@ -475,21 +484,41 @@ def confirm_acquired_machine(
     if contract.datacenter_id is not None and observed_dc != contract.datacenter_id:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} datacenter mismatch: expected {contract.datacenter_id!r}, "
-            f"observed {observed_dc!r}"
+            f"observed {observed_dc!r}",
+            gate="datacenter",
         )
     try:
         gpu = runpod.get_gpu(contract.gpu_type, api_key=api_key)
     except Exception:
         raise TargetObservationError(
-            f"provider gpuTypes catalog could not resolve GPU type {contract.gpu_type!r}"
+            f"provider gpuTypes catalog could not resolve GPU type {contract.gpu_type!r}",
+            gate="GPU",
         ) from None
     expected_display = gpu.get("displayName") if isinstance(gpu, dict) and gpu.get("id") == contract.gpu_type else None
     if not expected_display or expected_display != observed_gpu:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {expected_display!r} "
-            f"(catalog displayName of {contract.gpu_type!r}), observed {observed_gpu!r}"
+            f"(catalog displayName of {contract.gpu_type!r}), observed {observed_gpu!r}",
+            gate="GPU",
         )
     return observed_gpu, observed_dc
+
+
+def read_acquired_gpu_count(api_key: str, pod_id: str) -> int:
+    """The pod's GPU count from GraphQL ``pod.gpuCount``; unknown fails closed (rate gate)."""
+    from runpod_lifecycle import graphql as lifecycle_graphql
+
+    try:
+        record = lifecycle_graphql.get_pod(pod_id, api_key)
+    except Exception:
+        record = None
+    count = record.get("gpuCount") if isinstance(record, dict) else None
+    if type(count) is not int or count < 1:
+        raise TargetObservationError(
+            f"pod {pod_id!r} gpuCount was not reported by GraphQL; the pod total rate cannot be compared",
+            gate="rate",
+        )
+    return count
 
 
 async def observe_and_confirm_acquired_target(

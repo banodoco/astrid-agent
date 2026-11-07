@@ -23,10 +23,28 @@ from tests.packs.runpod.test_target_selection import case as case  # noqa: F401
 POD_ID = "vbkci4pniqyb4v"
 GPU_ID = "NVIDIA GeForce RTX 5090"
 # Recorded: attempt-3 GraphQL pod.machine, gpuTypes catalog row, and the REST GET shape.
-POD_GRAPHQL = {"data": {"pod": {"machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "EU-RO-1"}}}}
+POD_GRAPHQL = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "EU-RO-1"}}}}
 GPU_TYPES = {"data": {"gpuTypes": [{"id": GPU_ID, "displayName": "RTX 5090"}]}}
 
 pytestmark = pytest.mark.usefixtures("real_acquisition_confirmation")
+
+
+class FakeTime:
+    """Stands in for the time module inside worker_preparation: sleep advances monotonic."""
+
+    def __init__(self):
+        self.now, self.sleeps = 1000.0, []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def __getattr__(self, name):
+        import time
+        return getattr(time, name)
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +52,9 @@ def no_network(monkeypatch):
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     monkeypatch.setattr(socket.socket, "connect", lambda *args: pytest.fail("network forbidden"))
     monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: pytest.fail("network forbidden"))
-    monkeypatch.setattr(preparation, "_MACHINE_POLL_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(preparation, "_MACHINE_POLL_SECONDS", 3.0, raising=False)
+    # Fake clock: the bounded GraphQL wait polls on this time, so the tests stay fast.
+    monkeypatch.setattr(preparation, "time", FakeTime(), raising=False)
 
 
 @pytest.fixture
@@ -113,5 +133,119 @@ def test_unreported_graphql_machine_fails_closed_with_release(gate):
 def test_gpu_not_in_provider_catalog_fails_closed_with_release(gate):
     gate.gpus = {"data": {"gpuTypes": []}}
     with pytest.raises(PaidSelectionError, match="gpuTypes catalog"):
+        _select(gate)
+    assert _journal(gate)["state"] == "cleanup_pending"
+
+
+# ---- gate naming, bounded GraphQL wait, pod-total price (010f0dae1 -> this change) ----
+import datetime as _dt
+
+
+def _set_graphql_pod(gate, monkeypatch, responder):
+    """Route pod queries through ``responder(n)`` (n = 1-based pod query count); count them."""
+    import runpod.api.ctl_commands as ctl
+    import runpod.api.graphql as sdk_graphql
+    seen = []
+
+    def run_graphql_query(query, api_key=None):
+        if "gpuTypes" in query:
+            return gate.gpus
+        seen.append(query)
+        return responder(len(seen))
+
+    monkeypatch.setattr(sdk_graphql, "run_graphql_query", run_graphql_query)
+    monkeypatch.setattr(ctl, "run_graphql_query", run_graphql_query)
+    return seen
+
+
+def _past_expiry(gate, rate):
+    def observed(pod):
+        gate.case.now = _dt.datetime(2026, 11, 1, 5, 0, tzinfo=_dt.timezone.utc)
+        return rate
+    return observed
+
+
+@pytest.mark.parametrize("name", ["volume", "GPU", "datacenter", "rate", "lifetime", "machine"])
+def test_each_failing_gate_names_itself_in_the_error_and_the_journal(gate, name):
+    if name == "volume":
+        gate.rest["volumeMountPath"] = "/wrong"
+    elif name == "GPU":
+        gate.pod = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 4090", "dataCenterId": "EU-RO-1"}}}}
+    elif name == "datacenter":
+        gate.pod = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "US-XX-1"}}}}
+    elif name == "machine":
+        gate.pod = {"data": {"pod": {"gpuCount": 1, "machine": None}}}
+    elif name == "rate":
+        gate.case.owner.observed_hourly_usd = lambda pod: 9.99
+    elif name == "lifetime":
+        gate.case.owner.observed_hourly_usd = _past_expiry(gate, 1.19)
+    with pytest.raises(PaidSelectionError) as caught:
+        _select(gate)
+    assert f"unconfirmed {name} gate" in str(caught.value)
+    assert "price or lifetime" not in str(caught.value)
+    assert caught.value.gate == name
+    record = _journal(gate)
+    assert record["state"] == "cleanup_pending" and record["failed_gate"] == name
+    assert record["pod_id"] == POD_ID  # release behavior unchanged
+
+
+@pytest.mark.parametrize("appears_on", [2, 3])
+def test_machine_that_appears_after_one_or_two_polls_passes(gate, monkeypatch, appears_on):
+    ready = {"data": {"pod": {"gpuCount": 1, "machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "EU-RO-1"}}}}
+    empty = {"data": {"pod": {"gpuCount": 1, "machine": None}}}
+    seen = _set_graphql_pod(gate, monkeypatch, lambda n: empty if n < appears_on else ready)
+    assert _select(gate)["state"] == "claimed"
+    assert len(seen) >= appears_on
+
+
+def test_machine_that_never_appears_fails_closed_after_the_timeout_not_the_first_poll(gate, monkeypatch):
+    empty = {"data": {"pod": {"gpuCount": 1, "machine": None}}}
+    seen = _set_graphql_pod(gate, monkeypatch, lambda n: empty)
+    start = preparation.time.now
+    with pytest.raises(PaidSelectionError, match="unconfirmed machine gate"):
+        _select(gate)
+    assert len(seen) > 2
+    assert preparation.time.now - start >= selection._READINESS_TIMEOUT_SECONDS - preparation._MACHINE_POLL_SECONDS
+    assert set(preparation.time.sleeps) == {preparation._MACHINE_POLL_SECONDS}
+    assert _journal(gate)["state"] == "cleanup_pending"
+
+
+@pytest.mark.parametrize("observed,count,offer,ok", [
+    (1.19, 1, 1.19, True),       # recorded: gpuCount 1, costPerHr 1.19, offer 1.19
+    (2.38, 2, 1.19, True),       # pod total of two GPUs
+    (2.38, 1, 1.19, False),
+    (1.19, 1, "1.190", True),    # same price, different spelling
+    ("1.190", 1, 1.19, True),
+    (1.2, 1, 1.19, False),
+    (1.18, 1, 1.19, True),       # cheaper than the offer never blocks
+    (0.1 + 0.2, 1, 0.3, False),  # a float-noise value is a different, higher price; no tolerance
+    (3.57, 3, 1.19, True),       # 1.19 * 3 is 3.5700000000000003 in float math
+])
+def test_pod_total_rate_is_compared_in_decimal(observed, count, offer, ok):
+    assert selection.pod_rate_within_offer(observed, offer, count) is ok
+
+
+@pytest.mark.parametrize("count", [None, 0, -1, 1.0, True, "1"])
+def test_unknown_gpu_count_fails_closed_in_the_rate_gate(count):
+    with pytest.raises(PaidSelectionError) as caught:
+        selection.pod_rate_within_offer(1.19, 1.19, count)
+    assert caught.value.gate == "rate"
+
+
+@pytest.mark.parametrize("observed,count,passes", [(1.19, 1, True), (2.38, 2, True), (2.38, 1, False)])
+def test_selection_prices_the_pod_total_from_graphql_gpu_count(gate, observed, count, passes):
+    gate.pod = {"data": {"pod": {"gpuCount": count, "machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "EU-RO-1"}}}}
+    gate.case.owner.observed_hourly_usd = lambda pod: observed
+    if passes:
+        assert _select(gate)["state"] == "claimed"
+    else:
+        with pytest.raises(PaidSelectionError, match="unconfirmed rate gate"):
+            _select(gate)
+        assert _journal(gate)["failed_gate"] == "rate"
+
+
+def test_selection_fails_closed_when_graphql_reports_no_gpu_count(gate):
+    gate.pod = {"data": {"pod": {"machine": {"gpuDisplayName": "RTX 5090", "dataCenterId": "EU-RO-1"}}}}
+    with pytest.raises(PaidSelectionError, match="unconfirmed rate gate"):
         _select(gate)
     assert _journal(gate)["state"] == "cleanup_pending"

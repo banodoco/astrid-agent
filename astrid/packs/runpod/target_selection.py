@@ -17,6 +17,7 @@ import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
@@ -35,7 +36,38 @@ from . import worker_preparation
 
 
 class PaidSelectionError(TargetObservationError):
-    """Selection lacks current, exact paid authority or sufficient limits."""
+    """Selection lacks current, exact paid authority or sufficient limits.
+
+    Post-acquisition gates pass a fixed ``gate`` name (volume, GPU, datacenter,
+    rate, lifetime, machine) that the outer handler reports.
+    """
+
+
+# The readiness timeout the acquisition path already used (was the literal in
+# min(900, ...) for acquire/reconcile); the GPU/DC confirmation waits this long
+# (bounded by the paid lifetime) for GraphQL to populate pod.machine.
+_READINESS_TIMEOUT_SECONDS = 900
+
+
+def _rate_decimal(value: Any, name: str) -> Decimal:
+    """Exact Decimal from an int/float/str/Decimal through its shortest decimal text; never float math."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        raise PaidSelectionError(f"{name} must be a finite positive number", gate="rate")
+    try:
+        result = Decimal(str(value).strip())
+    except InvalidOperation:
+        raise PaidSelectionError(f"{name} must be a finite positive number", gate="rate") from None
+    if not result.is_finite() or result <= 0:
+        raise PaidSelectionError(f"{name} must be a finite positive number", gate="rate")
+    return result
+
+
+def pod_rate_within_offer(observed: Any, offer_hourly_usd: Any, gpu_count: Any) -> bool:
+    """RunPod costPerHr is the pod total: pass iff observed <= offer * gpuCount (exact Decimal)."""
+    if type(gpu_count) is not int or gpu_count < 1:
+        raise PaidSelectionError("pod GPU count is unknown; the pod total rate cannot be compared", gate="rate")
+    return (_rate_decimal(observed, "actual hourly USD rate")
+            <= _rate_decimal(offer_hourly_usd, "offer hourly USD rate") * gpu_count)
 
 
 def _label(value: Any, name: str) -> str:
@@ -445,12 +477,12 @@ class RunPodSelectionOwner:
                             config, handle_path=self.path, attempt=record, volume=volume, pod_id=None,
                             max_wait_seconds=max(1, int((expires - now).total_seconds())),
                             capacity_window_seconds=60, retry_interval_seconds=15, max_create_attempts=10,
-                            ready_timeout_seconds=max(1, min(900, int((expires - self.clock()).total_seconds()))),
+                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
                     else:
                         acquired = await reconcile_target.__wrapped__(
                             config, handle_path=self.path, attempt=record, volume=volume,
-                            ready_timeout_seconds=max(1, min(900, int((expires - self.clock()).total_seconds()))),
+                            ready_timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                         )
                 except CapacityExhaustedError:
                     raise
@@ -462,7 +494,7 @@ class RunPodSelectionOwner:
                 if (status != 200 or exact is None
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or exact.get("networkVolumeId") != p.volume_id):
-                    raise PaidSelectionError("provider did not confirm the exact volume mount")
+                    raise PaidSelectionError("provider did not confirm the exact volume mount", gate="volume")
                 # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
                 # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
                 # fresh pod). Unreported or unequal fails closed; no REST fallback.
@@ -472,19 +504,33 @@ class RunPodSelectionOwner:
                         observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
                         p.volume_name, p.volume_size_gb, record["request_name"], datacenter,
                     ),
-                    timeout_seconds=0,
+                    timeout_seconds=max(1, min(_READINESS_TIMEOUT_SECONDS, int((expires - self.clock()).total_seconds()))),
                 )
-                if _number(self.observed_hourly_usd(observation.pod_id), "actual hourly USD rate") != offer.hourly_usd:
-                    raise PaidSelectionError("actual rate changed; fresh consent is required before work")
+                try:
+                    gpu_count = await asyncio.to_thread(
+                        worker_preparation.read_acquired_gpu_count, config.api_key, observation.pod_id)
+                    observed_rate = self.observed_hourly_usd(observation.pod_id)
+                except TargetObservationError as exc:
+                    raise PaidSelectionError(str(exc), gate="rate") from None
+                except Exception:
+                    raise PaidSelectionError("actual hourly USD rate could not be read", gate="rate") from None
+                if not pod_rate_within_offer(observed_rate, offer.hourly_usd, gpu_count):
+                    raise PaidSelectionError(
+                        "actual pod rate exceeds the offer rate times GPU count; fresh consent is required before work",
+                        gate="rate")
                 if self.clock() >= expires:
-                    raise PaidSelectionError("claim preparation consumed its paid lifetime")
+                    raise PaidSelectionError("claim preparation consumed its paid lifetime", gate="lifetime")
             except Exception as exc:
-                pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True}
+                # Every gate names itself; a failure outside any gate is reported as such.
+                gate = getattr(exc, "gate", None) or "unclassified"
+                pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True,
+                           "failed_gate": gate}
                 replace_target_record(self.path, pending, operation_id=record["operation_id"])
-                # Our own gate messages are fixed, secret-free text naming the failed gate.
-                detail = (f"provider fields: {exc}" if isinstance(exc, TargetObservationError)
-                          else "price or lifetime")
-                raise PaidSelectionError(f"unconfirmed {detail}; exact claim requires cleanup") from None
+                # Our own gate messages are fixed, secret-free text; other exceptions are named by type only.
+                detail = (str(exc) if isinstance(exc, TargetObservationError)
+                          else f"unexpected {type(exc).__name__}")
+                raise PaidSelectionError(
+                    f"unconfirmed {gate} gate: {detail}; exact claim requires cleanup", gate=gate) from None
             claimed = {
                 **acquired_record, "schema_version": "astrid.runpod.claim.v1", "state": "claimed",
                 "pod_id": observation.pod_id, "name": observation.pod_name,
