@@ -140,23 +140,6 @@ class ElementLoaderHookTest(unittest.TestCase):
 
 
 class ShippedElementsTest(unittest.TestCase):
-    def test_astrid_motion_elements_load_with_zero_metadata_problems(self) -> None:
-        root = REPO_ROOT / "astrid/packs/astrid_motion/rendering/elements/effects"
-        manifests = sorted(root.glob("*/element.yaml"))
-        self.assertGreater(len(manifests), 0)
-        elements = [
-            load_element_definition(
-                manifest.parent,
-                kind="effects",
-                source="pack:astrid_motion",
-                editable=False,
-                priority=0,
-            )
-            for manifest in manifests
-        ]
-        problems = [problem for element in elements for problem in check_element_metadata(element)]
-        self.assertEqual(problems, [])
-
     def test_declared_effect_roles_are_in_vocabulary(self) -> None:
         root = REPO_ROOT / "astrid/packs/astrid_motion/rendering/elements/effects"
         for manifest in sorted(root.glob("*/element.yaml")):

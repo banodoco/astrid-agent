@@ -1360,18 +1360,6 @@
    ]
   },
   {
-   "id": "youtube.upload",
-   "disposition": "optional",
-   "evidence_reason": "Optional external publishing integration; not required for local beta.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
    "id": "youtube.youtube_audio",
    "disposition": "optional",
    "evidence_reason": "Optional external media import integration; retained with truthful binary preflight.",

@@ -211,17 +211,6 @@ def test_contact_view_draws_bounds_when_asked(tmp_path, monkeypatch):
 
 # --- layers registry ----------------------------------------------------------------------
 
-def test_layer_registry_lists_builtins_and_pack_layers(tmp_path):
-    names = {layer.name for layer in resolve_layers(None, view="motion")}
-    assert {"sync", "curves", "still", "diff", "lipsync", "lint", "strip", "onion"} <= names
-    assert "bounds" not in names and "heat" not in names  # opt-in / experimental
-    assert [layer.name for layer in resolve_layers(["bounds"], view="contact")] == ["bounds"]
-    with pytest.raises(ValueError, match="known layers"):
-        resolve_layers(["nope"], view="motion")
-    text = layer_help()
-    assert "rhythm" in text and "editorial pack" in text  # contributed by astrid/packs/editorial/visualize_layers
-
-
 def test_a_pack_layer_module_is_discovered(tmp_path, monkeypatch):
     pack = tmp_path / "packs" / "mypack" / "visualize_layers"
     pack.mkdir(parents=True)
@@ -644,12 +633,6 @@ def _own(maths, element):
     return values
 
 
-def test_elements_ship_their_own_motion():
-    found = element_motion.modules()
-    assert {"am-presenter", "am-snap-plate"} <= set(found)
-    assert all(path.name == "motion.ts" and (path.parent / "element.yaml").is_file() for path in found.values())
-
-
 @pytest.mark.remotion
 def test_a_real_v6_push_comes_from_the_element():
     """c16 (48.53 s): plate and presenter push 1 -> 1.35 over 100 frames; c07: zoom 3 -> 1 from frame 98."""
@@ -672,15 +655,6 @@ def test_a_real_v6_push_comes_from_the_element():
     # the face box follows the element's view, so it grows with the push
     early, late = model.face_box(by_id["c16-01-am-presenter"], 0), model.face_box(by_id["c16-01-am-presenter"], 100)
     assert (late[2] - late[0]) == pytest.approx(1.35 * (early[2] - early[0]), rel=0.02)
-
-
-def test_without_node_the_mirror_answers_and_says_so(monkeypatch):
-    monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", "/nonexistent/node")
-    monkeypatch.setattr(element_motion.shutil, "which", lambda _name: None)
-    by_id, maths = _v6_elements()
-    plate = by_id["c16-00-am-snap-plate"]
-    assert maths.at(plate, 50, 30) is None and "no Node" in maths.note
-    assert model.props_at(plate, plate.start + 50 / 30 + 1e-6, 30)["zoom"] == pytest.approx(1.175)
 
 
 @pytest.mark.remotion

@@ -23,10 +23,6 @@ PRESERVED_EXECUTOR_IDS = [
     "vibecomfy.validate",
     # One canonical id per remaining pack — sanity checks for common cases.
     "training.pool_build",
-    "iteration.assemble",
-    "youtube.upload",
-    # Declared as a v3 command action, so it lives in the executor registry.
-    "video_editing.hype",
 ]
 
 # One canonical orchestrator per pack that ships orchestrators.

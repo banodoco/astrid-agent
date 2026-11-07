@@ -100,39 +100,80 @@ result = sdk.invoke(
 )
 ```
 
-## Internal runner command (not a public entrypoint)
+## Equivalent SDK calls
 
-The following module command is reserved for Astrid's internal runner and is
-shown only for implementation debugging. Direct invocation is rejected by the
-canonical-entrypoint guard; use the SDK example above.
+Direct module invocation is rejected by the canonical-entrypoint guard; use
+the public SDK action path shown here and in the SDK quick-start above.
 
-```bash
-# Cloud text-to-video
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_video.run \
-  --model wan-2.2 --mode t2v --execution cloud \
-  --prompt "a serene mountain lake at dawn" --out ./out
-
-# Local image-to-video (requires vibecomfy + ComfyUI)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_video.run \
-  --model wan-2.2 --mode i2v --execution local \
-  --prompt "animate this scene" --image-ref ./frame0.png --out ./out
-
-# Image-to-video cloud
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_video.run \
-  --model ltx-2.3 --mode i2v --execution cloud \
-  --prompt "animate this scene" --image-ref ./frame0.png --out ./out
-
-# First-last-frame interpolation (local)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_video.run \
-  --model ltx-2.3 --mode flf --execution local \
-  --prompt "smooth transition" \
-  --image-ref ./frame0.png --image-end-ref ./frameN.png --out ./out
-
-# With resolution, frames, and fps
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_video.run \
-  --model ltx-2.3 --mode t2v --execution local \
-  --prompt "cyberpunk city flythrough" \
-  --resolution 1280x720 --frames 81 --fps 24 --out ./out
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "generation.generate_video",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'wan-2.2',
+        "mode": 't2v',
+        "execution": 'cloud',
+        "prompt": 'a serene mountain lake at dawn',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_video",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'wan-2.2',
+        "mode": 'i2v',
+        "execution": 'local',
+        "prompt": 'animate this scene',
+        "image_ref": './frame0.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_video",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'ltx-2.3',
+        "mode": 'i2v',
+        "execution": 'cloud',
+        "prompt": 'animate this scene',
+        "image_ref": './frame0.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_video",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'ltx-2.3',
+        "mode": 'flf',
+        "execution": 'local',
+        "prompt": 'smooth transition',
+        "image_ref": './frame0.png',
+        "image_end_ref": './frameN.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_video",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'ltx-2.3',
+        "mode": 't2v',
+        "execution": 'local',
+        "prompt": 'cyberpunk city flythrough',
+        "resolution": '1280x720',
+        "frames": 81,
+        "fps": 24,
+    },
+    dry_run=True,
+)
 ```
 
 ## Prompts file (JSONL)

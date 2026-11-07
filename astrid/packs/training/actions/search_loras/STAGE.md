@@ -34,16 +34,23 @@ result = sdk.invoke(
 )
 ```
 
-Internal runner form with additional options (not a public entrypoint):
+Equivalent SDK call with additional options:
 
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.training.actions.search_loras.run \
-  --base-model stabilityai/stable-diffusion-xl-base-1.0 \
-  --match "cinematic" \
-  --limit 50 \
-  --fetch-limit 200 \
-  --sort downloads \
-  --out runs/search-loras/search-loras.json
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "training.search_loras",
+    kind="action",
+    project="demo",
+    inputs={
+        "base_model": 'stabilityai/stable-diffusion-xl-base-1.0',
+        "match": 'cinematic',
+        "limit": 50,
+        "fetch_limit": 200,
+        "sort": 'downloads',
+    },
+    dry_run=True,
+)
 ```
 
 ## Inputs
@@ -81,12 +88,19 @@ Hugging Face does not expose `base_model` as a complete tag group in
 `models-tags-by-type`. To discover usable base model ids, scan LoRA repos and
 extract their `base_model:*` tags:
 
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.training.actions.search_loras.run \
-  --list-base-models \
-  --base-model-match z-image \
-  --fetch-limit 1000 \
-  --out runs/search-loras/base-models.json
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "training.search_loras",
+    kind="action",
+    project="demo",
+    inputs={
+        "list_base_models": True,
+        "base_model_match": 'z-image',
+        "fetch_limit": 1000,
+    },
+    dry_run=True,
+)
 ```
 
 ## Env
