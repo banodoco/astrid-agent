@@ -255,8 +255,15 @@ def inspect_target_records(
     pods: list[dict[str, Any]],
     volumes: list[dict[str, Any]],
     allow_inactive: bool = False,
+    release: bool = False,
 ) -> RunPodTargetObservation:
-    """Validate exact inventory identity; attachment checks also require readiness."""
+    """Validate exact inventory identity; attachment checks also require readiness.
+
+    ``release`` is for terminating a pod this journal created: the id, exact
+    name, image and volume still must match, but GPU and datacenter are only
+    compared when the provider reports them. A fresh RunPod pod can report an
+    empty ``machine``; refusing release for that would strand a paid pod.
+    """
     if not contract.pod_id.strip():
         raise ValueError("pod_id must be nonempty")
     if contract.network_volume_id is not None and not contract.network_volume_id.strip():
@@ -307,6 +314,8 @@ def inspect_target_records(
         (candidate for candidate in gpu_candidates if candidate and _equivalent(candidate, contract.gpu_type)),
         None,
     )
+    if observed_gpu is None and release and not any(gpu_candidates):
+        observed_gpu = contract.gpu_type  # unreported by the provider; id+name+image pin the pod
     if observed_gpu is None:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {contract.gpu_type!r}, "
@@ -333,6 +342,8 @@ def inspect_target_records(
     datacenter_id = _text(volume.get("dataCenterId"))
     if contract.network_volume_id is None:
         datacenter_id = _text(pod.get("dataCenterId")) or _text(machine.get("dataCenterId"))
+        if release and datacenter_id is None:
+            datacenter_id = contract.datacenter_id  # unreported; not a reason to strand a paid pod
         if contract.datacenter_id is not None and datacenter_id != contract.datacenter_id:
             raise TargetObservationError("no-volume pod datacenter could not be confirmed")
 
@@ -566,6 +577,7 @@ async def _release_inventory(
         pods=matches,
         volumes=volumes,
         allow_inactive=True,
+        release=True,
     )
     return observation, volume
 
