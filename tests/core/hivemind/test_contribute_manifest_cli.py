@@ -23,6 +23,7 @@ def test_contribute_manifest_values_and_input_flags_parse():
     for mapping in mappings:
         assert mapping["flag"] in parser._option_string_actions
         argv = ["--type", "submit-resource", mapping["flag"]]
-        if mapping["input"] != "dry_run":
-            argv.append("value")
+        option = parser._option_string_actions[mapping["flag"]]
+        if option.nargs != 0:
+            argv.append(next(iter(option.choices)) if option.choices else "value")
         parser.parse_args(argv)

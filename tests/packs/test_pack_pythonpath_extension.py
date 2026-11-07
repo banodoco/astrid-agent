@@ -55,14 +55,15 @@ def test_personal_pack_folder_is_importable(tmp_path: Path) -> None:
 
 def test_core_pack_id_clash_is_refused_with_reason(tmp_path: Path) -> None:
     external = tmp_path / "external"
-    _make_pack(external, "media")
+    _make_pack(external, "rendering")
 
     result = _run_import(tmp_path / "home", external, module="outside_pack")
 
     assert result.returncode != 0
-    assert "refusing astrid.packs path extension" in result.stderr
-    assert "'media'" in result.stderr
-    assert "core pack id" in result.stderr
+    assert "refusing astrid.packs" in result.stderr
+    assert "'rendering'" in result.stderr
+    assert "collides with" in result.stderr
+    assert "astrid/packs/rendering" in result.stderr
 
 
 def test_personal_and_env_duplicate_id_is_refused_with_reason(tmp_path: Path) -> None:
@@ -75,6 +76,6 @@ def test_personal_and_env_duplicate_id_is_refused_with_reason(tmp_path: Path) ->
     result = _run_import(home, external, module="same_pack")
 
     assert result.returncode != 0
-    assert "refusing astrid.packs path extension" in result.stderr
+    assert "refusing astrid.packs" in result.stderr
     assert "'same_pack'" in result.stderr
-    assert "duplicates personal/external pack id" in result.stderr
+    assert "collides with" in result.stderr
