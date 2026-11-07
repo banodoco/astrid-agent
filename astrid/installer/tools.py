@@ -26,9 +26,10 @@ DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@18.12.6"
 MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
 }
-# The pins schema (astrid.engine-pins.v1) takes no extra keys, so the lifecycle
-# version lives here; its repository and revision live in packs/runpod/pins.json.
-LIFECYCLE_VERSION = "0.3.1.dev0"
+# The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
+LIFECYCLE_VERSION = json.loads(
+    (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
+)["sources"]["lifecycle"]["version"]
 
 
 def omp_source(pin: dict) -> str | dict:

@@ -3,7 +3,8 @@
   "sources": {
     "lifecycle": {
       "repository": "https://github.com/banodoco/runpod-lifecycle.git",
-      "revision": "f2948817eeb94af8dee76be21f6d673724f1606e"
+      "revision": "f2948817eeb94af8dee76be21f6d673724f1606e",
+      "version": "0.3.1.dev0"
     },
     "comfyui": {
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
