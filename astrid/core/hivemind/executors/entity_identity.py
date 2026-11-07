@@ -44,7 +44,6 @@ __all__ = [
     "RESOURCE_GENERIC_KIND",
     "RESULT_KIND_MESSAGE",
     "RESULT_KIND_RESOURCE",
-    "RESULT_KIND_WORKFLOW",
     "KNOWN_RESOURCE_KINDS",
     "CITE_ITEM_KINDS",
     "JSON_SAFE_INTEGER_MAX",
@@ -84,7 +83,6 @@ RESOURCE_GENERIC_KIND = "resource"
 #: resource so a new resource kind needs no code change.
 RESULT_KIND_MESSAGE = "message"
 RESULT_KIND_RESOURCE = "resource"
-RESULT_KIND_WORKFLOW = "workflow"  # backwards-compatible alias for resource (AD-1)
 
 KNOWN_RESOURCE_KINDS: tuple[str, ...] = (
     "article",

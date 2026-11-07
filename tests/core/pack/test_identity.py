@@ -23,12 +23,12 @@ def test_pack_digest_matches_published_pack_tree_v1_vector(tmp_path: Path) -> No
     _published_tree(tmp_path)
 
     assert hashlib.sha256((tmp_path / "pack.yaml").read_bytes()).hexdigest() == (
-        "7babd167ce7b7a2f7bd895f4f9c3df7598bd55b392c4b44ec6d4bccac97656fa"
+        "96000acd1587824700d325ba7e148e7f911362489c592563abf806c3b347b95d"
     )
     assert hashlib.sha256((tmp_path / "shared/util.py").read_bytes()).hexdigest() == (
         "e13df8c44af5dea1e412403910b99cc5a48f2ccbf68a66b3374d6ab9cef9fc65"
     )
-    assert pack_digest(tmp_path) == "1af20ca4fc53a2792fad43c8298d9b2982925c1e3bb6620bda3e93e557dbe2db"
+    assert pack_digest(tmp_path) == "48776a452fb5b84e23284ebf5bcec4c091eb157331ab95c81910673af8454595"
 
 
 def test_digest_omits_pin_builds_caches_and_bytecode_but_keeps_nested_pin(tmp_path: Path) -> None:

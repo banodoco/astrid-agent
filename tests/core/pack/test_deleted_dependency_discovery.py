@@ -19,7 +19,7 @@ def _pack(root: Path, name: str, dependencies=()) -> Path:
     pack.mkdir(parents=True)
     (pack / 'pack.yaml').write_text(json.dumps({
         'schema_version': 3, 'id': name, 'name': name, 'version': '1.0.0',
-        'pack_api': '1.0', 'resources': [],
+        'pack_api': '2.0', 'resources': [],
         'dependencies': {'packs': list(dependencies)},
     }))
     return pack

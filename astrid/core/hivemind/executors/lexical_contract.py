@@ -309,20 +309,6 @@ def query_arms(query: str) -> tuple[dict, ...]:
     return tuple(arms)
 
 
-def query_constructor_choice(query: str) -> str:
-    """Back-compat shim: the *primary* constructor for ``query``.
-
-    Returns ``phraseto_tsquery`` for an exact-name / quoted-phrase shape and
-    ``websearch_to_tsquery`` (the default) otherwise. Prefer :func:`query_arms`
-    for the parallel-arm contract; this helper exists for compact decisions.
-    """
-    arms = query_arms(query)
-    for arm in arms:
-        if arm["constructor"] == QUERY_CONSTRUCTOR_PHRASE:
-            return QUERY_CONSTRUCTOR_PHRASE
-    return QUERY_CONSTRUCTOR_DEFAULT
-
-
 # ---------------------------------------------------------------------------
 # Normalization (frozen, IMMUTABLE-suitable)
 # ---------------------------------------------------------------------------

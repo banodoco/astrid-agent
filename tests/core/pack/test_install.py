@@ -160,10 +160,10 @@ def test_pin_mismatches_preserve_old_install(repo, root, kind):
 
 
 @pytest.mark.parametrize(("extra", "api", "code"), [
-    ("", "2.0", "api_major"),
+    ("", f"{PACK_API_VERSION[0] + 1}.0", "api_major"),
     ("dependencies: {packs: [absent]}\n", "2.0", "missing_dep"),
     ("dependencies: {python_requirements: [no-such-installed-distribution]}\n", "2.0", "missing_python"),
-    # One minor newer than this core's pack API (core is 1.1 since park g4's bump).
+    # One minor newer than this core's pack API (core is read from astrid.pack_api.VERSION).
     ("", f"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1] + 1}", "api_minor"),
 ])
 def test_real_pure_validator_refusals_preserve_install(repo, root, extra, api, code):

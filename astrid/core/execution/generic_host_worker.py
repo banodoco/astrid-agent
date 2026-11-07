@@ -93,7 +93,12 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
 
 
 def _run_captured_command(encoded: str, selected, contents) -> int:
-    """Compatibility entry for retained Runtime descriptors; code stays live."""
+    """Run a command whose imports come from the captured source descriptor.
+
+    Distinct from ``--pack-command``: the byte loader, not the live tree, is the
+    source of truth, so a later edit of the live root does not change what runs.
+    Emitted by the generic host and the orchestrator runner; not a persisted format.
+    """
     from astrid.core.pack.identity import pack_digest
 
     root = Path(selected["source"]["root"])

@@ -71,7 +71,7 @@ def test_release_list_change_removes_only_owned_defaults_and_is_not_user_removal
     folder = root / "folder_pack"
     folder.mkdir()
     (folder / "pack.yaml").write_text(
-        "schema_version: 3\nid: folder_pack\nname: Folder\nversion: 1.0.0\npack_api: '1.0'\nactions: {}\n",
+        "schema_version: 3\nid: folder_pack\nname: Folder\nversion: 1.0.0\npack_api: '2.0'\nactions: {}\n",
         encoding="utf-8",
     )
     write_pin(folder / "PIN", {"version": 1, "source": folder.as_uri(), "commit": None,
@@ -80,7 +80,7 @@ def test_release_list_change_removes_only_owned_defaults_and_is_not_user_removal
     personal = root / "personal"
     personal.mkdir()
     (personal / "pack.yaml").write_text(
-        "schema_version: 3\nid: personal\nname: Personal\nversion: 1.0.0\npack_api: '1.0'\nactions: {}\n",
+        "schema_version: 3\nid: personal\nname: Personal\nversion: 1.0.0\npack_api: '2.0'\nactions: {}\n",
         encoding="utf-8",
     )
     write_pin(personal / "PIN", {"version": 1, "source": personal.as_uri(), "commit": None,
