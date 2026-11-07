@@ -2,8 +2,9 @@
 
 The driver exercises the Pinokio launcher's own commands end to end: the
 environment, the install action, ``session.mjs serve``, the exact lifecycle stop
-functions, a stop that races a running task, an update to a stand-in Release 2,
-and uninstall. It writes one ``pinokio-row-v1`` receipt. Every step must pass.
+functions, a stop that races a running task, an update to a stand-in of the next
+release (N+1 for a candidate of Release N), and uninstall. It writes one
+``pinokio-row-v1`` receipt. Every step must pass.
 It never force-kills a process; a stuck process is left for the runner to reap.
 """
 
@@ -97,7 +98,6 @@ class Row:
         self.app_dir = self.pinokio_home / "api" / APP_NAME
         self.root = self.app_dir / "app" / "astrid"
         self.manifest = app_checkout / "public" / "install-manifest.json"
-        self.standin = self.scratch / "release2" / "install-manifest.json"
         # The manifest of the release last installed: what astrid.haus would
         # serve once this candidate is published.
         self.published: Path | None = None
@@ -185,6 +185,18 @@ class Row:
 
     # Install and record ------------------------------------------------------
 
+    def candidate_release(self) -> int:
+        """The release N declared by the App candidate manifest (an integer >= 1)."""
+        release = read_json(self.manifest).get("release")
+        if isinstance(release, bool) or not isinstance(release, int) or release < 1:
+            raise RowError("the App candidate manifest must declare an integer release >= 1")
+        return release
+
+    @property
+    def standin(self) -> Path:
+        """Stand-in for the next release, Release N+1, under the scratch directory."""
+        return self.scratch / f"release{self.candidate_release() + 1}" / "install-manifest.json"
+
     def record(self) -> tuple[Path, Path, dict]:
         install = read_json(self.root / "install.json")
         if install.get("owner") != "haus.astrid.runtime" or install.get("managed_by") != "pinokio":
@@ -236,8 +248,7 @@ class Row:
         installer = "install.ps1" if self.os_name == "windows" else "install"
         if not self.manifest.is_file() or not (self.app_checkout / "public" / installer).is_file():
             raise RowError("App candidate installer or manifest is missing")
-        if read_json(self.manifest).get("release") != 1:
-            raise RowError("the App candidate manifest must be Release 1")
+        self.candidate_release()
         if self.root.exists():
             raise RowError("install root already exists; refusing to modify it")
         if self.home.exists():
@@ -267,12 +278,14 @@ class Row:
             for key in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
                 self.env[key] = str({"USERPROFILE": self.home, "LOCALAPPDATA": self.home / "AppData" / "Local",
                                      "APPDATA": self.home / "AppData" / "Roaming"}[key])
-        # Stand-in Release 2 is generated from the App's own shipped manifest.
-        self.standin.parent.mkdir(parents=True, exist_ok=True)
+        # The stand-in for release N+1 is generated from the App's own shipped manifest.
+        standin = self.standin
+        standin.parent.mkdir(parents=True, exist_ok=True)
         self.command([sys.executable, self.agent / "scripts" / "make_standin_release.py", self.manifest,
-                      "--output", self.standin], timeout=120)
-        if read_json(self.standin).get("release") != 2 or not read_json(self.standin).get("qualification_marker"):
-            raise RowError("generated stand-in is not a Release 2 qualification manifest")
+                      "--output", standin], timeout=120)
+        generated = read_json(standin)
+        if generated.get("release") != self.candidate_release() + 1 or not generated.get("qualification_marker"):
+            raise RowError("generated stand-in is not a qualification manifest for the next release")
 
     def install_initial(self) -> None:
         self.install(self.manifest, expected=read_json(self.manifest))
@@ -421,13 +434,13 @@ class Row:
         self.verify_marker()
         return outcome
 
-    def release2_check(self) -> None:
+    def next_release_check(self) -> None:
         _, version, record = self.record()
         installed = read_json(version / "manifest.json")
         if installed != read_json(self.standin):
-            raise RowError("installed Release 2 manifest differs from the stand-in")
-        if record.get("identity") != {"release": 2, "managed_by": "pinokio"}:
-            raise RowError("installed identity is not Release 2 managed by Pinokio")
+            raise RowError("installed next-release manifest differs from the stand-in")
+        if record.get("identity") != {"release": self.candidate_release() + 1, "managed_by": "pinokio"}:
+            raise RowError("installed identity is not the next release managed by Pinokio")
         self.health()
         self.verify_marker()
 
@@ -444,14 +457,14 @@ def stages(row: Row) -> list[tuple[str, list]]:
         return lambda: text
 
     return [
-        ("install", [row.prepare, row.install_initial, detail("installed release 1 and verified its record")]),
+        ("install", [row.prepare, row.install_initial, detail("installed the candidate release and verified its record")]),
         ("start_task", [row.start, lambda: row.task_once(create_project=True),
                         detail("session ready and one chiptune task settled")]),
         ("stop_start", [row.stop, row.start, detail("graceful stop exited 0 and the session restarted")]),
         ("busy_stop_data", [row.busy_stop]),
-        ("update_ready_task", [row.stop, row.update_install, row.adopt_running, row.release2_check,
+        ("update_ready_task", [row.stop, row.update_install, row.adopt_running, row.next_release_check,
                                lambda: row.task_once(create_project=False),
-                               detail("release 2 identity; data marker kept; task settled")]),
+                               detail("next-release identity; data marker kept; task settled")]),
         ("uninstall_data", [row.stop, row.uninstall, row.cleanup_check,
                             detail("uninstalled; no program files; data marker kept")]),
     ]
