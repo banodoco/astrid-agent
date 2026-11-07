@@ -215,7 +215,8 @@ def test_launcher_replaces_cross_checkout_host_when_resident_is_unhealthy(
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     retired = []
-    monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda state, support: retired.append(dict(state)))
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
+                        lambda state, support, **_kwargs: retired.append(dict(state)))
 
     if fault == "unready-registration":
         client_type = generic_host.RuntimeProtocolClient
