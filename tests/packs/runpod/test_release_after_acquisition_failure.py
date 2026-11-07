@@ -42,10 +42,17 @@ def _graphql_projection(pod):
     return projected
 
 
-def test_acquisition_failure_releases_the_created_pod_by_create_response_id(small_lease, monkeypatch):
-    from runpod_lifecycle import api
+def test_acquisition_failure_releases_the_created_pod_by_create_response_id(
+        small_lease, monkeypatch, real_acquisition_confirmation):
+    import runpod
+    from runpod_lifecycle import api, graphql
     c = small_lease
     monkeypatch.setattr(api, "list_pods", lambda key: [_graphql_projection(pod) for pod in c.pods])
+    # Acquisition confirms from GraphQL pod.machine + the gpuTypes catalog: the
+    # machine reports "Preferred GPU" but the catalog names the type "RTX 5090".
+    monkeypatch.setattr(graphql, "get_pod", lambda pod_id, key=None: {
+        "machine": {"gpuDisplayName": "Preferred GPU", "dataCenterId": "EU-RO-1"}})
+    monkeypatch.setattr(runpod, "get_gpu", lambda gpu_id, *a, **k: {"id": gpu_id, "displayName": "RTX 5090"})
     owner = c.fresh()
 
     with pytest.raises(AcquisitionUnresolvedError, match="provider acquisition remains unresolved"):

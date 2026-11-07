@@ -19,6 +19,17 @@ def offline_egress(monkeypatch):
     monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
 
 
+@pytest.fixture(autouse=True)
+def offline_machine_confirmation(monkeypatch):
+    # Acquisition confirms GPU/datacenter from GraphQL pod.machine; these tests
+    # fake the provider, and the confirmation has dedicated tests under tests/packs/runpod.
+    monkeypatch.setattr(
+        worker_preparation, "confirm_acquired_machine",
+        lambda api_key, contract, *, timeout_seconds: (contract.gpu_type, contract.datacenter_id),
+        raising=False,
+    )
+
+
 _TEST_API_KEY = "rpa_test_secret_must_not_persist"
 _VOLUME = {"id": "vol-backup", "name": "backup", "size": 250}
 
