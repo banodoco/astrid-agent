@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from astrid import skills
+from astrid.pack_api import VERSION
 from astrid.core.cli_choices import StaticChoices
 from astrid.skills import cli as skills_cli
 from astrid.skills import discovery, state
@@ -265,7 +266,7 @@ class HermesExternalDirTest(unittest.TestCase):
     def test_external_dir_off_dry_run_preserves_config_and_install_records(self) -> None:
         fx = _Tmp()
         try:
-            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            skills.install(["rendering"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
             config_path = fx.home / ".hermes" / "config.yaml"
             config_bytes = config_path.read_bytes()
             state_bytes = fx.state_path.read_bytes()
@@ -283,7 +284,7 @@ class HermesExternalDirTest(unittest.TestCase):
     def test_external_dir_off_removes_only_recorded_entry_and_reports_it(self) -> None:
         fx = _Tmp()
         try:
-            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            skills.install(["rendering"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
             config_path = fx.home / ".hermes" / "config.yaml"
             entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
             config_before = (
@@ -333,20 +334,20 @@ class SyncPreservesInstalledPacksTest(unittest.TestCase):
             with TemporaryDirectory() as tmp:
                 md = Path(tmp) / "SKILL.md"
                 md.write_text("---\nname: astrid\n---\n\n# Astrid\n", encoding="utf-8")
-                skills.install(pack_ids=["foley"], harness_names=["claude"], state_path=fx.state_path)
+                skills.install(pack_ids=["rendering"], harness_names=["claude"], state_path=fx.state_path)
                 claude = ClaudeAdapter()
                 core = next(d for d in _descriptors() if d.pack_id == "_core")
-                foley = next(d for d in _descriptors() if d.pack_id == "foley")
-                target = claude.target_for(foley)
+                rendering = next(d for d in _descriptors() if d.pack_id == "rendering")
+                target = claude.target_for(rendering)
                 target.unlink()
                 target.symlink_to(core.skill_dir)
 
                 skills.sync(skill_md_path=md, state_path=fx.state_path)
 
                 data = state.load(fx.state_path)
-                self.assertIn("foley", data["installs"]["claude"])
+                self.assertIn("rendering", data["installs"]["claude"])
                 self.assertTrue(target.is_symlink())
-                self.assertEqual(target.resolve(), foley.skill_dir.resolve())
+                self.assertEqual(target.resolve(), rendering.skill_dir.resolve())
                 report = skills.check(skill_md_path=md, state_path=fx.state_path)
                 self.assertFalse(report["has_drift"], msg=str(report))
         finally:
@@ -389,17 +390,17 @@ class SyncPreservesInstalledPacksTest(unittest.TestCase):
             with TemporaryDirectory() as tmp:
                 md = Path(tmp) / "SKILL.md"
                 md.write_text("---\nname: astrid\n---\n\n# Astrid\n", encoding="utf-8")
-                skills.install(pack_ids=["foley"], harness_names=["claude"], state_path=fx.state_path)
+                skills.install(pack_ids=["rendering"], harness_names=["claude"], state_path=fx.state_path)
                 skills.sync(skill_md_path=md, state_path=fx.state_path)
 
                 clean = skills.check(skill_md_path=md, state_path=fx.state_path)
                 self.assertFalse(clean["has_drift"], msg=str(clean))
 
-                foley = next(d for d in _descriptors() if d.pack_id == "foley")
-                ClaudeAdapter().target_for(foley).unlink()
+                rendering = next(d for d in _descriptors() if d.pack_id == "rendering")
+                ClaudeAdapter().target_for(rendering).unlink()
                 drift = skills.check(skill_md_path=md, state_path=fx.state_path)
                 self.assertTrue(drift["has_drift"])
-                self.assertIn({"harness": "claude", "pack": "foley"}, drift["missing"])
+                self.assertIn({"harness": "claude", "pack": "rendering"}, drift["missing"])
         finally:
             fx.close()
 
@@ -635,18 +636,18 @@ def test_view_sync_retains_selection_and_migrates_old_installs():
     try:
         old = state._empty_state()
         old.pop("skills")
-        old["installs"]["claude"]["chiptune"] = {"target": "old", "mechanism": "symlink"}
-        old["installs"]["claude"]["foley"] = {"target": "old", "mechanism": "symlink"}
+        old["installs"]["claude"]["generation"] = {"target": "old", "mechanism": "symlink"}
+        old["installs"]["claude"]["rendering"] = {"target": "old", "mechanism": "symlink"}
         fx.state_path.write_text(json.dumps(old), encoding="utf-8")
         skills.sync(harness_names=["claude"], state_path=fx.state_path)
         data = state.load(fx.state_path)
-        assert data["skills"]["claude"]["skills"]["foley"]["selected"]
-        assert (fx.home / ".claude/skills/astrid-foley").is_symlink()
+        assert data["skills"]["claude"]["skills"]["rendering"]["selected"]
+        assert (fx.home / ".claude/skills/astrid-rendering").is_symlink()
         view = fx.tmp / "skills/claude/packs"
-        assert (view / "chiptune/SKILL.md").is_file()
-        skills.uninstall(["chiptune"], ["claude"], state_path=fx.state_path)
+        assert (view / "generation/SKILL.md").is_file()
+        skills.uninstall(["generation"], ["claude"], state_path=fx.state_path)
         skills.sync(harness_names=["claude"], state_path=fx.state_path)
-        assert not (view / "chiptune").exists()
+        assert not (view / "generation").exists()
     finally:
         fx.close()
 
@@ -790,7 +791,7 @@ def test_concurrent_installs_keep_both_selections(tmp_path):
     commands = [
         subprocess.Popen([sys.executable, "-m", "astrid", "skills", "install", pack, "--harness", "claude"],
                          env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        for pack in ("foley", "chiptune")
+        for pack in ("rendering", "generation")
     ]
     for process in commands:
         stdout, stderr = process.communicate(timeout=120)
@@ -804,17 +805,17 @@ def test_concurrent_installs_keep_both_selections(tmp_path):
         stdout, stderr = process.communicate(timeout=120)
         assert process.returncode == 0, (stdout, stderr)
     data = state.load(tmp_path / "state/astrid/skills.json")
-    assert all(data["skills"]["claude"]["skills"][pack]["selected"] for pack in ("foley", "chiptune"))
+    assert all(data["skills"]["claude"]["skills"][pack]["selected"] for pack in ("rendering", "generation"))
 
 
 def test_hermes_external_directory_reports_visibility():
     fx = _Tmp()
     try:
-        report = skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+        report = skills.install(["rendering"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
         assert report["actions"][0]["visibility"] == "external-dir: all skills visible"
         listing = skills.list_state(state_path=fx.state_path)
-        foley = next(row for row in listing["packs"] if row["id"] == "foley")
-        assert foley["harnesses"]["hermes"]["visibility"] == "external-dir: all skills visible"
+        rendering = next(row for row in listing["packs"] if row["id"] == "rendering")
+        assert rendering["harnesses"]["hermes"]["visibility"] == "external-dir: all skills visible"
     finally:
         fx.close()
 
@@ -822,10 +823,10 @@ def test_hermes_external_directory_reports_visibility():
 def test_install_survives_normal_view_sync():
     fx = _Tmp()
     try:
-        skills.install(["foley"], ["claude"], state_path=fx.state_path)
+        skills.install(["rendering"], ["claude"], state_path=fx.state_path)
         skills.sync(harness_names=["claude"], state_path=fx.state_path)
-        assert state.load(fx.state_path)["skills"]["claude"]["skills"]["foley"]["selected"]
-        assert (fx.home / ".claude/skills/astrid-foley").is_symlink()
+        assert state.load(fx.state_path)["skills"]["claude"]["skills"]["rendering"]["selected"]
+        assert (fx.home / ".claude/skills/astrid-rendering").is_symlink()
     finally:
         fx.close()
 
@@ -1031,19 +1032,19 @@ def test_public_boundaries_preserve_retargeted_record(tmp_path, foreign_root, ad
 def test_public_uninstall_preserves_edited_copy_record_and_selection(harness):
     fx = _Tmp()
     try:
-        skills.install(["foley"], [harness], mechanism="copy", state_path=fx.state_path)
+        skills.install(["rendering"], [harness], mechanism="copy", state_path=fx.state_path)
         adapter = {"claude": ClaudeAdapter, "codex": CodexAdapter, "hermes": HermesAdapter}[harness]()
-        target = adapter.skills_dir / "astrid-foley"
+        target = adapter.skills_dir / "astrid-rendering"
         edited = target / "SKILL.md"
         edited.write_bytes(edited.read_bytes() + b"\nmy change\r\n")
         snapshot = edited.read_bytes()
         before = state.load(fx.state_path)
-        report = skills.uninstall(["foley"], [harness], state_path=fx.state_path)
+        report = skills.uninstall(["rendering"], [harness], state_path=fx.state_path)
         after = state.load(fx.state_path)
         assert edited.read_bytes() == snapshot
         assert report["conflicts"]
-        assert after["installs"][harness]["foley"] == before["installs"][harness]["foley"]
-        assert after["skills"][harness]["skills"]["foley"] == before["skills"][harness]["skills"]["foley"]
+        assert after["installs"][harness]["rendering"] == before["installs"][harness]["rendering"]
+        assert after["skills"][harness]["skills"]["rendering"] == before["skills"][harness]["skills"]["rendering"]
     finally:
         fx.close()
 
@@ -1081,7 +1082,15 @@ def test_vanished_source_record_removes_only_unchanged_broken_link(tmp_path, mon
     try:
         # Discover a real declared external pack through the public source edge.
         source_root = tmp_path / "external-packs"
-        shutil.copytree(Path(__file__).resolve().parents[1] / "examples/packs/minimal", source_root / "minimal")
+        minimal = source_root / "minimal"
+        (minimal / "docs").mkdir(parents=True)
+        (minimal / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "id": "minimal", "name": "Minimal", "version": "0.1.0",
+            "pack_api": ".".join(map(str, VERSION)),
+            "documentation": {"kind": "skill", "path": "docs/SKILL.md"},
+        }), encoding="utf-8")
+        (minimal / "docs/SKILL.md").write_text(
+            "---\nname: minimal\ndescription: Minimal skill.\n---\nMinimal.\n", encoding="utf-8")
         monkeypatch.setenv("ASTRID_PACKS_PATH", str(source_root))
         vanished = next(d for d in skills.list_skills() if d.pack_id == "minimal")
         skills.install([vanished.pack_id], ["claude"], state_path=fx.state_path)
@@ -1201,6 +1210,7 @@ def test_extra_install_keeps_preservation_conflict_after_followup_sync(tmp_path,
         extra.mkdir(parents=True)
         (pack / "pack.yaml").write_text(yaml.safe_dump({
             "schema_version": 3, "id": "demo_pack", "name": "Demo Pack", "version": "0.1.0",
+            "pack_api": ".".join(map(str, VERSION)),
             "documentation": {"kind": "skill", "path": "docs/SKILL.md"},
             "resources": [{"kind": "skill", "path": "docs/extra/SKILL.md"}],
         }), encoding="utf-8")
