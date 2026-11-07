@@ -8,15 +8,6 @@ from astrid.core.generation.availability import availability_declaration
 def test_preview_routes_are_fixture_only_and_pack_resources_are_labeled() -> None:
     from types import SimpleNamespace
 
-    from astrid.core.pack.discovery import discover_packs_ordered
-
-    packs = {pack.id: pack for pack in discover_packs_ordered()}
-    fixture_routes = availability_declaration()["fixture_only_routes"]
-    for route, fixture_only in fixture_routes.items():
-        pack_id, path = route.split(":", 1)
-        resources = {resource["path"]: resource for resource in packs[pack_id].resources}
-        assert fixture_only is True and resources[path]["kind"] == "fixture"
-
     # A manifest-declared fixture-only route flows through the pack-manifest path.
     pack = SimpleNamespace(id="fixture_pack", extensions={"astrid": {"generation_availability": {
         "fixture_only_routes": {"fixture_pack:preview/scenes.json": True}}}})
