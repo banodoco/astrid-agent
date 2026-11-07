@@ -817,7 +817,6 @@
     {
       "id": "update-1110",
       "argv": [
-        "--yes",
         "--update"
       ],
       "choices": {
