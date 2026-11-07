@@ -1035,9 +1035,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])
         python = venv_python(environment)
-        self.run([self.uv, "pip", "install", "--python", python, "--require-hashes",
+        # uv hard-links cached files into the venv by default on Windows. A
+        # hard link shares one security descriptor, so installed files would
+        # keep the uv cache's DACL (Users read when the cache is outside a
+        # private profile, as on the hosted Pinokio row) instead of inheriting
+        # the private version tree's, and schema admission refuses them.
+        link_mode = ["--link-mode", "copy"] if self.service.system == "win32" else []
+        self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--require-hashes",
                   "-r", agent / "requirements" / "runtime.lock"])
-        self.run([self.uv, "pip", "install", "--python", python, "--no-deps", runtime,
+        self.run([self.uv, "pip", "install", *link_mode, "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
                  extra_env=source_install_env)
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
