@@ -56,7 +56,6 @@ def _load_executor_registry(
         return registry
     public_registry = ExecutorRegistry()
     public_registry.alias_resolver = registry.alias_resolver
-    public_registry.installed_namespaces = registry.installed_namespaces
     for definition in registry.list():
         if str(definition.metadata.get("visibility", "public")).lower() == "internal":
             continue
