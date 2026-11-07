@@ -100,7 +100,7 @@ def test_foreign_command_is_preserved_and_reported_once(manager, monkeypatch, lo
     lines = []
     assert launcher.install_shim(manager, say=lines.append) == (None, None)
     assert len(lines) == 1 and str(foreign) in lines[0] and "run-astrid" in lines[0]
-    launcher.remove_shim(manager)
+    launcher.remove_owned_command(manager, None, None)
     assert os.path.lexists(foreign)
     if location == "earlier-path":
         assert not target.exists()
@@ -220,9 +220,9 @@ def test_upgrade_repoints_posix_shim_and_old_uninstall_keeps_it(tmp_path, monkey
     previous = shim.read_text()
     assert launcher.install_shim(services[1])[0] == shim
     assert shim.read_text() != previous
-    launcher.remove_shim(services[0])
+    launcher.remove_owned_command(services[0], None, None)
     assert shim.exists()
-    launcher.remove_shim(services[1])
+    launcher.remove_owned_command(services[1], None, None)
     assert not shim.exists()
 
 

@@ -165,7 +165,8 @@ def test_summary_does_not_claim_failed_or_unreached_work(capsys):
     output = capsys.readouterr().out
     assert "Command/PATH: setup failed (OSError)" in output
     assert "Skill destinations: sync failed" in output
-    assert "Failure: ValueError: failed safely" in output
+    assert "Failure: ValueError" in output
+    assert "failed safely" not in output
     assert "running and ready" not in output
 
 

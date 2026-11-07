@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import sys
 import traceback
 from pathlib import Path
@@ -98,9 +97,16 @@ def _way_back_command(choices: dict[str, bool] | None, *, mode: str) -> str:
     return f"curl -fsSL https://astrid.haus/install | sh -s -- {arguments}"
 
 
-def rerun_with_yes(argv) -> str:
-    """The invoked command line with --yes appended: the exact consent rerun."""
-    return " ".join(shlex.quote(str(arg)) for arg in [*argv, "--yes"])
+PUBLIC_INSTALL_LINE = "curl -fsSL https://astrid.haus/install | sh -s --"
+PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))"
+
+
+def consent_rerun_command(choices, *, windows: bool) -> str:
+    """The public install line with --yes and the user's own choice flags: the exact consent rerun."""
+    flags = [f"{'--skill-copies' if name == 'skill_copies' else '--' + name} {'on' if choices[name] else 'off'}"
+             for name in CHOICE_NAMES if name in choices]
+    line = PUBLIC_INSTALL_LINE_WINDOWS if windows else PUBLIC_INSTALL_LINE
+    return " ".join([line, "--yes", *flags])
 
 
 def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
@@ -599,7 +605,7 @@ def main(argv: list[str] | None = None) -> int:
                         existing_install=existing_install, accept_recommended=args.yes,
                         interactive=sys.stdin.isatty()):
                     print(render_plan(resolved_choices))
-                    print("Exact rerun command: " + rerun_with_yes(sys.argv))
+                    print("Exact rerun command: " + consent_rerun_command(args.choices, windows=backend.service.system == "win32"))
                     summary_choices = resolved_choices
                     _print_run_summary(
                         summary_choices, mode=mode,

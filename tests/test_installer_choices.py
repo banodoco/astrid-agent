@@ -206,10 +206,11 @@ def test_maintenance_identity_write_preserves_choices_and_owned_fields(tmp_path)
     assert record["identity"] == version.document()["identity"]
 
 
-def test_rerun_with_yes_appends_consent_to_the_invoked_command():
-    from astrid.installer.cli import rerun_with_yes
+def test_consent_rerun_command_uses_public_install_line_and_user_flags():
+    from astrid.installer.cli import consent_rerun_command
 
-    assert rerun_with_yes(["astrid", "--autostart", "on", "--skills", "off"]) == (
-        "astrid --autostart on --skills off --yes")
-    assert rerun_with_yes(["/tmp/my installer/astrid", "--update"]) == (
-        "'/tmp/my installer/astrid' --update --yes")
+    assert consent_rerun_command({}, windows=False) == "curl -fsSL https://astrid.haus/install | sh -s -- --yes"
+    assert consent_rerun_command({"autostart": False, "skill_copies": True}, windows=False) == (
+        "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --skill-copies on")
+    assert consent_rerun_command({"command": True}, windows=True) == (
+        "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --command on")
