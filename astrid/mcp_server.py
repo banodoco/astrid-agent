@@ -390,7 +390,7 @@ def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {"ok": False, "error": payload}
     structured = {**payload, "task_refs": reply.get("details", {}).get("astridTaskRefs", [])}
-    return _text(json.dumps(structured, default=str)[:20000], error=done.returncode != 0 or payload.get("ok") is False,
+    return _text(json.dumps(structured, default=str), error=done.returncode != 0 or payload.get("ok") is False,
                  structured=structured)
 
 
@@ -599,7 +599,7 @@ def build_prompts(*, developer: bool = False) -> dict[str, dict[str, Any]]:
         if not name or name in prompts:
             name = re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(path.relative_to(packs).parts[:-1]))
         prompts[name] = {"definition": {"name": name, "title": f"Astrid skill: {name}",
-                                        "description": meta.get("description", "")[:1000], "arguments": []},
+                                        "description": meta.get("description", ""), "arguments": []},
                          "text": body.strip()}
     return prompts
 

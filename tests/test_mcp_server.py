@@ -296,6 +296,31 @@ def test_invoke_returns_admission_and_task_refs(monkeypatch):
     assert result["structuredContent"]["task_refs"] == [{"id": "T1"}]
 
 
+def test_invoke_text_is_the_whole_result(monkeypatch):
+    payload = {"ok": True, "task_id": "T1", "log": "x" * 30000, "outputs": ["out.mp4"]}
+
+    def fake_run(argv, cwd):
+        reply = {"content": [{"text": json.dumps(payload)}], "details": {"astridTaskRefs": []}}
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(reply), stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    result = mcp_server.call_tool(mcp_server._extra_tools()["invoke"],
+                                  {"capability_id": "vibecomfy.run", "project": "demo", "inputs": {}})
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert result["structuredContent"]["outputs"] == ["out.mp4"]
+
+
+def test_long_skill_descriptions_are_served_whole(monkeypatch, tmp_path):
+    import astrid
+
+    description = "Use this when " + "a long case, " * 120 + "and never for X."
+    skill = tmp_path / "packs" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(f'---\nname: demo\ndescription: "{description}"\n---\nBody\n', encoding="utf-8")
+    monkeypatch.setattr(astrid, "__file__", str(tmp_path / "__init__.py"))
+    assert mcp_server.build_prompts()["demo"]["definition"]["description"] == description
+
+
 def test_comfy_scan_runs_with_requested_ports(monkeypatch):
     calls = []
 
