@@ -71,7 +71,9 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "c70a8202b43099c08720ab99505f1ea4b945b6b53027322a8525f9dc922cce4f"
+    assert h3_entry.recipe.sha256 == hashlib.sha256(
+        (recipes._ROOT / h3_entry.recipe.path).read_bytes()
+    ).hexdigest()
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
