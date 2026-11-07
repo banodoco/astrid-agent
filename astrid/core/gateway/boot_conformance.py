@@ -80,17 +80,10 @@ def vibe_profile_specs() -> tuple[VibeProfileFixture, ...]:
     return _PROFILE_FIXTURES
 
 
-# Compatibility with the historical conformance seam's naming, without
-# introducing a second registry or setup journal.
-def capability_conformance_specs() -> tuple[VibeProfileFixture, ...]:
-    return vibe_profile_specs()
-
-
 __all__ = [
     "FROZEN_FIXTURE_DIGESTS",
     "VIBE_PROFILE_ORDER",
     "VIBE_PROFILE_REGISTRY",
     "VibeProfileFixture",
-    "capability_conformance_specs",
     "vibe_profile_specs",
 ]
