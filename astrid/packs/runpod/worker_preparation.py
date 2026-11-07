@@ -259,10 +259,13 @@ def inspect_target_records(
 ) -> RunPodTargetObservation:
     """Validate exact inventory identity; attachment checks also require readiness.
 
-    ``release`` is for terminating a pod this journal created: the id, exact
-    name, image and volume still must match, but GPU and datacenter are only
-    compared when the provider reports them. A fresh RunPod pod can report an
-    empty ``machine``; refusing release for that would strand a paid pod.
+    ``release`` is for terminating a pod this journal created. It is keyed on
+    the pod id the create response returned (journaled before any acquisition
+    check) plus the journal's unique request name, image and volume. GPU and
+    datacenter labels are recorded as evidence but never gate release: RunPod
+    reports them inconsistently (REST ``machine: {}`` on a fresh pod; GraphQL
+    ``gpuDisplayName`` "RTX 5090" for type id "NVIDIA GeForce RTX 5090"), and
+    refusing release over a label strands a paid pod this product created.
     """
     if not contract.pod_id.strip():
         raise ValueError("pod_id must be nonempty")
@@ -314,8 +317,9 @@ def inspect_target_records(
         (candidate for candidate in gpu_candidates if candidate and _equivalent(candidate, contract.gpu_type)),
         None,
     )
-    if observed_gpu is None and release and not any(gpu_candidates):
-        observed_gpu = contract.gpu_type  # unreported by the provider; id+name+image pin the pod
+    if observed_gpu is None and release:
+        # Evidence only: the created pod is pinned by id+name+image+volume.
+        observed_gpu = next((item for item in gpu_candidates if item), contract.gpu_type)
     if observed_gpu is None:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {contract.gpu_type!r}, "
@@ -344,7 +348,8 @@ def inspect_target_records(
         datacenter_id = _text(pod.get("dataCenterId")) or _text(machine.get("dataCenterId"))
         if release and datacenter_id is None:
             datacenter_id = contract.datacenter_id  # unreported; not a reason to strand a paid pod
-        if contract.datacenter_id is not None and datacenter_id != contract.datacenter_id:
+        if (not release and contract.datacenter_id is not None
+                and datacenter_id != contract.datacenter_id):
             raise TargetObservationError("no-volume pod datacenter could not be confirmed")
 
     return RunPodTargetObservation(
