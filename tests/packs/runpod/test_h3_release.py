@@ -701,13 +701,11 @@ def test_bootstrap_packages_exact_product_sources_deterministically():
     package = Path(build.__file__).parents[2]
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         assert set(archive.namelist()) == {
-            *("astrid/" + name for name in bootstrap._SOURCES), "astrid/packs/__init__.py",
+            *("astrid/" + name for name in bootstrap._SOURCES),
             f"astrid-{bootstrap.__version__}.dist-info/METADATA",
             *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
         }
-        # The product's pack initializer needs astrid.core.pack, which a stdlib-only
-        # cold target cannot import; it receives the namespace-only body.
-        assert archive.read("astrid/packs/__init__.py") == bootstrap._PACKS_NAMESPACE
+        assert "packs/__init__.py" in bootstrap._SOURCES
         for name in bootstrap._SOURCES:
             assert archive.read("astrid/" + name) == (package / name).read_bytes()
         runtime = Path(bootstrap.runtime_protocol.__file__).resolve().parent
@@ -959,3 +957,23 @@ def test_https_release_transport_requires_settled_health(monkeypatch, statuses):
         handle = build.LifecycleTransport({"id": "pod1"}, 5, transport="https", token="test-token-" + "a" * 40)
         handle.ssh.disconnect()
     assert calls == list(statuses)
+
+
+def test_cold_helper_imports_without_astrid_core_pack(tmp_path):
+    import subprocess
+    import sys
+    payload = bootstrap.source_archive()
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        archive.extractall(tmp_path)
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from astrid.packs.runpod import h3_release_bootstrap, h3_release_remote\n"
+        "import astrid.packs\n"
+        "bad = [m for m in sys.modules if m == 'astrid.core.pack' or m.startswith('astrid.core.pack.')]\n"
+        "assert not bad, bad\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(tmp_path)],
+                            capture_output=True, text=True, cwd=tmp_path, env={})
+    assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr

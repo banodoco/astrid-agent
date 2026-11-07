@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from astrid.pack_api import VERSION as PACK_API_VERSION
+from astrid.personal_packs_root import resolve_personal_packs_root
 
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 PERSONAL_PACK_ID = "personal"
@@ -18,25 +19,6 @@ _MANIFEST = (
     f'pack_api: "{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}"\n'
     "actions: {}\n"
 ).encode("utf-8")
-
-
-def resolve_personal_packs_root(root: str | os.PathLike[str] | None = None) -> Path | None:
-    """Return the canonical collection root without creating or modifying it.
-
-    An explicit root takes precedence. Otherwise the canonical collection is
-    ``~/Astrid/packs``. ``ASTRID_PACKS_PATH`` names additional collections and
-    never changes the identity of the personal pack.
-    """
-    if root is None:
-        candidate = Path.home() / "Astrid" / "packs"
-    else:
-        candidate = Path(root).expanduser()
-    if not candidate.is_absolute():
-        return None
-    try:
-        return candidate.resolve(strict=False)
-    except (OSError, RuntimeError):
-        return None
 
 
 @contextmanager

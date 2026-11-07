@@ -1,8 +1,8 @@
 """Package the H3 helper's exact stdlib-only source closure for cold targets.
 
 This is transport packaging, not an installer or another downloader. All module
-bodies come from the controller's product package, including A1's real contracts,
-except the pack namespace initializer, which is replaced by a stdlib-only body.
+bodies come from the controller's product package, including A1's real contracts.
+Shipped bytes equal source bytes.
 The temporary package is private to one isolated target process and is removed
 after provisioning. No installed Astrid or third-party target package is needed.
 """
@@ -26,15 +26,11 @@ _SOURCES = (
     "core/generation/__init__.py",
     "core/generation/engine_contracts.py",
     "core/generation/model_downloader.py",
+    "personal_packs_root.py",
+    "packs/__init__.py",
     "packs/runpod/h3_release_bootstrap.py",
     "packs/runpod/h3_release_remote.py",
 )
-
-# The product's astrid.packs initializer resolves pack roots through
-# astrid.core.pack, which is not stdlib-only. The cold target only imports the
-# two runpod modules below, so it receives this namespace-only body instead.
-# It is part of the archive bytes and therefore of the release source identity.
-_PACKS_NAMESPACE = b'"""Capability package namespace for the cold-target helper."""\n\n__all__: list[str] = []\n'
 
 # Complete import/call closure of platform.lock_file(fd, blocking=False) on the
 # Linux cold target: package initializer -> errors, platform -> cancellation,
@@ -50,7 +46,6 @@ def source_archive() -> bytes:
     """Return deterministic bytes from either a checkout or installed package."""
     package = Path(__file__).resolve().parents[2]
     files = {"astrid/" + name: (package / name).read_bytes() for name in _SOURCES}
-    files["astrid/packs/__init__.py"] = _PACKS_NAMESPACE
     runtime = Path(runtime_protocol.__file__).resolve().parent
     files.update({"runtime_protocol/" + name: (runtime / name).read_bytes()
                   for name in _RUNTIME_SOURCES})
