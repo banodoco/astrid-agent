@@ -255,8 +255,11 @@ def test_warm_owner_releases_only_its_journal_and_preserves_volumes(warm_case, t
     assert c.case.calls == ["begin", "finish", "retire", "stop", "remove_credential", "delete"]
 
 
+# A GPU label is not journal identity: RunPod reports it inconsistently for the
+# same created pod (see test_release_after_acquisition_failure.py), so release
+# is pinned by id, exact name, image and volume only.
 @pytest.mark.parametrize("field,value", [
-    ("name", "other-broker"), ("machineType", "GPU-other"), ("imageName", "image-other"),
+    ("name", "other-broker"), ("imageName", "image-other"),
     ("networkVolumeId", "vol-other"),
 ])
 def test_other_journal_identity_on_selected_pod_blocks_delete(release_case, field, value):

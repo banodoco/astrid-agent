@@ -82,8 +82,10 @@ def test_created_pod_with_unreported_machine_is_terminated_on_resume(tmp_path, m
     assert json.loads(path.read_text())["state"] == "cleanup_complete"
 
 
+# GPU/datacenter labels are evidence, not release gates (see
+# test_release_after_acquisition_failure.py); identity is id+name+image+volume.
 @pytest.mark.parametrize("change", [{"name": "someone-elses-pod"}, {"imageName": "other/image:1"},
-                                    {"machine": {"gpuDisplayName": "NVIDIA A100"}}])
+                                    {"networkVolumeId": "vol-other"}])
 def test_release_still_refuses_a_pod_that_contradicts_the_journal(tmp_path, monkeypatch, change):
     path = tmp_path / "claim.json"
     record = _created_record()

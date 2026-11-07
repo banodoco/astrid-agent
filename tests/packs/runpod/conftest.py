@@ -59,3 +59,32 @@ def forbid_provider_gpu_rate_lookup(request: pytest.FixtureRequest, monkeypatch:
         f"{request.node.nodeid} attempted {len(attempts)} provider GPU-rate lookup(s); "
         "RunPod unit tests must use local rate behavior"
     )
+
+
+@pytest.fixture
+def real_acquisition_confirmation():
+    """Opt out of the autouse stub below: run confirm_acquired_machine for real."""
+
+
+@pytest.fixture(autouse=True)
+def stub_acquisition_graphql_machine(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Acquisition confirms from GraphQL pod.machine + the gpuTypes catalog (never REST).
+
+    Unit tests that fake the account inventory (``api.list_pods``) and are not
+    about the confirmation get a confirmation that echoes the contract. Tests
+    that exercise it request ``real_acquisition_confirmation`` and fake the two
+    GraphQL calls themselves.
+    """
+    if (request.node.get_closest_marker("integration") is not None
+            or "real_acquisition_confirmation" in request.fixturenames):
+        yield
+        return
+
+    from astrid.packs.runpod import worker_preparation
+
+    monkeypatch.setattr(
+        worker_preparation, "confirm_acquired_machine",
+        lambda api_key, contract, *, timeout_seconds: (contract.gpu_type, contract.datacenter_id),
+        raising=False,
+    )
+    yield

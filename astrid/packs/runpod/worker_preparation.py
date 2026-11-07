@@ -15,7 +15,7 @@ import re
 import stat
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace as _dc_replace
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
@@ -51,6 +51,9 @@ class RunPodTargetContract:
     network_volume_size_gb: int
     expected_pod_name: str | None = None
     datacenter_id: str | None = None
+    # Acquisition only: GPU/datacenter are decided by confirm_acquired_machine
+    # (GraphQL pod.machine), not by the inventory record this contract inspects.
+    defer_machine: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,10 +262,17 @@ def inspect_target_records(
 ) -> RunPodTargetObservation:
     """Validate exact inventory identity; attachment checks also require readiness.
 
-    ``release`` is for terminating a pod this journal created: the id, exact
-    name, image and volume still must match, but GPU and datacenter are only
-    compared when the provider reports them. A fresh RunPod pod can report an
-    empty ``machine``; refusing release for that would strand a paid pod.
+    ``contract.defer_machine`` is for acquisition: the GPU and datacenter are decided by
+    :func:`confirm_acquired_machine` from GraphQL ``pod.machine`` (the provider
+    gpuTypes catalog for the GPU), never from this inventory/REST record.
+
+    ``release`` is for terminating a pod this journal created. It is keyed on
+    the pod id the create response returned (journaled before any acquisition
+    check) plus the journal's unique request name, image and volume. GPU and
+    datacenter labels are recorded as evidence but never gate release: RunPod
+    reports them inconsistently (REST ``machine: {}`` on a fresh pod; GraphQL
+    ``gpuDisplayName`` "RTX 5090" for type id "NVIDIA GeForce RTX 5090"), and
+    refusing release over a label strands a paid pod this product created.
     """
     if not contract.pod_id.strip():
         raise ValueError("pod_id must be nonempty")
@@ -314,8 +324,10 @@ def inspect_target_records(
         (candidate for candidate in gpu_candidates if candidate and _equivalent(candidate, contract.gpu_type)),
         None,
     )
-    if observed_gpu is None and release and not any(gpu_candidates):
-        observed_gpu = contract.gpu_type  # unreported by the provider; id+name+image pin the pod
+    defer_machine = contract.defer_machine
+    if observed_gpu is None and (release or defer_machine):
+        # Evidence only: the created pod is pinned by id+name+image+volume.
+        observed_gpu = next((item for item in gpu_candidates if item), contract.gpu_type)
     if observed_gpu is None:
         raise TargetObservationError(
             f"pod {contract.pod_id!r} GPU mismatch: expected {contract.gpu_type!r}, "
@@ -342,9 +354,10 @@ def inspect_target_records(
     datacenter_id = _text(volume.get("dataCenterId"))
     if contract.network_volume_id is None:
         datacenter_id = _text(pod.get("dataCenterId")) or _text(machine.get("dataCenterId"))
-        if release and datacenter_id is None:
+        if (release or defer_machine) and datacenter_id is None:
             datacenter_id = contract.datacenter_id  # unreported; not a reason to strand a paid pod
-        if contract.datacenter_id is not None and datacenter_id != contract.datacenter_id:
+        if (not release and not defer_machine and contract.datacenter_id is not None
+                and datacenter_id != contract.datacenter_id):
             raise TargetObservationError("no-volume pod datacenter could not be confirmed")
 
     return RunPodTargetObservation(
@@ -418,6 +431,81 @@ async def observe_exact_target(
     return await asyncio.to_thread(observe_target, api_key, contract)
 
 
+_MACHINE_POLL_SECONDS = 3.0
+
+
+def confirm_acquired_machine(
+    api_key: str,
+    contract: RunPodTargetContract,
+    *,
+    timeout_seconds: float,
+) -> tuple[str, str | None]:
+    """Confirm a freshly acquired pod's GPU and datacenter from GraphQL ``pod.machine``.
+
+    REST reports ``machine: {}`` for a correct fresh pod, so REST never decides.
+    Datacenter: ``machine.dataCenterId`` must equal the contract's exactly. GPU:
+    the contract's gpu_type id is resolved to its ``displayName`` through the
+    provider's gpuTypes catalog (same GraphQL endpoint) and must equal
+    ``machine.gpuDisplayName`` exactly. No normalization, aliases or fuzzy match.
+    GraphQL still reporting no machine at the timeout fails closed.
+    Returns ``(gpuDisplayName, dataCenterId)``.
+    """
+    import runpod
+    from runpod_lifecycle import graphql as lifecycle_graphql
+
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    machine: Mapping[str, Any] = {}
+    while True:
+        try:
+            record = lifecycle_graphql.get_pod(contract.pod_id, api_key)
+            candidate = record.get("machine") if isinstance(record, dict) else None
+            machine = candidate if isinstance(candidate, dict) else {}
+        except Exception:
+            machine = {}
+        if machine.get("gpuDisplayName") and machine.get("dataCenterId"):
+            break
+        if time.monotonic() >= deadline:
+            raise TargetObservationError(
+                f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout"
+            )
+        time.sleep(_MACHINE_POLL_SECONDS)
+
+    observed_gpu = machine["gpuDisplayName"]
+    observed_dc = machine["dataCenterId"]
+    if contract.datacenter_id is not None and observed_dc != contract.datacenter_id:
+        raise TargetObservationError(
+            f"pod {contract.pod_id!r} datacenter mismatch: expected {contract.datacenter_id!r}, "
+            f"observed {observed_dc!r}"
+        )
+    try:
+        gpu = runpod.get_gpu(contract.gpu_type, api_key=api_key)
+    except Exception:
+        raise TargetObservationError(
+            f"provider gpuTypes catalog could not resolve GPU type {contract.gpu_type!r}"
+        ) from None
+    expected_display = gpu.get("displayName") if isinstance(gpu, dict) and gpu.get("id") == contract.gpu_type else None
+    if not expected_display or expected_display != observed_gpu:
+        raise TargetObservationError(
+            f"pod {contract.pod_id!r} GPU mismatch: expected {expected_display!r} "
+            f"(catalog displayName of {contract.gpu_type!r}), observed {observed_gpu!r}"
+        )
+    return observed_gpu, observed_dc
+
+
+async def observe_and_confirm_acquired_target(
+    api_key: str,
+    contract: RunPodTargetContract,
+    *,
+    ready_timeout_seconds: int,
+) -> RunPodTargetObservation:
+    """Acquisition confirmation: inventory identity, then GPU/datacenter from GraphQL machine."""
+    observation = await observe_exact_target(api_key, _dc_replace(contract, defer_machine=True))
+    gpu_display, datacenter = await asyncio.to_thread(
+        confirm_acquired_machine, api_key, contract, timeout_seconds=ready_timeout_seconds
+    )
+    return _dc_replace(observation, gpu_type=gpu_display, datacenter_id=datacenter)
+
+
 def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | None]:
     """Preserve exact REST GET status; null/errors never become absence proof.
 
@@ -453,6 +541,7 @@ def _target_contract(
     pod_id: str,
     expected_name: str | None,
     volume: Mapping[str, Any],
+    defer_machine: bool = False,
 ) -> RunPodTargetContract:
     return RunPodTargetContract(
         pod_id=pod_id,
@@ -463,6 +552,7 @@ def _target_contract(
         network_volume_name=_text(volume.get("name")),
         network_volume_size_gb=int(volume["size"]),
         datacenter_id=_text(volume.get("dataCenterId")),
+        defer_machine=defer_machine,
     )
 
 
@@ -475,7 +565,7 @@ async def _wait_and_observe_target(
     ready_timeout_seconds: int,
 ) -> RunPodTargetObservation:
     await pod.wait_ready(timeout=ready_timeout_seconds)
-    return await observe_exact_target(
+    return await observe_and_confirm_acquired_target(
         config.api_key,
         _target_contract(
             config,
@@ -483,6 +573,7 @@ async def _wait_and_observe_target(
             expected_name=expected_name,
             volume=volume,
         ),
+        ready_timeout_seconds=ready_timeout_seconds,
     )
 
 
@@ -1083,6 +1174,7 @@ async def acquire_target(
                     network_volume_id=str(volume.get("id") or ""),
                     network_volume_name=str(volume.get("name") or ""),
                     network_volume_size_gb=int(volume["size"]),
+                    defer_machine=True,
                 ),
             )
             pod = await get_pod(requested_pod_id, config, name=initial.pod_name)
@@ -1300,7 +1392,7 @@ async def acquire_target(
         raise
 
     try:
-        observation = await observe_exact_target(
+        observation = await observe_and_confirm_acquired_target(
             config.api_key,
             _target_contract(
                 config,
@@ -1308,6 +1400,7 @@ async def acquire_target(
                 expected_name=expected_name,
                 volume=volume,
             ),
+            ready_timeout_seconds=ready_timeout_seconds,
         )
     except BaseException as exc:
         failed = {
@@ -1462,6 +1555,7 @@ async def reconcile_target(
                 pod_id=pod_id,
                 expected_name=expected_name,
                 volume=volume,
+                defer_machine=True,
             ),
         )
         if expected_name is None:
