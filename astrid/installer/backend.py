@@ -35,6 +35,7 @@ from .core import (
     new_version_id,
     persist_install_identity,
     read_json,
+    windows_private,
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_owned_command
@@ -1234,6 +1235,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("The installer needs the manifest's pinned uv.")
         folder = root / "versions" / new_version_id(manifest)
         folder.mkdir(parents=True)
+        windows_private(folder)  # Parent of version.json, profile.json and services.json.
         write_json(folder / "manifest.json", manifest)
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))

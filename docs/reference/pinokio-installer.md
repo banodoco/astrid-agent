@@ -18,10 +18,16 @@ existing limit of 90 characters.
 `install.json` records `managed_by: "pinokio"`. Update and uninstall with the
 same explicit `--root` retain the manager, even when the option is omitted.
 The existing per-user `astrid-install.json` selection records the manager,
-program root and data root under the existing installer lock. It is next to
-the default program root: `~/.local/share/astrid-install.json` on macOS,
+program root and data root under the existing installer lock. It is the
+lock's sibling: `~/.local/share/astrid-install.json` on macOS,
 `${XDG_DATA_HOME:-~/.local/share}/astrid-install.json` on Linux, and
-`%LOCALAPPDATA%\astrid-install.json` on Windows.
+`%LOCALAPPDATA%\Astrid Installer\astrid-install.json` on Windows. On Windows
+the installer writes its records (this selection, `install.json`, `current`
+and each version's `version.json`, `profile.json` and `services.json`) with a
+protected owner/SYSTEM DACL inside protected directories, because Runtime
+admits a stopped Pinokio install only through that private read. The installer
+moves an older `%LOCALAPPDATA%\astrid-install.json` it owns into place under
+its lock; Runtime never reads the old location.
 
 An active login-service install prevents a Pinokio install and the error names
 that installation. Ordinary install/update without an explicit root refuses a

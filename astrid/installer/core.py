@@ -74,9 +74,25 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def windows_private(target) -> None:
+    """Give an installer record or directory a protected owner/SYSTEM DACL on Windows.
+
+    Runtime admits stopped-Pinokio evidence only through ``read_private``,
+    which needs a protected DACL on the file and on its parent; an inherited
+    DACL never qualifies. POSIX permissions are unchanged.
+    """
+    from runtime_protocol import platform
+
+    if platform.sys.platform == "win32":
+        platform.owner_only(target)
+
+
 def write_json(path: Path, value: dict) -> None:
+    from runtime_protocol import platform
     from runtime_protocol.platform import durable_replace
 
+    if platform.sys.platform == "win32" and not path.parent.exists():
+        platform.private_directory(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
@@ -84,6 +100,7 @@ def write_json(path: Path, value: dict) -> None:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
+    windows_private(temporary)  # The rename keeps the protected descriptor.
     durable_replace(temporary, path)
 
 
@@ -257,6 +274,7 @@ def switch(root: Path, version: Version) -> None:
         stream.write(name + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    windows_private(pointer)
     durable_replace(pointer, root / "current")
 
 

@@ -94,7 +94,46 @@ def default_program_root(home: Path, system: str) -> Path:
 
 
 def install_selection(home: Path, system: str) -> Path:
-    return default_program_root(home, system).parent / "astrid-install.json"
+    """Return the per-user selection record: the installer lock's sibling.
+
+    On Windows both live in the private ``Astrid Installer`` directory, so the
+    Runtime's private read admits the record; LOCALAPPDATA's DACL is inherited.
+    """
+    return installer_lock_path(home, system).with_name("astrid-install.json")
+
+
+def migrate_install_selection(home: Path, system: str) -> None:
+    """Move a Windows selection from LOCALAPPDATA beside the installer lock.
+
+    Runs once under the installer lock. Only this installer's own regular-file
+    record moves; anything else is left untouched and never read. Runtime reads
+    only the new private record.
+    """
+    if system != "win32":
+        return
+    legacy = default_program_root(home, system).parent / "astrid-install.json"
+    if not os.path.lexists(legacy) or linked(legacy) or not legacy.is_file():
+        return
+    lock_path = installer_lock_path(home, system)
+    platform.private_directory(lock_path.parent)
+    with lock_path.open("a+b") as lock:
+        try:
+            platform.lock_file(lock.fileno(), blocking=False)
+        except BlockingIOError:
+            return  # The holder serializes; this run then contends for the lock.
+        try:
+            try:
+                record = read_json(legacy)
+            except (OSError, ValueError):
+                return
+            if record.get("owner") != LABEL:
+                return
+            selection = install_selection(home, system)
+            if not os.path.lexists(selection):
+                write_json(selection, record)
+            legacy.unlink()
+        finally:
+            platform.unlock_file(lock.fileno())
 
 
 UNSUPERVISED_WARNING = (

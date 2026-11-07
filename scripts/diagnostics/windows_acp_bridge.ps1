@@ -87,7 +87,9 @@ try {
 $defaultDataRoot = Join-Path $env:LOCALAPPDATA 'Astrid Runtime'
 $dataRootWasProvided = -not [string]::IsNullOrWhiteSpace($DataRoot)
 if (-not $dataRootWasProvided) {
-    $selectionPath = Join-Path $env:LOCALAPPDATA 'astrid-install.json'
+    # The installer keeps the selection beside its lock; older installs used LOCALAPPDATA.
+    $selectionPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Astrid Installer') 'astrid-install.json'
+    if (-not (Test-Path -LiteralPath $selectionPath)) { $selectionPath = Join-Path $env:LOCALAPPDATA 'astrid-install.json' }
     if (Test-Path -LiteralPath $selectionPath) {
         try {
             $selection = Get-Content -LiteralPath $selectionPath -Raw | ConvertFrom-Json

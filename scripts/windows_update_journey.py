@@ -174,7 +174,7 @@ def capture_stop_task_state(evidence, phase, state=None):
 
 
 def assert_no_boundary(journey, root, data, boundary):
-    selection = journey.read_json(Path(os.environ["LOCALAPPDATA"]) / "astrid-install.json")
+    selection = journey.read_json(journey.selection_path())
     marker = journey.read_json(root / "install.json")
     if (any(os.path.lexists(p) for p in boundary) or marker.get("r1_data_root")
             or selection.get("r1_data_root") or os.path.lexists(Path(str(data) + "-r1"))):
