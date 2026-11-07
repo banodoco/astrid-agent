@@ -843,8 +843,20 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
     applied = read_json(c.service.selection)
     assert cli.main([*args, '--autostart', 'on']) == 0
     assert read_json(c.service.selection) == applied
+    # Command and skills branches of the same completed-policy apply: R1 operations only, no R0 stop.
+    opened, synced = [], []
+    monkeypatch.setattr(c.backend, 'open', lambda *a, **k: opened.append('open'), raising=False)
+    monkeypatch.setattr(c.backend, 'sync_skills', lambda *a, **k: synced.append(a), raising=False)
+    c.service.choices = {**applied['choices'], 'command': False}
+    assert handoff.apply_completed_policy(c.backend, {'command': False}) is True
+    assert opened == ['open'] and synced == []
+    assert read_json(c.service.selection)['choices']['command'] is False
+    c.service.choices = {**read_json(c.service.selection)['choices'], 'skills': False, 'skill_copies': True}
+    assert handoff.apply_completed_policy(c.backend, {'skills': False, 'skill_copies': True}) is True
+    assert opened == ['open'] and len(synced) == 1
+    assert read_json(c.service.selection)['choices']['skill_copies'] is True
     capsys.readouterr()
     assert cli.main(['--root', str(c.root)]) == 0
     out = capsys.readouterr().out
     assert 'Astrid setup summary:' in out
-    assert read_json(c.service.selection)['choices'] == {**saved, 'autostart': True}
+    assert read_json(c.service.selection)['choices'] == {**saved, 'autostart': True, 'command': False, 'skills': False, 'skill_copies': True}
