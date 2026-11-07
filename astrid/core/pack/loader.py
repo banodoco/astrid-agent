@@ -110,6 +110,7 @@ def scan_packs(
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     _validate: bool = True,
     personal_packs_root: str | Path | None = None,
+    expected_pack_id: str | None = None,
 ) -> PackScan:
     """Scan a pack root without importing pack code.
 
@@ -135,12 +136,14 @@ def scan_packs(
     with group_read_lock(source_root):
         return _scan_packs_locked(source_root, include_hidden=include_hidden,
                                   strict=strict, required_pack_ids=required_pack_ids,
-                                  _validate=_validate, personal_packs_root=personal_packs_root)
+                                  _validate=_validate, personal_packs_root=personal_packs_root,
+                                  expected_pack_id=expected_pack_id)
 
 
 def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
                        required_pack_ids: frozenset[str], _validate: bool,
-                       personal_packs_root: str | Path | None = None) -> PackScan:
+                       personal_packs_root: str | Path | None = None,
+                       expected_pack_id: str | None = None) -> PackScan:
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
@@ -148,15 +151,6 @@ def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
     seen: dict[str, Path] = {}
     children = ((source_root,) if (source_root / "pack.yaml").is_file()
                 else sorted(source_root.iterdir(), key=lambda path: path.name))
-    # A managed source is staged under a digest-named directory; its identity is the
-    # declared pack id, not the folder name (discovery admits it the same way).
-    managed_ids: dict[Path, str] = {}
-    if (source_root / "pack.yaml").is_file():
-        from astrid.core.pack.source_setup import active_source_inventory
-
-        inventory = active_source_inventory()
-        managed_ids = {source.pack_root.resolve(): source.pack_id
-                       for source in (inventory.sources if inventory is not None else ())}
     for child in children:
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
@@ -165,7 +159,12 @@ def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
-            pack = load_pack_manifest(manifest_path, expected_pack_id=managed_ids.get(child.resolve()))
+            # A managed source root is a revision directory, not a folder named
+            # for the pack: its declared id is the expected one.
+            pack = load_pack_manifest(
+                manifest_path,
+                expected_pack_id=expected_pack_id if child == source_root else None,
+            )
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
             if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):
@@ -220,8 +219,12 @@ def scan_pack_roots(
         from astrid.core.pack.source_setup import active_source_inventory
         inventory = active_source_inventory()
         source_records = {source.pack_id: source for source in inventory.sources} if inventory else {}
+    managed_ids = {
+        Path(record.pack_root).resolve(): record.pack_id for record in source_records.values()
+    }
     scans = [scan_packs(path, include_hidden=include_hidden, strict=strict,
-                        required_pack_ids=required_pack_ids, _validate=False)
+                        required_pack_ids=required_pack_ids, _validate=False,
+                        expected_pack_id=managed_ids.get(path))
              for path in dict.fromkeys(Path(root).expanduser().resolve() for root in roots)]
     packs = list({pack.root.resolve(): pack for scan in scans for pack in scan.packs}.values())
     quarantined = [record for scan in scans for record in scan.quarantined]

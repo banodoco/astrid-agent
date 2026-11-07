@@ -13,7 +13,7 @@ import pytest
 
 from astrid.core.timeline.authoring_bundle import open_authoring_bundle, publish_authoring_candidate
 from astrid.core.timeline.authoring_feedback import authoring_change_summary, publication_feedback
-from astrid.packs.timeline.cli import _configure_diff, _configure_show, _configure_visualize
+from astrid.core.cli.domain_timelines import _configure_diff, _configure_show, _configure_visualize
 from astrid.sdk.authoring_remote import AuthoringRemoteError, TargetBoundAuthoringBundle
 from astrid.sdk.timeline.commit import bundle_from_document, document_from_bundle
 from astrid.sdk.timeline.emitter import DocumentPatchError, emit_document_commands

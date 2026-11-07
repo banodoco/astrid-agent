@@ -13,7 +13,7 @@ from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
 from pathlib import Path
 
-from astrid.core.pack.personal import resolve_personal_packs_root
+from astrid.personal_packs_root import resolve_personal_packs_root
 
 __all__: list[str] = []
 

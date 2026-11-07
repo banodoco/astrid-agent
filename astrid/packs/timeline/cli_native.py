@@ -587,7 +587,7 @@ def commit_edit(parsed, *, sheet=False, edit=None, inverse=False):
     return print_result(shown, as_json=parsed.json,
                         human_renderer=lambda value: _render_commit_result(value, dry_run=parsed.dry_run))
 def configure_edit_options(subparser):
-    from astrid.packs.timeline.cli import _add_idempotency_key, _add_json_flag
+    from astrid.core.cli.domain_timelines import _add_idempotency_key, _add_json_flag
 
     subparser.description = ("Media layer adds, literal clip moves and trims commit through the durable timeline session. "
                              "Other flags edit a legacy detached working copy.")
@@ -598,7 +598,7 @@ def configure_edit_options(subparser):
 
 
 def configure_apply_options(subparser):
-    from astrid.packs.timeline.cli import _add_idempotency_key, _add_json_flag
+    from astrid.core.cli.domain_timelines import _add_idempotency_key, _add_json_flag
 
     subparser.add_argument("--dry-run", action="store_true", help="Preview the sheet commit without publishing.")
     _add_idempotency_key(subparser)
@@ -609,7 +609,7 @@ def configure_apply_options(subparser):
 def history_steps(value):
     import argparse
 
-    from astrid.packs.timeline.cli import _positive_int
+    from astrid.core.cli.domain_timelines import _positive_int
 
     if not value.lstrip().startswith("{"):
         return _positive_int(value)
@@ -626,7 +626,7 @@ def history_steps(value):
 
 
 def configure_history_options(subparser):
-    from astrid.packs.timeline.cli import _add_idempotency_key, _add_json_flag
+    from astrid.core.cli.domain_timelines import _add_idempotency_key, _add_json_flag
 
     subparser.add_argument("--commit", action="append", metavar="RECEIPT_ID",
                            help="Reverse an accepted Runtime commit; for redo select the accepted undo. Repeat oldest first.")

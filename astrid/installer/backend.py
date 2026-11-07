@@ -1243,14 +1243,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
         sibling_sources = []
         source_install_env = {}
-        if "lifecycle" in manifest or "runpod" in manifest:
-            for name, directory, distribution in (
-                ("lifecycle", "lifecycle", "RUNPOD_LIFECYCLE"),
-                ("runpod", "runpod", "RUNPOD"),
-            ):
-                pin = manifest[name]
-                sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / directory))
-                source_install_env[f"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_{distribution}"] = pin["version"]
+        if "lifecycle" in manifest:
+            pin = manifest["lifecycle"]
+            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle"))
+            source_install_env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD_LIFECYCLE"] = pin["version"]
         self._verify_local_timeline_schema(agent)
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])

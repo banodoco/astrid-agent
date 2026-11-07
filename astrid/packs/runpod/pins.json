@@ -1,6 +1,10 @@
 {
   "schema": "astrid.engine-pins.v1",
   "sources": {
+    "lifecycle": {
+      "repository": "https://github.com/banodoco/runpod-lifecycle.git",
+      "revision": "f2948817eeb94af8dee76be21f6d673724f1606e"
+    },
     "comfyui": {
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
       "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"

@@ -2,26 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
 from astrid.core.generation.availability import availability_declaration
 
 
 def test_preview_routes_are_fixture_only_and_pack_resources_are_labeled() -> None:
-    declaration = availability_declaration()
-    fixture_routes = declaration["fixture_only_routes"]
-    pack = yaml.safe_load(Path("astrid/packs/astrid_motion/pack.yaml").read_text(encoding="utf-8"))
-    resources = {resource["path"]: resource for resource in pack["resources"]}
+    from types import SimpleNamespace
 
-    assert fixture_routes
-    for route, fixture_only in fixture_routes.items():
-        pack_id, path = route.split(":", 1)
-        assert pack_id == "astrid_motion"
-        assert fixture_only is True
-        assert resources[path]["kind"] == "fixture"
-    assert {f"astrid_motion:{path}" for path, item in resources.items() if item["kind"] == "fixture"} == set(fixture_routes)
+    # A manifest-declared fixture-only route flows through the pack-manifest path.
+    pack = SimpleNamespace(id="fixture_pack", extensions={"astrid": {"generation_availability": {
+        "fixture_only_routes": {"fixture_pack:preview/scenes.json": True}}}})
+    assert availability_declaration(selected_packs=(pack,))["fixture_only_routes"] == {
+        "fixture_pack:preview/scenes.json": True}
 
 
 def test_model_qualification_is_coded_and_qualified_fake_is_allowed(monkeypatch):
@@ -58,9 +49,8 @@ def test_executor_documentation_uses_action_decision_and_retains_qualified(monke
 
     ids = ['wan2gp.generate_video', 'video_editing.animate_image',
            'vibecomfy.character_animation', 'synthetic.qualified']
-    declaration = {**availability.availability_declaration()}
-    declaration['actions'] = {**declaration['actions'], 'synthetic.qualified': {'available': True}}
-    monkeypatch.setattr(availability, 'availability_declaration', lambda: declaration)
+    from tests.core.generation.availability_fixtures import declare_wan_actions_unqualified
+    declare_wan_actions_unqualified(monkeypatch, {'synthetic.qualified': {'available': True}})
     executors = [SimpleNamespace(id=name, short_description='executor description', description='',
         metadata={'pack_root': generator.PACKS_ROOT / 'fake'}) for name in ids]
     monkeypatch.setattr(generator, 'load_executors', lambda: SimpleNamespace(list=lambda: executors))

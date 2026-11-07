@@ -8,6 +8,8 @@ from unittest import mock
 
 import pytest
 
+from astrid.pack_api import VERSION as PACK_API_VERSION
+
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.pack.discovery import discover_canonical_pack_metadata, discover_pack_metadata
 from astrid.core.pack.source_setup import (
@@ -38,9 +40,10 @@ def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
     executor.mkdir(parents=True)
     (pack / "pack.yaml").write_text(
         f"schema_version: {schema_version}\nid: demo\nname: Demo Pack\nversion: 1.0.0\n"
-        "capabilities: [testing]\n"
-        + ('pack_api: "2.0"\ndocumentation: {kind: none, reason: source setup fixture.}\n'
-           if schema_version == 3 else ""),
+        + (
+            "capabilities: [testing]\n" if schema_version != 3 else
+            f"pack_api: \"{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}\"\ndocuments:\n  note:\n    format_version: 1\n    schema: {{type: object}}\n"
+        ),
         encoding="utf-8",
     )
     (executor / "executor.yaml").write_text(
@@ -61,22 +64,15 @@ def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
     return _git(root, "rev-parse", "HEAD")
 
 
-def test_no_hivemind_external_default_or_pin_report(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    monkeypatch.delenv("ASTRID_SOURCE_DECLARATIONS", raising=False)
-    # Legacy Hivemind-only overrides no longer select an external source.
-    monkeypatch.setenv("ASTRID_HIVEMIND_REVISION", "invalid")
-    monkeypatch.setenv("ASTRID_HIVEMIND_REPOSITORY", "https://example.test/unused.git")
-    declarations = declarations_from_json()
-    assert declarations == ()
+def test_hivemind_resolves_as_installed_core_pack() -> None:
+    """Hivemind ships in core (Plan 06): discovery admits it from the core package, not an external source."""
+    import astrid
+    from astrid.core.pack.discovery import discover_pack_metadata
 
-    state_path = tmp_path / "state.json"
-    report = provision(declarations, state_path=state_path, data_root=tmp_path / "data")
-    assert report["ok"] is True
-    assert report["active"] == []
-    assert "hivemind_pin" not in report
-    assert active_source_inventory(state_path=state_path).sources == ()
+    discovered = next(item for item in discover_pack_metadata() if item.pack.id == "hivemind")
+    assert discovered.source_kind == "source"
+    core_manifest = Path(astrid.__file__).resolve().parent / "core" / "hivemind" / "pack.yaml"
+    assert Path(discovered.pack.root, "pack.yaml").resolve() == core_manifest
 
 
 def test_test_home_isolates_default_managed_source_inventory(tmp_path: Path) -> None:

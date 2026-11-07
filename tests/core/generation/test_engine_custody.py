@@ -755,13 +755,13 @@ recipe=replace(base,
  start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),
  health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 original_read_ref=recipes._read_ref
-def read_ref(ref):
+def read_ref(ref,**kwargs):
  if ref.path.startswith('cpu-fixture/'):
   path=Path({str(root)!r})/ref.path
   payload=path.read_bytes()
   assert hashlib.sha256(payload).hexdigest()==ref.sha256
   return path,payload
- return original_read_ref(ref)
+ return original_read_ref(ref,**kwargs)
 recipes._read_ref=read_ref
 recipes.load_recipe=lambda engine,platform:recipe
 original_run=LocalLinuxExecutionContext.run

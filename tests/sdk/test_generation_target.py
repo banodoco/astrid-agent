@@ -16,6 +16,7 @@ from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTarge
 from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
+from tests.core.generation.availability_fixtures import declare_wan_unqualified
 from tests.core.generation.backends.test_comfy_model_resolution import install_target, target_info
 from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
     engine_configuration, network, observation_configuration,
@@ -53,6 +54,23 @@ def storage_client(*, store_root=None):
 def attached_without_managed(monkeypatch):
     monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
     monkeypatch.setattr(preflight, "_comfyui_runtime_available", Mock(side_effect=AssertionError("managed installation probed")))
+
+
+def z_image_only_registry(monkeypatch):
+    """The target serves z-image; the default owns its failure, so offer no other default."""
+    import astrid.sdk as sdk
+    registry = ModelRegistry([ModelRegistry.load_default().get('z-image')])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+
+
+def test_default_missing_on_target_owns_its_failure_without_fallback(network, monkeypatch):
+    client, requests = install_target(network, target_info())
+    attached_without_managed(monkeypatch)
+    with pytest.raises(AstridError, match='qwen_image_2.1_turbo_int8_convrot') as caught:
+        GenerationFacade().image(target=client.target.url, prompt='one boat', dry_run=True)
+    assert caught.value.code == 'missing_model'
+    assert caught.value.to_envelope()['entry']['id'] == 'qwen-image-2.1-turbo'
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
 
 
 @pytest.mark.parametrize('blocked_ids', [
@@ -163,6 +181,7 @@ def test_qualified_first_candidate_is_probed_and_prepared_first(network, monkeyp
 
 @pytest.mark.parametrize('target', ['auto', 'managed', 'http://127.0.0.1:8123'])
 def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target):
+    declare_wan_unqualified(monkeypatch)
     probe = Mock(side_effect=AssertionError('explicit unqualified route probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
@@ -210,6 +229,7 @@ def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, i
 
 def test_explicit_bundled_template_is_not_filtered_or_dispatched(monkeypatch):
     from astrid.core.generation import entries
+    declare_wan_unqualified(monkeypatch)
     manifest = {'id': 'video/wan_fake', 'kind': 'video', 'modes': ['i2v'], 'source': 'ready-template'}
     monkeypatch.setattr(entries, 'find_entry', lambda name: manifest)
     probe = Mock(side_effect=AssertionError('unqualified template probed'))
@@ -251,6 +271,7 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     monkeypatch.setattr(builtins, '__import__', reject_remote_import)
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     seen = {}
     runtime, imported = storage_client(store_root=tmp_path / 'runtime-media')
 
@@ -292,9 +313,7 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     assert seen["comfy_url"] == client.target.url
     assert seen["generation_intent"]["modality"] == "image"
     assert seen["generation_intent"]["metadata"]["model"] == "z-image"
-    # 8d96186db added the higher-priority Qwen candidate; each candidate
-    # resolves against a fresh target inventory before z-image is selected.
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert runtime.media.import_file.call_count == 3
     assert not imported[seen["python"]["digest"]].exists()
 
@@ -386,14 +405,13 @@ def test_default_skips_missing_target_model_and_uses_ready_candidate(network, mo
 def test_attached_dry_run_resolves_and_approves_without_destination_or_admission(network, monkeypatch, tmp_path):
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("dry-run admitted")))
     output = tmp_path / "absent"
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", out=output, dry_run=True)
     assert plan["entry"]["approval"]["status"] == "approved"
     assert plan["target"]["endpoint"] == client.target.url
-    # 8d96186db added the higher-priority Qwen candidate; each candidate
-    # resolves against a fresh target inventory before z-image is selected.
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert not output.exists()
 
 
@@ -447,6 +465,7 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     original = targets.resolve_target
 
     def default_to_fake(target, **kwargs):
@@ -758,7 +777,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             from vibecomfy.workflow_bundle import load_bundle
             from vibecomfy.security.provenance import Provenance
             receipt_path = tmp_path / 'admission.json'
-            code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+            code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                 '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
                 '--target', f'http://127.0.0.1:{server.server_port}',
                 '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
@@ -790,7 +809,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
         with ThreadPoolExecutor(max_workers=1) as worker:
             settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
             try:
-                code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+                code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                     '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
                     '--target', f'http://127.0.0.1:{server.server_port}',
                     '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
