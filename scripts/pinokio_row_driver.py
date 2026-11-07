@@ -81,6 +81,7 @@ class Row:
         self.standin = self.scratch / "release2" / "install-manifest.json"
         self.env: dict[str, str] = {}
         self.child: subprocess.Popen | None = None
+        self.adopted_pid: int | None = None
         self.session_count = 0
         self.version: dict | None = None
         self.data: Path | None = None
@@ -292,13 +293,40 @@ class Row:
         self.command(["node", "--input-type=module", "-e", code,
                       (self.launcher / "pinokio" / "lifecycle.mjs").as_uri(), self.root, self.app_dir], timeout=90)
 
-    def finish_stop(self) -> None:
+    def adopt_running(self) -> None:
+        """Take over the session the Pinokio updater left running on the new version."""
+        self.data, _version, self.version = self.record()
+        control = read_json(self.root / "pinokio-control.json")
+        pid = control.get("pid")
+        if not isinstance(pid, int) or not control.get("token") or not control.get("port"):
+            raise RowError("updater left no session controller")
         try:
-            rc = self.child.wait(timeout=15)
-        except subprocess.TimeoutExpired as exc:
-            raise RowError("session did not exit after graceful stop; left running") from exc
-        if rc != 0:
-            raise RowError(f"session failed after stop: exit {rc}")
+            os.kill(pid, 0)
+        except OSError as exc:
+            raise RowError("updater's session is not running") from exc
+        self.child = None
+        self.adopted_pid = pid
+        self.instance = self.health()["instance"]
+
+    def finish_stop(self) -> None:
+        if self.child is None:
+            # An adopted session is not our child: wait for it to exit by pid.
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    os.kill(self.adopted_pid, 0)
+                except OSError:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RowError("adopted session did not exit after graceful stop; left running")
+                time.sleep(0.2)
+        else:
+            try:
+                rc = self.child.wait(timeout=15)
+            except subprocess.TimeoutExpired as exc:
+                raise RowError("session did not exit after graceful stop; left running") from exc
+            if rc != 0:
+                raise RowError(f"session failed after stop: exit {rc}")
         if self.record()[0] != self.data:
             raise RowError("selected data root changed during stop")
         discovery = self.data / "runtime" / "discovery.json"
@@ -382,7 +410,7 @@ def stages(row: Row) -> list[tuple[str, list]]:
                         detail("session ready and one chiptune task settled")]),
         ("stop_start", [row.stop, row.start, detail("graceful stop exited 0 and the session restarted")]),
         ("busy_stop_data", [row.busy_stop]),
-        ("update_ready_task", [row.stop, row.update_install, row.start, row.release2_check,
+        ("update_ready_task", [row.stop, row.update_install, row.adopt_running, row.release2_check,
                                lambda: row.task_once(create_project=False),
                                detail("release 2 identity; data marker kept; task settled")]),
         ("uninstall_data", [row.stop, row.uninstall, row.cleanup_check,
