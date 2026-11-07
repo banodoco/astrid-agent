@@ -33,7 +33,7 @@ part a pack author needs day to day. Build the pack with
 
 Put them in `tests/packs/<pack>/test_*.py`, with an `__init__.py` so a file
 name shared with another pack cannot collide (as in
-[tests/packs/video_editing/](../../../../../tests/packs/video_editing/)).
+[tests/packs/h3_av/](../../../../../tests/packs/h3_av/)).
 Never inside `astrid/packs/<pack>/`: collection is `testpaths = ["tests"]`, so
 they would never run. The cross-pack contracts in `tests/packs/test_pack_*.py`
 (layout, discovery, validation, recoverability) already cover every pack.
@@ -68,8 +68,8 @@ load a module only the integration lane has with `require_module` from
 
 1. **Pure logic: a unit test.** Import the function from the action's module
    and feed it small, deterministic input, as
-   [tests/packs/music/test_music_pack.py](../../../../../tests/packs/music/test_music_pack.py)
-   does with synthetic signals. No Runtime, no subprocess.
+   [tests/packs/h3_av/test_continuation_timing.py](../../../../../tests/packs/h3_av/test_continuation_timing.py)
+   does with small synthetic requests. No Runtime, no subprocess.
 2. **Runtime behaviour: the real daemon.** Use the `real_runtime` fixture from
    [tests/conftest.py](../../../../../tests/conftest.py). `real_runtime()`
    starts a daemon on a temp realm, `real_runtime(realm, support_root=...)`
@@ -78,7 +78,7 @@ load a module only the integration lane has with `require_module` from
    [tests/helpers/runtime.py](../../../../../tests/helpers/runtime.py)
    (`ASTRID_RUNTIME_CHECKOUT`, or the `astrid-runtime` sibling).
    These tests are `integration`. Example:
-   [test_runtime_publication_chain.py](../../../../../tests/packs/video_editing/test_runtime_publication_chain.py).
+   [test_runtime_recovery_integration.py](../../../../../tests/packs/h3_av/test_runtime_recovery_integration.py).
    Do not construct `RuntimeDaemon` yourself.
 3. **A fake Runtime, only where it is verified.** A fake may answer only the
    operations recorded in

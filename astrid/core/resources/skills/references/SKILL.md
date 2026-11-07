@@ -56,8 +56,8 @@ id remains, report the typed limitation instead of inventing a download,
 filesystem path, or local cache fallback.
 
 For generating new variants, follow the [generation skill](../../../../packs/generation/docs/SKILL.md).
-For placing media in an existing video timeline, follow the [video editing
-existing-timeline route](../../../../packs/video_editing/docs/SKILL.md); rendering is
+For placing media in an existing video timeline, follow the [timeline
+editing route](../../../../packs/timeline/docs/SKILL.md); rendering is
 downstream evidence.
 Return to [creative work](../../../../packs/_core/docs/creative-work/SKILL.md) for capability selection.
 

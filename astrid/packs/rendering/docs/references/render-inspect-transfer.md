@@ -129,7 +129,7 @@ font/resource provenance. Do not install a browser or renderer from this
 skill; missing host/native prerequisites must be reported by the owning Sol
 lane.
 
-For repeatable draft narration synchronization, use `video_editing.sync_draft_voiceover` as documented in the [video editing skill](../../../video_editing/docs/SKILL.md). It reads the timeline's pinned script, synthesizes through `generation.generate_speech`, and publishes one validated revision. Empty scripts are skipped and existing final or unadopted audio stays protected. For a one-off manual import, see the [placeholder voiceover recipe](placeholder-voiceover.md). Neither workflow needs a video render.
+For repeatable draft narration synchronization, use `video_editing.sync_draft_voiceover` as documented by the `video_editing` pack (installed separately from the poms_packs collection, not shipped in this checkout). It reads the timeline's pinned script, synthesizes through `generation.generate_speech`, and publishes one validated revision. Empty scripts are skipped and existing final or unadopted audio stays protected. For a one-off manual import, see the [placeholder voiceover recipe](placeholder-voiceover.md). Neither workflow needs a video render.
 
 ### CLI checks and journal
 
@@ -661,8 +661,8 @@ facade, direct module invocation, or backend-specific shape to the timeline.
 ## Runtime-owned multi-step stitching
 
 For a two-child generation flow that must wait durably and preserve declared
-output order, use the typed handoff in
-`astrid.packs.video_editing.shared.runtime_orchestration` and the stitch
+output order, use the typed handoff in the installed
+`video_editing` pack (`shared.runtime_orchestration`) and the stitch
 admission in `astrid.packs.rendering.shared.runtime_stitch`. These modules
 describe the graph and publication settings; the Runtime owns lifecycle,
 continuation admission, canonical timeline CAS, and render-task creation. The
