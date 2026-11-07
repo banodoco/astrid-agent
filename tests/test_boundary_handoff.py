@@ -87,6 +87,9 @@ elif args == ["--user", "enable", "--now", "astrid-r1.service"]:
     assert not state["enabled"] and not state["running"], "two service owners"
     state.update(r1="active", r1_enabled=True)
     path.write_text(json.dumps(state))
+elif args in (["--user", "enable", "astrid-r1.service"], ["--user", "disable", "astrid-r1.service"]):
+    state["r1_enabled"] = args[1] == "enable"
+    path.write_text(json.dumps(state))
 else:
     raise SystemExit("unexpected manager mutation: " + repr(args))
 ''')
@@ -835,7 +838,13 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
         handoff.handle(c.root, c.data, c.backend, policy_change={'command': False})
     assert journal.read_bytes() == midway
     write_json(journal, complete)
+    assert cli.main([*args, '--autostart', 'on']) == 0
+    assert read_json(c.service.selection)['choices']['autostart'] is True
+    applied = read_json(c.service.selection)
+    assert cli.main([*args, '--autostart', 'on']) == 0
+    assert read_json(c.service.selection) == applied
+    capsys.readouterr()
     assert cli.main(['--root', str(c.root)]) == 0
     out = capsys.readouterr().out
-    assert 'Astrid setup summary:' in out and 'Astrid will not start at sign-in' in out
-    assert read_json(c.service.selection)['choices'] == saved
+    assert 'Astrid setup summary:' in out
+    assert read_json(c.service.selection)['choices'] == {**saved, 'autostart': True}

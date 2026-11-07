@@ -50,6 +50,22 @@ def _json(value):
     return json.dumps(value, sort_keys=True) + "\n"
 
 
+# Saved setup choices (and the command receipt they produce) may change after a
+# completed handoff; they are policy, not handoff identity.
+POLICY_FIELDS = (("command_shim", "command_path"), ("choices",), ())
+
+
+def _matches(path, expected, ignore):
+    text = _text(path)
+    if text in expected:
+        return True
+    if text is None or not ignore:
+        return False
+    def strip(content):
+        return {k: v for k, v in json.loads(content).items() if k not in ignore}
+    return strip(text) in [strip(e) for e in expected]
+
+
 class BoundaryHandoff:
     def __init__(self, backend):
         self.backend = backend
@@ -119,8 +135,8 @@ class BoundaryHandoff:
         new = self._records(value) if value.get("candidate") else old
         # Validate all three before the first mutation. A partial replay may
         # contain either side at each file, never a third party's replacement.
-        for path, before, after in zip(paths, old, new):
-            if _text(path) not in (before, after):
+        for path, before, after, ignore in zip(paths, old, new, POLICY_FIELDS):
+            if not _matches(path, (before, after), ignore):
                 raise ValueError(f"Handoff selection changed; R0 was not restarted: {path}")
         for path, before in zip(paths, old):
             if _text(path) != before:
@@ -168,9 +184,9 @@ class BoundaryHandoff:
     def validate_active(self, value):
         if value["phase"] != "complete" or not value.get("receipt"):
             raise ValueError("The R1 handoff is not complete.")
-        for path, expected in zip((self.root / "install.json", self.service.selection, self.root / "current"),
-                                  self._records(value)):
-            if _text(path) != expected:
+        for path, expected, ignore in zip((self.root / "install.json", self.service.selection, self.root / "current"),
+                                          self._records(value), POLICY_FIELDS):
+            if not _matches(path, (expected,), ignore):
                 raise ValueError("R1 handoff selection changed; both roots were kept.")
         candidate = Version.load(value["candidate"])
         if read_json(registration._regular(candidate.root / "version.json")) != candidate.document():
@@ -326,6 +342,33 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     if policy_change:
         raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
     BoundaryHandoff(backend).run(data, manifest_loader, say=say)
+    return True
+
+
+def apply_completed_policy(backend, policy_change, *, say=print):
+    """Apply changed setup choices to a completed R1 in place; no R0 stop path.
+
+    Returns False when there is no completed handoff. The R0 discovery file is
+    never read: R1 operations only use the validated journal and R1 records.
+    Only the changed names are re-registered; unchanged saved policy is kept.
+    """
+    if not policy_change or not os.path.lexists(journal_path(backend.service)):
+        return False
+    transaction = BoundaryHandoff(backend)
+    value = transaction._load()
+    if value["phase"] != "complete":
+        return False
+    candidate, _destination = transaction.validate_active(value)
+    saved = read_json(backend.service.selection)
+    registration._publish(backend.service.selection, _json(
+        {**saved, "choices": {**saved.get("choices", {}), **backend.service.choices}}), exclusive=False)
+    if "autostart" in policy_change:
+        transaction.registration.set_autostart(policy_change["autostart"])
+    if "command" in policy_change:
+        backend.open()
+    if "skills" in policy_change or "skill_copies" in policy_change:
+        backend.sync_skills(candidate)
+    say("Applied the changed setup choices to the running R1 install; R0 was not touched.")
     return True
 
 

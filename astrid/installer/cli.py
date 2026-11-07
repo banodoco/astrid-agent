@@ -618,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
                     policy_change = {name: value for name, value in args.choices.items()
                                      if value != previous_skill_policy[name]} or None
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
-                    from .boundary_handoff import handle
+                    from .boundary_handoff import apply_completed_policy, handle
 
                     def candidate_manifest():
                         if not uv.is_absolute() or not uv.is_file():
@@ -640,6 +640,13 @@ def main(argv: list[str] | None = None) -> int:
                             _print_run_summary(
                                 summary_choices, mode=mode, install_root=summary_root,
                                 result_note="R0 to R1 handoff handled; saved setup choices were kept and no command, autostart or skills change was made by it.")
+                        return 0
+                    if (mode in {"install", "update"} and apply_completed_policy(backend, policy_change)):
+                        # Completed handoff: the changed choices were applied to R1
+                        # in place. The R0 stop path and legacy discovery are not used.
+                        _print_run_summary(
+                            summary_choices, mode=mode, install_root=summary_root,
+                            result_note="setup choices applied to R1; R0 was not touched.")
                         return 0
                 else:
                     from .boundary_registration import journal_path
