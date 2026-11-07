@@ -632,3 +632,20 @@ def test_source_archive_carries_git_and_the_one_identity_manifest_the_verifier_r
     assert manifest["heads"] == {Path(d).name: f"{i}" * 40 for i, d in enumerate(rp.SOURCE_DIRS)}
     assert set(manifest["heads"]) == {"astrid-agent", "astrid-runtime", "runpod-lifecycle", "VibeComfy"}
     assert manifest["runtime_lock_sha256"] == rp.sha256_file(sources / "src/astrid-agent/runtime.lock.json")
+
+
+def test_engine_custody_root_is_not_on_the_workspace_fuse_mount():
+    """Engine custody needs an owner-only (0700) directory; /workspace is a FUSE mount that ignores mkdir's
+    mode, so a custody root under it fails at the first helper with unsafe_path/helper-identity
+    (attempt 06). Every pod-side engine root the wrapper hands out must live off that mount.
+    """
+    from pathlib import PurePosixPath
+
+    def on_workspace(path: str) -> bool:
+        return PurePosixPath(path).is_relative_to("/workspace")
+
+    assert not on_workspace(rp.ENGINE_ROOT)
+    assert f"ASTRID_ENGINE_ROOT:-{rp.ENGINE_ROOT}}}" in rp.POD_BOOTSTRAP_SCRIPT
+    for engine in ("comfyui", "vibecomfy-h3"):
+        assert not on_workspace(f"{rp.ENGINE_BASE}/{engine}")
+    assert not on_workspace(rp.RunPodInstallation.root)

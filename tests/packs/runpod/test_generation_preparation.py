@@ -51,7 +51,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         raw["volume"] = None
     c.prefs = RunPodPreferences.from_mapping(raw)
     recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-    plan = engine_runner.plan_install(recipe, root="/workspace/astrid/engines/comfyui", placement="local")
+    plan = engine_runner.plan_install(recipe, root="/root/astrid/engines/comfyui", placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
         _selected_runtime_commit(), next(s for s in recipe.sources if s.name == "vibecomfy").pin.revision,
@@ -307,7 +307,7 @@ def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility
 
     recipe = engine_recipe.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
-    root = "/workspace/astrid/engines/vibecomfy-h3"
+    root = "/root/astrid/engines/vibecomfy-h3"
     expected = engine_runner.plan_install(recipe, root=root, placement="local")
     vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
     compatibility = RunPodLeaseCompatibility(
@@ -317,7 +317,7 @@ def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     installation = RunPodInstallation(compatibility, engine="vibecomfy-h3", root=root)
     assert installation.plan() == expected
     with pytest.raises(Exception, match="unsupported retained installation"):
-        replace(installation, root="/workspace/astrid/engines/comfyui").plan()
+        replace(installation, root="/root/astrid/engines/comfyui").plan()
 
 
 @pytest.mark.parametrize("release_race", [False, True])
