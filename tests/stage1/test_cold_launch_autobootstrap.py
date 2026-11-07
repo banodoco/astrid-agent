@@ -217,7 +217,7 @@ def test_default_runtime_connection_still_starts_pack_host(monkeypatch, tmp_path
     result = autobootstrap.ensure_runtime()
 
     assert result["host_status"] == "ready"
-    assert seen == [{"reconfigure_action": autobootstrap.RECONFIGURE_ACTION, "attach_healthy": True}]
+    assert seen == [{"reconfigure_action": autobootstrap.RECONFIGURE_ACTION}]
 
 
 def test_real_worker_source_handoff_starts_pack_host_after_lifecycle_filter(

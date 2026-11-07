@@ -966,8 +966,7 @@ def _consume_runtime_cleanup_receipt(state: Mapping[str, Any]) -> None:
 
 def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
                         status: str | None = None,
-                        current_runtime_instance_id: str | None = None,
-                        attach_reason: str | None = None) -> bool:
+                        current_runtime_instance_id: str | None = None) -> bool:
     """Stop the registered host group and return whether shutdown sent SIGKILL."""
     status = _registered_host_status(state) if status is None else status
     if status == "foreign":
@@ -1014,9 +1013,8 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
                 "legacy Windows host registration lacks a matching Runtime Job-drain receipt; "
                 "automatic retirement is blocked"
             )
-        detail = f"registration status {status}" + (f"; {attach_reason}" if attach_reason else "")
         raise PackHostBootstrapError(
-            "registered Windows host has no retained Job custody; retirement blocked" + f" ({detail})"
+            f"registered Windows host has no retained Job custody; retirement blocked (registration status {status})"
         )
     if status != "reused":
         return _stop_group(int(state["pid"]), leader_birth=str(state.get("process_birth_id") or "") or None)
@@ -1054,13 +1052,8 @@ def _check_locked_host_registration(state: Mapping[str, Any], support: Path) -> 
 
 
 def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: bool = False,
-                        current_runtime_instance_id: str | None = None,
-                        attach_reason: str | None = None) -> None:
-    """Caller holds support's host lock. Stop its registered host and drop its markers.
-
-    ``attach_reason`` is the attach rejection that led here; it is carried into the
-    refusal text so the receipt names why the live host was not attached.
-    """
+                        current_runtime_instance_id: str | None = None) -> None:
+    """Caller holds support's host lock. Stop its registered host and drop its markers."""
     _check_locked_host_registration(state, support)
     status = _registered_host_status(state)
     used_receipt = (
@@ -1073,10 +1066,8 @@ def _retire_host_locked(state: Mapping[str, Any], support: Path, *, foreground: 
         if foreground:
             _terminate_old_host(state, foreground=True, status=status,
                                 current_runtime_instance_id=current_runtime_instance_id)
-        elif attach_reason is None:
-            _terminate_old_host(state)
         else:
-            _terminate_old_host(state, attach_reason=attach_reason)
+            _terminate_old_host(state)
     for name in ("generic-host.ready.json", "generic-host.json"):
         (support / name).unlink(missing_ok=True)
     if used_receipt:
@@ -1790,153 +1781,6 @@ class _ParkedPackHostInspector:
         return observed
 
 
-
-
-_ATTACHABLE_KEYS = (
-    "endpoint", "executor_id", "ready_file", "credential_file",
-    "support_root", "runtime_instance_id", "runtime_epoch", "schema_digest",
-)
-_ATTACH_READY_KEYS = (
-    *_ATTACHABLE_KEYS, "source_checkout", "source_checkout_digest",
-    "source_closure_digest", "source_inventory_identity",
-    "boot_manifest_path", "boot_manifest_hash", "python_executable",
-)
-
-
-def _attach_mismatch(key: str, expected: Any, actual: Any) -> dict[str, str]:
-    """One named field that blocked attach. Only paths, digests, ids and pids reach here."""
-    def show(value: Any) -> str:
-        text = repr(value)
-        return text if len(text) <= 160 else text[:157] + "..."
-    return {"key": key, "expected": show(expected), "actual": show(actual)}
-
-
-def _attach_static_mismatches(current: Mapping[str, Any], ready: Mapping[str, Any],
-                              expected: Mapping[str, Any], inventory_identity: str) -> list[dict[str, str]]:
-    """Every registration or ready field that stops a live host from being attached."""
-    checkout = Path(str(current.get("source_checkout") or ""))
-    pairs: list[tuple[str, Any, Any]] = [
-        ("current.source_checkout_is_dir", True, checkout.is_dir()),
-        ("current.source_checkout_digest_present", True, bool(current.get("source_checkout_digest"))),
-        ("current.source_closure_digest_present", True, bool(current.get("source_closure_digest"))),
-        ("current.source_inventory_identity", inventory_identity, current.get("source_inventory_identity", "")),
-        ("ready.status", "ready", ready.get("status")),
-        ("ready.pid", str(current.get("pid")), str(ready.get("pid"))),
-        ("ready.process_birth_id", str(current.get("process_birth_id")), str(ready.get("process_birth_id"))),
-    ]
-    pairs += [(f"current.{key}", expected.get(key), current.get(key)) for key in _ATTACHABLE_KEYS]
-    pairs += [(f"ready.{key}", current.get(key), ready.get(key)) for key in _ATTACH_READY_KEYS]
-    return [_attach_mismatch(key, want, got) for key, want, got in pairs if want != got]
-
-
-def _reject_attach(current: Mapping[str, Any], mismatches: list[dict[str, str]],
-                   rejections: list[str] | None) -> None:
-    """Record why attach was refused: one stderr diagnostic line, plus the reason for the caller."""
-    reason = "attach rejected: " + "; ".join(
-        f"{item['key']} expected={item['expected']} actual={item['actual']}" for item in mismatches)
-    if rejections is not None:
-        rejections.append(reason)
-    try:
-        print(json.dumps({
-            "diagnostic": "astrid.pack_host_attach_rejected",
-            "reason": reason,
-            "pid": current.get("pid"),
-            "process_birth_id": current.get("process_birth_id"),
-            "runtime_service_launch_id": current.get("runtime_service_launch_id"),
-            "keys": [item["key"] for item in mismatches],
-            "mismatches": mismatches,
-        }, sort_keys=True), file=sys.stderr, flush=True)
-    except Exception:
-        pass  # Diagnostics never change attach or retirement behaviour.
-    return None
-
-
-def _attach_resident_host(
-    current: Mapping[str, Any], ready: Mapping[str, Any], *,
-    expected: Mapping[str, Any], worker_path: Path, runtime_epoch: Any,
-    runtime_instance_id: str, inventory_identity: str,
-    rejections: list[str] | None = None,
-) -> Mapping[str, Any] | None:
-    """Return a receipt for a live Runtime-registered host from another checkout.
-
-    A None result names its cause on stderr (``astrid.pack_host_attach_rejected``)
-    and appends the same reason to ``rejections`` when given.
-    """
-    mismatches = _attach_static_mismatches(current, ready, expected, inventory_identity)
-    if mismatches:
-        return _reject_attach(current, mismatches, rejections)
-    checkout = Path(str(current.get("source_checkout") or ""))
-    resident_token = ""
-    try:
-        from astrid.core.execution.generic_host import (
-            RuntimeProtocolClient,
-            source_checkout_closure_digest,
-            source_checkout_digest,
-        )
-
-        observed_digest = source_checkout_digest(checkout)
-        if observed_digest != current["source_checkout_digest"]:
-            return _reject_attach(current, [_attach_mismatch(
-                "live.source_checkout_digest", current["source_checkout_digest"], observed_digest)], rejections)
-        observed_closure = source_checkout_closure_digest(checkout)
-        if observed_closure != current["source_closure_digest"]:
-            return _reject_attach(current, [_attach_mismatch(
-                "live.source_closure_digest", current["source_closure_digest"], observed_closure)], rejections)
-        from astrid.core._shared.boot_manifest import load_boot_manifest_hash
-
-        manifest = Path(str(current.get("boot_manifest_path") or ""))
-        observed_manifest = load_boot_manifest_hash(manifest, support_root=Path(str(current["support_root"])))
-        if observed_manifest != current["boot_manifest_hash"]:
-            return _reject_attach(current, [_attach_mismatch(
-                "live.boot_manifest_hash", current["boot_manifest_hash"], observed_manifest)], rejections)
-        resident_token = worker_path.read_text(encoding="utf-8").strip()
-        resident_client = RuntimeProtocolClient(str(expected["endpoint"]), resident_token)
-        resident_client._authenticate_worker(PACK_HOST_ACTOR)
-        registration = resident_client.generated.get_executor(PACK_HOST_ACTOR)
-        def field(name: str):
-            return registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
-        ready_registration = ready.get("registration")
-        def ready_field(name: str):
-            return ready_registration.get(name) if isinstance(ready_registration, Mapping) else getattr(ready_registration, name, None)
-        caps = field("capabilities") or ()
-        live_pairs: list[tuple[str, Any, Any]] = [
-            ("live.executor_id", PACK_HOST_ACTOR, field("executor_id")),
-            ("live.readiness", "ready", field("readiness")),
-            ("live.runtime_epoch", runtime_epoch, field("runtime_epoch")),
-            ("ready.source_epoch_present", True, isinstance(ready.get("source_epoch"), str) and bool(ready.get("source_epoch"))),
-            ("live.source_epoch", ready.get("source_epoch"), field("source_epoch")),
-            ("ready_registration.source_epoch", ready.get("source_epoch"), ready_field("source_epoch")),
-            ("live.source_digest_present", True, bool(field("source_digest"))),
-            ("live.source_digest", ready_field("source_digest"), field("source_digest")),
-            ("live.dependency_digest_present", True, bool(field("dependency_digest"))),
-            ("live.dependency_digest", ready_field("dependency_digest"), field("dependency_digest")),
-            ("live.capability_ready", True, any(
-                (cap.get("status") if isinstance(cap, Mapping) else getattr(cap, "status", None)) == "ready"
-                for cap in caps)),
-        ]
-        live_mismatches = [_attach_mismatch(key, want, got) for key, want, got in live_pairs if want != got]
-        if live_mismatches:
-            return _reject_attach(current, live_mismatches, rejections)
-    except (RuntimeError, OSError, ValueError, TypeError, KeyError, AttributeError, ImportError) as exc:
-        return _reject_attach(current, [_attach_mismatch("live.check_raised", "completed", type(exc).__name__)], rejections)
-    finally:
-        resident_token = ""
-    return {
-        "host_status": "ready",
-        "host_pid": int(current["pid"]),
-        "host_executor_id": PACK_HOST_ACTOR,
-        "host_ready_file": str(expected["ready_file"]),
-        "host_ready_capabilities": list(ready.get("ready_capabilities", [])),
-        "host_runtime_instance_id": runtime_instance_id,
-        "host_runtime_epoch": runtime_epoch,
-        "host_source_checkout_digest": current["source_checkout_digest"],
-        "host_source_closure_digest": current["source_closure_digest"],
-        "host_source_inventory_identity": current.get("source_inventory_identity", ""),
-        "host_boot_manifest_path": current["boot_manifest_path"],
-        "host_boot_manifest_hash": current["boot_manifest_hash"],
-    }
-
-
 # A Runtime-supervised foreground host writes its ready record only after its own
 # startup, which can take minutes (Windows launch validation alone took 69 s).
 _STARTUP_WAIT_SECONDS = 180.0
@@ -1967,7 +1811,7 @@ def _await_supervised_startup(state_path: Path, ready_path: Path,
     The Runtime decides supervision: a ``pack-host`` row in its health (re-read every
     few seconds) or a registration carrying the supervisor's launch id. Returns once
     a live registration has a ready record for its pid and birth id; the caller's
-    locked section then attaches. Without a supervisor and without such a registration,
+    locked section then reuses it. Without a supervisor and without such a registration,
     returns at once and the caller's normal path decides.
     """
     deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
@@ -2018,23 +1862,28 @@ def _await_supervised_startup(state_path: Path, ready_path: Path,
         time.sleep(_STARTUP_POLL_SECONDS)
 
 
-def _supervised_unready_message(current: Mapping[str, Any] | None, status: str | None,
-                                attach_rejections: list[str]) -> str:
+def _supervised_unready_message(current: Mapping[str, Any] | None, ready: Mapping[str, Any] | None,
+                                status: str | None, expected: Mapping[str, Any]) -> str:
     """Why a Runtime-supervised host cannot be used yet. Never a retirement or launch instruction."""
     if current is None:
         return "Astrid's task host is still starting (no registration yet); try again"
     pid = current.get("pid")
     if status != "ours":
         return f"Astrid's task host stopped during startup (pid {pid}, registration status {status}); try again"
-    if attach_rejections:
-        return f"Astrid's task host is up but could not be attached (pid {pid}; {attach_rejections[-1]}); try again"
+    if (ready and str(ready.get("status")) == "ready"
+            and str(ready.get("pid")) == str(pid)
+            and str(ready.get("process_birth_id")) == str(current.get("process_birth_id"))):
+        # Ready, but registered for another install (checkout, manifest or interpreter).
+        differs = sorted(key for key, want in expected.items()
+                         if current.get(key) != want or ready.get(key) != want)
+        return (f"Astrid's task host is running for a different Astrid install (pid {pid}; "
+                f"differs in {', '.join(differs) or 'registration'}); restart Astrid if this persists")
     return (f"Astrid's task host is still starting (pid {pid}, registration status ours; "
             "no matching ready record); try again")
 
 def ensure_pack_host(
     value: Mapping[str, Any], *, reconfigure_action: str,
     startup_idle_seconds: float = HOST_STARTUP_IDLE_SECONDS,
-    attach_healthy: bool = False,
     _foreground: bool = False,
 ) -> Mapping[str, Any]:
     """Ensure the runtime-issued host is ready, waiting while it makes progress.
@@ -2178,28 +2027,6 @@ def ensure_pack_host(
         if current:
             _check_locked_host_registration(current, runtime_support)
         status = _registered_host_status(current) if current else None
-        attach_rejections: list[str] = []
-        if not _foreground and attach_healthy and current and ready and status == "ours":
-            receipt = _attach_resident_host(
-                rejections=attach_rejections,
-                current=current, ready=ready,
-                expected={
-                    "endpoint": endpoint,
-                    "executor_id": PACK_HOST_ACTOR,
-                    "ready_file": str(ready_path),
-                    "credential_file": str(worker_path),
-                    "support_root": str(runtime_support),
-                    "runtime_instance_id": str(runtime_instance_id),
-                    "runtime_epoch": runtime_epoch,
-                    "schema_digest": schema_digest,
-                },
-                worker_path=worker_path,
-                runtime_epoch=runtime_epoch,
-                runtime_instance_id=str(runtime_instance_id),
-                inventory_identity=inventory_identity,
-            )
-            if receipt is not None:
-                return receipt
         from astrid.core.gateway.dispatch import compose_profile_handoff
         try:
             boot_handoff = compose_profile_handoff(
@@ -2253,7 +2080,7 @@ def ensure_pack_host(
         supervised = runtime_supervised or (current is not None and current.get("runtime_service_launch_id") is not None)
         if supervised and not _foreground:
             # The Runtime launches and retires its own host; an SDK caller does neither.
-            raise PackHostBootstrapError(_supervised_unready_message(current, status, attach_rejections))
+            raise PackHostBootstrapError(_supervised_unready_message(current, ready, status, expected))
         if current:
             # Any Astrid process may replace the host its registration names, but
             # reconfiguration is not cancellation: a host with child work is left
@@ -2274,11 +2101,7 @@ def ensure_pack_host(
                 _retire_host_locked(current, runtime_support, foreground=True,
                                     current_runtime_instance_id=current_instance)
             else:
-                attach_reason = "; ".join(attach_rejections) or None
-                if attach_reason is None:
-                    _retire_host_locked(current, runtime_support)
-                else:
-                    _retire_host_locked(current, runtime_support, attach_reason=attach_reason)
+                _retire_host_locked(current, runtime_support)
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:

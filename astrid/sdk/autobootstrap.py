@@ -504,9 +504,7 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
         from astrid.sdk.host_bootstrap import PackHostBootstrapError, ensure_pack_host
 
         try:
-            result.update(ensure_pack_host(
-                value, reconfigure_action=RECONFIGURE_ACTION, attach_healthy=True
-            ))
+            result.update(ensure_pack_host(value, reconfigure_action=RECONFIGURE_ACTION))
         except PackHostBootstrapError as exc:
             raise AutoBootstrapError(str(exc)) from exc
     return result

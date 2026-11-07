@@ -1020,14 +1020,11 @@ class _FollowReached(Exception):
 def test_windows_task_admits_sdk_result_after_stderr_diagnostic(monkeypatch):
     """The installed SDK merges a stderr diagnostic into the captured output before its result."""
     diagnostic = json.dumps({
-        "diagnostic": "astrid.pack_host_attach_rejected",
-        "keys": ["live.check_raised"],
-        "mismatches": [{"actual": "'ApiError'", "expected": "'completed'", "key": "live.check_raised"}],
-        "pid": 6620,
-        "process_birth_id": "windows-creation:134385483390147122",
-        "reason": "attach rejected: live.check_raised expected='completed' actual='ApiError'",
-        "runtime_service_launch_id": "33abad01b1474e78992f7a765c6fe6fd",
-    }, sort_keys=True)
+        "diagnostic": "astrid.child_bridge_io_failure",
+        "endpoint": "sdk", "phase": "unknown", "operation": "unknown",
+        "exception_class": "OSError", "errno": 32, "request_sequence": 3, "frame_bytes": 512,
+        "elapsed_seconds": 0.25, "budget_seconds": 30.0, "dispatch_elapsed_seconds": None,
+    }, sort_keys=True, separators=(",", ":"))
     result = json.dumps({
         "ok": True,
         "content": [{"type": "text", "text": "{\"ok\": true}"}],

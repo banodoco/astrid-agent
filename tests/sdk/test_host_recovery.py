@@ -61,16 +61,6 @@ class Harness:
             def health(self):
                 return {"status": "ok", "runtime_epoch": "epoch-1", "runtime_instance_id": "instance-1",
                         "schema_digest": "schema-1"}
-            def _authenticate_worker(self, _executor_id):
-                return "realm-1"
-            @property
-            def generated(self):
-                return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
-                    executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="ready",
-                    runtime_epoch="epoch-1", source_epoch="source-epoch-1",
-                    source_digest="source-digest-1", dependency_digest="dependency-digest-1",
-                    capabilities=[SimpleNamespace(status="ready")],
-                ))
         monkeypatch.setattr(generic_host, "RuntimeProtocolClient", Client)
         real_birth = host_bootstrap._host_birth_identity
         monkeypatch.setattr(host_bootstrap, "_host_birth_identity",
@@ -176,84 +166,28 @@ def test_copied_registration_is_foreign_and_its_markers_are_dropped(tmp_path):
     assert other.is_dir()
 
 
-def test_launcher_attaches_to_healthy_host_from_another_checkout(harness, monkeypatch, tmp_path):
-    h = harness
+def _second_checkout(h, tmp_path) -> Path:
+    """Point the caller at another checkout than the one the resident host was registered from."""
     second = tmp_path / "second-source"
     (second / "astrid" / "packs").mkdir(parents=True)
     _materialize_source_closure(second)
     h.value["source_checkout"] = str(second)
-    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
-    from astrid.core.gateway import dispatch
-    monkeypatch.setattr(
-        dispatch, "compose_profile_handoff",
-        lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
-    )
-
-    result = host_bootstrap.ensure_pack_host(
-        h.value, reconfigure_action="reconfigure", attach_healthy=True,
-    )
-
-    assert result["host_status"] == "ready"
-    assert result["host_pid"] == FAKE_PID
-    assert result["host_source_checkout_digest"] == source_checkout_digest(h.source)
-    assert h.launches == []
+    return second
 
 
-@pytest.mark.parametrize("fault", [
-    "unready-registration", "changed-registration-generation", "changed-resident-source",
-])
-def test_launcher_replaces_cross_checkout_host_when_resident_is_unhealthy(
-    harness, monkeypatch, tmp_path, fault,
-):
+def test_unsupervised_cross_checkout_host_is_retired_and_replaced(harness, monkeypatch, tmp_path):
     h = harness
-    resident_source = h.source
-    second = tmp_path / "second-source"
-    (second / "astrid" / "packs").mkdir(parents=True)
-    _materialize_source_closure(second)
-    h.value["source_checkout"] = str(second)
-    h.source = second
+    h.source = _second_checkout(h, tmp_path)
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     retired = []
     monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
-                        lambda state, support, **_kwargs: retired.append(dict(state)))
+                        lambda state, support, **kwargs: retired.append((dict(state), kwargs)))
 
-    if fault == "unready-registration":
-        client_type = generic_host.RuntimeProtocolClient
-
-        class UnreadyClient(client_type):
-            @property
-            def generated(self):
-                return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
-                    executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="starting",
-                    runtime_epoch="epoch-1", source_epoch="source-epoch-1",
-                    source_digest="source-digest-1", dependency_digest="dependency-digest-1",
-                    capabilities=[SimpleNamespace(status="ready")],
-                ))
-
-        monkeypatch.setattr(generic_host, "RuntimeProtocolClient", UnreadyClient)
-    elif fault == "changed-registration-generation":
-        client_type = generic_host.RuntimeProtocolClient
-
-        class SupersededClient(client_type):
-            @property
-            def generated(self):
-                return SimpleNamespace(get_executor=lambda _executor_id: SimpleNamespace(
-                    executor_id=host_bootstrap.PACK_HOST_ACTOR, readiness="ready",
-                    runtime_epoch="epoch-1", source_epoch="source-epoch-2",
-                    source_digest="source-digest-1", dependency_digest="dependency-digest-1",
-                    capabilities=[SimpleNamespace(status="ready")],
-                ))
-
-        monkeypatch.setattr(generic_host, "RuntimeProtocolClient", SupersededClient)
-    else:
-        (resident_source / "astrid" / "packs" / "changed.marker").write_text("changed")
-    result = host_bootstrap.ensure_pack_host(
-        h.value, reconfigure_action="reconfigure", attach_healthy=True,
-    )
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert result["host_status"] == "ready"
-    assert len(retired) == 1
+    assert [(state["pid"], kwargs) for state, kwargs in retired] == [(FAKE_PID, {})]
     assert len(h.launches) == 1
 
 
@@ -663,8 +597,11 @@ def test_windows_live_host_retirement_requires_retained_job(monkeypatch):
     monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
 
-    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="no retained Job custody"):
+    with pytest.raises(host_bootstrap.PackHostBootstrapError) as raised:
         host_bootstrap._terminate_old_host({"pid": 4321, "process_birth_id": "windows-creation:1234"})
+
+    assert str(raised.value) == ("registered Windows host has no retained Job custody; "
+                                 "retirement blocked (registration status gone)")
 
 
 def test_windows_gone_host_without_retained_job_keeps_registration_markers(monkeypatch, tmp_path):
@@ -1150,12 +1087,8 @@ def _forbid_retirement(monkeypatch) -> None:
                         lambda *_a, **_kw: pytest.fail("signalled a Runtime-supervised host from an SDK caller"))
 
 
-def test_supervised_starting_host_attaches_once_its_ready_record_appears(harness, monkeypatch, tmp_path):
+def test_supervised_starting_host_is_reused_once_its_ready_record_appears(harness, monkeypatch):
     h = harness
-    second = tmp_path / "second-source"
-    (second / "astrid" / "packs").mkdir(parents=True)
-    _materialize_source_closure(second)
-    h.value["source_checkout"] = str(second)
     _supervise(h)
     ready_record = (h.support / "generic-host.ready.json").read_bytes()
     (h.support / "generic-host.ready.json").unlink()  # still starting: no ready record yet
@@ -1170,17 +1103,37 @@ def test_supervised_starting_host_attaches_once_its_ready_record_appears(harness
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     _forbid_retirement(monkeypatch)
-    from astrid.core.gateway import dispatch
-    monkeypatch.setattr(
-        dispatch, "compose_profile_handoff",
-        lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
-    )
 
-    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert result["host_status"] == "ready"
     assert result["host_pid"] == FAKE_PID
     assert len(polls) == 2
+    assert h.launches == []
+
+
+@pytest.mark.parametrize("supervision", ["launch-id", "health-row"])
+def test_supervised_cross_checkout_host_fails_clearly_and_is_left_alone(harness, monkeypatch, tmp_path,
+                                                                        supervision):
+    h = harness
+    _second_checkout(h, tmp_path)
+    if supervision == "launch-id":
+        _supervise(h)
+    else:
+        _runtime_supervises(monkeypatch, [RUNNING_ROW])
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    monkeypatch.setattr(host_bootstrap.time, "sleep", lambda _s: pytest.fail("a ready host must not be waited on"))
+    _forbid_retirement(monkeypatch)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError) as raised:
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
+
+    message = str(raised.value)
+    assert message.startswith(f"Astrid's task host is running for a different Astrid install (pid {FAKE_PID}; ")
+    assert "differs in " in message and "source_checkout" in message
+    assert message.endswith("); restart Astrid if this persists")
+    assert "still starting" not in message and "no retained Job custody" not in message
     assert h.launches == []
 
 
@@ -1195,7 +1148,7 @@ def test_supervised_host_that_never_becomes_ready_is_left_alone(harness, monkeyp
     _forbid_retirement(monkeypatch)
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="still starting") as raised:
-        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert "no retained Job custody" not in str(raised.value)
     assert str(FAKE_PID) in str(raised.value)
@@ -1213,7 +1166,7 @@ def test_supervised_host_that_dies_while_starting_raises_clearly(harness, monkey
     _forbid_retirement(monkeypatch)
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="stopped during startup") as raised:
-        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert "no retained Job custody" not in str(raised.value)
     assert h.launches == []
@@ -1248,12 +1201,8 @@ def _runtime_supervises(monkeypatch, rows, *, typed: bool = False) -> None:
     monkeypatch.setattr(generic_host.RuntimeProtocolClient, "health", health)
 
 
-def test_runtime_supervised_host_registered_late_attaches_once_ready(harness, monkeypatch, tmp_path):
+def test_runtime_supervised_host_registered_late_is_reused_once_ready(harness, monkeypatch):
     h = harness
-    second = tmp_path / "second-source"
-    (second / "astrid" / "packs").mkdir(parents=True)
-    _materialize_source_closure(second)
-    h.value["source_checkout"] = str(second)
     registration = (h.support / "generic-host.json").read_bytes()
     ready_record = (h.support / "generic-host.ready.json").read_bytes()
     (h.support / "generic-host.json").unlink()  # launch validation still running: no registration yet
@@ -1272,13 +1221,8 @@ def test_runtime_supervised_host_registered_late_attaches_once_ready(harness, mo
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
     monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
     _forbid_retirement(monkeypatch)
-    from astrid.core.gateway import dispatch
-    monkeypatch.setattr(
-        dispatch, "compose_profile_handoff",
-        lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
-    )
 
-    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert result["host_status"] == "ready"
     assert result["host_pid"] == FAKE_PID
@@ -1297,7 +1241,7 @@ def test_runtime_supervised_host_that_never_becomes_ready_is_left_alone(harness,
     _forbid_retirement(monkeypatch)
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="still starting") as raised:
-        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert "no retained Job custody" not in str(raised.value)
     assert str(FAKE_PID) in str(raised.value)
@@ -1313,7 +1257,7 @@ def test_runtime_supervised_host_whose_service_failed_names_the_reason(harness, 
     _forbid_retirement(monkeypatch)
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="failed") as raised:
-        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert "pack host exited with status 1" in str(raised.value)
     assert h.launches == []
@@ -1325,7 +1269,7 @@ def test_no_supervisor_and_no_registration_keeps_the_launch_path(harness, monkey
     (h.support / "generic-host.ready.json").unlink()
     _runtime_supervises(monkeypatch, [])
 
-    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure")
 
     assert result["host_status"] == "ready"
     assert len(h.launches) == 1
