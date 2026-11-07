@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
@@ -29,18 +30,28 @@ def managed_source_root() -> Path:
     return resolve_runtime_data_root() / "runpod" / "sources"
 
 
+def _installed_manifest_path() -> Path:
+    """The release manifest the installer wrote at this install's version root.
+
+    `stage()` writes ``<version>/manifest.json`` and the Agent runs from
+    ``<version>/py``, so the version root is the interpreter prefix's parent
+    (the same layout `mcp_server._astrid_env` and `pack.cli_manage` rely on).
+    """
+    return Path(sys.prefix).absolute().parent / "manifest.json"
+
+
 def _pins() -> dict[str, tuple[str, str]]:
     """Map each remote_placement.SOURCE_DIRS name to (repository, commit)."""
     from astrid.core.generation import engine_recipe
+    from astrid.core.rendering._local_schema import runtime_lock_path
 
-    runtime_commit = json.loads((AGENT_ROOT / "runtime.lock.json").read_bytes())["source_commit"]
+    runtime_commit = json.loads(runtime_lock_path(AGENT_ROOT).read_bytes())["source_commit"]
     vibe = next(s for s in engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130").sources
                 if s.name == "vibecomfy").pin
-    manifest_path = AGENT_ROOT.parent / "manifest.json"
+    manifest_path = _installed_manifest_path()
     try:
         manifest = json.loads(manifest_path.read_bytes())
-        agent, runtime = manifest["agent"], manifest["runtime"]
-        lifecycle, runpod = manifest["lifecycle"], manifest["runpod"]
+        agent, runtime, lifecycle = manifest["agent"], manifest["runtime"], manifest["lifecycle"]
     except (OSError, ValueError, KeyError) as exc:
         raise ManagedSourcesError(
             f"RunPod needs the installed release manifest at {manifest_path} to pin its bootstrap sources") from exc
@@ -50,7 +61,6 @@ def _pins() -> dict[str, tuple[str, str]]:
         "src/astrid-agent": (agent.get("repo", "https://github.com/banodoco/astrid-agent"), agent["sha"]),
         "src/astrid-runtime": (runtime.get("repo", "https://github.com/banodoco/astrid-runtime"), runtime_commit),
         "src/runpod-lifecycle": (lifecycle["repo"], lifecycle["sha"]),
-        "src/runpod-python": (runpod["repo"], runpod["sha"]),
         "src/VibeComfy": (vibe.repository, vibe.revision),
     }
 

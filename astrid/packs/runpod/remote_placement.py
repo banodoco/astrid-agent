@@ -65,7 +65,6 @@ MANIFEST_MARK = "WRAPPER_MANIFEST_SHA256="
 RESULT_MARK = "WRAPPER_RESULT_JSON="
 FIXED_OUTPUTS = ("08-final-receipt.json", "operation-state.json")
 SOURCE_DIRS = (
-    "src/runpod-python",
     "src/astrid-runtime",
     "src/runpod-lifecycle",
     "src/astrid-agent",
@@ -215,7 +214,7 @@ def sha256_file(path: Path) -> str:
 
 
 def source_digest(source_root: Path) -> str:
-    """Same digest the pack's bootstrap payload computes over the five source dirs."""
+    """Same digest the pack's bootstrap payload computes over the four source dirs."""
     lines: list[tuple[bytes, str]] = []
     for directory in SOURCE_DIRS:
         base = Path(source_root) / directory

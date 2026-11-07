@@ -113,7 +113,7 @@ CLIP_SECONDS, SMOKE_SECONDS = 9, 1
 FINAL_VIDEO = "07-finalizer/retrieved/verified-candidate.media"
 FINAL_RECEIPT = "08-final-receipt.json"
 COMPOSITION_MANIFEST = "05-compose/retrieved/composition-manifest.json"
-BUNDLE_TREES = ("astrid-agent", "runpod-python", "astrid-runtime", "runpod-lifecycle", "VibeComfy")
+BUNDLE_TREES = ("astrid-agent", "astrid-runtime", "runpod-lifecycle", "VibeComfy")
 EXPECTED_VIDEO = {"frames": 216, "rate": "24/1", "width": 1024, "height": 576}
 _SECRET_LINE = re.compile(r"key|token|secret|bearer|authorization|password", re.I)
 
@@ -573,11 +573,11 @@ def _file_sha256(path: Path) -> str:
 # Default collaborators (replaced by stubs in tests)
 # ---------------------------------------------------------------------------------------------
 
-def controller_source_paths(sources_dir: Path) -> tuple[Path, Path]:
-    """Use the same SDK/lifecycle sources locally that this session bundles."""
+def controller_source_paths(sources_dir: Path) -> tuple[Path, ...]:
+    """Use the same lifecycle source locally that this session bundles; runpod comes from the venv."""
     sources = Path(sources_dir).resolve()
-    paths = (sources / "runpod-python", sources / "runpod-lifecycle" / "src")
-    for root, marker in zip(paths, ("runpod/api/mutations/pods.py", "runpod_lifecycle/cli.py")):
+    paths = (sources / "runpod-lifecycle" / "src",)
+    for root, marker in zip(paths, ("runpod_lifecycle/cli.py",)):
         if not (root / marker).is_file():
             raise SessionError(f"controller source is missing: {root / marker}")
     return paths
@@ -2571,7 +2571,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--storage-volume-id", help="require the uniquely observed existing network volume to have this ID")
     p.add_argument("--gpus", default=",".join(DEFAULT_GPUS), type=lambda s: [g.strip() for g in s.split(",") if g.strip()],
                    help="GPU names in order of preference (default: %(default)s)")
-    p.add_argument("--sources-dir", required=True, help="directory holding runpod-python astrid-runtime runpod-lifecycle VibeComfy")
+    p.add_argument("--sources-dir", required=True, help="directory holding astrid-runtime runpod-lifecycle VibeComfy")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--request", help="the 9 s clip request JSON (requires --asset-map)")
     mode.add_argument("--jobs", help="version: 1 YAML job list (h3 request/assets or cmd command/input-files/expected-outputs)")
