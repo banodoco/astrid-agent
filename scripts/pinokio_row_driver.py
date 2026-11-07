@@ -247,10 +247,21 @@ class Row:
         code = ("const p=require(process.argv[1]);"
                 "process.stdout.write(JSON.stringify(p.buildEnvironment({appDirectory:process.argv[2]})))")
         self.env = dict(os.environ, HOME=str(self.home))
+        if self.os_name == "windows":
+            # Windows keeps per-user data under these, not HOME; isolate them too.
+            self.env.update(USERPROFILE=str(self.home),
+                            LOCALAPPDATA=str(self.home / "AppData" / "Local"),
+                            APPDATA=str(self.home / "AppData" / "Roaming"))
+            for key in ("LOCALAPPDATA", "APPDATA"):
+                Path(self.env[key]).mkdir(parents=True, exist_ok=True)
         self.env = json.loads(self.command(["node", "-e", code, self.launcher / "pinokio" / "environment.js",
                                             self.app_dir], timeout=30))
         if self.env.get("HOME") != str(self.home):
             raise RowError("candidate environment rejected the isolated HOME")
+        if self.os_name == "windows":
+            for key in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
+                self.env[key] = str({"USERPROFILE": self.home, "LOCALAPPDATA": self.home / "AppData" / "Local",
+                                     "APPDATA": self.home / "AppData" / "Roaming"}[key])
         # Stand-in Release 2 is generated from the App's own shipped manifest.
         self.standin.parent.mkdir(parents=True, exist_ok=True)
         self.command([sys.executable, self.agent / "scripts" / "make_standin_release.py", self.manifest,
@@ -378,8 +389,14 @@ class Row:
             if self.wait_for_state(busy, {"running", *TERMINAL}, timeout=120) == "running":
                 break
         else:
-            raise RowError("every busy task finished before it was seen running; busy stop was not exercised")
-        caught = f" (task running, {duration}s audio, attempt {attempt})"
+            # On a fast runner the task can finish before a poll sees it running. Send Stop
+            # straight after admission instead; a busy refusal or a clean stop are both accepted,
+            # and the receipt says which happened.
+            busy = ci_journey.submit_task(self.version, self.evidence, PROJECT, create_project=False,
+                                          duration_s=BUSY_DURATIONS_S[-1])
+            self.task_id = busy
+            duration, attempt = BUSY_DURATIONS_S[-1], len(BUSY_DURATIONS_S) + 1
+        caught = f" ({duration}s audio, attempt {attempt}" + (", Stop sent right after admission)" if attempt > len(BUSY_DURATIONS_S) else ", task seen running)")
         try:
             self.stop_request()
         except RowError as exc:

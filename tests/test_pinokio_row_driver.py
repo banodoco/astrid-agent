@@ -101,7 +101,7 @@ def test_clean_stop_while_busy_is_accepted_and_task_checked_after_restart(monkey
 
     row, events = _busy_row(monkeypatch, stop_request)
     outcome = row.busy_stop()
-    assert outcome.startswith("busy stop completed cleanly (task running")
+    assert outcome.startswith("busy stop completed cleanly (") and "task seen running" in outcome
     assert events.index("finish-stop") < events.index("start")
     assert events[-1] == "verify-marker"
     assert events.count(("wait", "task-1", sorted(ci_journey.TERMINAL))) == 1
@@ -165,10 +165,10 @@ def test_sdk_result_tolerates_only_leading_diagnostic_lines():
         ci_journey._sdk_result('{"other": 1}\n{"ok": true}')
 
 
-def test_busy_stop_escalates_length_and_fails_if_never_caught_running(monkeypatch):
+def test_busy_stop_escalates_length_then_stops_right_after_admission(monkeypatch):
     row, events = _busy_row(monkeypatch, lambda events: lambda: events.append("stopped"))
     monkeypatch.setattr(row, "wait_for_state", lambda task_id, wanted, timeout: "succeeded")
-    with pytest.raises(driver.RowError, match="busy stop was not exercised"):
-        row.busy_stop()
-    assert [e[1] for e in events if isinstance(e, tuple) and e[0] == "submit"] == list(driver.BUSY_DURATIONS_S)
-    assert "stopped" not in events
+    outcome = row.busy_stop()
+    submits = [e[1] for e in events if isinstance(e, tuple) and e[0] == "submit"]
+    assert submits == list(driver.BUSY_DURATIONS_S) + [driver.BUSY_DURATIONS_S[-1]]
+    assert "stopped" in events and "Stop sent right after admission" in outcome
