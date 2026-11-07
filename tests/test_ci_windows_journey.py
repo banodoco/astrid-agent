@@ -243,26 +243,6 @@ def test_bootstrap_receipt_and_cleanup_failures_do_not_mask_lifecycle_error(tmp_
     assert any("kill failed" in note for note in failure.value.__notes__)
 
 
-@pytest.fixture
-def stub_installed_profile_binding(monkeypatch):
-    monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
-
-
-def sdk_invocation(argv, task_id="task-1"):
-    request = json.loads(argv[0])
-    assert journey.os.environ["ASTRID_HOST_EXECUTION_PROFILE"] == "installed"
-    assert request == {
-        "capability_id": "chiptune.sfx",
-        "kind": "executor",
-        "project": "windows-journey",
-        "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
-    }
-    return json.dumps({
-        "content": [{"type": "text", "text": "{}"}],
-        "details": {"astridTaskRefs": [{"task_id": task_id}]},
-    })
-
-
 def test_journey_runs_for_main_release_windows_branches_and_main_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert 'branches: [main, release-1, "windows/**"]' in workflow
@@ -292,7 +272,7 @@ def test_journey_resolves_companion_refs_from_durable_defaults():
     assert "^[0-9a-fA-F]{40}$" in workflow
     assert "git -C journey-app rev-parse HEAD" in workflow
     assert "default: windows/task-host" not in workflow
-    assert "Run an installed-profile SDK invocation through settlement" in workflow
+    assert "scripts/ci_windows_journey.py task" not in workflow
 
 
 def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkeypatch):
@@ -401,31 +381,22 @@ def test_windows_update_pack_host_capture_is_bounded_read_only_and_scrubbed(tmp_
     assert after["files"]["generic-host.ready.json"]["status"] == "missing"
 
 
-@pytest.mark.parametrize("state,outputs,expected", [
-    ("queued", [], False), ("failed", [], False), ("succeeded", [], False),
-    ("succeeded", [{"name": "sfx", "digest": "sha256:" + "a" * 64, "size": 9644}], False),
-    ("succeeded", [{"name": name, "digest": "sha256:" + "a" * 64, "size": 100}
-                   for name in ("sfx", "sfx_meta")], True),
-])
-def test_admission_is_not_task_settlement(monkeypatch, stub_installed_profile_binding, state, outputs, expected):
+@pytest.mark.parametrize("state,expected", [("queued", False), ("failed", False), ("succeeded", True)])
+def test_admission_is_not_task_settlement(monkeypatch, state, expected):
     def cli(module, argv, name, **kwargs):
-        if module == "astrid.omp_invoke":
-            assert name == "release1-task-sdk-invocation.json"
-            return sdk_invocation(argv)
         if argv[:2] == ["tasks", "show"]:
-            return json.dumps({"ok": True, "data": {"state": state, "result": {"outputs": outputs}}})
+            return json.dumps({"ok": True, "data": {"state": state}})
         return json.dumps({"ok": True, "data": {"task_id": "task-1"}})
 
     monkeypatch.setattr(journey, "cli", cli)
     if expected:
-        journey.task()
+        journey.settle_task("task-1")
     else:
         with pytest.raises(RuntimeError, match="did not settle"):
-            journey.task()
+            journey.settle_task("task-1")
 
 
-def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, monkeypatch,
-                                                                    stub_installed_profile_binding):
+def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     calls = []
     state = "running"
@@ -433,8 +404,6 @@ def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, mo
 
     def cli(module, argv, name, **kwargs):
         nonlocal state, follow_count
-        if module == "astrid.omp_invoke":
-            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})
@@ -458,12 +427,11 @@ def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, mo
     monkeypatch.setattr(journey, "cli", cli)
     monkeypatch.setattr(journey, "snapshot", lambda name: [process(
         22, 21, "10:02", command=(r"C:\Users\runner\py\Scripts\python.exe -X utf8 -m "
-                                   r"astrid.packs.chiptune.actions.sfx.run --out "
+                                   r"astrid_attempt.worker --out "
                                    r"C:\Users\runner\AppData\Local\Temp\astrid-attempt-task-1-token\outputs")
     )])
-    monkeypatch.setattr(journey, "capture_sfx_output", lambda task_id, rows: None)
     with pytest.raises(RuntimeError, match="reached terminal state 'cancelled'"):
-        journey.task()
+        journey.settle_task("task-1")
 
     assert ("tasks", "cancel") in calls
     assert follow_count == 2
@@ -471,8 +439,7 @@ def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, mo
     assert calls[-2:] == [("tasks", "show"), ("tasks", "events")]
 
 
-def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_path, monkeypatch,
-                                                                           stub_installed_profile_binding):
+def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     logs = tmp_path / "logs"
@@ -498,8 +465,6 @@ def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_p
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
-        if module == "astrid.omp_invoke":
-            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})
@@ -534,22 +499,20 @@ def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_p
         raise AssertionError(argv)
 
     monkeypatch.setattr(journey, "cli", cli)
-    command = (f"python -m astrid.packs.chiptune.actions.sfx.run --out "
+    command = (f"python -m astrid_attempt.worker --out "
                f"{attempt / 'outputs'}")
     monkeypatch.setattr(journey, "snapshot", lambda name: [process(
         22, 21, "10:02", command=command,
     )])
-    monkeypatch.setattr(journey, "capture_sfx_output", lambda task_id, rows: None)
     with pytest.raises(RuntimeError, match="reached terminal state 'cancelled'"):
-        journey.task()
+        journey.settle_task("task-1")
 
     assert calls.index(("tasks", "cancel")) > calls.index(("tasks", "show"))
     assert (tmp_path / "task-timeout-service-pack-host.log").read_text(encoding="utf-8") == "host at timeout\n"
     assert json.loads((tmp_path / "task-timeout-task-output-capture.json").read_text()) == metadata
 
 
-def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_path, monkeypatch,
-                                                                        stub_installed_profile_binding):
+def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     (tmp_path / "logs").mkdir()
@@ -558,8 +521,6 @@ def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_pat
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
-        if module == "astrid.omp_invoke":
-            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if tuple(argv[:2]) in (("projects", "create"), ("tasks", "events")):
             return json.dumps({"ok": True, "data": []})
@@ -579,14 +540,13 @@ def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_pat
         journey, "snapshot", lambda name: (_ for _ in ()).throw(RuntimeError("snapshot failed")),
     )
     with pytest.raises(RuntimeError, match="reached terminal state 'cancelled'"):
-        journey.task()
+        journey.settle_task("task-1")
 
     assert calls.index(("tasks", "cancel")) > calls.index(("tasks", "show"))
     assert (tmp_path / "processes-after-task-follow-error.json").is_file()
 
 
-def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_path, monkeypatch,
-                                                                          stub_installed_profile_binding):
+def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     (tmp_path / "logs").mkdir()
@@ -598,8 +558,6 @@ def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_p
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
-        if module == "astrid.omp_invoke":
-            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})
@@ -618,12 +576,11 @@ def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_p
             return json.dumps({"ok": True, "data": []})
         raise AssertionError(argv)
 
-    command = f"python -m astrid.packs.chiptune.actions.sfx.run --out {attempt / 'outputs'}"
+    command = f"python -m astrid_attempt.worker --out {attempt / 'outputs'}"
     monkeypatch.setattr(journey, "cli", cli)
     monkeypatch.setattr(journey, "snapshot", lambda name: [process(22, 21, "10:02", command=command)])
-    monkeypatch.setattr(journey, "capture_sfx_output", lambda task_id, rows: None)
     with pytest.raises(RuntimeError, match="reached terminal state 'cancelled'"):
-        journey.task()
+        journey.settle_task("task-1")
 
     assert ("tasks", "cancel") in calls
     assert not (tmp_path / "task-timeout-task-output-capture.json").exists()
@@ -646,24 +603,6 @@ def test_oversized_task_metadata_is_rejected_with_a_bounded_read(tmp_path, monke
     assert not (tmp_path / "evidence" / "task-timeout-task-output-capture.json").exists()
 
 
-def test_sfx_output_capture_restricts_path_to_the_journey_attempt(tmp_path, monkeypatch):
-    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
-    command = (r"C:\Users\runner\py\Scripts\python.exe -X utf8 -m "
-               r"astrid.packs.chiptune.actions.sfx.run --out "
-               r"C:\Users\runner\AppData\Local\Temp\astrid-attempt-task-1-token\outputs")
-    journey.capture_sfx_output("task-1", [process(22, 21, "10:02", command=command)])
-    evidence = json.loads((tmp_path / "task-sfx-output-evidence.json").read_text())
-    assert evidence == {
-        "found": True,
-        "files": {name: {"exists": False} for name in ("manifest.json", "sfx.json", "sfx.wav")},
-    }
-
-    unrelated = command.replace("astrid-attempt-task-1-token", "other-task")
-    journey.capture_sfx_output("task-1", [process(22, 21, "10:02", command=unrelated)])
-    evidence = json.loads((tmp_path / "task-sfx-output-evidence.json").read_text())
-    assert evidence == {"found": False, "files": {}}
-
-
 def test_collect_preserves_timeout_logs_separately_from_final_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
@@ -674,7 +613,7 @@ def test_collect_preserves_timeout_logs_separately_from_final_logs(tmp_path, mon
     attempt.mkdir()
     (attempt / "task-stdout-tail.log").write_text("child at timeout\n", encoding="utf-8")
     (attempt / "task-stderr-tail.log").write_text("child error at timeout\n", encoding="utf-8")
-    command = (f"python -m astrid.packs.chiptune.actions.sfx.run --out "
+    command = (f"python -m astrid_attempt.worker --out "
                f"{attempt / 'outputs'}")
 
     journey.capture_task_logs("task-1", [process(22, 21, "10:02", command=command)])

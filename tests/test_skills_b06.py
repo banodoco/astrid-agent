@@ -8,10 +8,10 @@ from astrid.skills import discovery, registry
 from astrid.skills.view import compose_view
 
 
-def test_video_editing_canonical_doc_route_survives_view_composition(tmp_path: Path) -> None:
+def test_generation_canonical_doc_route_survives_view_composition(tmp_path: Path) -> None:
     descriptors = discovery.list_skills(discovery.PACKS_DIR)
     core = next(descriptor for descriptor in descriptors if descriptor.pack_id == "_core")
-    video = next(descriptor for descriptor in descriptors if descriptor.pack_id == "video_editing")
+    video = next(descriptor for descriptor in descriptors if descriptor.pack_id == "generation")
 
     view_root = tmp_path / "view"
     _, _, view_packs = compose_view(view_root, core, [video])
@@ -19,12 +19,12 @@ def test_video_editing_canonical_doc_route_survives_view_composition(tmp_path: P
 
     installed_route = (view_root / "creative-work" / "SKILL.md").read_text(encoding="utf-8")
     assert "[selected pack directory](references/packs.md)" in installed_route
-    assert "packs/video_editing/SKILL.md" in (view_root / "creative-work/references/packs.md").read_text()
-    assert "../../../video_editing/docs/SKILL.md" not in installed_route
-    installed = (view_root / "packs" / "video_editing" / "SKILL.md").read_text(encoding="utf-8")
-    assert str(discovery.PACKS_DIR / "video_editing/actions/event_talks/run.py") in installed
-    assert str(discovery.PACKS_DIR / "rendering/docs/SKILL.md") in installed
-    assert str(discovery.PACKS_DIR / "timeline/docs/SKILL.md") in installed
+    assert "packs/generation/SKILL.md" in (view_root / "creative-work/references/packs.md").read_text()
+    assert "../../../generation/docs/SKILL.md" not in installed_route
+    installed = (view_root / "packs" / "generation" / "SKILL.md").read_text(encoding="utf-8")
+    # Cross-pack doc links are rewritten from pack-relative to absolute paths in the view.
+    assert str(discovery.PACKS_DIR / "vibecomfy/docs/SKILL.md") in installed
+    assert "../../vibecomfy/docs/SKILL.md" not in installed
 
 
 def test_creative_work_resolves_v3_action_guides_from_pack_manifest() -> None:

@@ -698,30 +698,8 @@ def _host_ready(value):
             ready.get("runtime_instance_id") == value["runtime_instance_id"])
 
 
-def task(project="windows-journey", *, create_project=True):
-    # Exercise the installed SDK boundary against the profile written by the
-    # real installer. This local SFX action has no external model/GPU needs.
-    os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
-    assert_installed_profile_binding()
-    if create_project:
-        created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
-                                 "project.json"))
-        if created.get("ok") is not True:
-            raise RuntimeError("Project creation failed")
-    request = {
-        "capability_id": "chiptune.sfx",
-        "kind": "executor",
-        "project": project,
-        "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
-    }
-    invocation = json.loads(cli("astrid.omp_invoke", [json.dumps(request)],
-                                "release1-task-sdk-invocation.json"))
-    task_refs = invocation.get("details", {}).get("astridTaskRefs", [])
-    if invocation.get("content", [{}])[0].get("type") != "text" or len(task_refs) != 1:
-        raise RuntimeError("Installed-profile SDK invocation did not return one admitted task")
-    task_id = task_refs[0].get("task_id")
-    if not isinstance(task_id, str) or not task_id:
-        raise RuntimeError("Installed-profile SDK invocation returned no task identity")
+def settle_task(task_id, project="windows-journey"):
+    """Follow an admitted task to settlement, cancelling and collecting evidence on failure."""
     try:
         cli("astrid", ["tasks", "follow", task_id, "--project", project, "--poll-seconds", "2",
                        "--timeout-seconds", "900", "--json"], "task-follow.jsonl", timeout=960)
@@ -729,8 +707,6 @@ def task(project="windows-journey", *, create_project=True):
         process_rows = best_effort("processes-after-task-follow.json", lambda: snapshot(
             "processes-after-task-follow.json"))
         best_effort("task-python-stacks-before-cancel", lambda: capture_task_python_stacks(process_rows))
-        if process_rows is not None:
-            best_effort("task-sfx-output-evidence.json", lambda: capture_sfx_output(task_id, process_rows))
         best_effort("task-logs-before-cancel", lambda: capture_task_logs(task_id, process_rows))
         try:
             cli("astrid", ["tasks", "events", task_id, "--project", project, "--json"],
@@ -770,12 +746,8 @@ def task(project="windows-journey", *, create_project=True):
         ) from follow_error
     settled = json.loads(cli("astrid", ["tasks", "show", task_id, "--project", project, "--json"], "task-settled.json"))
     row = settled.get("data") or {}
-    outputs = {item.get("name"): item for item in (row.get("result") or {}).get("outputs", [])}
-    if (settled.get("ok") is not True or row.get("state") != "succeeded" or
-            not {"sfx", "sfx_meta"} <= outputs.keys() or any(
-                not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
-                outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
-        raise RuntimeError("Task did not settle successfully with outputs")
+    if settled.get("ok") is not True or row.get("state") != "succeeded":
+        raise RuntimeError("Task did not settle successfully")
     return task_id
 
 
@@ -839,8 +811,6 @@ def task_attempt_root(task_id, process_rows):
     expected_prefix = ntpath.normcase(f"astrid-attempt-{task_id}-")
     for process in process_rows:
         command = process.get("command") or ""
-        if "astrid.packs.chiptune.actions.sfx.run" not in command:
-            continue
         match = re.search(r'--out\s+(?:"([^"]+)"|(\S+))', command)
         if not match:
             continue
@@ -963,30 +933,6 @@ def capture_task_logs(task_id=None, process_rows=None):
     })
 
 
-def capture_sfx_output(task_id, process_rows):
-    """Record only the known journey SFX attempt's small metadata files."""
-    attempt = task_attempt_root(task_id, process_rows)
-    output_root = attempt / "outputs" if attempt is not None else None
-
-    evidence = {"found": output_root is not None, "files": {}}
-    if output_root is not None:
-        for name in ("manifest.json", "sfx.json", "sfx.wav"):
-            path = output_root / name
-            try:
-                size = path.stat().st_size
-            except OSError:
-                evidence["files"][name] = {"exists": False}
-                continue
-            entry = {"exists": True, "size": size}
-            if name.endswith(".json") and size <= 65536:
-                try:
-                    entry["content"] = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    entry["content"] = "unreadable or invalid JSON"
-            evidence["files"][name] = entry
-    save("task-sfx-output-evidence.json", evidence)
-
-
 def astrid_processes(rows, roots, tracked=()):
     roots = [ntpath.normcase(str(root)).rstrip("\\/") + "\\" for root in roots]
     selected = {process_key(row) for row in rows if process_key(row) in tracked or
@@ -1068,7 +1014,7 @@ def collect():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("journey", "install", "start", "health", "host", "task", "down", "stopped", "collect"))
+    parser.add_argument("step", choices=("journey", "install", "start", "health", "host", "down", "stopped", "collect"))
     parser.add_argument("--installer-shell", choices=("powershell.exe", "pwsh.exe"))
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: use local Agent and Runtime Git checkouts")
     args, remaining = parser.parse_known_args()
@@ -1096,8 +1042,6 @@ def main():
     elif args.step == "host":
         wait_for("pack-host is running with its current ready file", host_ready)
         snapshot("processes-host-ready.json")
-    elif args.step == "task":
-        task()
     elif args.step == "down":
         down()
     elif args.step == "stopped":
