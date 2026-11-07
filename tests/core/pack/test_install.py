@@ -413,9 +413,12 @@ def test_shared_root_resolver_and_personal_preservation(repo, root, monkeypatch)
     personal = ensure_personal_pack(root)
     (personal / "precious.py").write_text("user content\n")
     before = snapshot(personal)
+    # ASTRID_PACKS_PATH extends discovery; it never chooses the collection that
+    # installs mutate (see cli_manage._selected_root). The default personal
+    # collection, under the test HOME, receives the install.
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(root))
     result = install_pack(source=repo.bare, revision=repo.commit, pack_id="hello_ext")
-    assert result.path == root / "hello_ext"
+    assert result.path == Path.home() / "Astrid" / "packs" / "hello_ext"
     assert snapshot(personal) == before
 
 

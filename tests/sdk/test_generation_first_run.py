@@ -74,7 +74,7 @@ def test_repo_ref_install_repair_and_kept_workspace_reinstall(
             write_json(selection, {"owner": service.LABEL, "data_root": str(support),
                                    "program_root": str(program)})
 
-    manifest = {"agent": {"sha": commit, "repo": str(repo)}}
+    manifest = {"release": 1, "agent": {"sha": commit, "repo": str(repo)}}
     before = _snapshot(tmp_path)
     assert storage_root.resolve_runtime_data_root() == Path.home() / ".astrid-data"
     assert _snapshot(tmp_path) == before

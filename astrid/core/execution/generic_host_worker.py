@@ -93,11 +93,11 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
 
 
 def _run_captured_command(encoded: str, selected, contents) -> int:
-    """Run a command whose imports come from the captured source descriptor.
+    """Run a command named by a Runtime source descriptor through the selected-pack route.
 
-    Distinct from ``--pack-command``: the byte loader, not the live tree, is the
-    source of truth, so a later edit of the live root does not change what runs.
-    Emitted by the generic host and the orchestrator runner; not a persisted format.
+    The pack id and root come from the descriptor; the command is then checked
+    and executed exactly as ``--pack-command`` does. Emitted by the generic host
+    for non-bridged captured commands and by the orchestrator runner.
     """
     from astrid.core.pack.identity import pack_digest
 

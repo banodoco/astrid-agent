@@ -135,7 +135,10 @@ def _package_probe(tmp_path, source, *, saved_target=False):
     if saved_target:
         config = Path.home() / ".vibecomfy/config.toml"
         config.parent.mkdir(parents=True)
-        config.write_text('[comfyui]\nowner = "human"\nurl = "http://127.0.0.1:8199"\n')
+        config.write_text(
+            '[comfyui]\nowner = "human"\nurl = "http://127.0.0.1:8199"\n'
+            '[runpod]\nprovider_account_ref = "fixture-account"\ngpu_types = ["NVIDIA A40"]\n'
+            'image = "registry.example/worker@sha256:' + "0" * 64 + '"\n')
     # Retain the interpreter's provisioned dependencies. The explicitly chosen
     # package root is first; the child asserts its actual imported origin.
     env = {key: value for key, value in os.environ.items()
@@ -210,18 +213,25 @@ print(json.dumps({'origin': astrid.__file__, 'skills': ['_core', 'generation', '
 def test_runpod_package_fake_owner(tmp_path):
     result = _package_probe(tmp_path, _READ_ONLY_PREAMBLE + """
 events = []
-class Owner:
-    def describe(self):
-        events.append('describe')
-        return {'engine': 'comfyui', 'placement': 'runpod', 'pod_id': 'fake-pod-a'}
-    def release(self, *, wait):
-        events.append(['release', wait])
-        return {'task_id': 'release-task-a', 'state': 'cleanup_pending',
-                'idempotency_key': 'runpod-release:operation-a'}
-cli._open_client = lambda: nullcontext(SimpleNamespace(runpod_generation_owner=Owner()))
+class Result:
+    ok = True
+    kernel_task_id = 'release-task-a'
+    def __init__(self, raw):
+        self.raw_result = raw
+    def to_dict(self):
+        return self.raw_result
+class Client:
+    def invoke_result(self, capability_id, *, kind, inputs, wait, **kwargs):
+        events.append([capability_id, kind, wait])
+        if capability_id == 'runpod.status':
+            return Result({'result': {'payload': {'target_operation': {
+                'engine': 'comfyui', 'placement': 'runpod', 'pod_id': 'fake-pod-a'}}}})
+        return Result({'task_id': 'release-task-a', 'state': 'cleanup_pending',
+                       'idempotency_key': 'runpod-release:operation-a'})
+cli._open_client = lambda: nullcontext(Client())
 description = command(['describe', '--target', 'runpod'])
 release = command(['release', '--engine', 'comfyui', '--target', 'runpod', '--no-wait'])
-assert events == ['describe', ['release', False]]
+assert events == [['runpod.status', 'action', True], ['runpod.release', 'action', False]]
 print(json.dumps({'origin': astrid.__file__, 'description': description, 'release': release}))
 """, saved_target=True)
     assert result["description"]["placement"] == "runpod"

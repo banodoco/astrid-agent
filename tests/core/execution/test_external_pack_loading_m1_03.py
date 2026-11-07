@@ -35,7 +35,7 @@ def _external_pack(tmp_path, monkeypatch, *, kind="python", module="astrid.packs
         (package / "__init__.py").write_text("\n", encoding="utf-8")
     (root / "shared" / "helper.py").write_text("VALUE = 'same-value'\n", encoding="utf-8")
     manifest = yaml.safe_load((root / "pack.yaml").read_text(encoding="utf-8"))
-    manifest["pack_api"] = "1.0"
+    manifest["pack_api"] = "2.0"
     action = manifest["actions"]["calculate"]
     if kind == "python":
         invocation = {"kind": "python", "path": "actions/emit.py", "function": "run"}
