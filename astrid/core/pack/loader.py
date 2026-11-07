@@ -148,6 +148,15 @@ def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
     seen: dict[str, Path] = {}
     children = ((source_root,) if (source_root / "pack.yaml").is_file()
                 else sorted(source_root.iterdir(), key=lambda path: path.name))
+    # A managed source is staged under a digest-named directory; its identity is the
+    # declared pack id, not the folder name (discovery admits it the same way).
+    managed_ids: dict[Path, str] = {}
+    if (source_root / "pack.yaml").is_file():
+        from astrid.core.pack.source_setup import active_source_inventory
+
+        inventory = active_source_inventory()
+        managed_ids = {source.pack_root.resolve(): source.pack_id
+                       for source in (inventory.sources if inventory is not None else ())}
     for child in children:
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
@@ -156,7 +165,7 @@ def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
-            pack = load_pack_manifest(manifest_path)
+            pack = load_pack_manifest(manifest_path, expected_pack_id=managed_ids.get(child.resolve()))
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
             if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):

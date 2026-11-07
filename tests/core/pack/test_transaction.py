@@ -1053,7 +1053,7 @@ def test_real_cli_retained_pack_cannot_import_rogue_pack_api(
     from astrid.core.pack.loader import packs_root as bundled_packs_root
 
     core_root = bundled_packs_root().resolve()
-    assert (core_root / "foley" / "pack.yaml").is_file()
+    assert (core_root / "rendering" / "pack.yaml").is_file()
     external = tmp_path / "external-packs"
     rogue = external / "rogue"
     rogue.mkdir(parents=True)
@@ -1061,7 +1061,7 @@ def test_real_cli_retained_pack_cannot_import_rogue_pack_api(
     (rogue / "api.py").write_text("PUBLIC = True\n", encoding="utf-8")
     retained = packs_root / "retained"
     retained.mkdir(parents=True)
-    (retained / "pack.yaml").write_text(manifest("retained", ("foley",)), encoding="utf-8")
+    (retained / "pack.yaml").write_text(manifest("retained", ("rendering",)), encoding="utf-8")
     (retained / "consumer.py").write_text("from astrid.packs.rogue.api import PUBLIC\n", encoding="utf-8")
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")

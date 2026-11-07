@@ -38,7 +38,9 @@ def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
     executor.mkdir(parents=True)
     (pack / "pack.yaml").write_text(
         f"schema_version: {schema_version}\nid: demo\nname: Demo Pack\nversion: 1.0.0\n"
-        "capabilities: [testing]\n",
+        "capabilities: [testing]\n"
+        + ('pack_api: "2.0"\ndocumentation: {kind: none, reason: source setup fixture.}\n'
+           if schema_version == 3 else ""),
         encoding="utf-8",
     )
     (executor / "executor.yaml").write_text(
@@ -125,7 +127,7 @@ def test_source_declaration_preserves_relative_posix_subpath() -> None:
 
 def test_local_git_v2_source_is_staged_once_and_shared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     repository = tmp_path / "repository"
-    revision = _fixture_repo(repository)
+    revision = _fixture_repo(repository, schema_version=3)
     state_path = tmp_path / "state" / "pack-sources.json"
     data_root = tmp_path / "data"
     declaration = SourceDeclaration.from_mapping(
