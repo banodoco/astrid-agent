@@ -214,3 +214,14 @@ def test_consent_rerun_command_uses_public_install_line_and_user_flags():
         "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --skill-copies on")
     assert consent_rerun_command({"command": True}, windows=True) == (
         "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --command on")
+
+
+def test_existing_install_update_needs_no_consent_flag_and_keeps_saved_policy():
+    # The plain update command (no choice flags, no --yes) must not refuse, and the
+    # Agent keeps the saved policy; a legacy install without a record keeps its baseline.
+    from astrid.installer.choices import LEGACY_CHOICES, resolve_choices, unattended_consent_required
+
+    assert not unattended_consent_required(existing_install=True, accept_recommended=False, interactive=False)
+    saved = {"autostart": False, "command": True, "skills": True, "skill_copies": False}
+    assert resolve_choices(saved=saved, existing_install=True) == saved
+    assert resolve_choices(existing_install=True) == LEGACY_CHOICES
