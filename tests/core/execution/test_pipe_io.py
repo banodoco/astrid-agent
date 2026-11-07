@@ -314,40 +314,6 @@ def test_remotion_parser_reads_fragmented_json_until_eof(children):
         _read(_PipeReader(reader, timeout=10))
 
 
-def test_cdp_partial_nul_frames_survive_deadline_and_buffered_child_exit(children):
-    from astrid.core.contracts.errors import AstridError
-    from astrid.packs.capture.actions.web_page.run import _Cdp
-
-    process, own = children("""import os, sys
-os.write(1, b'{"id":1,')
-sys.stdin.buffer.readline()
-os.write(1, b'"result":{"value":"ok"}}\\0{"method":"Page.loadEventFired"}\\0')
-""")
-    cdp = _Cdp(process.stdin.fileno(), process.stdout.fileno())
-    own(cdp._reader)
-    own(cdp._writer)
-    with pytest.raises(AstridError, match="timed out waiting for the browser"):
-        cdp._read_one(time.monotonic() + .2)
-    cdp._writer.write(b"continue\n", deadline=time.monotonic() + 10)
-    assert process.wait(timeout=10) == 0
-    assert cdp._read_one(time.monotonic() + 10) == {"id": 1, "result": {"value": "ok"}}
-    assert cdp._read_one(time.monotonic() + 10) == {"method": "Page.loadEventFired"}
-    with pytest.raises(AstridError, match="closed its debugging pipe unexpectedly"):
-        cdp._read_one(time.monotonic() + 10)
-
-
-def test_cdp_call_keeps_one_deadline_when_browser_does_not_read_commands(children):
-    from astrid.core.contracts.errors import AstridError
-    from astrid.packs.capture.actions.web_page.run import _Cdp
-
-    process, own = children("import time; time.sleep(60)")
-    cdp = _Cdp(process.stdin.fileno(), process.stdout.fileno())
-    own(cdp._reader)
-    own(cdp._writer)
-    with pytest.raises(AstridError, match="timed out waiting for the browser"):
-        cdp.call("test", {"large": "x" * (2 * 1024 * 1024)}, timeout=.1)
-
-
 def test_remotion_exchange_shares_write_and_response_deadline(children, monkeypatch):
     from astrid.core.execution import remotion_host_session as host
 

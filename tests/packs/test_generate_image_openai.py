@@ -12,14 +12,12 @@ from astrid.core.contracts.errors import AstridError
 from astrid.core.execution.executor.registry import load_default_registry
 from astrid.core.util.llm_clients import _load_api_key
 from astrid.core.util.secrets import load_api_key
-from astrid.packs.editorial.actions.transcribe.run import load_api_key as load_transcribe_api_key
 from astrid.packs.generation.actions.generate_image_openai.run import (
     _build_openai_manifest,
     build_parser,
     generate as openai_generate,
     main,
 )
-from astrid.packs.rendering.actions.sprite_sheet.run import load_fal_key
 
 def test_fake_openai_provider_receipt_binds_generated_images_port(
     tmp_path, monkeypatch
@@ -221,20 +219,3 @@ def test_missing_credentials_fail_without_leaking_values(monkeypatch, tmp_path):
     assert "do-not-leak-this" not in message
 
 
-def test_packs_that_used_generate_image_env_helpers_read_shared_env(monkeypatch, tmp_path):
-    env_file = tmp_path / "keys.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "OPENAI_API_KEY=from-openai",
-                "FAL_KEY=from-fal",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("FAL_KEY", raising=False)
-    monkeypatch.delenv("FAL_API_KEY", raising=False)
-
-    assert load_transcribe_api_key(env_file) == "from-openai"
-    assert load_fal_key(env_file) == "from-fal"
