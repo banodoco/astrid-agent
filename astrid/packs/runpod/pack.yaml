@@ -871,7 +871,7 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: false}
+    isolation: {mode: subprocess, network: true}
     metadata: {host_target_operation: status}
     invocation:
       kind: command
@@ -892,7 +892,7 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: false}
+    isolation: {mode: subprocess, network: true}
     metadata: {host_target_operation: setup}
     invocation:
       kind: command
@@ -913,7 +913,7 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: false}
+    isolation: {mode: subprocess, network: true}
     metadata: {host_target_operation: ls}
     invocation:
       kind: command
@@ -934,7 +934,7 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: false}
+    isolation: {mode: subprocess, network: true}
     metadata: {host_target_operation: release}
     invocation:
       kind: command

@@ -6,44 +6,23 @@ from pathlib import Path
 from astrid.core.execution.capability_ledger import load_capability_ledger
 
 
-MOVED_PACKS_NOTE = (
-    "Core-only install: packs that moved to poms_packs are in the approved census "
-    "lock but not installed, so they are reported missing (drift) while nothing "
-    "installed is unreviewed."
-)
-INSTALLED_PACKS = {
-    "comfy_wrap", "generation", "h3_av", "local", "rendering",
-    "runpod", "training", "vibecomfy", "wan2gp",
-}
-
-
 def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
     coverage = sources["coverage"]
 
-    # Counts are the installed core packs only; the approved census lock still
-    # carries the moved packs (110 / 111 labels).
+    # The approved census lock is the core-only set, so the installed packs
+    # reconcile completely with no drift.
     assert sources["counts"]["pack_labels"] == 42
     assert sources["counts"]["historical_pack_labels"] == 46
-    assert sources["counts"]["executor_inventory"] == 56
-    assert coverage["source_labels"]["approved"] == 110
-    assert coverage["historical_source_labels"]["approved"] == 111
-
-    # Drift is exactly "approved but not installed": nothing unreviewed in the
-    # label censuses, and every missing id belongs to a pack that is not installed.
-    # See MOVED_PACKS_NOTE.
+    lock = json.loads(Path("config/astrid-capability-census.lock.json").read_text(encoding="utf-8"))
+    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 56
+    assert len(lock["source_labels"]) == 42
+    assert len(lock["historical_source_labels"]) == 46
+    assert all(section["complete"] for section in coverage.values())
     for section in ("source_labels", "historical_source_labels", "executor_inventory"):
-        row = coverage[section]
-        assert row["status"] == "drift" and row["complete"] is False
-        assert row["missing"]
-        assert not {name.split(".", 1)[0] for name in row["missing"]} & INSTALLED_PACKS
-    assert coverage["source_labels"]["added"] == []
-    assert coverage["historical_source_labels"]["added"] == []
-    # The only executors installed but not yet in the approved lock.
-    assert coverage["executor_inventory"]["added"] == [
-        "runpod.ls", "runpod.release", "runpod.setup", "runpod.status",
-    ]
+        assert coverage[section]["status"] == "ok"
+        assert coverage[section]["added"] == [] and coverage[section]["missing"] == []
     assert not {
         row["pack"]
         for row in sources["pack_labels"]
@@ -207,7 +186,7 @@ def test_hivemind_is_excluded_from_the_in_tree_source_label_census():
     assert HIVEMIND_IDS <= matrix_ids
 
 
-def test_moved_pack_labels_are_not_reported_as_installed_and_admission_is_denied():
+def test_moved_pack_labels_are_not_reported_as_installed():
     from astrid.core.execution.capability_ledger import capability_execution_admission
 
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
@@ -218,11 +197,11 @@ def test_moved_pack_labels_are_not_reported_as_installed_and_admission_is_denied
     for action_id, resources in (("pixel.snap", ["cpu"]), ("chiptune.compose", ["cpu"]), ("capture.web_page", ["provider"])):
         assert matrix[action_id]["disposition"] == "optional"
         assert matrix[action_id]["resource_keys"] == resources
-    # Reconciliation is incomplete against the unchanged approved census lock,
-    # so admission is denied for every capability until the lock is re-approved.
+    # Reconciliation is complete against the core-only lock; the matrix row
+    # admits the capability, which still needs runtime readiness to run.
     admission = capability_execution_admission(ledger, "pixel.snap")
-    assert admission["executable"] is False
-    assert admission["reason"] == "capability source reconciliation is incomplete"
+    assert admission["executable"] is True
+    assert admission["requires_runtime_readiness"] is True
 
 
 def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
