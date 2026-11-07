@@ -57,7 +57,7 @@ class SourceRepo:
         shared = self.work / "packs" / "shared"
         shared.mkdir(parents=True, exist_ok=True)
         (shared / "pack.yaml").write_text(
-            "schema_version: 3\nid: shared\nname: Shared\nversion: 1.0.0\npack_api: '1.0'\n"
+            "schema_version: 3\nid: shared\nname: Shared\nversion: 1.0.0\npack_api: '2.0'\n"
             "documentation: {kind: none, reason: refusal fixture.}\n", encoding="utf-8")
         (shared / "payload.txt").write_text("shared v2\n", encoding="utf-8")
         (self.pack / "payload.txt").write_text("alpha v2\n", encoding="utf-8")
@@ -115,7 +115,7 @@ def _seed_admitted_generation(source_repo: SourceRepo, packs_root: Path) -> None
     shared = source_repo.work / "packs" / "shared"
     shared.mkdir(parents=True, exist_ok=True)
     (shared / "pack.yaml").write_text(
-        "schema_version: 3\nid: shared\nname: Shared\nversion: 1.0.0\npack_api: '1.0'\n"
+        "schema_version: 3\nid: shared\nname: Shared\nversion: 1.0.0\npack_api: '2.0'\n"
         "documentation: {kind: none, reason: admitted refusal fixture.}\n", encoding="utf-8")
     (shared / "payload.txt").write_text("shared baseline\n", encoding="utf-8")
     (source_repo.pack / "entry.tsx").write_text(
@@ -182,7 +182,7 @@ def test_real_cli_add_installs_python_requirement_and_runtime_executes_installed
     action.parent.mkdir(parents=True)
     action.write_text("import pytest\ndef run():\n    return 'pytest-' + pytest.__version__\n", encoding="utf-8")
     (source_repo.pack / "pack.yaml").write_text(
-        "schema_version: 3\nid: alpha\nname: Alpha\nversion: 1.0.0\npack_api: '1.0'\n"
+        "schema_version: 3\nid: alpha\nname: Alpha\nversion: 1.0.0\npack_api: '2.0'\n"
         "dependencies:\n  python_requirements: [pytest]\n"
         "actions:\n  use_pytest:\n    description: Read the installed pytest version.\n"
         "    invocation:\n      kind: python\n      path: actions/use_pytest.py\n      function: run\n"
@@ -251,7 +251,7 @@ def test_real_cli_add_refusals_preserve_admitted_baseline(
     candidate = tmp_path / "candidate"
     candidate.mkdir()
     (candidate / "pack.yaml").write_text(
-        "schema_version: 3\nid: beta\nname: Beta\nversion: 1.0.0\npack_api: '1.0'\n"
+        "schema_version: 3\nid: beta\nname: Beta\nversion: 1.0.0\npack_api: '2.0'\n"
         "documentation: {kind: none, reason: add refusal fixture.}\n", encoding="utf-8")
     if refusal == "missing_python":
         missing = "astrid-r9-add-missing-9c2007"
@@ -300,7 +300,7 @@ def test_real_cli_rollback_refuses_release_pin_and_preserves_admitted_baseline(
     beta = tmp_path / "beta"
     beta.mkdir()
     (beta / "pack.yaml").write_text(
-        "schema_version: 3\nid: beta\nname: Beta\nversion: 1.0.0\npack_api: '1.0'\n"
+        "schema_version: 3\nid: beta\nname: Beta\nversion: 1.0.0\npack_api: '2.0'\n"
         "documentation: {kind: none, reason: rollback refusal fixture.}\n", encoding="utf-8")
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
     assert _cli_add_folder(beta, "beta", packs_root) == 0
