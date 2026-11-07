@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts import ci_journey
+from scripts import make_standin_release
 from scripts import pinokio_row_driver as driver
 
 BUSY = "Astrid is busy (2 tasks running). Try again when they finish."
@@ -195,9 +196,10 @@ def test_uninstall_runs_the_installed_candidate_manifest_never_the_published_one
     with pytest.raises(driver.RowError, match="installed candidate release"):
         row.uninstall()
     assert not commands
-    for manifest in (row.manifest, row.standin):
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(json.dumps({"release": 1 if manifest == row.manifest else 2}), encoding="utf-8")
+    row.manifest.parent.mkdir(parents=True, exist_ok=True)
+    row.manifest.write_text(json.dumps({"release": 1}), encoding="utf-8")
+    row.standin.parent.mkdir(parents=True, exist_ok=True)
+    row.standin.write_text(json.dumps({"release": 2}), encoding="utf-8")
     (version / "manifest.json").write_text(row.manifest.read_text(encoding="utf-8"), encoding="utf-8")
     row.install_initial()
     (version / "manifest.json").write_text(row.standin.read_text(encoding="utf-8"), encoding="utf-8")
@@ -208,3 +210,72 @@ def test_uninstall_runs_the_installed_candidate_manifest_never_the_published_one
     assert "--uninstall" in uninstall
     assert uninstall[uninstall.index("--manifest") + 1] == str(row.standin)
     assert uninstall[uninstall.index("--root") + 1] == str(row.root)
+
+
+def _release_row(tmp_path, monkeypatch, release):
+    """A Row whose App checkout ships a candidate manifest at ``release``.
+
+    The installer and the Pinokio environment are faked; the stand-in is built
+    by the real make_standin_release generator, and the fake installer leaves the
+    manifest it was given as the installed version's manifest.
+    """
+    app = tmp_path / "app"
+    (app / "public").mkdir(parents=True)
+    (app / "public" / "install").write_text("#!/bin/sh\n", encoding="utf-8")
+    (app / "public" / "install-manifest.json").write_text(
+        json.dumps({"release": release, "pinokio": {"sha": "c" * 40}}), encoding="utf-8")
+    pinokio = tmp_path / "pinokio"
+    pinokio.mkdir()
+    (pinokio / "environment.js").write_text("", encoding="utf-8")
+    row = driver.Row(job_id="pinokio-linux", os_name="linux", run_root=tmp_path / "run", pinokio=pinokio,
+                     agent=tmp_path / "agent", app_checkout=app, candidate_sha="a" * 40)
+    version = tmp_path / "version"
+    version.mkdir()
+    commands = []
+
+    def fake_command(argv, **_kwargs):
+        argv = [str(part) for part in argv]
+        commands.append(argv)
+        if argv[0] == "node":
+            return json.dumps({"HOME": str(row.home)})
+        if argv[1].endswith("make_standin_release.py"):
+            candidate = json.loads(Path(argv[2]).read_text(encoding="utf-8"))
+            out = Path(argv[argv.index("--output") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(make_standin_release.canonical_manifest_bytes(
+                make_standin_release.make_standin_release(candidate)))
+            return ""
+        manifest = Path(argv[argv.index("--manifest") + 1])
+        (version / "manifest.json").write_bytes(manifest.read_bytes())
+        return ""
+
+    monkeypatch.setattr(driver.sys, "platform", "linux")
+    monkeypatch.setattr(driver.subprocess, "check_output", lambda *a, **k: "a" * 40 + "\n")
+    monkeypatch.setattr(row, "command", fake_command)
+    monkeypatch.setattr(row, "record", lambda: (tmp_path / "data", version, {"identity": {"managed_by": "pinokio"}}))
+    return row, version, commands
+
+
+def test_candidate_release_nine_installs_and_standin_is_release_ten(tmp_path, monkeypatch):
+    row, version, commands = _release_row(tmp_path, monkeypatch, release=9)
+    row.prepare()
+    row.install_initial()
+    assert read_manifest_release(version) == 9
+    assert row.standin.parent.name == "release10"
+    row.update_install()
+    assert read_manifest_release(version) == 10
+    assert json.loads(row.standin.read_text(encoding="utf-8"))["release"] == 10
+    installs = [argv[argv.index("--manifest") + 1] for argv in commands if "--manifest" in argv]
+    assert installs == [str(row.manifest), str(row.standin)]
+
+
+@pytest.mark.parametrize("bad", [0, "9", True, None])
+def test_candidate_release_must_be_an_integer_at_least_one(tmp_path, monkeypatch, bad):
+    row, _version, _commands = _release_row(tmp_path, monkeypatch, release=1)
+    row.manifest.write_text(json.dumps({"release": bad}), encoding="utf-8")
+    with pytest.raises(driver.RowError, match="integer release"):
+        row.prepare()
+
+
+def read_manifest_release(version):
+    return json.loads((version / "manifest.json").read_text(encoding="utf-8"))["release"]
