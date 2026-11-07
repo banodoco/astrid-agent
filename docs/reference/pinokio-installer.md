@@ -27,7 +27,11 @@ and each version's `version.json`, `profile.json` and `services.json`) with a
 protected owner/SYSTEM DACL inside protected directories, because Runtime
 admits a stopped Pinokio install only through that private read. The installer
 moves an older `%LOCALAPPDATA%\astrid-install.json` it owns into place under
-its lock; Runtime never reads the old location.
+its lock; Runtime never reads the old location. A live login record whose
+selected version is not provably release 1 or later stays where release 0
+reads it (the Windows R0 upgrade is refused), a live record replaces a
+retained uninstalled receipt, and a live old record is deleted only once the
+private record holds it.
 
 An active login-service install prevents a Pinokio install and the error names
 that installation. Ordinary install/update without an explicit root refuses a

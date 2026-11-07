@@ -101,12 +101,38 @@ def install_selection(home: Path, system: str) -> Path:
     return installer_lock_path(home, system).with_name("astrid-install.json")
 
 
+def _live_selection(record: dict) -> bool:
+    return record.get("uninstalled") is not True
+
+
+def _migratable_live_selection(record: dict) -> bool:
+    """Whether a live legacy record selects an install this release adopts.
+
+    Release 0 reads its record only from LOCALAPPDATA, and this installer
+    refuses a Windows login R0 upgrade, so that record must stay where R0
+    reads it. A login record moves only once its selected version provably
+    is release 1 or later; anything unproven is left untouched.
+    """
+    if record.get("managed_by") == "pinokio":
+        return True  # Pinokio's update adopts its own R0 install.
+    if record.get("managed_by") is not None or not isinstance(record.get("program_root"), str):
+        return False
+    try:
+        version = current(absolute(record["program_root"]))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+    return version is not None and version.release >= 1
+
+
 def migrate_install_selection(home: Path, system: str) -> None:
     """Move a Windows selection from LOCALAPPDATA beside the installer lock.
 
     Runs once under the installer lock. Only this installer's own regular-file
     record moves; anything else is left untouched and never read. Runtime reads
-    only the new private record.
+    only the new private record. A live R0 login record is never moved (see
+    ``_migratable_live_selection``), a live record replaces a retained
+    uninstalled receipt, and a live legacy record is deleted only once the
+    private record holds it.
     """
     if system != "win32":
         return
@@ -127,8 +153,24 @@ def migrate_install_selection(home: Path, system: str) -> None:
                 return
             if record.get("owner") != LABEL:
                 return
+            live = _live_selection(record)
+            if live and not _migratable_live_selection(record):
+                return
             selection = install_selection(home, system)
-            if not os.path.lexists(selection):
+            if os.path.lexists(selection):
+                if linked(selection) or not selection.is_file():
+                    return
+                try:
+                    private = read_json(selection)
+                except (OSError, ValueError):
+                    return
+                if private.get("owner") != LABEL:
+                    return
+                if live and not _live_selection(private):
+                    write_json(selection, record)  # A live install beats a receipt.
+                elif live and private != record:
+                    return  # Both live: the private one is read; keep the other.
+            else:
                 write_json(selection, record)
             legacy.unlink()
         finally:
