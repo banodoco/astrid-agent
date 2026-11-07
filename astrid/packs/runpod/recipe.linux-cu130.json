@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "e0ca283b5dc9db2056b41c822a899ac539919b143b4287740b4d3b0df9a16da0"
+    "sha256": "7d714dda97d43f69f5ec81c8d10adc214bd6f59e725f0dbc8c2cceefaecf7a1c"
   },
   "source_bindings": [
     {
@@ -26,6 +26,16 @@
       "name": "videohelpersuite",
       "pin": "videohelpersuite",
       "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite"
+    },
+    {
+      "name": "comfyui-hunyuanvideo-foley",
+      "pin": "comfyui-hunyuanvideo-foley",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-HunyuanVideo_Foley"
+    },
+    {
+      "name": "comfyui-qwentts",
+      "pin": "comfyui-qwentts",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-QwenTTS"
     }
   ],
   "environments": [
@@ -38,7 +48,7 @@
         "mode": "packaged",
         "packaged_lock": {
           "path": "packs/runpod/requirements.linux-cu130.lock",
-          "sha256": "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+          "sha256": "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36a1f99"
         },
         "input_paths": [],
         "constraints": [],
@@ -67,7 +77,7 @@
       "node_lock": {
         "source": "vibecomfy",
         "path": "custom_nodes.lock",
-        "sha256": "7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42"
+        "sha256": "ec18e9952426cdf32fc38c628ef95357b813ac005bba59fd18eab347ed6cef8c"
       },
       "source_installs": [
         {
@@ -93,7 +103,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/runpod/models.lock.json",
-    "sha256": "d86ca8584229010f39c326f2c2d5b6dd3c0aa7b3c06ec6deb0ab5dc5f89c61a5"
+    "sha256": "36313259beb158f06719561b1108b8258f4ec822316722963e3c33bbfa36ca16"
   },
   "start": {
     "argv": [

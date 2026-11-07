@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Print or bump the VibeComfy revision Astrid is pinned to.
+"""Print the VibeComfy revision Astrid is pinned to.
 
 The pin authority is the packaged VibeComfy engine recipe. The dependency
 adapter, CI and this command all read its digest-verified source pin.
 
     python scripts/vibecomfy_pin.py            # print the pinned revision
-    python scripts/vibecomfy_pin.py <sha>      # bump it (full 40-hex commit)
 
 A bump rewrites the ``vibecomfy`` and ``vibecomfy-h3`` revisions in every
 package-owned pin manifest, then the dependent ``{"path", "sha256"}`` pin
