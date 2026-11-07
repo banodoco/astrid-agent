@@ -20,7 +20,7 @@ def test_setup_optional_volume_round_trip_retains_the_same_owner(tmp_path, monke
     holds = WarmHolds()
     bindings = TargetProviderBindings(pack_roots=[source / "astrid/packs/runpod"], holds=holds,
         credentials={"FAKE_CREDENTIAL": "synthetic-only"}.__getitem__,
-        environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(source)})
+        environ={})
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": raw}
     try:
         setup = bindings.operate(policy, "setup")

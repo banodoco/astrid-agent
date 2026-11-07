@@ -396,9 +396,6 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     credential = credentials(credential_name)
     if not isinstance(credential, str) or not credential:
         raise PaidSelectionError("configured provider credential is unavailable to the retained host")
-    source_root = environ.get("ASTRID_RUNPOD_SOURCE_ROOT")
-    if not isinstance(source_root, str) or not source_root:
-        raise PaidSelectionError("retained installation source root is unavailable")
     recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
     root = f"/workspace/astrid/engines/{engine}"
     plan = engine_runner.plan_install(recipe, root=root, placement="local")
@@ -428,7 +425,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
         owner.close()
         raise
     return RunPodAdapter(lease_owner=owner,
-                         placement=RemotePlacement(None, source_root=Path(source_root)),
+                         placement=RemotePlacement(None),
                          installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
                          validate=_validate_retained_workflow)
 

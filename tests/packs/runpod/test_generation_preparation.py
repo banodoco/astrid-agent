@@ -357,7 +357,8 @@ def test_real_pack_host_binding_composes_retained_owner_adapter_and_release(reta
     monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
     roots = (Path(__file__).resolve().parents[3] / "astrid" / "packs",)
     bindings = resolve_target_provider("runpod", roots).TargetProviderBindings(pack_roots=roots, holds=c.host.holds,
-        credentials=lambda name: "fake-only", environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(c.placement.source_root)})
+        credentials=lambda name: "fake-only", environ={})
+    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: c.placement.source_root)
     selection = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping()}
     provider = bindings.get(**selection)
     c.owner = provider.lease_owner.selection
@@ -709,7 +710,7 @@ def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_
                      "image": "fixture/cuda130@sha256:" + "1" * 64},
         engine="comfyui", holds=lambda *a, **k: None,
         quiesce=lambda *a, **k: None, credentials=lambda name: "fake-only",
-        environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(tmp_path / "source")},
+        environ={},
     )
     try:
         quote = adapter.quote()
