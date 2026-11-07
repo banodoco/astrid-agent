@@ -777,9 +777,6 @@ def test_main_binds_controller_and_cli_to_bundle_sources(tmp_path, monkeypatch, 
         args.jobs, args.request, args.asset_map = None, None, None
         args.resume_held_jobs = "synthetic-unopened-held-jobs.yaml"
     sources = Path(args.sources_dir)
-    (sources / "runpod-python/runpod/api/mutations").mkdir(parents=True)
-    (sources / "runpod-python/runpod/__init__.py").write_text("# fake source package")
-    (sources / "runpod-python/runpod/api/mutations/pods.py").write_text("# source marker")
     (sources / "runpod-lifecycle/src/runpod_lifecycle").mkdir(parents=True)
     (sources / "runpod-lifecycle/src/runpod_lifecycle/__init__.py").write_text("# fake source package")
     (sources / "runpod-lifecycle/src/runpod_lifecycle/cli.py").write_text("# source marker")
@@ -789,19 +786,17 @@ def test_main_binds_controller_and_cli_to_bundle_sources(tmp_path, monkeypatch, 
     fake_cli = tmp_path / "fake-lifecycle"
     fake_cli.write_text(f"#!{sys.executable}\n" +
                         "import importlib.util, json, sys\n" +
-                        "print(json.dumps({'sdk': importlib.util.find_spec('runpod').origin, " +
-                        "'lifecycle': importlib.util.find_spec('runpod_lifecycle').origin, 'argv': sys.argv[1:]}))\n")
+                        "print(json.dumps({'lifecycle': importlib.util.find_spec('runpod_lifecycle').origin, 'argv': sys.argv[1:]}))\n")
     fake_cli.chmod(0o700)
     args.runpod_cli = str(fake_cli)
 
     def session(*_args, **kwargs):
         def run():
-            assert sys.path[:2] == list(map(str, paths))
+            assert sys.path[:1] == list(map(str, paths))
             env = {"PYTHONPATH": "/prior-source"}
             code, stdout, stderr = kwargs["cli"](["launch"], env)
             assert code == 0, stderr
             origins = json.loads(stdout)
-            assert Path(origins["sdk"]) == sources / "runpod-python/runpod/__init__.py"
             assert Path(origins["lifecycle"]) == sources / "runpod-lifecycle/src/runpod_lifecycle/__init__.py"
             assert origins["argv"] == ["--transport", "https", "launch"]
             assert env == {"PYTHONPATH": "/prior-source"}
