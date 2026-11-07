@@ -172,3 +172,39 @@ def test_busy_stop_escalates_length_then_stops_right_after_admission(monkeypatch
     submits = [e[1] for e in events if isinstance(e, tuple) and e[0] == "submit"]
     assert submits == list(driver.BUSY_DURATIONS_S) + [driver.BUSY_DURATIONS_S[-1]]
     assert "stopped" in events and "Stop sent right after admission" in outcome
+
+
+@pytest.mark.parametrize("os_name", ["linux", "macos", "windows"])
+def test_uninstall_runs_the_installed_candidate_manifest_never_the_published_one(tmp_path, monkeypatch, os_name):
+    """pinokio-windows run 42394700185: a manifest-less uninstall ran production pins.
+
+    The install line fetches astrid.haus/install-manifest.json when no manifest
+    is given, so the row's uninstall ran the published Agent and Runtime against
+    the candidate's installation instead of the candidate under test.
+    """
+    app = tmp_path / "app"
+    row = driver.Row(job_id=f"pinokio-{os_name}", os_name=os_name, run_root=tmp_path / "run",
+                     pinokio=tmp_path / "pinokio", agent=tmp_path / "agent", app_checkout=app,
+                     candidate_sha="a" * 40)
+    commands = []
+    monkeypatch.setattr(row, "command", lambda argv, **_kwargs: commands.append([str(part) for part in argv]) or "")
+    version = tmp_path / "version"
+    version.mkdir()
+    monkeypatch.setattr(row, "record", lambda: (tmp_path / "data", version, {"identity": {"managed_by": "pinokio"}}))
+
+    with pytest.raises(driver.RowError, match="installed candidate release"):
+        row.uninstall()
+    assert not commands
+    for manifest in (row.manifest, row.standin):
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"release": 1 if manifest == row.manifest else 2}), encoding="utf-8")
+    (version / "manifest.json").write_text(row.manifest.read_text(encoding="utf-8"), encoding="utf-8")
+    row.install_initial()
+    (version / "manifest.json").write_text(row.standin.read_text(encoding="utf-8"), encoding="utf-8")
+    row.update_install()
+    row.uninstall()
+
+    uninstall = commands[-1]
+    assert "--uninstall" in uninstall
+    assert uninstall[uninstall.index("--manifest") + 1] == str(row.standin)
+    assert uninstall[uninstall.index("--root") + 1] == str(row.root)

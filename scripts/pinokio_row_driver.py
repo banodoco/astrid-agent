@@ -98,6 +98,9 @@ class Row:
         self.root = self.app_dir / "app" / "astrid"
         self.manifest = app_checkout / "public" / "install-manifest.json"
         self.standin = self.scratch / "release2" / "install-manifest.json"
+        # The manifest of the release last installed: what astrid.haus would
+        # serve once this candidate is published.
+        self.published: Path | None = None
         self.env: dict[str, str] = {}
         self.child: subprocess.Popen | None = None
         self.adopted_pid: int | None = None
@@ -198,7 +201,7 @@ class Row:
             raise RowError("version root mismatch")
         return data, version, record
 
-    def installer_argv(self, manifest: Path | None, *, uninstall: bool = False) -> list[str]:
+    def installer_argv(self, manifest: Path, *, uninstall: bool = False) -> list[str]:
         if self.os_name == "windows":
             argv = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                     "-File", str(self.app_checkout / "public" / "install.ps1")]
@@ -207,9 +210,10 @@ class Row:
         argv += ["--root", str(self.root), "--managed-by", "pinokio"]
         if uninstall:
             argv.append("--uninstall")
-        else:
-            argv += ["--manifest", str(manifest)]
-        return argv
+        # Always explicit: without --manifest the install line fetches the
+        # production manifest, so uninstall would run the published release's
+        # installer and Runtime against this candidate's installation.
+        return argv + ["--manifest", str(manifest)]
 
     def install(self, manifest: Path, *, expected: dict) -> None:
         self.command(self.installer_argv(manifest), timeout=3600)
@@ -219,6 +223,7 @@ class Row:
             raise RowError("installed manifest differs from the requested manifest")
         if record.get("identity", {}).get("managed_by") != "pinokio":
             raise RowError("installed version is not Pinokio-managed")
+        self.published = manifest
 
     def prepare(self) -> None:
         if PLATFORM_OS.get(sys.platform) != self.os_name:
@@ -276,7 +281,9 @@ class Row:
         self.install(self.standin, expected=read_json(self.standin))
 
     def uninstall(self) -> None:
-        self.command(self.installer_argv(None, uninstall=True), timeout=3600)
+        if self.published is None:
+            raise RowError("uninstall needs the manifest of the installed candidate release")
+        self.command(self.installer_argv(self.published, uninstall=True), timeout=3600)
 
     # Session and stop --------------------------------------------------------
 
