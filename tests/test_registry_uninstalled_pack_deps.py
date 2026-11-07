@@ -10,14 +10,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+from astrid.core.execution.capability_ledger import load_capability_ledger
 from astrid.core.execution.executor.registry import (
     ExecutorRegistry,
     ExecutorRegistryError,
     load_default_registry,
 )
+
+LEDGER = Path("config/astrid-beta-capabilities.json")
 
 SIX_DEFAULT_ENTRIES = (
     "qwen-image-2.1-turbo",
@@ -76,19 +80,47 @@ def test_core_only_describe_pool_build_is_not_blocked() -> None:
 
 def test_typo_inside_installed_pack_still_raises() -> None:
     registry = ExecutorRegistry([_definition("alpha.one", ("alpha.typo",))])
-    registry.installed_namespaces = {"alpha"}
+    with pytest.raises(ExecutorRegistryError, match="unknown executor 'alpha.typo'"):
+        registry.validate_all()
+
+
+def test_typo_in_installed_pack_among_missing_pack_deps_still_raises() -> None:
+    registry = ExecutorRegistry([
+        _definition("alpha.one", ("gone.thing", "alpha.typo")),
+        _definition("alpha.two"),
+    ])
     with pytest.raises(ExecutorRegistryError, match="unknown executor 'alpha.typo'"):
         registry.validate_all()
 
 
 def test_missing_namespace_marks_unavailable_without_raising() -> None:
     registry = ExecutorRegistry([_definition("alpha.one", ("gone.thing",))])
-    registry.installed_namespaces = {"alpha"}
     registry.validate_all()
-    assert "gone" in registry.unavailable_reason("alpha.one")
+    reason = registry.unavailable_reason("alpha.one")
+    assert "gone" in reason
+    assert registry.get("alpha.one").metadata["unavailable_reason"] == reason
 
 
-def test_registry_without_namespace_knowledge_stays_strict() -> None:
-    registry = ExecutorRegistry([_definition("alpha.one", ("gone.thing",))])
-    with pytest.raises(ExecutorRegistryError):
-        registry.validate_all()
+def test_capability_ledger_loads_core_only_and_marks_pool_build_unavailable(monkeypatch) -> None:
+    """The real ledger path builds and validates its own registry from the packs.
+
+    The registry is captured at the hand-off to source reconciliation so this
+    test covers registry construction and validation, which is where the
+    dependency on the uninstalled editorial pack used to abort the load.
+    """
+    from astrid.core.execution import capability_ledger
+
+    captured = {}
+
+    def capture(*args, executor_registry=None, **kwargs):
+        captured["registry"] = executor_registry
+        return {"counts": {}, "coverage": {}}
+
+    monkeypatch.setattr(capability_ledger, "_reconcile_sources", capture)
+    ledger = load_capability_ledger(LEDGER, pack_roots=(Path("astrid/packs"),))
+    assert ledger["capabilities"]
+    registry = captured["registry"]
+    for executor_id in ("training.pool_build", "training.pool_merge"):
+        reason = registry.unavailable_reason(executor_id)
+        assert reason and "editorial" in reason
+        assert registry.get(executor_id).metadata["available"] is False

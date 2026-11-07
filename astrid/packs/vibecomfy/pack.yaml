@@ -1091,3 +1091,25 @@ resources:
   path: src/dimensional_ltx.py
 - kind: implementation
   path: src/dimensional_vace.py
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        edit:
+          reasons:
+          - external-escape-hatch
+          note: Edits VibeComfy workflows through external VibeComfy CLI; outputs stay with the external
+            tool.
+        import:
+          reasons:
+          - external-escape-hatch
+          note: Imports workflows through the external VibeComfy porting service; the canonical bundle
+            outputs are settled without a universal result manifest.
+        inspect:
+          reasons:
+          - external-escape-hatch
+          note: Inspects VibeComfy workflows through external VibeComfy CLI with no Astrid result receipt.
+        validate:
+          reasons:
+          - external-escape-hatch
+          note: Validates VibeComfy workflows through external VibeComfy CLI.
