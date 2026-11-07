@@ -6,17 +6,21 @@ those dependencies.
 """
 from __future__ import annotations
 
-import json
 import pathlib
 import subprocess
 import sys
 
 
 root = pathlib.Path(__file__).resolve().parent.parent
-lock = json.loads((root / "astrid" / "packs" / "vibecomfy" / "pins.json").read_text())
-source = lock["sources"]["vibecomfy"]
-sha = source["revision"]
-repository = source["repository"]
+sys.path.insert(0, str(root))
+
+from astrid.core.generation.engine_recipe import load_recipe  # noqa: E402
+
+# The digest-verified recipe is the one source pin, as in CI and vibecomfy_pin.py.
+source = next(item for item in load_recipe("vibecomfy", "windows-x86_64-cu130").sources
+              if item.name == "vibecomfy")
+sha = source.pin.revision
+repository = source.pin.repository
 subprocess.run(
     [
         sys.executable,
