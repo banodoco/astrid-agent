@@ -27,7 +27,7 @@ def case(tmp_path, monkeypatch):
         "provider_account_ref": "account-a", "gpu_types": ["preferred-gpu", "fallback-gpu"],
         "image": "worker@sha256:" + "a" * 64,
         "volume": {"id": "volume-a", "name": "storage", "size_gb": 100, "mount_path": "/workspace"},
-        "idle_timeout_seconds": 60, "credential_ref": "env:FAKE_RUNPOD_CREDENTIAL",
+        "idle_timeout_seconds": 60, "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL",
     }
     prefs = RunPodPreferences.from_mapping(raw)
     offer = RunPodOffer("account-a", "preferred-gpu", 1.0, "offer-1")

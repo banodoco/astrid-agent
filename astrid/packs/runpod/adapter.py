@@ -391,6 +391,8 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
         raise PaidSelectionError("unsupported retained installation route")
     preferences = RunPodPreferences.from_mapping(preferences)
     credential_name = (preferences.credential_ref or "env:RUNPOD_API_KEY").removeprefix("env:")
+    if not re.fullmatch(r"RUNPOD_[A-Z0-9_]*", credential_name):
+        raise PaidSelectionError("provider credential must be a RUNPOD_* environment name")
     if not callable(credentials):
         raise PaidSelectionError("retained host credential resolver is unavailable")
     credential = credentials(credential_name)

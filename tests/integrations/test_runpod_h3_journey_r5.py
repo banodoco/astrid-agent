@@ -152,7 +152,7 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
         packs = Path(__file__).resolve().parents[2] / 'astrid' / 'packs'
         host = GenericPackHost(pack_roots=[packs / 'vibecomfy', packs / 'h3_av', packs / 'runpod'],
             client=RuntimeProtocolClient(daemon.endpoint, worker_token), max_concurrency=4,
-            credential_source={'FAKE_RUNPOD_CREDENTIAL': 'fake-only'}, attempt_base=tmp_path / 'attempts')
+            credential_source={'RUNPOD_RUNPOD_FAKE_CREDENTIAL': 'fake-only'}, attempt_base=tmp_path / 'attempts')
         host.discover()
         host.preflight()
         for capability in ('vibecomfy.run', 'h3_av.transform', 'runpod.status', 'runpod.release'):

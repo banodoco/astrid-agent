@@ -390,7 +390,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
                  "@sha256:24795acee5856a3e6d383e879ccdd53edd25d24ea38d0edab5a1d3718ea385e6",
         "volume": {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"},
         "idle_timeout_seconds": 1800,
-        "credential_ref": "env:FAKE_RUNPOD_CREDENTIAL", "budget_cap_usd": 2.0}
+        "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
     target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     provider = ProviderHTTP(tuple_sources, claim_path)
@@ -451,7 +451,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     packs = Path(__file__).resolve().parents[2] / "astrid" / "packs"
     host = GenericPackHost(pack_roots=[packs / "vibecomfy", packs / "runpod"],
         client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token), attempt_base=tmp_path / "attempts",
-        credential_source={"FAKE_RUNPOD_CREDENTIAL": "synthetic-only"})
+        credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "synthetic-only"})
     host.discover()
     host.preflight()
     for name in ("runpod.setup", "runpod.ls", "runpod.status", "runpod.release", "vibecomfy.run"):

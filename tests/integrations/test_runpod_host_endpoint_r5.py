@@ -191,7 +191,7 @@ def retained_host(retained, tmp_path, monkeypatch, real_runtime, tuple_sources):
     packs = Path(__file__).resolve().parents[2] / "astrid" / "packs"
     host = GenericPackHost(pack_roots=[packs / name for name in ("vibecomfy", "runpod", "h3_av")],
         client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
-        credential_source={"FAKE_RUNPOD_CREDENTIAL": "fake-only"}, attempt_base=tmp_path / "attempts")
+        credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "fake-only"}, attempt_base=tmp_path / "attempts")
     host.discover()
     host.preflight()
     host.register()
@@ -324,7 +324,7 @@ def test_runtime_claim_binds_one_endpoint_and_delivers(retained, comfy, tmp_path
         host = GenericPackHost(
             pack_roots=[pack_root / "vibecomfy", pack_root / "runpod"],
             client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
-            credential_source={"FAKE_RUNPOD_CREDENTIAL": "fake-only"},
+            credential_source={"RUNPOD_RUNPOD_FAKE_CREDENTIAL": "fake-only"},
             attempt_base=tmp_path / "attempts",
         )
         host.discover()
