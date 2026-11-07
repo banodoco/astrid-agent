@@ -1951,11 +1951,14 @@ def _await_supervised_startup(state_path: Path, ready_path: Path) -> None:
     retirement belongs to the Runtime.
     """
     deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    seen_live = False
     while True:
         state = _read_object(state_path)
         if not state or state.get("runtime_service_launch_id") is None:
             return  # not Runtime-supervised: the caller's normal path decides
         status = _registered_host_status(state)
+        if status != "ours" and not seen_live:
+            return  # a stale registration from an earlier host: the normal path decides
         if status != "ours":
             raise PackHostBootstrapError(
                 f"Astrid's task host stopped during startup (pid {state.get('pid')}, "
@@ -1966,6 +1969,7 @@ def _await_supervised_startup(state_path: Path, ready_path: Path) -> None:
                 and str(ready.get("pid")) == str(state.get("pid"))
                 and str(ready.get("process_birth_id")) == str(state.get("process_birth_id"))):
             return
+        seen_live = True
         if time.monotonic() >= deadline:
             raise PackHostBootstrapError(
                 f"Astrid's task host is still starting (pid {state.get('pid')}, registration status "

@@ -1217,3 +1217,13 @@ def test_supervised_host_that_dies_while_starting_raises_clearly(harness, monkey
 
     assert "no retained Job custody" not in str(raised.value)
     assert h.launches == []
+
+
+def test_stale_supervised_registration_is_left_to_the_normal_path(harness, monkeypatch):
+    h = harness
+    _supervise(h)
+    (h.support / "generic-host.ready.json").unlink()
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
+    monkeypatch.setattr(host_bootstrap.time, "sleep", lambda _s: pytest.fail("a stale host must not be waited on"))
+
+    host_bootstrap._await_supervised_startup(h.support / "generic-host.json", h.support / "generic-host.ready.json")
