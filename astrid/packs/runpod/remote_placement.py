@@ -52,7 +52,11 @@ ENGINE_ID = "vibecomfy-h3"
 DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
 POD_ROOT = "/workspace/astrid"
-ENGINE_ROOT = f"{POD_ROOT}/engines/{ENGINE_ID}"
+# Engine custody (astrid.core.generation.engine_custody) needs owner-only directories. /workspace is a
+# FUSE mount that ignores mkdir's mode, so the engine root lives on the pod's container disk, like the
+# scripts/pod_session.py route. Models may still be cached on /workspace.
+ENGINE_BASE = "/root/astrid/engines"
+ENGINE_ROOT = f"{ENGINE_BASE}/{ENGINE_ID}"
 BOOTSTRAP_ROOT = f"{POD_ROOT}/bootstrap"
 RUNS_ROOT = f"{POD_ROOT}/runs"
 POD_VENV = "/opt/astrid"
@@ -140,7 +144,7 @@ class RunPodInstallation:
     compatibility: Mapping[str, str]
     engine: str = "comfyui"
     platform: str = "linux-x86_64-cu130"
-    root: str = "/workspace/astrid/engines/comfyui"
+    root: str = f"{ENGINE_BASE}/comfyui"
 
     def plan(self):
         from astrid.core.generation import engine_recipe, engine_runner
@@ -148,7 +152,7 @@ class RunPodInstallation:
 
         expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
         if (self.engine not in {"comfyui", "vibecomfy-h3"} or self.platform != "linux-x86_64-cu130"
-                or self.root != f"/workspace/astrid/engines/{self.engine}"):
+                or self.root != f"{ENGINE_BASE}/{self.engine}"):
             raise RemotePlacementError("unsupported retained installation route")
         recipe = engine_recipe.load_recipe(self.engine, self.platform)
         plan = engine_runner.plan_install(recipe, root=self.root, placement="local")

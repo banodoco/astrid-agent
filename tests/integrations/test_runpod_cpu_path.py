@@ -206,7 +206,7 @@ class ProviderHTTP:
             DownloadResult, HealthEvidence, InstallReceipt, StepReceipt,
         )
         recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-        root = "/workspace/astrid/engines/comfyui"
+        root = "/root/astrid/engines/comfyui"
         plan = engine_runner.plan_install(recipe, root=root, placement="local")
         lock = engine_recipe.load_model_lock(recipe.models_lock)
         stamp = datetime.now(timezone.utc).isoformat()
@@ -277,12 +277,12 @@ class ProviderHTTP:
             if "pod_bootstrap.sh" in detached:
                 self.files[self.marker] = b"ok"
             else:
-                self.files["/workspace/astrid/engines/comfyui/.astrid-engine/install.json"] = json.dumps(self.receipt).encode()
+                self.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = json.dumps(self.receipt).encode()
             self.files.update({directory + "/status": b"exited", directory + "/exit": b"0",
                                directory + "/pid": b"123", directory + "/stdout": b"", directory + "/stderr": b""})
             return 0, ""
         if "engines status" in command:
-            installed = "/workspace/astrid/engines/comfyui/.astrid-engine/install.json" in self.files
+            installed = "/root/astrid/engines/comfyui/.astrid-engine/install.json" in self.files
             return 0, json.dumps(self.receipt if installed else None)
         if command.startswith(("cat ", "tail ")):
             return 0, self.files[shlex.split(command)[-1]].decode()

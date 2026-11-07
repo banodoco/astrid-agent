@@ -383,7 +383,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     """Construct the retained A3/A4 composition on an explicit host request."""
     from astrid.core.generation import engine_recipe, engine_runner
     from runpod_lifecycle.config import RunPodConfig
-    from astrid.packs.runpod.remote_placement import RemotePlacement, RunPodInstallation
+    from astrid.packs.runpod.remote_placement import ENGINE_BASE, RemotePlacement, RunPodInstallation
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility, RunPodPreferences
     from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 
@@ -399,7 +399,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     if not isinstance(credential, str) or not credential:
         raise PaidSelectionError("configured provider credential is unavailable to the retained host")
     recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
-    root = f"/workspace/astrid/engines/{engine}"
+    root = f"{ENGINE_BASE}/{engine}"
     plan = engine_runner.plan_install(recipe, root=root, placement="local")
     runtime_lock = json.loads((Path(__file__).resolve().parents[3] / "runtime.lock.json").read_bytes())
     vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
