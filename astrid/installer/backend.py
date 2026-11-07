@@ -204,7 +204,8 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
                 raise ValueError("installed timeline schema input has a foreign owner or type")
         root_fd = fd
         dirs = {(): root_fd}
-        files = (SCHEMA_RELATIVE_PATH, *READER_INPUTS)
+        # runtime.lock.json is the reader's pin source; installer-owned, so secured too.
+        files = (SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"), *READER_INPUTS)
         # Check all path components without following links before modifying any.
         for relative in files:
             parent = root_fd

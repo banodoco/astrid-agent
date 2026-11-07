@@ -53,6 +53,13 @@ def test_user_chosen_0775_root_is_refused_with_fix(tmp_path):
     try:
         root = tmp_path / "chosen"
         schema = _populate(root)
+        # Only the user-chosen root is group-writable; the rest is private, so the
+        # refusal must name the root itself.
+        for path in (p for p in root.rglob("*") if p.is_dir()):
+            path.chmod(0o755)
+        for path in root.rglob("*"):
+            if path.is_file():
+                path.chmod(0o644)
         root.chmod(0o775)
         with pytest.raises(ValueError) as caught:
             reader.verified_schema_path(root, str(schema))
