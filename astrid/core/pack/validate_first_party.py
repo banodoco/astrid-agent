@@ -8,63 +8,20 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
 import yaml
 
 # ---------------------------------------------------------------------------
-# Known first-party pack IDs and internal directories
+# Non-pack entries in the source packs root. Pack inventory itself is derived
+# from the manifests present in that root.
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_FIRST_PARTY_PACKS_ROOT = _REPO_ROOT / "astrid" / "packs"
-_FIRST_PARTY_PACK_IDS = (
-    "astrid_motion",
-    "blender",
-    "capture",
-    "chiptune",
-    "comfy_wrap",
-    "developer",
-    "discord_local",
-    "editorial",
-    "fal",
-    "foley",
-    "generation",
-    "h3_av",
-    "iteration",
-    "local",
-    "media",
-    "moirae",
-    "music",
-    "pixel",
-    "rendering",
-    "runpod",
-    "seedance_local",
-    "stream_content",
-    "training",
-    "understanding",
-    "vibecomfy",
-    "video_editing",
-    "wan2gp",
-    "youtube",
-    "typed_timeline",
-    "timeline",
-)
-_TRACKED_FIRST_PARTY_PACK_IDS = tuple(
-    pack_id for pack_id in _FIRST_PARTY_PACK_IDS
-    if pack_id not in {"discord_local", "seedance_local"}
-)
-# ``_core`` is a skill-only shell. Runtime product mount directories
-# retain executable CLI adapters but intentionally have no ``pack.yaml``:
-# their durable state belongs to the neutral workspace runtime, not a local
-# schema host.
-_FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots"}
-# Engine recipe inputs are first-party inventory, but not capability packs or
-# Runtime mounts.  They intentionally have no ``pack.yaml`` and are consumed
-# only by the engine installer/recipe loader.
-_FIRST_PARTY_ENGINE_RESOURCE_DIRS = {"comfyui"}
-_EXCLUDED_FIRST_PARTY_DIRS = {"external", "hivemind"}
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+_FIRST_PARTY_PACKS_ROOT = _PACKAGE_ROOT / "packs"
+# ``_core`` remains a manifestless skill shell until M3-15 relocates it.
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
 
 ValidationContext = Literal["standalone", "assembled"]
@@ -201,11 +158,7 @@ def is_first_party_packs_root_candidate(path: str | Path) -> bool:
         if child.is_dir()
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
-        and child.name in (
-            set(_FIRST_PARTY_PACK_IDS)
-            | _FIRST_PARTY_INTERNAL_DIRS
-            | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-        )
+        and (pack_manifest_path(child) is not None or child.name == "_core" or (child / "cli.py").is_file())
     }
     if root == _FIRST_PARTY_PACKS_ROOT:
         return True
@@ -399,6 +352,8 @@ def _first_party_inventory(
     pack_roots: Iterable[str | Path] | None,
 ) -> tuple[list[str], tuple[Path, ...], list[str], list[str]]:
     """Resolve first-party root dispositions without discovering packs."""
+    from astrid.core.pack import pack_manifest_path
+
     if not root.is_dir():
         return [f"{root}: first-party packs root does not exist"], (), [], []
 
@@ -409,46 +364,55 @@ def _first_party_inventory(
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
     }
+    # A CLI file is a runtime-mount exception only when the directory has no
+    # pack manifest. Manifest-bearing CLI packs are ordinary selected packs
+    # and must pass the same validation as every other manifest root.
     runtime_mounts = sorted(
-        name for name in _FIRST_PARTY_INTERNAL_DIRS - {"_core"} if name in child_dirs
+        name
+        for name, child in child_dirs.items()
+        if (child / "cli.py").is_file() and pack_manifest_path(child) is None
     )
-    excluded = sorted(
-        name for name in _EXCLUDED_FIRST_PARTY_DIRS if name in child_dirs
-    )
+    excluded: list[str] = []
     if pack_roots is not None:
         selected = tuple(Path(path).expanduser().resolve() for path in pack_roots)
         return [], selected, excluded, runtime_mounts
 
-    expected = set(_FIRST_PARTY_PACK_IDS if root == _FIRST_PARTY_PACKS_ROOT else _TRACKED_FIRST_PARTY_PACK_IDS)
-    if root == _FIRST_PARTY_PACKS_ROOT:
-        expected |= _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-    # Mirrored/test roots may omit optional personal packs, but a known
-    # optional pack is still valid when explicitly present. Keep the allowed
-    # inventory wider than the required inventory so only unknown roots fail.
-    allowed = (
-        set(_FIRST_PARTY_PACK_IDS)
-        | _FIRST_PARTY_INTERNAL_DIRS
-        | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-        | _EXCLUDED_FIRST_PARTY_DIRS
-    )
     errors: list[str] = []
-    for pack_id in sorted(expected - set(child_dirs)):
-        errors.append(f"missing first-party pack directory: {pack_id}")
-    for name in sorted(set(child_dirs) - allowed):
-        errors.append(f"unexpected top-level directory: {name}")
     selected: list[Path] = []
-    for pack_id in _FIRST_PARTY_PACK_IDS:
-        pack_dir = child_dirs.get(pack_id)
-        if pack_dir is None:
+    # Engine assets are already declared by the canonical engine index. Reuse
+    # those explicit inputs instead of maintaining a copied directory allowlist.
+    resource_roots: set[str] = set()
+    index = root / "engine-index.json"
+    if index.is_file():
+        try:
+            entries = json.loads(index.read_text(encoding="utf-8"))["entries"]
+            for entry in entries:
+                recipe = (root.parent / entry["recipe"]["path"]).resolve()
+                relative = recipe.relative_to(root)
+                if recipe.is_file() and len(relative.parts) > 1:
+                    resource_roots.add(relative.parts[0])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"invalid engine resource inventory: {exc}")
+    for name, child in sorted(child_dirs.items()):
+        if name == "_core":
             continue
-        if not (pack_dir / "pack.yaml").is_file():
-            errors.append(f"{pack_id}: pack manifest not found (pack.yaml)")
+        manifest = pack_manifest_path(child)
+        if manifest is not None:
+            # A CLI entrypoint does not exempt a directory from pack validation.
+            selected.append(child)
             continue
-        selected.append(pack_dir)
+        if name in runtime_mounts:
+            # Manifestless CLI mounts are established runtime-owned roots.
+            continue
+        if name in resource_roots:
+            excluded.append(name)
+            continue
+        if any(path.is_file() for path in child.rglob("*")):
+            errors.append(f"unexpected manifestless top-level directory: {name}")
+        else:
+            errors.append(f"unexpected top-level directory: {name}")
     core_dir = child_dirs.get("_core")
-    if core_dir is None:
-        errors.append("missing internal directory: _core")
-    else:
+    if core_dir is not None:
         for manifest_name in ("pack.yaml", "pack.yml", "pack.json"):
             if (core_dir / manifest_name).is_file():
                 errors.append(f"_core: skill-only shell must not contain {manifest_name}")

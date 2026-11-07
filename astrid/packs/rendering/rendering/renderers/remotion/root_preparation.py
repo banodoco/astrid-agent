@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import json
 import os
 import shutil
@@ -172,7 +176,7 @@ def _prepared_remotion_root(*args: Any, **kwargs: Any) -> Iterator[Any]:
     Path(parent).mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".project-elements-", dir=parent) as temporary:
         registry, pack_roots = stage_project_elements(
-            config, Path(temporary), registry=backend.load_default_registry(project_root=backend.REPO_ROOT),
+            config, Path(temporary), registry=backend.load_default_registry(project_root=backend.CHECKOUT_ROOT),
         )
         with _prepared_remotion_root_selected(
             *args, **kwargs, element_registry=registry, pack_roots=pack_roots,

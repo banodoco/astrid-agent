@@ -1,0 +1,20 @@
+{
+  "installed-qwen-prompt": {
+    "outputs": {
+      "13": {
+        "images": [
+          {
+            "filename": "Qwen_image_2.1_astrid_installed-attempt_00001_.png",
+            "subfolder": "",
+            "type": "output"
+          }
+        ]
+      }
+    },
+    "status": {
+      "status_str": "success",
+      "completed": true,
+      "messages": []
+    }
+  }
+}

@@ -1,7 +1,7 @@
 """Bound command entrypoint for ``vibecomfy.character_animation``."""
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("vibecomfy.character_animation")
 
@@ -17,7 +17,7 @@ def build_parser():
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    from astrid.core.generation.availability import require_action_available
+    from astrid.pack_api import require_action_available
     require_action_available(CAPABILITY_ID)
     request = CharacterAnimationRequest(
         reference_image_ref=args.reference_image_ref or "",

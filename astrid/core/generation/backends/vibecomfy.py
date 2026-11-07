@@ -746,6 +746,15 @@ class VibeComfyBackend(BackendAdapter):
 
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
         if isinstance(unbound_inputs, dict):
+            # Generated templates list every public input's default under
+            # ``unbound_inputs``; a public input bound to a node in this
+            # workflow is declared, so only names without that binding count.
+            declared_inputs = getattr(wf, "inputs", None)
+            workflow_nodes = getattr(wf, "nodes", None)
+            bound_inputs = {
+                name for name, spec in (declared_inputs.items() if isinstance(declared_inputs, dict) else ())
+                if isinstance(workflow_nodes, dict) and getattr(spec, "node_id", None) in workflow_nodes
+            }
             requested_unbound = sorted(
                 tmpl_param
                 for canon, tmpl_param in param_map.items()
@@ -753,6 +762,7 @@ class VibeComfyBackend(BackendAdapter):
                 and canon in params
                 and params[canon] is not None
                 and tmpl_param in unbound_inputs
+                and tmpl_param not in bound_inputs
             )
             if requested_unbound:
                 raise ValueError(
@@ -2587,7 +2597,17 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # and the bundle's lock/provenance gates remain in force.
             from vibecomfy.schema import get_target_schema_provider
 
-            target_schema = get_target_schema_provider(server_url=self._http_origin)
+            try:
+                bound_model_root = validate_model_root_binding(
+                    host_session.get("model_root_binding"),
+                    verify_files=True,
+                )
+            except ModelRootBindingError as exc:
+                raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
+            target_schema = get_target_schema_provider(
+                server_url=self._http_origin, auxiliary_model_custody="target",
+                target_model_assets=bound_model_root.inventory,
+            )
             refresh = getattr(target_schema, "refresh", None)
             if callable(refresh):
                 refresh()
@@ -2599,13 +2619,6 @@ class CheckoutServerAdapter(VibeComfyBackend):
             # same verified root explicitly.  Without this, a worker with an
             # otherwise healthy session falls back to VibeComfy's empty
             # default models directory and falsely reports a missing model.
-            try:
-                bound_model_root = validate_model_root_binding(
-                    host_session.get("model_root_binding"),
-                    verify_files=True,
-                )
-            except ModelRootBindingError as exc:
-                raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
             if provenance is not None:
                 provenance.installed(self._host_profile)
             environment_model_root = os.environ.get(MODEL_ROOT_ENV)

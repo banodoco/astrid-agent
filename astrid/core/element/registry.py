@@ -386,7 +386,7 @@ def _load_pack_elements_with_diagnostics(
     skipped: list[SkippedElement] = []
     for pack in packs:
         # All discovered packs share the same priority.  Discovery order is
-        # canonical; the local editable pack cannot shadow a source pack.
+        # canonical; the editable personal pack cannot shadow a source pack.
         priority = 30
         for kind, manifest in iter_element_manifest_paths(
             pack,
@@ -399,7 +399,7 @@ def _load_pack_elements_with_diagnostics(
                     manifest_path=manifest,
                     kind=kind,
                     source=f"pack:{pack.id}",
-                    editable=pack.id == "local",
+                    editable=pack.id == "personal",
                     priority=priority,
                     element_kind_registry=element_kind_registry,
                 )

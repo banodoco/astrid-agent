@@ -14,14 +14,18 @@ and the ffmpeg backend's probe-form ``_duration_frames``.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import json
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core import timeline
-from astrid.core.foundation.paths import REPO_ROOT, WORKSPACE_ROOT
+from astrid.pack_api import Timeline
+from astrid.core.foundation.paths import WORKSPACE_ROOT
 from astrid.core.media import ffprobe_metadata_strict
 from astrid.core.pack.discovery import discover_pack_metadata
 from astrid.core.rendering.contracts import RenderProfile
@@ -55,7 +59,7 @@ def _serialize_timeline(
     default_theme: str = "banodoco-default",
 ) -> dict[str, Any]:
     return (
-        timeline.Timeline.load(timeline_path).for_render(default_theme=default_theme).to_json_data()
+        Timeline.load(timeline_path).for_render(default_theme=default_theme).to_json_data()
     )
 
 
@@ -96,7 +100,7 @@ def _resolved_theme_for_render(
     to search a checkout or filesystem theme directory during a render.
     """
 
-    loaded = timeline.Timeline.load(timeline_path)
+    loaded = Timeline.load(timeline_path)
     timeline_config = loaded.to_config()
     merged = (
         _theme_for_props(runtime_theme_path)
@@ -134,7 +138,7 @@ def _active_pack_order_for_provenance(
             "root": str(discovered.pack_dir),
         }
         for discovered in discover_pack_metadata(
-            project_root=project_root if project_root is not None else REPO_ROOT
+            project_root=project_root if project_root is not None else CHECKOUT_ROOT
         )
     ]
 

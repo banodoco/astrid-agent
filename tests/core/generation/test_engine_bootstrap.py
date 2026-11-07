@@ -44,13 +44,32 @@ def unzip(bundle):
 
 def test_console_dry_run_and_help_are_isolated_and_exact():
     b = bootstrap.build_cli_bootstrap(ARGV)
-    loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
+    free_bytes = 2**63 - 1
+    loader = b.command[-1].replace(
+        "raise SystemExit(entries[0].load()())",
+        "entry = entries[0].load()\n"
+        "    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n"
+        "    import astrid.core.engine_cli as _cli\n"
+        f"    _cli._disk_anchor = lambda root: (root, 1, 1, {free_bytes})\n"
+        "    raise SystemExit(entry())",
+    )
     result = run(b, loader=loader)
     assert result.returncode == 0, result.stderr
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
     assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *ARGV],
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+    required_bytes = sum(model.bytes for model in load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130').models)
+    assert required_bytes > 0
+    assert plan['disk_check'] == {
+        'required_bytes': required_bytes, 'free_bytes': free_bytes,
+        'status': 'ok', 'basis': 'locked_model_bytes',
+    }
+    local_code = (
+        f"import astrid.core.engine_cli as c; c._disk_anchor = lambda root: (root, 1, 1, {free_bytes}); "
+        "from astrid.console import main; raise SystemExit(main())"
+    )
+    local = subprocess.run([sys.executable, '-c', local_code, *ARGV],
                            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
     assert local.returncode == 0 and result.stdout == local.stdout
     help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
@@ -154,15 +173,42 @@ def test_execution_is_not_qualified():
         bootstrap.build_cli_bootstrap(('engines', 'install', 'vibecomfy-h3'))
 
 
-def test_real_console_execution_refuses_without_a2():
+def test_real_console_execution_refuses_without_a2(tmp_path):
+    # Historical name: the CLI now has a real backend, but this fixture stops at
+    # the locked-model disk gate before backend/custody/install work can begin.
     b = bootstrap.build_cli_bootstrap(ARGV)
     spec = json.loads(base64.b64decode(b.env['ASTRID_ENGINE_SPEC']))
-    spec['argv'] = ['engines', 'install', 'vibecomfy-h3', '--root', '/tmp/astrid-plan']
+    root = tmp_path / 'uncreated-engine-root'
+    assert not root.exists()
+    spec['argv'] = ['engines', 'install', 'vibecomfy-h3', '--root', str(root)]
     env, loader = repack(b, spec=spec)
+    sentinel = tmp_path / 'operation-sentinel'
+    loader = loader.replace(
+        "raise SystemExit(entries[0].load()())",
+        "import astrid.core.engine_cli as _cli\n"
+        "    def _unexpected(*args, **kwargs):\n"
+        f"        open({str(sentinel)!r}, 'w').write('entered')\n"
+        "        raise RuntimeError('bootstrap fixture operation sentinel entered')\n"
+        "    _cli._disk_anchor = lambda root: (root, 1, 1, 0)\n"
+        "    _cli._default_backend = _unexpected\n"
+        "    _cli._custody_preflight = _unexpected\n"
+        "    _cli.install_engine = _unexpected\n"
+        "    _cli._check_install_identity = _unexpected\n"
+        "    raise SystemExit(entries[0].load()())",
+    )
     result = run(b, env, loader)
     assert result.returncode == 1
-    assert json.loads(result.stderr)['error']['code'] == 'unsupported_platform'
-    assert not Path('/tmp/astrid-plan').exists()
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+    required_bytes = sum(model.bytes for model in load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130').models)
+    assert required_bytes > 0
+    assert json.loads(result.stderr) == {'error': {
+        'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+        'retryable': True, 'recovery_handle': None,
+        'message': 'Free disk space or choose a different --root, then retry.',
+        'required_bytes': required_bytes, 'free_bytes': 0,
+    }}
+    assert not sentinel.exists()
+    assert not root.exists()
 
 
 def test_loader_spec_and_archive_boundaries():

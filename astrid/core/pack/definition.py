@@ -56,6 +56,10 @@ class PackDefinition:
     rendering: dict[str, Any] = field(default_factory=dict)
     documents: dict[str, Any] = field(default_factory=dict)
     documentation: dict[str, Any] = field(default_factory=dict)
+    pack_api: str | None = None
+    dependencies: dict[str, Any] = field(default_factory=dict)
+    cli: dict[str, Any] = field(default_factory=dict)
+    engines: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         taxonomy = {
@@ -97,4 +101,12 @@ class PackDefinition:
             declarations = getattr(self, section)
             if declarations or str(self.schema_version) == "3":
                 payload[section] = _normalize_json_value(declarations, path=f"pack.{section}")
+        if self.pack_api is not None:
+            payload["pack_api"] = self.pack_api
+        if self.dependencies:
+            payload["dependencies"] = _normalize_json_value(self.dependencies, path="pack.dependencies")
+        if self.cli:
+            payload["cli"] = _normalize_json_value(self.cli, path="pack.cli")
+        if self.engines:
+            payload["engines"] = _normalize_json_value(self.engines, path="pack.engines")
         return payload

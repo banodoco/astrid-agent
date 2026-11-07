@@ -138,3 +138,30 @@ def test_terminal_serializer_accepts_standalone_orchestrator_result():
         "receipt": {"observed": "without publication"},
         "effect": {"side_effect": "retained"},
     }
+
+
+def test_terminal_receipt_preserves_typed_runtime_settlement():
+    from astrid_runtime_client.generated import Task
+
+    task = Task.from_json({
+        "task_id": "task-1", "run_id": "run-1", "state": "succeeded",
+        "version": 2, "capability_id": "image.generate", "capability_digest": "sha256:cap",
+        "idempotency_key": "request-1", "created_at": "2026-11-02T00:00:00Z",
+        "updated_at": "2026-11-02T00:00:01Z", "runtime_epoch": 1,
+        "input_object_ids": [], "spec": {"seed": 17},
+        "result": {"outputs": [{"object_id": "object-1", "sha256": "abc"}]},
+    })
+    result = InvocationResult(capability_id="image.generate", capability_type="executor",
+                              native_kind="executor", ok=True)
+    receipt = serialize_terminal_result(
+        result, status="succeeded", task_id=task.task_id, attempt_id="attempt-1",
+        parent_task_id=None, parent_attempt_id=None, request_digest="sha256:request",
+        resolved_options={}, cost=None, warnings=[], settled=True,
+        settlement=task, effect={"published": True},
+    )
+    wire = json.loads(json.dumps(receipt))
+    assert wire["publication"]["status"] == "settled"
+    assert wire["publication"]["receipt"]["task_id"] == task.task_id
+    assert wire["publication"]["receipt"]["spec"] == {"seed": 17}
+    assert wire["publication"]["receipt"]["result"] == task.result
+    assert task.result == {"outputs": [{"object_id": "object-1", "sha256": "abc"}]}

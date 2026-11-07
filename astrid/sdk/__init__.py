@@ -11,6 +11,17 @@ from __future__ import annotations
 import importlib
 
 _EXPORTS = {
+    "resolve_media_handle": ("media_handles", "resolve_media_handle"),
+    "save_media": ("media_handles", "save_media"),
+    "Checkout": ("timeline", "Checkout"),
+    "MEDIA_TRANSCRIPT_SCHEMA": ("media_transcript", "SCHEMA"),
+    "WHISPER_SOURCE": ("media_transcript", "WHISPER_SOURCE"),
+    "write_transcript": ("media_transcript", "write_transcript"),
+    "timeline_intent_words": ("timeline_intent", "words"),
+    "select_capability_row": ("capability_selection", "select_capability_row"),
+    "child_bridge_is_live": ("_child_bridge", "child_bridge_is_live"),
+    "inherited_child_bridge": ("_child_bridge", "inherited_child_bridge"),
+    "validate_child_policy": ("_child_bridge", "validate_child_policy"),
     "AstridClient": ("client", "AstridClient"),
     "AliasRecord": ("dto", "AliasRecord"),
     "Capability": ("dto", "Capability"),

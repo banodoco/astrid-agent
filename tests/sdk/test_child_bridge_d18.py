@@ -1638,3 +1638,20 @@ def test_failed_child_poll_carries_only_projected_lease_evidence(tmp_path, isola
     assert [request["op"] for request in requests] == ["submit", "status"]
     for sentinel in ("MESSAGE_SENTINEL", "PROMPT_SENTINEL", "INPUT_SENTINEL", "PAYLOAD_SENTINEL", "PRIVATE_PATH"):
         assert sentinel not in json.dumps(result.raw_result)
+
+def test_optional_file_default_is_not_runtime_custody(tmp_path, isolated, channel):
+    _, messages, _ = channel
+    root = write_pack(tmp_path, pack_id='optional_file', actions={'echo': {
+        'description': 'Optional managed input.',
+        'invocation': {'kind': 'command', 'command': {'argv': ['python', '-m', 'fixture.tool']}},
+        'inputs': [{'name': 'asset', 'type': 'file', 'required': False, 'default': ''},
+                   {'name': 'flag', 'type': 'boolean', 'required': False, 'default': False}],
+    }})
+    result = astrid.invoke('optional_file.echo', kind='action', extra_pack_roots=(str(root),),
+                           inputs={}, child_key='omitted')
+    assert result.ok
+    assert messages[0]['inputs'] == {'flag': False} and messages[0]['input_descriptors'] == []
+    with pytest.raises(astrid.CapabilityValidationError, match="file input 'asset'"):
+        astrid.invoke('optional_file.echo', kind='action', extra_pack_roots=(str(root),),
+                      inputs={'asset': ''}, child_key='explicit-empty')
+    assert len([row for row in messages if row['op'] == 'submit']) == 1

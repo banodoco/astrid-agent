@@ -113,6 +113,9 @@ def capability_execution_admission(
             (item for item in inventory if isinstance(item, Mapping) and item.get("id") == capability_id),
             None,
         )
+        if sources.get("selection_explicit") is True and executor_row is None:
+            denied["reason"] = "capability is absent from the selected executor inventory"
+            return denied
         if isinstance(executor_row, Mapping) and executor_row.get("executable") is False:
             denied["reason"] = "executor inventory marks capability non-executable"
             return denied
@@ -172,11 +175,6 @@ _HISTORICAL_SOURCE_LABELS: tuple[dict[str, Any], ...] = (
     },
 )
 
-# These personal adapters are opt-in project packs.  They may be present in
-# an editable checkout, but they are not part of the canonical source census;
-# their executor contracts remain represented by the optional matrix rows.
-_OPTIONAL_PROJECT_PACK_IDS = frozenset({"discord_local", "seedance_local"})
-
 _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
     {
         "id": "iteration.prepare",
@@ -185,7 +183,7 @@ _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
         "discovery_status": "historical_only",
         "executable": False,
         "reason": "Retired thread/sidecar iteration preparation executor.",
-        "source": "historical: astrid/core/contracts/output_result_exemptions.json",
+        "source": "historical-only",
     },
     {
         "id": "training.asset_cache",
@@ -194,7 +192,7 @@ _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
         "discovery_status": "historical_only",
         "executable": False,
         "reason": "Retired persistent URL asset-cache executor.",
-        "source": "historical: astrid/core/contracts/output_result_exemptions.json",
+        "source": "historical-only",
     },
 )
 
@@ -277,10 +275,17 @@ def _census_check(current: set[str], approved: list[str] | None, quarantined: se
     }
 
 
-def _source_labels(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+def _source_labels(repo_root: Path, *, excluded: frozenset[str] = frozenset(), selected_packs: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+    from astrid.core.pack import load_pack_manifest
+
     rows: list[dict[str, Any]] = []
-    for manifest in sorted((repo_root / "astrid" / "packs").glob("*/pack.yaml")):
-        if manifest.parent.name in _OPTIONAL_PROJECT_PACK_IDS or manifest.parent.name in excluded:
+    manifests = (tuple(pack.manifest_path for pack in selected_packs) if selected_packs is not None
+                 else sorted((repo_root / "astrid" / "packs").glob("*/pack.yaml")))
+    for manifest in manifests:
+        if manifest.parent.name in excluded:
+            continue
+        pack = load_pack_manifest(manifest)
+        if pack.extensions.get("astrid", {}).get("project_scope") == "optional":
             continue
         raw = _load_manifest_payload(manifest)
         labels = raw.get("capabilities", []) if isinstance(raw, Mapping) else []
@@ -289,13 +294,15 @@ def _source_labels(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -
         for label in labels:
             if not isinstance(label, str) or not label.strip():
                 raise CapabilityLedgerError(f"{manifest}: capability labels must be non-empty strings")
-            rows.append({"pack": manifest.parent.name, "label": label, "source": str(manifest.relative_to(repo_root))})
+            rows.append({"pack": pack.id, "label": label, "source": (str(manifest.relative_to(repo_root)) if manifest.is_relative_to(repo_root) else str(manifest))})
     return rows
 
 
-def _aliases(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+def _aliases(repo_root: Path, *, excluded: frozenset[str] = frozenset(), selected_packs: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for manifest in sorted((repo_root / "astrid" / "packs").glob("*/pack.yaml")):
+    manifests = (tuple(pack.manifest_path for pack in selected_packs) if selected_packs is not None
+                 else sorted((repo_root / "astrid" / "packs").glob("*/pack.yaml")))
+    for manifest in manifests:
         if manifest.parent.name in excluded:
             continue
         raw = _load_manifest_payload(manifest)
@@ -306,35 +313,116 @@ def _aliases(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -> list
             if not isinstance(alias, Mapping) or not {"alias", "canonical_id"} <= set(alias):
                 raise CapabilityLedgerError(f"{manifest}: alias entry missing alias/canonical_id")
             rows.append({
-                "pack": manifest.parent.name,
+                "pack": str(raw["id"]),
                 "kind": str(alias.get("kind", "executor")),
                 "alias": str(alias["alias"]),
                 "canonical_id": str(alias["canonical_id"]),
                 "deprecated": bool(alias.get("deprecated", False)),
                 "deprecation_message": str(alias.get("deprecation_message", "")),
-                "source": str(manifest.relative_to(repo_root)),
+                "source": (str(manifest.relative_to(repo_root)) if manifest.is_relative_to(repo_root) else str(manifest)),
             })
     return rows
 
 
-def _executor_inventory(repo_root: Path) -> list[dict[str, Any]]:
-    source = repo_root / "astrid" / "core" / "contracts" / "output_result_exemptions.json"
-    payload = json.loads(source.read_text(encoding="utf-8"))
-    non_exempt = payload.get("non_exempt", [])
-    exemptions = payload.get("exemptions", {})
-    if not isinstance(non_exempt, list) or not isinstance(exemptions, Mapping):
-        raise CapabilityLedgerError(f"{source}: invalid executor snapshot")
+def _executor_inventory(repo_root: Path, *, executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> list[dict[str, Any]]:
+    """Reconcile runnable definitions under the historical inventory key.
+
+    Local parents remain distinct from executors in their real registries, but
+    both need selected-source/result policy before host readiness can admit them.
+    An explicitly supplied executor registry never expands into ambient parents.
+    """
+    from astrid.core.execution.executor.registry import load_default_registry
+    from astrid.core.pack import load_pack_manifest
+
     rows: list[dict[str, Any]] = []
-    for capability_id in sorted(set(str(value) for value in non_exempt)):
-        rows.append({"id": capability_id, "result_contract": "manifest", "disposition": "historical", "source": str(source.relative_to(repo_root))})
-    for capability_id, detail in sorted(exemptions.items()):
-        detail = detail if isinstance(detail, Mapping) else {}
+    parsed_packs = {pack.id: pack for pack in selected_packs or ()}
+    registry = executor_registry if executor_registry is not None else load_default_registry(project_root=repo_root)
+    if executor_registry is None and orchestrator_registry is None:
+        from astrid.core.execution.executor.actions import action_is_local_orchestrator, action_orchestrator_definition
+        from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
+        from astrid.core.pack.discovery import discover_packs_ordered
+
+        orchestrator_registry = OrchestratorRegistry(executor_registry=registry)
+        packs = selected_packs if selected_packs is not None else discover_packs_ordered(project_root=repo_root)
+        # This policy belongs to pack actions. Legacy folder orchestrators do
+        # not carry that owning action and must not inherit its result policy.
+        for pack in packs:
+            for local_id, action in pack.actions.items():
+                if action_is_local_orchestrator(action):
+                    orchestrator_registry.register(action_orchestrator_definition(pack, local_id, action))
+        orchestrator_registry.validate_all(executor_registry=registry)
+    definitions = [(definition, "executor") for definition in registry.list()]
+    if orchestrator_registry is not None:
+        definitions.extend((definition, "orchestrator") for definition in orchestrator_registry.list())
+    for definition, capability_kind in definitions:
+        capability_id = definition.id
+        pack_id = capability_id.split(".", 1)[0]
+        pack_root = definition.metadata.get("pack_root")
+        if pack_root is None:
+            raise CapabilityLedgerError(f"selected executor {capability_id} has no owning pack root")
+        manifest = Path(pack_root).resolve() / "pack.yaml"
+        _pack_id, action_id = capability_id.split(".", 1)
+        try:
+            pack = parsed_packs.get(pack_id)
+            if pack is None:
+                pack = load_pack_manifest(manifest)
+                if pack.id != pack_id:
+                    raise CapabilityLedgerError(f"selected executor {capability_id} is not owned by {manifest}")
+                parsed_packs[pack_id] = pack
+            if pack.root.resolve() != Path(pack_root).resolve():
+                raise CapabilityLedgerError(f"selected executors disagree on the owning root for {pack_id}")
+            detail = (
+                pack.extensions.get("astrid", {})
+                .get("output_result_exemptions", {})
+                .get("actions", {})
+                .get(action_id)
+            )
+        except Exception as exc:
+            raise CapabilityLedgerError(f"cannot read output-result policy for {capability_id}: {exc}") from exc
+        if isinstance(detail, Mapping):
+            result_contract = "exempted"
+            reason = str(detail.get("note", ""))
+            reasons = [str(value) for value in detail.get("reasons", [])]
+        elif definition.metadata.get("output_result_manifest") is True:
+            result_contract = "manifest"
+            reason = ""
+            reasons = []
+        else:
+            raise CapabilityLedgerError(f"{manifest}: missing output-result policy for {capability_id}")
         rows.append({
             "id": str(capability_id),
-            "result_contract": "exempted",
+            "kind": capability_kind,
+            "result_contract": result_contract,
             "disposition": "historical",
-            "reason": str(detail.get("note", "")),
-            "source": str(source.relative_to(repo_root)),
+            "reason": reason,
+            "reasons": reasons,
+            "source": (
+                (str(manifest.relative_to(repo_root)) if manifest.is_relative_to(repo_root) else str(manifest))
+                if manifest.is_relative_to(repo_root)
+                else str(manifest)
+            ),
+        })
+
+    # Compatibility records describe historical, absent optional routes only.
+    # They never grant policy to a selected executor; its own manifest did that.
+    source = historical_matrix[0] if historical_matrix is not None else repo_root / "config" / "astrid-beta-capabilities.json"
+    historical_capabilities = historical_matrix[1] if historical_matrix is not None else []
+    if historical_matrix is None and source.is_file():
+        try:
+            matrix = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CapabilityLedgerError(f"cannot read historical capability declarations {source}: {exc}") from exc
+        historical_capabilities = matrix.get("capabilities", [])
+    installed_ids = {row["id"] for row in rows}
+    for item in historical_capabilities:
+        history = item.get("historical_result_contract")
+        if not isinstance(history, dict) or item["id"] in installed_ids:
+            continue
+        rows.append({
+            "id": item["id"], "result_contract": "exempted",
+            "disposition": "historical", "reason": history["note"],
+            "reasons": history["reasons"], "external_contract": history["external_contract"],
+            "executable": False, "source": str(source.relative_to(repo_root)) if source.is_relative_to(repo_root) else str(source),
         })
     rows.extend(dict(row) for row in _HISTORICAL_EXECUTOR_ROWS if row["id"] not in {item["id"] for item in rows})
     return rows
@@ -358,13 +446,21 @@ def _model_inventory(repo_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
     return rows, sorted(backends)
 
 
-def _render_backend_inventory(repo_root: Path) -> list[dict[str, Any]]:
+def _render_backend_inventory(repo_root: Path, *, selected_packs: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+    from astrid.core.pack import discover_packs
+
     rows: list[dict[str, Any]] = []
-    root = repo_root / "astrid" / "packs" / "rendering" / "rendering" / "renderers"
-    for source in sorted(root.glob("*/renderer.yaml")):
+    if selected_packs is None:
+        selected_packs = discover_packs(repo_root / "astrid" / "packs")
+    sources = sorted(
+        pack.root / declaration["path"]
+        for pack in selected_packs for declaration in pack.rendering.values()
+        if declaration.get("type") == "renderer"
+    )
+    for source in sources:
         raw = _load_manifest_payload(source)
         if isinstance(raw, Mapping) and raw.get("id"):
-            rows.append({"id": str(raw["id"]), "required_binaries": [str(value) for value in (raw.get("required_binaries") or [])], "source": str(source.relative_to(repo_root))})
+            rows.append({"id": str(raw["id"]), "required_binaries": [str(value) for value in (raw.get("required_binaries") or [])], "source": str(source.relative_to(repo_root)) if source.is_relative_to(repo_root) else str(source)})
     return rows
 
 
@@ -387,20 +483,29 @@ def _historical_projection(row: Mapping[str, Any]) -> bool:
     )
 
 
-def _census_sets(repo_root: Path) -> dict[str, Any]:
+def _census_sets(repo_root: Path, *, executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> dict[str, Any]:
     """Collect the admitted census identifiers and the quarantined subset of each.
 
     Shared by :func:`_reconcile_sources` (check) and :func:`write_census_lock`
     (approve), so both see exactly the same inputs.
     """
-    quarantined_by_pack, quarantined_records = _quarantine_snapshot(repo_root)
+    if selected_packs is not None:
+        quarantined_by_pack, quarantined_records = {}, []
+    elif executor_registry is not None:
+        from astrid.core.pack import load_pack_manifest
+        roots = sorted({Path(definition.metadata["pack_root"]).resolve()
+                        for definition in executor_registry.list()})
+        selected_packs = tuple(load_pack_manifest(root / "pack.yaml") for root in roots)
+        quarantined_by_pack, quarantined_records = {}, []
+    else:
+        quarantined_by_pack, quarantined_records = _quarantine_snapshot(repo_root)
     excluded = frozenset(quarantined_by_pack)
-    labels = _source_labels(repo_root, excluded=excluded)
+    labels = _source_labels(repo_root, excluded=excluded, selected_packs=selected_packs)
     historical_labels = [row for row in labels if _historical_projection(row)]
     historical_labels.extend(dict(row) for row in _HISTORICAL_SOURCE_LABELS)
     historical_labels.sort(key=lambda row: (row["pack"], row["label"]))
-    aliases = _aliases(repo_root, excluded=excluded)
-    executors = _executor_inventory(repo_root)
+    aliases = _aliases(repo_root, excluded=excluded, selected_packs=selected_packs)
+    executors = _executor_inventory(repo_root, executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs, historical_matrix=historical_matrix)
     quarantined_rows = [
         {"pack": pack, "label": label}
         for pack, declared in sorted(quarantined_by_pack.items())
@@ -426,44 +531,51 @@ def _census_sets(repo_root: Path) -> dict[str, Any]:
         "current": current,
         "quarantined": quarantined,
         "quarantined_records": quarantined_records,
+        "selected_packs": selected_packs,
     }
 
 
-def _reconcile_sources(repo_root: Path, capabilities: list[Mapping[str, Any]]) -> dict[str, Any]:
-    census = _census_sets(repo_root)
+def _reconcile_sources(
+    repo_root: Path, capabilities: list[Mapping[str, Any]], *,
+    executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None,
+    external_contracts: Mapping[str, Any] | None = None, matrix_source: Path | None = None,
+) -> dict[str, Any]:
+    census = _census_sets(
+        repo_root, executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs,
+        historical_matrix=(matrix_source or repo_root / "config" / "astrid-beta-capabilities.json", capabilities),
+    )
     labels = census["labels"]
     historical_labels = census["historical_labels"]
     quarantined_records = census["quarantined_records"]
     aliases = census["aliases"]
     executors = census["executors"]
     models, model_backends = _model_inventory(repo_root)
-    rendering_backends = _render_backend_inventory(repo_root)
+    rendering_backends = _render_backend_inventory(repo_root, selected_packs=census.get("selected_packs"))
     current_ids = {str(row.get("id")) for row in capabilities}
     for row in labels:
         candidate = f"{row['pack']}.{row['label']}"
         row["canonical_id"] = candidate if candidate in current_ids else None
         row["disposition"] = "advertised" if row["canonical_id"] else "unmapped_source_label"
     for row in executors:
-        if row["id"] in current_ids:
-            row["disposition"] = "advertised"
-            row["discovery_status"] = "discovered"
-        elif row["id"].startswith(("hivemind.", "discord_local.", "seedance_local.")):
-            # These IDs remain in the result-contract inventory. If their
-            # shipped/explicit pack is absent, keep them visible without
-            # making an unavailable external route look executable.
-            row["disposition"] = "unavailable_external"
-            row["discovery_status"] = "not_installed"
-            row["reason"] = "optional external pack is not installed in this checkout"
+        if row.get("external_contract"):
+            row.update(disposition="unavailable_external", discovery_status="not_installed", executable=False)
         elif row["id"] in current_ids:
-            row["disposition"] = "advertised"
-            row["discovery_status"] = "discovered"
+            row.update(disposition="advertised", discovery_status="discovered")
         elif row["disposition"] == "historical":
             row["reason"] = row.get("reason") or "retained in historical executor snapshot; no current executor manifest"
-            row["discovery_status"] = "historical_only"
-    for row in executors:
-        if row.get("discovery_status") != "discovered":
-            row.setdefault("executable", False)
-    expected_hivemind = sorted(row["id"] for row in executors if row["id"].startswith("hivemind."))
+            row.update(discovery_status="historical_only", executable=False)
+    external = {}
+    for name, contract in (external_contracts or {}).items():
+        ids = sorted(item["id"] for item in capabilities
+                     if item.get("historical_result_contract", {}).get("external_contract") == name)
+        installed = sum(row["id"] in ids and row.get("discovery_status") == "discovered" for row in executors)
+        external[name] = {
+            "disposition": "optional_external", "executor_ids": ids,
+            "external_census": {
+                "declared_count": len(ids), "installed_count": installed,
+                "unresolved": installed != len(ids), "note": contract["note"],
+            },
+        }
     # Blessed census baseline. Hivemind remains represented by the optional
     # external contract below; it is deliberately absent from the in-tree
     # source-label census. Optional project packs remain represented by their
@@ -491,18 +603,8 @@ def _reconcile_sources(repo_root: Path, capabilities: list[Mapping[str, Any]]) -
         "models": models,
         "generation_backends": model_backends,
         "rendering_backends": rendering_backends,
-        "hivemind": {
-            "disposition": "optional_external",
-            "executor_ids": expected_hivemind,
-            "external_census": {
-                "declared_count": 7,
-                "installed_count": 0,
-                "unresolved": True,
-                "note": "Seven Hivemind executors are declared by the optional external pack; installation is proven by the managed source inventory."
-                if len(expected_hivemind) == 7
-                else "Historical Hivemind contract is incomplete; no additional ID is guessed.",
-            },
-        },
+        "selection_explicit": executor_registry is not None,
+        **external,
         "coverage": coverage,
         "counts": {"pack_labels": len(labels), "historical_pack_labels": len(historical_labels), "executor_inventory": len(executors), "aliases": len(aliases), "models": len(models), "rendering_backends": len(rendering_backends)},
     }
@@ -544,8 +646,36 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def load_capability_ledger(matrix_path: str | Path) -> dict[str, Any]:
+def load_capability_ledger(matrix_path: str | Path, *, executor_registry: Any = None, pack_roots: tuple[Path, ...] | None = None) -> dict[str, Any]:
     """Load the readiness matrix and reconcile all shipped capability sources."""
+    if executor_registry is not None and pack_roots is not None:
+        raise ValueError("provide executor_registry or pack_roots, not both")
+    selected_packs = None
+    orchestrator_registry = None
+    if pack_roots is not None:
+        from astrid.core.execution.executor.registry import ExecutorRegistry
+        from astrid.core.execution.executor.actions import action_executor_definition, action_is_local_orchestrator, action_orchestrator_definition
+        from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
+        from astrid.core.pack.loader import scan_pack_roots
+
+        roots = tuple(Path(root).expanduser().resolve() for root in pack_roots)
+        # Admit exactly the supplied inventory, including renderer-only packs.
+        # Loading the default registry and filtering afterwards reads ambient
+        # sources and can fail on content the caller did not select.
+        selected_packs = scan_pack_roots(roots, source_records={}).packs
+        # Canonical admission supports v3 executable packs only. Their actions
+        # are the complete executor declarations; legacy executor.yaml files
+        # beneath an admitted root are not additional selected inputs.
+        executor_registry = ExecutorRegistry()
+        orchestrator_registry = OrchestratorRegistry(executor_registry=executor_registry)
+        for pack in selected_packs:
+            for local_id, action in pack.actions.items():
+                if action_is_local_orchestrator(action):
+                    orchestrator_registry.register(action_orchestrator_definition(pack, local_id, action))
+                else:
+                    executor_registry.register(action_executor_definition(pack, local_id, action))
+        executor_registry.validate_all()
+        orchestrator_registry.validate_all(executor_registry=executor_registry)
     path = Path(matrix_path).expanduser().resolve()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -556,7 +686,14 @@ def load_capability_ledger(matrix_path: str | Path) -> dict[str, Any]:
     _validate_matrix_capabilities(payload["capabilities"])
     result = dict(payload)
     repo_root = _repo_root_for_matrix(path)
-    result["sources"] = _reconcile_sources(repo_root, payload["capabilities"]) if repo_root else {"counts": {}, "coverage": {}}
+    if selected_packs is not None or executor_registry is not None:
+        # A selected inventory reconciles against the matrix's own project
+        # (its model catalog), not an ambient checkout. A matrix outside any
+        # project (host fixtures) keeps the unreconciled default.
+        project = path.parent.parent
+        if (project / "astrid" / "core" / "model_catalog" / "models.yaml").is_file():
+            repo_root = project
+    result["sources"] = _reconcile_sources(repo_root, payload["capabilities"], executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs, external_contracts=payload.get("external_contracts", {}), matrix_source=path) if repo_root else {"counts": {}, "coverage": {}}
     return result
 
 

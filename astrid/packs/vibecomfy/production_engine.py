@@ -171,13 +171,10 @@ def _load_workflow(workflow: Mapping[str, Any], references: Mapping[str, str], s
     template_id = workflow.get("template_id")
     bindings = workflow.get("bindings")
     if isinstance(template_id, str) and isinstance(bindings, Mapping):
-        import vibecomfy
+        from vibecomfy.resources import ready_templates_root
         from vibecomfy.registry.ready import repo_ready_template_discovery, workflow_from_ready
 
-        if vibecomfy.__file__ is None:
-            raise ProductionEngineError("installed vibecomfy package has no filesystem root")
-        ready_root = Path(vibecomfy.__file__).resolve().parent.parent / "ready_templates"
-        discovery = repo_ready_template_discovery(root=ready_root if ready_root.exists() else None)
+        discovery = repo_ready_template_discovery(root=ready_templates_root())
         resolved = workflow_from_ready(template_id, _discovery=discovery)
         for name, value in bindings.items():
             try:
@@ -221,8 +218,14 @@ def _canonical_bundle_value(resolved: Any) -> Any:
 def _workflow_content_digest(source: Path) -> str:
     """Bind execution identity to the exact admitted input member bytes."""
     members = [source]
+    source_evidence_absent = False
     if source.suffix.lower() == ".py":
-        members.extend((source.with_suffix(".vibe.json"), source.with_name("source.json")))
+        members.append(source.with_suffix(".vibe.json"))
+        source_evidence = source.with_name("source.json")
+        if source_evidence.exists():
+            members.append(source_evidence)
+        else:
+            source_evidence_absent = True
     digest = hashlib.sha256()
     for member in members:
         try:
@@ -233,6 +236,8 @@ def _workflow_content_digest(source: Path) -> str:
             ) from exc
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
+    if source_evidence_absent:
+        digest.update(b"\0source.json:absent\0")
     return "sha256:" + digest.hexdigest()
 
 

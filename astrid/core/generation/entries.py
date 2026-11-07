@@ -20,16 +20,15 @@ def user_entries() -> list[dict[str, Any]]:
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
-    try:
-        import vibecomfy
-        root = Path(vibecomfy.__file__).resolve().parent.parent
-        index = json.loads((root / 'template_index.json').read_text())['templates']
-        coverage = json.loads((root / 'ready_templates/sources/manifests/coverage.json').read_text())['workflows']
-    except (ImportError, OSError, KeyError, ValueError):
-        return []
+    from vibecomfy import resources
+    from vibecomfy.errors import ShippedResourceMissingError
+    root = resources.ready_templates_root().parent
+    index = resources.template_index()['templates']
+    coverage = resources.coverage_manifest()['workflows']
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
-                  'first_last_frame_video': 'flf', 'text_to_audio_song': 'music',
+                  'first_last_frame_video': 'flf', 'text_to_audio_song': 'music', 'music': 'music',
+                  'video_to_audio_foley': 'sfx', 'tts': 'tts',
                   'text_to_speech_custom_voice': 'tts', 'text_to_speech_voice_clone': 'tts',
                   'text_to_speech_voice_design': 'tts'}
     from vibecomfy.entries import LOADER_ROLES
@@ -65,12 +64,18 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         ambiguity = None if kind and modes else 'kind or mode requires review'
         try:
             workflow = workflow_from_ready(item['id'], _discovery=discovery)
+            # A transient projection of the owning workflow declaration. Never
+            # persist or maintain a separate asset list alongside the template.
+            model_assets = workflow.metadata.get('model_assets', [])
             needs = [{**ref, 'role': LOADER_ROLES.get(ref['class_type']),
                       **({'ambiguity': 'unknown loader role'} if ref['class_type'] not in LOADER_ROLES else {})}
                      for ref in _referenced_model_values(workflow)]
             binds = {name: name for name in workflow.inputs}
+        except ShippedResourceMissingError:
+            raise
         except Exception:
             needs, binds = [], {}
+            model_assets = []
             ambiguity = 'ready workflow metadata could not be loaded'
         registry_ids = {catalog_by_template[(item['id'], mode)] for mode in modes
                         if (item['id'], mode) in catalog_by_template}
@@ -78,8 +83,10 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
                      'bundle': str((root / item['path']).resolve()), 'needs': needs, 'binds': binds,
                      'defaults': {}, 'inputs': item.get('public_inputs', []), 'source': 'ready-template',
                      'requirements': {'custom_nodes': item.get('custom_nodes', []), 'models': needs},
+                     'model_assets': model_assets,
                      'registry_id': next(iter(registry_ids)) if len(registry_ids) == 1 else None,
-                     'ambiguity': ambiguity})
+                     'ambiguity': ambiguity,
+                     **({'license_notice': item['license_notice']} if item.get('license_notice') else {})})
     return rows
 
 
@@ -224,12 +231,8 @@ def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[
 
 def _ready_ids() -> set[str]:
     """Read identities without building unrelated workflows."""
-    try:
-        import vibecomfy
-        root = Path(vibecomfy.__file__).resolve().parent.parent
-        return {item['id'] for item in json.loads((root / 'template_index.json').read_text())['templates']}
-    except (ImportError, OSError, KeyError, ValueError):
-        return set()
+    from vibecomfy import resources
+    return {item['id'] for item in resources.template_index()['templates']}
 
 
 def _load_entry_workflow(entry: dict[str, Any]) -> Any:
@@ -253,6 +256,7 @@ def _entry_bindings(workflow: Any, binds: dict[str, Any] | None, mode: str,
 
 
 def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list[dict[str, Any]]:
+    from vibecomfy.entries import media_loader_kind
     # Registered names are authoritative. Entry/common spellings are accepted
     # internally, but never add alias metadata to the public inventory.
     mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs},
@@ -274,12 +278,12 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
         kind = _input_type(spec.type)
         node = workflow.nodes.get(str(spec.node_id))
         # Explicit media semantics declare a string reference that is staged
-        # separately. Bare LoadImage.image widgets expose an upload filename.
-        # Other IMAGE sockets retain their declared type and fail closed.
+        # separately (pre-main). Native media pickers otherwise carry local
+        # filenames at the public boundary (PINS). Link sockets on arbitrary
+        # nodes retain their declared media type and fail closed.
         if kind == 'image' and spec.media_semantics == 'image':
             kind = 'string'
-        elif (kind == 'image' and getattr(node, 'class_type', None) == 'LoadImage'
-                and spec.field == 'image'):
+        elif media_loader_kind(getattr(node, 'class_type', ''), spec.field):
             kind = 'file'
         if kind == 'unknown':
             # InputSpec defaults and the bound widget are declared workflow
@@ -433,7 +437,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         modes = entry['modes']
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
-        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui'}
+        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
+                **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
         workflow = _load_entry_workflow(entry)
         schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
     else:
@@ -448,17 +453,18 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
             'inputs': schemas[selected] if selected is not None else [],
             'mode_descriptions': {name: {'mode': name, 'inputs': fields} for name, fields in schemas.items()}}
     from astrid.core.generation.availability import (
-        availability_projection, entry_availability, model_availability,
+        availability_declaration, availability_projection, entry_availability, model_availability,
     )
+    declaration = availability_declaration()
     for name, row in description['mode_descriptions'].items():
         if base['source'] == 'catalog':
-            backends = {backend: availability_projection(model_availability(entry_id, name, backend))
+            backends = {backend: availability_projection(model_availability(entry_id, name, backend, declaration=declaration))
                         for backend in catalog.modes[name].backends}
             row['backends'] = backends
             projection = next((item for item in backends.values() if item['availability'] == 'available'),
                               next(iter(backends.values()), availability_projection({'available': True})))
         else:
-            projection = availability_projection(entry_availability(entry, name))
+            projection = availability_projection(entry_availability(entry, name, declaration=declaration))
         row.update(projection)
     rows = description['mode_descriptions']
     projection = rows[selected] if selected is not None else next(
@@ -791,5 +797,14 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
             target=getattr(client, 'generation_target', None), issues=issues,
             fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
                     'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
+    custody = {}
+    if client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
+        from .model_root import validate_model_root_binding
+        # This selected local managed target was provisioned through its lock.
+        # Re-verify local bytes before projecting its inventory; no host registry
+        # or graph picker can supply a missing target asset.
+        binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
+        workflow.metadata["models_root"] = str(binding.path)
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
-        model_availability="target", refresh_object_info=client.object_info)
+        model_availability="target", refresh_object_info=client.object_info, **custody)

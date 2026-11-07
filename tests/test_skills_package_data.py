@@ -3,11 +3,11 @@
 from importlib import resources
 
 from astrid.skills import (
-    DEFAULT_FIRST_PARTY_SKILL_IDS,
     _sync_descriptors_for_harness,
     default_pack_ids,
     state,
 )
+from astrid.core.pack import load_pack_manifest
 from astrid.skills.discovery import PACKS_DIR, list_skills
 
 
@@ -28,19 +28,18 @@ def test_hivemind_is_not_hardcoded_as_a_default_skill() -> None:
     assert "hivemind" not in default_pack_ids(source_only)
 
 
-def test_frozen_first_party_defaults_use_real_stable_pack_declarations() -> None:
+def test_default_skill_policy_comes_from_pack_manifests() -> None:
     descriptors = list_skills()
-    by_id = {descriptor.pack_id: descriptor for descriptor in descriptors}
-
-    assert DEFAULT_FIRST_PARTY_SKILL_IDS == (
-        "vibecomfy", "rendering", "typed_timeline", "video_editing",
-    )
-    assert set(DEFAULT_FIRST_PARTY_SKILL_IDS) <= set(default_pack_ids(descriptors))
-    for pack_id in DEFAULT_FIRST_PARTY_SKILL_IDS:
-        manifest = by_id[pack_id].skill_dir.parent / "pack.yaml"
-        text = manifest.read_text(encoding="utf-8")
-        assert "status: active" in text
-        assert "stability: stable" in text
+    default_ids = set(default_pack_ids(descriptors))
+    declared_ids = {
+        descriptor.pack_id
+        for descriptor in descriptors
+        if (descriptor.skill_dir.parent / "pack.yaml").is_file()
+        if load_pack_manifest(descriptor.skill_dir.parent / "pack.yaml")
+        .extensions.get("astrid", {}).get("skills", {}).get("default") is True
+    }
+    assert declared_ids == {"vibecomfy", "rendering", "typed_timeline", "video_editing"}
+    assert declared_ids <= default_ids
 
 
 def test_default_composition_preserves_opt_outs_without_acquisition(monkeypatch, tmp_path) -> None:
