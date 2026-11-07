@@ -1498,3 +1498,11 @@ resources:
   path: docs/references/worlds-authoring.md
 - kind: support
   path: shared/readiness-image.tsx
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        render:
+          reasons:
+          - GPU
+          note: Renders brief timeline to video through Remotion with GPU-accelerated rendering.
