@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import checkout_root
+
+from astrid.pack_api import AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('vibecomfy.run')
 import argparse
@@ -16,6 +18,7 @@ import re  # noqa: E402 - imports follow the canonical entrypoint guard
 import shutil
 import subprocess
 import sys
+import traceback
 from types import SimpleNamespace
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -23,12 +26,9 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager
 from types import ModuleType
 
-from astrid.core._shared.result_manifest import (  # noqa: E402
-    build_manifest,
-    write_manifest,
-)
-from astrid.core.contracts.errors import AstridError, render_astrid_error  # noqa: E402
-from astrid.core.cli_choices import add_choice_arg  # noqa: E402
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AstridError, render_astrid_error  # noqa: E402
+from astrid.pack_api import add_choice_arg  # noqa: E402
 from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     read_managed_generation_result,
@@ -597,8 +597,8 @@ def _t9_child_dispatch(
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.
     generation.character_swap_asset_sha256()
-    root = Path(__file__).resolve().parents[5]
-    if Path(generation.__file__).resolve().parents[4] != root:
+    root = checkout_root()
+    if checkout_root() != root:
         raise AstridValueError("T9 child generation source belongs to another closure")
     candidate_path = Path(os.environ["ASTRID_H3_CANDIDATE_MANIFEST"])
     candidate_bytes = candidate_path.read_bytes()
@@ -1084,6 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
                 endpoint_checkout=endpoint_checkout,
             )
     except Exception as exc:
+        sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         error = exc if isinstance(exc, AstridError) else AstridError(
             f"vibecomfy.run: {exc}",
             recovery_command=(

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from astrid.core.generation import entries, listing
 from astrid.core.generation.backends.comfy_target import ComfyTarget
@@ -59,3 +60,23 @@ def test_malformed_target_inventory_is_not_ready(monkeypatch, tmp_path):
     import pytest
     with pytest.raises(ValueError, match='target is missing'):
         entries.target_schema(entry, workflow, client)
+def test_python_pair_identity_binds_required_members_and_optional_source_evidence(tmp_path):
+    from astrid.packs.vibecomfy.production_engine import ProductionEngineError, _workflow_content_digest
+
+    python = tmp_path / 'workflow.py'
+    companion = python.with_suffix('.vibe.json')
+    python.write_bytes(b'authored Python')
+    companion.write_bytes(b'canonical companion')
+    original = _workflow_content_digest(python)
+    companion.write_bytes(b'changed canonical companion')
+    assert _workflow_content_digest(python) != original
+    companion.write_bytes(b'canonical companion')
+    retained = tmp_path / 'source.json'
+    retained.write_bytes(b'original import evidence')
+    with_evidence = _workflow_content_digest(python)
+    assert with_evidence != original
+    retained.write_bytes(b'changed import evidence')
+    assert _workflow_content_digest(python) != with_evidence
+    companion.unlink()
+    with pytest.raises(ProductionEngineError, match='workflow.vibe.json'):
+        _workflow_content_digest(python)

@@ -44,7 +44,6 @@ ROOT_FILE_ALLOWLIST = {
 ROOT_DIR_ALLOWLIST = {
     ".github",
     ".megaplan",
-    ".vscode",
     "astrid",
     # Product configuration and contracts read by code and tests:
     # config/ (capability ledger, runtime, hivemind contract),
@@ -59,20 +58,10 @@ ROOT_DIR_ALLOWLIST = {
     "requirements",
     "schemas",
     "scripts",
-    # Authored storyboard provenance (not generated render output).
-    "storyboards",
     "tests",
     "tools",
-    # Authored operator source and records, committed deliberately:
-    # workflows/ (H3 workflow scripts and READMEs referenced by guides and
-    # scripts/watch_h3_5090_storage.py), projects/ (H3 continuation recipe
-    # exercised by tests/test_h3_continuation_runner_contract.py), guides/
-    # (operator guides linked from README and checked by check_doc_references),
-    # output/ (one tracked imagegen prompt source; generated output elsewhere
-    # stays untracked).
+    # Shared H3/RunPod workflows and operator guides still have active references.
     "guides",
-    "output",
-    "projects",
     "workflows",
 }
 

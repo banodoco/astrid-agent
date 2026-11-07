@@ -665,6 +665,19 @@ def test_same_release_repair_keeps_installed_version_and_never_stages(tmp_path, 
         assert not {"stop", "start", "register"}.intersection(names)
 
 
+def test_same_release_repair_applies_changed_skill_policy_without_staging(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=10)
+    backend.service = SimpleNamespace(choices={"skills": False, "skill_copies": False},
+                                      skill_policy_changed=True, home=tmp_path, system="linux",
+                                      path=tmp_path / "astrid.service", selection=tmp_path / "selection.json")
+    backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
+    Installer(root, data, backend, say=lambda _line: None).run("install", {"release": 10})
+    names = [call[0] for call in backend.calls]
+    assert names.count("sync_skills") == 1
+    assert current(root) == old
+    assert "stage" not in names
+
+
 def test_explicit_update_rejects_malformed_candidate_release_before_staging(tmp_path):
     root, data, _old, backend = _installed_lifecycle_backend(tmp_path, release=10)
 
@@ -918,7 +931,8 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
     version = Version(tmp_path / "version", Path(sys.executable), tmp_path / "profile.json", {})
     backend.sync_skills(version)
 
-    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync"]
+    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+                           "--skills", "on", "--skill-copies", "off"]
     assert calls[0][2] == 60
     assert "sync diagnostic output" in log.read_text(encoding="utf-8")
     assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")
@@ -1102,7 +1116,9 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
 
     assert cli.main(["--root", str(tmp_path / "program")]) == 1
     output = capsys.readouterr()
-    assert output.out.splitlines() == [FAILURE_MESSAGE, message]
+    lines = output.out.splitlines()
+    assert lines[:2] == [FAILURE_MESSAGE, message]
+    assert "Astrid setup summary:" in lines  # the consent summary now follows a failed run
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
@@ -1128,6 +1144,33 @@ def test_cli_shows_safe_verification_context_but_not_raw_diagnostics(tmp_path, m
     output = capsys.readouterr().out
     assert safe in output
     assert "private-token-should-not-appear" not in output
+
+
+@pytest.mark.parametrize("failure_type", [subprocess.SubprocessError, RuntimeError])
+def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
+    tmp_path, monkeypatch, capsys, failure_type
+):
+    from runtime_protocol import platform
+
+    from astrid.installer import cli
+
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    raw = f"private-subprocess-token service log says permission denied at {tmp_path / 'service.log'}"
+
+    def verification_failed(*_args, **_kwargs):
+        raise failure_type(raw)
+
+    monkeypatch.setattr(cli, "Backend", verification_failed)
+
+    assert cli.main(["--root", str(tmp_path / "program")]) == 1
+    output = capsys.readouterr().out
+    assert f"Failure: {failure_type.__name__}" in output
+    assert raw not in output
+    assert "private-subprocess-token" not in output
+    assert str(tmp_path / "service.log") not in output
+    # Backend construction fails before any installer log is selected; pre-main
+    # then keeps diagnostics on the console and prints no Details path.
+    assert "Details:" not in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])
@@ -2231,3 +2274,141 @@ def test_backend_stop_reused_pid_with_matching_publications_never_signals_new_ow
     assert manager_calls == ['disable', 'stop']
     assert not paths.discovery_path.exists()
     assert not paths.instance_lock_path.exists()
+
+
+@pytest.mark.parametrize("manager", [None, "pinokio"])
+@pytest.mark.parametrize("delete_data", [False, True])
+def test_uninstall_composes_owned_skill_cleanup_before_program_removal(
+        tmp_path, monkeypatch, manager, delete_data, capsys):
+    from astrid.installer import cli
+    from tests.installer_skill_fixtures import edit_and_foreign, skill_installation
+
+    env = skill_installation(tmp_path, monkeypatch, manager=manager)
+    edited, edit_bytes, foreign, foreign_file = edit_and_foreign(env)
+    owned_copy = env.targets["codex"]
+    # Include an owned descriptor-backed link as well as owned marked copies.
+    from astrid.skills import list_skills
+    declared = next(d for d in list_skills() if d.pack_id == "_core")
+    owned_link = env.targets["codex"].parent / "astrid-owned"
+    owned_link.symlink_to(declared.skill_dir, target_is_directory=True)
+    # Codex fence edits must preserve all surrounding user bytes.
+    agents_md = owned_copy.parent.parent / "AGENTS.md"
+    outside = b"user before  \r\n\r\n"
+    agents_md.write_bytes(outside + agents_md.read_bytes() + b"\r\nuser after  \r\n")
+    policy = env.backend.service.recorded()["choices"]
+    events = []
+    remove = env.backend.remove
+
+    def stop(version, _data):
+        assert version == env.old
+        assert owned_copy.exists() and owned_link.is_symlink()
+        events.append("stop")
+
+    def remove_programs(*args, **kwargs):
+        assert events == ["stop", "unregister"]
+        assert env.old.python.is_file()
+        assert not owned_copy.exists() and not owned_link.is_symlink()
+        assert edited.read_bytes() == edit_bytes and foreign.is_symlink()
+        assert agents_md.read_bytes() == outside + b"\n\r\nuser after  \r\n"
+        events.append("remove")
+        return remove(*args, **kwargs)
+
+    unregister = env.backend.unregister
+
+    def unregister_after_cleanup():
+        assert not owned_copy.exists() and not owned_link.is_symlink()
+        events.append("unregister")
+        return unregister()
+
+    monkeypatch.setattr(env.backend, "stop", stop)
+    monkeypatch.setattr(env.backend, "unregister", unregister_after_cleanup)
+    monkeypatch.setattr(env.backend, "remove", remove_programs)
+    monkeypatch.setattr(env.backend.service, "unregister", lambda: events.append("service-unregister"))
+    # Keep service event outside the lifecycle ordering assertion.
+    if manager is None:
+        monkeypatch.setattr(env.backend.service, "unregister", lambda: None)
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    args = ["--uninstall", "--root", str(env.root)] + (["--delete-data"] if delete_data else [])
+    assert cli.main(args) == 0
+    output = capsys.readouterr().out
+    assert "Astrid skill target removed:" in output
+    assert f"Skill target preserved: {edited.parent}" in output
+    assert f"Skill target preserved: {foreign}" in output
+    assert "edited Astrid managed copy preserved" in output
+    assert events == ["stop", "unregister", "remove"]
+    assert not env.root.exists() and not env.old.python.exists()
+    assert edited.read_bytes() == edit_bytes and foreign.is_symlink()
+    assert foreign_file.read_bytes() == b"foreign bytes\n"
+    assert env.sentinel.exists() is (not delete_data)
+    assert env.data.exists() is (not delete_data)
+    if not delete_data:
+        assert env.sentinel.read_bytes() == b"workspace bytes\r\n"
+        assert "Workspace kept" in output
+    record = env.backend.service.recorded()
+    assert record["choices"] == policy and record["uninstalled"] is True
+    if manager:
+        assert "managed_by" not in record and "program_root" not in record
+
+
+@pytest.mark.parametrize("failure", ["process", "invalid-json"])
+def test_uninstall_skill_cleanup_failure_retains_selected_source(tmp_path, monkeypatch, failure):
+    from tests.installer_skill_fixtures import skill_installation
+
+    env = skill_installation(tmp_path, monkeypatch)
+    before = env.backend.service.selection.read_bytes()
+    monkeypatch.setattr(env.backend, "stop", lambda *_args: None)
+
+    def fail(*_args, **_kwargs):
+        if failure == "process":
+            raise subprocess.CalledProcessError(1, [str(env.old.python)], output="cleanup failed")
+        return "invalid json"
+
+    monkeypatch.setattr(env.backend, "run", fail)
+    with pytest.raises(RuntimeError, match="skill cleanup failed; program files were kept"):
+        Installer(env.root, env.data, env.backend, say=lambda _: None).run("uninstall", {})
+    assert env.old.python.is_file() and env.root.exists()
+    assert env.backend.service.selection.read_bytes() == before
+    assert all(target.exists() for target in env.targets.values())
+    assert env.sentinel.read_bytes() == b"workspace bytes\r\n"
+
+
+@pytest.mark.parametrize("requested", [
+    {"skills": False, "skill_copies": True},
+    {"skills": True, "skill_copies": False},
+])
+def test_ordinary_update_applies_saved_skill_policy(tmp_path, monkeypatch, requested):
+    from astrid.installer.choices import resolve_choices
+    from tests.installer_skill_fixtures import skill_installation
+
+    env = skill_installation(tmp_path, monkeypatch)
+    candidate = env.version("new", 12)
+    policy = resolve_choices(saved=requested, existing_install=True)
+    record = env.backend.service.recorded()
+    write_json(env.backend.service.selection, {**record, "choices": policy})
+    env.backend.service.choices = policy
+    execute = env.backend.run
+
+    def run(argv, **kwargs):
+        if "-c" in argv and "inspect_canonical_schema" in str(argv[argv.index("-c") + 1]):
+            return json.dumps({"identity": {"version": 31}, "target": 31})
+        return execute(argv, **kwargs)
+
+    monkeypatch.setattr(env.backend, "run", run)
+    monkeypatch.setattr(env.backend, "stage", lambda *_: candidate)
+    monkeypatch.setattr(env.backend, "validate_candidate", lambda *_: None)
+    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
+    monkeypatch.setattr(env.backend, "register", lambda version, _data: env.backend.persist_identity(version))
+    monkeypatch.setattr(env.backend, "start", lambda *_: None)
+    monkeypatch.setattr(env.backend, "verify", lambda *_: None)
+    monkeypatch.setattr(env.backend, "open", lambda: None)
+    installer = Installer(env.root, env.data, env.backend, say=lambda _: None)
+    installer.run("update", {"release": 12})
+    assert current(env.root) == candidate
+    assert installer.outcomes["skills"]["ok"]
+    assert env.backend.service.recorded()["choices"] == policy
+    assert env.sentinel.read_bytes() == b"workspace bytes\r\n"
+    for target in env.targets.values():
+        if requested["skills"]:
+            assert target.is_symlink()
+        else:
+            assert not target.exists() and not target.is_symlink()

@@ -99,7 +99,8 @@ class BaseHelperTest(unittest.TestCase):
             # foreign real dir named like ours → never touched (not a symlink)
             (d / "astrid-realdir").mkdir()
 
-            removed = prune_orphan_skill_links(d, known_pack_ids={"foley"})
+            removed = prune_orphan_skill_links(d, known_pack_ids={"foley"},
+                owned_sources={d / "astrid-gone": {real_target}})
 
             self.assertEqual([p.name for p in removed], ["astrid-gone"])
             self.assertTrue((d / "astrid-foley").exists())

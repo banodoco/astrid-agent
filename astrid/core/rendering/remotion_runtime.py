@@ -36,7 +36,7 @@ from astrid.core.env_vars import (
     ASTRID_TIMELINE_SCHEMA_PYTHONPATH,
 )
 from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
 from astrid.core.rendering import _local_schema, _registry_origin, _remotion_package
 
 REMOTION_PROJECT_DIR_ENV = ASTRID_REMOTION_PROJECT_DIR
@@ -407,7 +407,7 @@ def _runtime_inputs(project_dir: Path, environment: Mapping[str, str], python: s
     from astrid.core.product_resources import product_resource
     lock_path = product_resource("runtime.lock.json", installed=REPO_ROOT / "runtime.lock.json",
                                  source=REPO_ROOT / "runtime.lock.json",
-                                 package_root=REPO_ROOT / "astrid/resources")
+                                 package_root=PACKAGE_ROOT / "resources")
     paths = [node, Path(python), cli, project / "package.json", project / "package-lock.json", Path(__file__),
              Path(_remotion_package.__file__), Path(_local_schema.__file__),
              lock_path, schema,
@@ -548,7 +548,7 @@ def _normalize_registry_selectors(context: dict[str, str]) -> dict[str, str]:
         else:
             del context['PYTHONPATH']
     if context.get(ASTRID_PACKS_PATH):
-        implied = {_resolved_path_text(str(REPO_ROOT / 'astrid' / 'packs'))}
+        implied = {_resolved_path_text(str(PACKAGE_ROOT / 'packs'))}
         try:
             from astrid.core.pack.source_setup import active_source_inventory
             implied.update(_resolved_path_text(str(source.pack_root))
@@ -642,8 +642,7 @@ def _registry_observation() -> dict[str, Any]:
     state = generator.compute_generated_registry_state()  # include_local=True
     inventory = active_source_inventory(verify=True)
     packs = discover_pack_metadata(project_root=generator.TOOLS_DIR)
-    roots = [str(Path(astrid.__file__).resolve().parent / 'packs'),
-             str(Path(generator.TOOLS_DIR) / 'astrid/packs/local')]
+    roots = [str(Path(astrid.__file__).resolve().parent / 'packs')]
     roots.extend(str(source.pack_root) for source in inventory.sources)
     for raw in os.environ.get(ASTRID_PACKS_PATH, '').split(os.pathsep):
         if raw:

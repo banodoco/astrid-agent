@@ -31,7 +31,7 @@ Verbs (exactly these five, one SDK call each):
 
 The parser also mounts the reviewed runtime-owned nested ``references`` family
 beneath ``media`` (``references: media references``): ``astrid media references <verb>``
-embeds the references product parser (``astrid/packs/references/cli.py``)
+embeds the references product parser (``astrid/core/cli/domain_references.py``)
 so reference ``create/update/archive/associate/link/set-primary/list/show`` are
 executable only beneath media. There is **no
 top-level references family** (sense check SC30).

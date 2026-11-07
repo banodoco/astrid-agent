@@ -176,7 +176,13 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
             else:
                 safe = owned_by_current_user(path, facts, forbidden=0o022)
             if not safe:
-                raise ValueError(f"local timeline schema input has a foreign owner/mode: {path.name}")
+                detail = ""
+                if (sys.platform != "win32" and stat.S_ISDIR(facts.st_mode)
+                        and facts.st_mode & 0o022):
+                    detail = (f"; timeline schema input directory {path} is group- or "
+                              f"world-writable; run: chmod 755 {path}")
+                raise ValueError(
+                    f"local timeline schema input has a foreign owner/mode: {path.name}{detail}")
             if path == root:
                 break
         facts = leaf.stat()

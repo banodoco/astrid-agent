@@ -192,7 +192,7 @@ pins are authoritative and may be enriched by a legacy lock only when they do
 not already identify the pack. Older bundles and the compiler's compatibility
 path still require the checkout-adjacent `custom_nodes.lock`, so ship it with
 the runtime and verify its SHA-256 (the H3 release lock is
-`7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42`). Never
+`ec18e9952426cdf32fc38c628ef95357b813ac005bba59fd18eab347ed6cef8c`). Never
 synthesize a lock from whatever happens to be installed. A missing or
 different lock is a transport/setup failure, not a reason to weaken the
 workflow pin.

@@ -11,6 +11,14 @@ from pathlib import Path
 
 from . import update_job
 from .backend import Backend
+from .choices import (
+    CHOICE_NAMES,
+    RECOMMENDED_CHOICES,
+    parse_choice,
+    render_plan,
+    resolve_choices,
+    unattended_consent_required,
+)
 from .core import (
     TERMINAL_STEPS,
     BackupSpaceError,
@@ -33,6 +41,171 @@ PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
 )
 PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
 RECOVERED_PREVIOUS_VERSION = "Recovered your previous version — run Update again"
+
+
+def _prompt_choices(*, input_fn=None, output=None):
+    """Ask once, then ask each recommended choice only when Customize is selected."""
+    input_fn = input_fn or input
+    output = output or sys.stdout
+    print("Recommended Astrid setup:", file=output)
+    for name in CHOICE_NAMES:
+        value = "on" if RECOMMENDED_CHOICES[name] else "off"
+        print(f"  {name.replace('_', ' ')}: {value}", file=output)
+    while True:
+        output.write("Continue with this setup? [Y/n/c]\n")
+        output.flush()
+        answer = input_fn().strip().lower()
+        if answer in {"", "y", "yes"}:
+            return dict(RECOMMENDED_CHOICES), False
+        if answer in {"n", "no"}:
+            return None, True
+        if answer in {"c", "customize"}:
+            choices = {}
+            labels = {
+                "autostart": "Start Astrid at sign-in?",
+                "command": "Add the astrid terminal command?",
+                "skills": "Install Astrid skills for detected agents?",
+                "skill_copies": "Use copies for skills?",
+            }
+            for name in CHOICE_NAMES:
+                default = "Y/n" if RECOMMENDED_CHOICES[name] else "y/N"
+                while True:
+                    output.write(f"{labels[name]} [{default}]\n")
+                    output.flush()
+                    response = input_fn().strip().lower()
+                    if response in {"", "y", "yes"}:
+                        choices[name] = RECOMMENDED_CHOICES[name] if not response else True
+                        break
+                    if response in {"n", "no"}:
+                        choices[name] = False
+                        break
+            return choices, False
+
+
+def _way_back_command(choices: dict[str, bool] | None, *, mode: str) -> str:
+    selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+    flags = ["--yes"]
+    if mode == "update":
+        flags.append("--update")
+    flags.extend(
+        f"--{'skill-copies' if name == 'skill_copies' else name} {'on' if selected[name] else 'off'}"
+        for name in CHOICE_NAMES
+    )
+    arguments = " ".join(flags)
+    if sys.platform == "win32":
+        return f"& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) {arguments}"
+    return f"curl -fsSL https://astrid.haus/install | sh -s -- {arguments}"
+
+
+def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
+                       result_note=None, install_root: Path | None = None):
+    def safe(value):
+        return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
+
+    print("\nAstrid setup summary:")
+    if declined or result_note:
+        print(f"  Result: {result_note or 'setup declined; no installation changes were applied.'}")
+    else:
+        outcomes = outcomes or {}
+        print(f"  Startup: {outcomes.get('startup', 'not confirmed')}.")
+        registered = outcomes.get("autostart_registered")
+        status = "registered" if registered is True else "not registered" if registered is False else "not confirmed"
+        print(f"  Sign-in autostart: {status}.")
+        command = outcomes.get("command")
+        if command is None:
+            print("  Command/PATH: not reached in this run.")
+        elif command.get("action") == "disabled":
+            effects = []
+            if command.get("removed_shim"):
+                effects.append("Astrid's command shim removed")
+            if command.get("removed_path"):
+                effects.append("Astrid's PATH entry removed")
+            if command.get("preserved_shim"):
+                effects.append("command shim preserved because ownership could not be verified")
+            if command.get("error"):
+                message = f"; cleanup failed ({command['error']})"
+                if effects:
+                    message += "; " + ", ".join(effects)
+            else:
+                message = "; " + ", ".join(effects) if effects else "; no owned command/PATH changes were needed"
+            print("  Command/PATH: off" + message + ".")
+        elif command.get("error"):
+            print(f"  Command/PATH: setup failed ({command['error']}); use the run-astrid launcher.")
+        elif command.get("path") is None:
+            print("  Command/PATH: command shim was skipped; see the installer output above.")
+        elif command.get("action") == "ready":
+            change = command.get("shim_change") or "available"
+            detail = f"shim {change} at {safe(command['path'])}"
+            if command.get("path_added"):
+                detail += f"; user PATH entry added: {safe(command['path_added'])}"
+            elif command.get("path_present"):
+                detail += "; PATH already contains Astrid's command directory"
+            elif command.get("path_hint"):
+                detail += "; follow the PATH instruction above"
+            elif command.get("path_present") is False:
+                detail += "; PATH entry remains absent"
+            print("  Command/PATH: " + detail + ".")
+        elif command.get("path_hint"):
+            print(f"  Command/PATH: shim created at {safe(command['path'])}; follow the PATH instruction above.")
+        else:
+            print(f"  Command/PATH: shim created at {safe(command['path'])}.")
+        skills = outcomes.get("skills")
+        if skills is None:
+            print("  Skill destinations: not confirmed in this run.")
+        elif not skills.get("ok"):
+            print("  Skill destinations: sync failed; see the installer log.")
+        elif skills.get("destinations"):
+            print("  Skill destinations: " + ", ".join(safe(path) for path in skills["destinations"]))
+        elif not skills.get("removed"):
+            print("  Skill destinations: no target changes were reported.")
+        if skills is not None:
+            if skills.get("removed"):
+                print("  Astrid skill targets removed: " + ", ".join(safe(path) for path in skills["removed"]))
+            for conflict in skills.get("conflicts", []):
+                if isinstance(conflict, dict):
+                    where = safe(conflict.get("path", "(unknown path)"))
+                    reason = safe(conflict.get("reason", "ownership is ambiguous"))
+                    print(f"  Skill target preserved: {where} ({reason}).")
+        if failure is not None:
+            safe_context = failure.safe_message if isinstance(failure, VerificationError) else None
+            if safe_context:
+                print(f"  Failure: {type(failure).__name__}: {safe(safe_context)}")
+            else:
+                print(f"  Failure: {type(failure).__name__}")
+    selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+    if not selected["autostart"]:
+        print("  Startup recovery: Astrid will not start at sign-in. To start it later, rerun the install line; to enable sign-in startup, replace --autostart off with --autostart on in the Way back line.")
+    if not selected["command"]:
+        print("  Command recovery: the astrid command shim is off. To restore it, replace --command off with --command on in the Way back line.")
+        if install_root is not None:
+            launcher = install_root / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+            if launcher.is_file():
+                print(f"  Absolute Astrid CLI path while the command is off: {safe(launcher)}")
+    if not selected["skills"]:
+        print("  Skills recovery: to enable Astrid skills later, rerun the install line with --skills on (replace this flag in the Way back line).")
+    if not selected["skill_copies"]:
+        print("  Skill copies recovery: to enable skill copies later, rerun the install line with --skill-copies on (replace this flag in the Way back line).")
+    print("  Maintenance: rerun the install line to repair or restart; add --update to update, or --uninstall to remove Astrid. Uninstall keeps the workspace unless --delete-data is added.")
+    print("  Way back: " + _way_back_command(choices, mode=mode))
+
+
+class _ChoiceAction(argparse.Action):
+    """Store each public choice flag once and reject duplicate flags."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        seen = getattr(namespace, "_seen_choices", set())
+        if self.dest in seen:
+            raise argparse.ArgumentError(self, f"{option_string} may only be supplied once.")
+        seen = set(seen)
+        seen.add(self.dest)
+        setattr(namespace, "_seen_choices", seen)
+        try:
+            parsed = parse_choice(values)
+        except ValueError as failure:
+            raise argparse.ArgumentError(self, str(failure)) from failure
+        current_values = dict(getattr(namespace, "choices", None) or {})
+        current_values[self.dest] = parsed
+        setattr(namespace, "choices", current_values)
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -135,6 +308,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--sandbox", action="store_true",
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
                              "(docs/setup/openshell-sandbox.md); selected for this install or update")
+    result.add_argument("--yes", action="store_true", help="accept the recommended setup choices")
+    result.set_defaults(choices={})
+    for name in CHOICE_NAMES:
+        flag = "--skill-copies" if name == "skill_copies" else f"--{name}"
+        result.add_argument(flag, dest=name, metavar="on|off", action=_ChoiceAction,
+                            help=f"set {name.replace('_', ' ')} to on or off")
     return result
 
 
@@ -142,6 +321,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     mode = ("rollback" if args.rollback else "update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
+    summary_choices = None
+    summary_installer = None
+    summary_root = None
+    declined = False
     if args.apply and mode != "update-recovery":
         parser().error("--apply is only valid with --update-recovery.")
     if mode == "update-recovery":
@@ -170,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-app requires --managed-by pinokio and keeps the existing workspace and process settings.")
     if args.sandbox and mode not in ("install", "update"):
         parser().error("--sandbox is only valid for install or update.")
+    if (args.yes or args.choices) and mode not in {"install", "update", "app-update"}:
+        parser().error("setup choices and --yes are only valid for install or update.")
     if args.update_job and (not args.root or not args.root.is_absolute() or not args.data_root
                             or not args.data_root.is_absolute() or not args.manifest
                             or args.update_app or args.uninstall or args.doctor is not None
@@ -183,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         log_path = platform.log_dir() / "install.log"
+        summary_root = root
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
@@ -218,6 +404,19 @@ def main(argv: list[str] | None = None) -> int:
                 backend.log = log
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
+            if mode in {"install", "update", "app-update"}:
+                pinokio_record = backend.service.recorded()
+                backend.service.choices = resolve_choices(
+                    explicit=args.choices,
+                    saved=pinokio_record.get("choices"),
+                    accept_recommended=args.yes,
+                    existing_install=True,
+                )
+                prior_skill_policy = resolve_choices(saved=pinokio_record.get("choices"), existing_install=True)
+                backend.service.skill_policy_changed = any(
+                    name in args.choices and backend.service.choices[name] != prior_skill_policy[name]
+                    for name in ("skills", "skill_copies")
+                )
             # A running session holds lifetime admission. A stopped operation
             # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
@@ -239,9 +438,10 @@ def main(argv: list[str] | None = None) -> int:
                     download("https://astrid.haus/install-manifest.json", manifest_path)
                 manifest = validate_manifest(read_json(manifest_path))
                 if args.update_app:
-                    update_app(root, backend, manifest)
+                    outcomes = update_app(root, backend, manifest)
                 else:
-                    update_pinokio(root, backend, manifest, force=args.update)
+                    outcomes = update_pinokio(root, backend, manifest, force=args.update)
+                _print_run_summary(backend.service.choices, mode=mode, outcomes=outcomes)
                 return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))
@@ -353,6 +553,57 @@ def main(argv: list[str] | None = None) -> int:
                 backend.console_diagnostics = log is None
                 if log is not None:
                     backend.log = log
+                existing_install = (
+                    marker.get("owner") == LABEL
+                    or (recorded.get("owner") == LABEL
+                        and recorded.get("program_root") == str(root)
+                        and not recorded.get("uninstalled"))
+                )
+                policy_change = None
+                prompt_values = None
+                if (mode in {"install", "update"} and not existing_install
+                        and not args.yes and not args.choices and sys.stdin.isatty()):
+                    prompt_values, declined = _prompt_choices()
+                    if declined:
+                        summary_choices = dict(RECOMMENDED_CHOICES)
+                        _print_run_summary(summary_choices, mode=mode, declined=True,
+                                           install_root=summary_root)
+                        return 0
+                matching_selection = (
+                    recorded.get("owner") == LABEL
+                    and recorded.get("program_root") == str(root)
+                )
+                resolved_choices = resolve_choices(
+                    explicit=args.choices,
+                    saved=recorded.get("choices") if matching_selection else None,
+                    prompt=prompt_values,
+                    accept_recommended=args.yes,
+                    existing_install=existing_install,
+                ) if mode in {"install", "update", "app-update"} else None
+                if resolved_choices is not None:
+                    previous_skill_policy = resolve_choices(
+                        saved=recorded.get("choices") if matching_selection else None,
+                        existing_install=existing_install,
+                    )
+                    backend.service.skill_policy_changed = any(
+                        name in args.choices and resolved_choices[name] != previous_skill_policy[name]
+                        for name in ("skills", "skill_copies")
+                    )
+                if mode in {"install", "update"} and unattended_consent_required(
+                        existing_install=existing_install, accept_recommended=args.yes,
+                        interactive=sys.stdin.isatty()):
+                    print(render_plan(resolved_choices))
+                    summary_choices = resolved_choices
+                    _print_run_summary(
+                        summary_choices, mode=mode,
+                        result_note="setup not started; interactive consent is required.",
+                        install_root=summary_root)
+                    return 2
+                if resolved_choices is not None:
+                    backend.service.choices = resolved_choices
+                    summary_choices = resolved_choices
+                    policy_change = {name: value for name, value in args.choices.items()
+                                     if value != previous_skill_policy[name]} or None
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
                     from .boundary_handoff import handle
 
@@ -367,7 +618,15 @@ def main(argv: list[str] | None = None) -> int:
                     # R0's data stays read-only. This must precede legacy
                     # journal replay, Runtime preflight, staging and claims.
                     if handle(root, data, backend, manifest_loader=candidate_manifest,
-                              rollback=mode == "rollback"):
+                              rollback=mode == "rollback", policy_change=policy_change):
+                        # A handled R0/R1 boundary never reaches the installer's
+                        # consent application below. Saved choices stay in the
+                        # selection the handoff carries over, and a requested
+                        # change was refused inside handle(). Report that.
+                        if mode in {"install", "update"}:
+                            _print_run_summary(
+                                summary_choices, mode=mode, install_root=summary_root,
+                                result_note="R0 to R1 handoff handled; saved setup choices were kept and no command, autostart or skills change was made by it.")
                         return 0
                 else:
                     from .boundary_registration import journal_path
@@ -400,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
                         if marker.get("owner") == LABEL:
                             update_job.sweep_owned_jobs(root, locked=True)
                         print(RECOVERED_PREVIOUS_VERSION)
+                    if mode in {"install", "update"}:
+                        _print_run_summary(summary_choices, mode=mode)
                     return 0
                 if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
                     # Sweep only jobs and artifacts named by Astrid's durable
@@ -434,7 +695,8 @@ def main(argv: list[str] | None = None) -> int:
                     write_json(root / "install.json", marker)
                     if managed_by == "pinokio":
                         write_json(backend.service.selection, {**recorded, "owner": LABEL,
-                                   "program_root": str(root), "data_root": str(data), "managed_by": "pinokio"})
+                               "program_root": str(root), "data_root": str(data), "managed_by": "pinokio",
+                               "choices": resolved_choices})
                 print(f"Using your workspace at {data}.")
                 manifest = {}
                 if mode not in {"uninstall", "doctor"}:
@@ -447,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
                 installer = Installer(root, data, backend, **options)
+                summary_installer = installer
                 if args.update_job:
                     if update_job_record is None:
                         raise ValueError("The update job could not be admitted.")
@@ -464,6 +727,10 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if locked:
                     platform.unlock_file(lock.fileno())
+        if mode in {"install", "update"}:
+            _print_run_summary(summary_choices, mode=mode,
+                               outcomes=getattr(summary_installer, "outcomes", None),
+                               install_root=summary_root)
         return 0
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         try:
@@ -485,4 +752,8 @@ def main(argv: list[str] | None = None) -> int:
             print(failure.safe_message)
         if log is not None:
             print(f"Details: {log}")
+        if mode in {"install", "update"}:
+            _print_run_summary(summary_choices, mode=mode,
+                               outcomes=getattr(summary_installer, "outcomes", None),
+                               failure=failure, install_root=summary_root)
         return 1

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-from astrid.core.generation.availability import require_action_available
+from astrid.pack_api import require_action_available
 from astrid.packs.training.shared.interfaces import (
     ArtifactPullResult,
     ComputeHandle,

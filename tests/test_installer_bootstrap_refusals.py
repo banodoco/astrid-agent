@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -59,11 +61,15 @@ def test_cli_source_refusal_precedes_record_writes_and_stop(tmp_path, monkeypatc
 
     class FakeService:
         selection = home / "data" / "astrid-install.json"
+        system = sys.platform
+        path = home / "service" / "astrid.service"
 
         def recorded(self):
             if selection_mode == "default-selection":
                 return {"owner": LABEL, "program_root": str(root), "data_root": str(data)}
             return {}
+
+    FakeService.home = home
 
     class FakeBackend:
         def __init__(self, *_args, **_kwargs):
@@ -77,7 +83,8 @@ def test_cli_source_refusal_precedes_record_writes_and_stop(tmp_path, monkeypatc
 
     monkeypatch.setattr(cli, "Backend", FakeBackend)
     monkeypatch.setattr(cli, "write_json", lambda *args: writes.append(args))
-    argv = (["--root", str(root), "--data-root", str(data)] if selection_mode == "explicit-custom" else [])
+    argv = (["--root", str(root), "--data-root", str(data), "--yes"]
+            if selection_mode == "explicit-custom" else [])
     assert cli.main(argv) == 1
     output = capsys.readouterr().out
     assert SOURCE_REFUSAL in output
@@ -113,7 +120,7 @@ def test_real_source_guard_preserves_retained_ownership_bytes(tmp_path, monkeypa
     before = {path: path.read_bytes() for path in (profile, paths.catalog_path)}
     discovery_before = paths.discovery_path.read_bytes()
 
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
+    assert cli.main(["--root", str(root), "--data-root", str(data), "--yes"]) == 1
     assert SOURCE_REFUSAL in capsys.readouterr().out
     assert {path: path.read_bytes() for path in before} == before
     assert paths.discovery_path.read_bytes() == discovery_before
@@ -152,7 +159,7 @@ def test_real_cli_invalid_live_identity_refuses_before_writes_and_stop(tmp_path,
     monkeypatch.setattr(cli, "write_json", lambda *args: writes.append(args))
     monkeypatch.setattr(Backend, "preflight_stop", lambda *_args: stops.append("preflight"))
     monkeypatch.setattr(Backend, "stop", lambda *_args: stops.append("stop"))
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
+    assert cli.main(["--root", str(root), "--data-root", str(data), "--yes"]) == 1
     assert "Your work is kept" in capsys.readouterr().out
     assert "Live Runtime startup identity cannot be verified" in (tmp_path / "logs" / "install.log").read_text()
     assert writes == stops == []
@@ -252,70 +259,80 @@ def test_windows_bootstrap_forwards_core_refusal_and_keeps_scriptblock_open():
     assert "# Throw instead of exit: irm | iex must never close the user's shell." in script
 
 
-@pytest.mark.parametrize("case", ["source", "unreadable", "changed", "legacy_birth", "legacy_unknown"])
-def test_selected_r0_refuses_before_preflight_or_stop(tmp_path, monkeypatch, capsys, case):
-    from astrid.installer.backend import Backend
-    from astrid.installer.core import current, write_json
-    from astrid_runtime.paths import RuntimePaths
-    from runtime_protocol import platform
+# R1 handoff treats R0 discovery as opaque, so discovery identity and process
+# birth are not authority for stopping the selected service. The corresponding
+# safety boundaries are exercised by test_public_cli_wrong_manager_binding_refuses_before_stop
+# (foreign manager and unchanged root/data),
+# test_public_cli_busy_lock_refusal_reenables_and_preserves_both_roots
+# (selected realm owner and unchanged root/data), and the collision, foreign
+# launchd arguments, missing lock, and changed-unit recovery tests in
+# test_installer_r0_stop.py. A recoverable handoff journal may precede stop.
 
-    home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "data"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
-    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
-    # The R0 Linux/macOS service captures launch versions/<id>/py/bin/python
-    # with versions/<id>/profile.json. Reconstruct the R0 record format.
-    version = root / "versions" / "3204bb00-6d53a190-a813c6d5"
-    python = version / "py" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.write_text("fixture, never executed")
-    write_json(version / "version.json", {"root": str(version), "python": str(python),
-                                         "profile": str(version / "profile.json"), "env": {}})
-    write_json(version / "manifest.json", {"release": 0})
-    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
-    (root / "current").write_text(version.name + "\n")
-    assert current(root).release == 0
-    paths = RuntimePaths.current(data_root=data)
-    birth = "proc-start-ticks:12812" if case in {"legacy_birth", "legacy_unknown"} else "birth"
-    discovery = {"pid": 4242, "process_birth_id": birth, "runtime_instance_id": "instance",
-                 "endpoint": "http://127.0.0.1:12345"}
-    write_json(paths.discovery_path, discovery)
-    before = {path: path.read_bytes() for path in (root / "current", root / "install.json",
-                                                     version / "version.json", paths.discovery_path)}
-    observed = {"legacy_birth": "proc-start-ticks:12812;boot:00000000-0000-0000-0000-000000000001;pidns:7",
-                "legacy_unknown": None}.get(case, "birth")
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": observed})
-    source = {"release": 0, "managed_by": "source", "runtime_head": "a" * 40,
-              "agent_head": "b" * 40, "dirty": False, "dirty_hash": "c" * 64}
-    def health(*_args, **_kwargs):
-        if case == "changed":
-            write_json(paths.discovery_path, {**discovery, "runtime_instance_id": "replacement"})
-        return {"runtime_instance_id": "instance", "identity": source}
-    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity", health)
-    if case == "unreadable":
-        read_bytes = Path.read_bytes
-        def read(path):
-            if path == paths.discovery_path:
-                raise PermissionError("simulated unreadable discovery")
-            return read_bytes(path)
-        monkeypatch.setattr(Path, "read_bytes", read)
-    calls = []
-    monkeypatch.setattr(Backend, "preflight_stop", lambda *_args: calls.append("preflight"))
-    monkeypatch.setattr(Backend, "stop", lambda *_args: calls.append("stop"))
-    monkeypatch.setattr(cli, "write_json", lambda *_args: calls.append("write"))
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
-    assert "Your work is kept" in capsys.readouterr().out
-    assert calls == []
-    log = (tmp_path / "logs" / "install.log").read_text()
-    expected = {"source": "source identity conflicts", "unreadable": "cannot be read",
-                "changed": "Live Runtime startup identity cannot be verified",
-                "legacy_birth": "discovery owner identity changed",
-                "legacy_unknown": "discovery owner identity changed"}
-    assert expected[case] in log
-    for path, contents in before.items():
-        if path != paths.discovery_path:
-            assert path.read_bytes() == contents
-    if case != "unreadable":
-        assert (paths.discovery_path.read_bytes() != before[paths.discovery_path]) == (case == "changed")
-    assert not (home / "data" / "astrid-install.json").exists()
+
+@pytest.mark.app_checkout
+def test_windows_bootstrap_streams_each_customize_prompt_before_input():
+    script = (_app_root() / "public/install.ps1").read_text(encoding="utf-8")
+    assert "process.OutputDataReceived += (sender, data) => {" in script
+    assert "if (streamOutput && !failurePending) Console.WriteLine(data.Data);" in script
+    assert "process.BeginOutputReadLine();" in script
+    assert "$Result = Invoke-InstallerCommand $Uv $RunArgs -StreamOutput" in script
+
+    child_code = (
+        "from astrid.installer.cli import _prompt_choices; "
+        "_prompt_choices()"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(AGENT_ROOT), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", child_code],
+        cwd=AGENT_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    delivered = queue.Queue()
+
+    def read_lines():
+        assert process.stdout is not None
+        for line in process.stdout:
+            delivered.put(line)
+
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    answers = iter(["c", "", "n", "", ""])
+    expected = [
+        "Continue with this setup? [Y/n/c]",
+        "Start Astrid at sign-in? [Y/n]",
+        "Add the astrid terminal command? [Y/n]",
+        "Install Astrid skills for detected agents? [Y/n]",
+        "Use copies for skills? [y/N]",
+    ]
+    observed = []
+    try:
+        for prompt in expected:
+            while True:
+                line = delivered.get(timeout=5)
+                observed.append(line.rstrip("\r\n"))
+                if observed[-1] == prompt:
+                    break
+            assert line.endswith("\n"), f"prompt was not newline-terminated: {line!r}"
+            assert process.stdin is not None
+            process.stdin.write(next(answers) + "\n")
+            process.stdin.flush()
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if process.stdin:
+            process.stdin.close()
+        if process.stdout:
+            process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
+    assert [line for line in observed if "? [" in line] == expected

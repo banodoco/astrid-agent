@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import copy
 import json
 import re
@@ -12,7 +16,6 @@ from typing import Any
 
 from jsonschema import Draft7Validator
 
-from astrid.core.foundation.paths import REPO_ROOT
 
 from .artifacts import HASHES_KEY
 from ...shared.items import utc_now_iso
@@ -111,7 +114,7 @@ def _load_caption_schema(schema_path: Any) -> Mapping[str, Any] | None:
         return None
     path = Path(schema_path).expanduser()
     if not path.is_absolute():
-        path = (REPO_ROOT / path).resolve()
+        path = (PACK_ROOT / path).resolve()
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
         raise ValueError(f"caption schema must be a JSON object: {schema_path}")
@@ -129,7 +132,7 @@ def _load_sidecar(item: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     path = Path(value).expanduser()
     if not path.is_absolute():
-        path = (REPO_ROOT / path).resolve()
+        path = (PACK_ROOT / path).resolve()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

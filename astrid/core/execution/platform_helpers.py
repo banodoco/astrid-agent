@@ -10,6 +10,14 @@ import stat
 import sys
 
 from runtime_protocol import platform
+from runtime_protocol.platform import owner_only, spawn_tree
+
+
+def runtime_dirfd_filesystem():
+    """Return Runtime's directory-relative filesystem implementation."""
+    from runtime_protocol.dirfd import filesystem
+
+    return filesystem
 
 
 def owned_by_current_user(path_or_fd, metadata, *, mode: int | None = None,

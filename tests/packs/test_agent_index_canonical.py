@@ -8,7 +8,9 @@ from pathlib import Path
 
 import yaml
 
-from astrid.core.pack import agent_index
+from astrid.core.pack import agent_index, discover_packs
+from astrid.core.pack.discovery import DiscoveredPack
+from astrid.pack_api import VERSION
 
 
 def _write_pack(parent: Path, pack_id: str, manifest: dict, files: dict[str, str]) -> Path:
@@ -20,7 +22,7 @@ def _write_pack(parent: Path, pack_id: str, manifest: dict, files: dict[str, str
         path.write_text(content, encoding="utf-8")
     (root / "pack.yaml").write_text(yaml.safe_dump({
         "schema_version": 3, "id": pack_id, "name": pack_id.title(),
-        "version": "1.0.0", **manifest,
+        "version": "1.0.0", "pack_api": f"{VERSION[0]}.{VERSION[1]}", **manifest,
     }), encoding="utf-8")
     return root
 
@@ -73,7 +75,13 @@ def _fixture_packs(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
         "executors/run/run.py": "raise AssertionError('discovery executed legacy')\n",
         "executors/run/STAGE.md": "Legacy stage excerpt.\n## Details\nMore.\n",
     })
-    monkeypatch.setattr(agent_index, "packs_root", lambda: tmp_path)
+    def selected_metadata(*, include_hidden=False):
+        return tuple(
+            DiscoveredPack(pack=pack, source_kind="source", priority_index=index)
+            for index, pack in enumerate(discover_packs(tmp_path, include_hidden=include_hidden))
+        )
+
+    monkeypatch.setattr(agent_index, "discover_pack_metadata", selected_metadata)
     return demo, support, legacy
 
 
@@ -130,16 +138,6 @@ def test_canonical_public_contributions_aliases_and_docs_are_deterministic(tmp_p
     assert agent_index.build_agent_index(pack_id="missing") is None
 
 
-def test_legacy_component_projection_stays_compatible(tmp_path: Path, monkeypatch) -> None:
-    _demo, _support, legacy = _fixture_packs(tmp_path, monkeypatch)
-    projected = agent_index.build_agent_index(pack_id="legacy")
-    assert projected["purpose"] == "Existing purpose."
-    assert projected["capabilities"] == ["legacy"]
-    assert projected["normal_entrypoints"] == ["legacy.run"]
-    assert projected["docs_paths"]["readme"] == str(legacy / "README.md")
-    assert projected["components"] == [{
-        "id": "legacy.run", "name": "Run", "kind": "built_in", "description": "Legacy executor.",
-        "runtime": {"type": "python-cli", "entrypoint": "run.py", "callable": None},
-        "is_entrypoint": True, "docs_paths": {"stage": str(legacy / "executors/run/STAGE.md")},
-        "stage_excerpt": "Legacy stage excerpt.",
-    }]
+def test_legacy_pack_is_quarantined_by_current_discovery(tmp_path: Path, monkeypatch) -> None:
+    _demo, _support, _legacy = _fixture_packs(tmp_path, monkeypatch)
+    assert agent_index.build_agent_index(pack_id="legacy") is None

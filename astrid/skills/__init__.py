@@ -8,6 +8,8 @@ selects one Claude-style frontmatter document per pack.
 from __future__ import annotations
 
 import copy
+import json
+import shutil
 from pathlib import Path
 from functools import wraps
 from typing import Iterable
@@ -15,17 +17,9 @@ from typing import Iterable
 from . import discovery, registry, state
 from .discovery import SkillDescriptor, list_skills
 from .harnesses import ADAPTERS, HarnessAdapter, adapter_for, all_adapters
-from .harnesses.base import target_mechanism
+from .harnesses.base import remove_symlink, target_mechanism
+from astrid.core.contracts.errors import AstridError
 from .links import LinkScan, scan_links
-
-# Legacy setup defaults retained for external and managed pack policy.
-DEFAULT_FIRST_PARTY_SKILL_IDS = (
-    "vibecomfy",
-    "rendering",
-    "typed_timeline",
-    "video_editing",
-)
-
 
 def default_descriptors(
     descriptors: Iterable[SkillDescriptor] | None = None,
@@ -44,13 +38,7 @@ def default_descriptors(
     except Exception:
         managed_default_ids = set()
     for descriptor in available:
-        if descriptor.skill_dir.resolve().is_relative_to(discovery.PACKS_DIR.resolve()) and descriptor not in result:
-            result.append(descriptor)
         if descriptor.pack_id in managed_default_ids and descriptor not in result:
-            result.append(descriptor)
-    for pack_id in DEFAULT_FIRST_PARTY_SKILL_IDS:
-        descriptor = by_id.get(pack_id)
-        if descriptor is not None and descriptor not in result:
             result.append(descriptor)
     for descriptor in available:
         if descriptor in result:
@@ -62,17 +50,7 @@ def default_descriptors(
             pack = load_pack_manifest(manifest_path)
         except Exception:  # malformed optional packs remain discoverable only
             continue
-        # Canonical v2 currently normalizes omitted taxonomy fields to the
-        # default value, so inspect the source manifest to distinguish an
-        # explicit default declaration from legacy first-party manifests.
-        try:
-            import yaml
-
-            raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-        except Exception:  # malformed optional packs remain opt-in
-            raw = {}
-        declared_tier = raw.get("install_tier") if isinstance(raw, dict) else None
-        if declared_tier in {"core", "default"}:
+        if (pack.extensions.get("astrid", {}).get("skills", {}).get("default") is True):
             result.append(descriptor)
     return result
 
@@ -128,8 +106,8 @@ def _locked_operation(fn):
     return wrapped
 
 
-def _units(pack_ids, skill_names, all_skills, *, uninstalling=False, developer=False):
-    available = list_skills()
+def _units(pack_ids, skill_names, all_skills, *, uninstalling=False, developer=False, available=None):
+    available = list_skills() if available is None else available
     if developer:
         if pack_ids is not None or skill_names or all_skills:
             raise ValueError("--developer selects the developer skills; do not combine it with a pack, --skill or --all-skills")
@@ -166,6 +144,125 @@ def _inventory(current_state, harness, descriptor):
     })
 
 
+def _ownership_sources(adapter, descriptors, current_state, state_path):
+    """Project existing declarations/records into evidence for this operation.
+
+    Names select candidates only. Every link must still match an exact source;
+    a stale record's destination never proves what the link currently names.
+    """
+    declared = {d.skill_dir.resolve() for d in descriptors}
+    records = current_state.get("installs", {}).get(adapter.name, {})
+    sources = {adapter.target_for(d): set(declared) for d in descriptors}
+    view_root = (state_path or state.state_path()).parent / "skills" / adapter.name
+    marker = view_root / ".astrid-managed-packs"
+    if not view_root.is_symlink() and marker.is_file() and not marker.is_symlink():
+        declared.add(view_root.resolve())
+        packs_root = view_root / "packs"
+        for pack_id in marker.read_text(encoding="utf-8").splitlines():
+            # Marker entries are pack IDs, never paths supplied to traversal.
+            if pack_id and Path(pack_id).name == pack_id and pack_id not in {".", ".."}:
+                pack_dir = packs_root / pack_id
+                if not packs_root.is_symlink() and not pack_dir.is_symlink():
+                    declared.add(pack_dir.resolve())
+        for d in descriptors:
+            pack_dir = packs_root / d.pack_id
+            extra_dir = pack_dir / d.skill if d.skill else None
+            if (extra_dir is not None and not extra_dir.is_symlink()
+                    and not packs_root.is_symlink() and not pack_dir.is_symlink()
+                    and pack_dir.resolve() in declared):
+                declared.add(extra_dir.resolve())
+    for target in sources:
+        sources[target].update(declared)
+    for record in records.values():
+        if not isinstance(record, dict) or not isinstance(record.get("target"), str):
+            continue
+        target = Path(record["target"]).expanduser()
+        evidence = sources.setdefault(target, set(declared))
+        if isinstance(record.get("source"), str) and Path(record["source"]).is_absolute():
+            evidence.add(Path(record["source"]))
+    return sources, declared
+
+
+@_locked_operation
+def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> dict:
+    """Remove proven owned targets, retaining and reporting every conflict."""
+    current = state.load(state_path)
+    initial_installs = copy.deepcopy(current.get("installs", {}))
+    mains = list_skills()
+    descriptors = mains + discovery.list_extras(mains)
+    report: dict = {"actions": [], "conflicts": [], "ambiguous": []}
+    for harness, adapter in all_adapters().items():
+        records = current.get("installs", {}).get(harness, {})
+        retained_records = dict(records)
+        harness_report = {"harness": harness, "removed": [], "preserved": []}
+        sources, declared = _ownership_sources(adapter, descriptors, current, state_path)
+        paths = set(sources)
+        skills_dir = getattr(adapter, "skills_dir", None)
+        if skills_dir is not None and skills_dir.is_dir():
+            paths.update(entry for entry in skills_dir.iterdir()
+                         if entry.name == "astrid" or entry.name.startswith("astrid-"))
+        external_targets = set()
+        for skill_id, record in records.items():
+            if not isinstance(record, dict) or not isinstance(record.get("target"), str):
+                report["ambiguous"].append({"harness": harness, "skill": skill_id,
+                    "reason": "missing target record; preserved"})
+                continue
+            target = Path(record["target"]).expanduser()
+            if record.get("mechanism") == "external-dir" and harness == "hermes":
+                external_targets.add(target)
+                recorded_units = [unit for unit in descriptors if unit.skill_id == skill_id]
+                if not any(target == adapter.target_for(unit) for unit in recorded_units):
+                    report["conflicts"].append({"harness": harness, "path": str(target),
+                        "reason": "recorded Hermes external-dir target does not match this skill; preserved"})
+                    harness_report["preserved"].append(str(target))
+                    continue
+                try:
+                    steps = adapter.apply("uninstall", descriptors, mechanism="external-dir", dry_run=dry_run)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    report["conflicts"].append({"harness": harness, "path": str(target), "reason": str(exc)})
+                    harness_report["preserved"].append(str(target))
+                    continue
+                for step in steps:
+                    if step.extras.get("changed"):
+                        harness_report["removed"].append(step.extras["entry"])
+                retained_records.pop(skill_id, None)
+        for target in sorted(paths - external_targets):
+            try:
+                changed = remove_symlink(target, sources=sources.get(target, declared), dry_run=dry_run)
+            except AstridError as exc:
+                row = {"harness": harness, "path": str(target), "reason": str(exc)}
+                report["conflicts"].append(row)
+                if target.is_symlink():
+                    report["ambiguous"].append(row)
+                harness_report["preserved"].append(str(target))
+                continue
+            if changed:
+                harness_report["removed"].append(str(target))
+            for skill_id, record in records.items():
+                if isinstance(record, dict) and record.get("target") == str(target):
+                    retained_records.pop(skill_id, None)
+        view_root = (state_path or state.state_path()).parent / "skills" / harness
+        marker = view_root / ".astrid-managed-packs"
+        if view_root.is_dir() and not view_root.is_symlink() and marker.is_file() and not marker.is_symlink():
+            if not dry_run:
+                shutil.rmtree(view_root)
+            harness_report["removed"].append(str(view_root))
+        if harness == "codex" and adapter.agents_md.is_file():
+            text = adapter.agents_md.read_bytes().decode("utf-8", errors="surrogateescape")
+            if adapter._merge_block(text, "") != text:
+                if not dry_run:
+                    adapter._rewrite_agents_md([], remove=True)
+                harness_report["removed"].append(str(adapter.agents_md))
+        current["installs"][harness] = retained_records
+        if harness_report["removed"]:
+            current["skills"][harness]["synced_at"] = state.now_iso()
+        report["actions"].append(harness_report)
+    changed = any(action["removed"] for action in report["actions"]) or current["installs"] != initial_installs
+    if changed and not dry_run:
+        state.save(current, state_path)
+    return report
+
+
 @_locked_operation
 def install(
     pack_ids: Iterable[str] | None,
@@ -179,29 +276,37 @@ def install(
     all_skills: bool = False,
     developer: bool = False,
 ) -> dict:
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer)
+    mechanism = mechanism or "symlink"
+    available = list_skills()
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer, available=available)
+    known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
     extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
 
     report: dict = {"actions": []}
     for harness_name, adapter in targets.items():
-        kwargs: dict = {"force": force}
-        if harness_name == "hermes":
-            kwargs["mechanism"] = mechanism
+        selected_mechanism = mechanism if harness_name == "hermes" or mechanism != "external-dir" else "symlink"
+        kwargs: dict = {"force": force, "mechanism": selected_mechanism,
+                        "owned_sources": _ownership_sources(adapter, known_units,
+                                                            current_state, state_path)[0]}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=True))
         if dry_run:
             steps = adapter.plan("install", descriptors, **kwargs)
         else:
             steps = adapter.apply("install", descriptors, **kwargs)
+            conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
             for descriptor in descriptors:
                 target = adapter.target_for(descriptor)
+                if target in conflicts_by_target:
+                    continue
                 state.record_install(
                     current_state,
                     harness_name,
                     descriptor.skill_id,
                     target=str(target),
+                    source=str(descriptor.skill_dir.resolve()),
                     mechanism=(
                         kwargs["mechanism"]
                         if kwargs.get("mechanism") == "external-dir"
@@ -209,6 +314,8 @@ def install(
                     ),
                 )
             for descriptor in descriptors:
+                if adapter.target_for(descriptor) in conflicts_by_target:
+                    continue
                 entry = _inventory(current_state, harness_name, descriptor)
                 entry["selected"] = True
                 entry["digest"] = discovery.unit_digest(descriptor, extras_for_digest)
@@ -217,6 +324,10 @@ def install(
                     disabled.remove(descriptor.pack_id)
         report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps],
                                   **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})})
+        for step in steps:
+            if step.extras.get("conflict"):
+                report.setdefault("conflicts", []).append({"harness": harness_name,
+                    "path": str(step.target) if step.target else None, "reason": step.extras["conflict"]})
 
     if not dry_run:
         state.save(current_state, state_path)
@@ -224,8 +335,14 @@ def install(
             # A selected developer-only extra was withheld from its pack's copy,
             # so refresh the pack too: its links to the extra become live again.
             refresh_ids = {d.skill_id for d in descriptors} | {d.pack_id for d in descriptors if d.developer_only}
-            return sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
-                                    state_path=state_path, refresh_ids=refresh_ids)
+            resynced = sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
+                                          state_path=state_path, refresh_ids=refresh_ids)
+            # An unselected extra with a conflict is not revisited by sync.
+            # Keep the preservation result from the initial replacement attempt.
+            for conflict in report.get("conflicts", []):
+                if conflict not in resynced.setdefault("conflicts", []):
+                    resynced["conflicts"].append(conflict)
+            return resynced
     return report
 
 
@@ -240,20 +357,26 @@ def uninstall(
     all_skills: bool = False,
     developer: bool = False,
 ) -> dict:
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer)
+    available = list_skills()
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer, available=available)
+    known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
 
     report: dict = {"actions": []}
     for harness_name, adapter in targets.items():
-        kwargs: dict = {}
+        kwargs: dict = {"owned_sources": _ownership_sources(
+            adapter, known_units, current_state, state_path)[0]}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=False))
         if dry_run:
             steps = adapter.plan("uninstall", descriptors, **kwargs)
         else:
             steps = adapter.apply("uninstall", descriptors, **kwargs)
+            conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
             for descriptor in descriptors:
+                if adapter.target_for(descriptor) in conflicts_by_target:
+                    continue
                 state.record_uninstall(
                     current_state,
                     harness_name,
@@ -262,7 +385,12 @@ def uninstall(
                     default=not developer and descriptor.skill is None and descriptor in default_descriptors(descriptors),
                 )
             for descriptor in descriptors:
-                _inventory(current_state, harness_name, descriptor)["selected"] = False
+                if adapter.target_for(descriptor) not in conflicts_by_target:
+                    _inventory(current_state, harness_name, descriptor)["selected"] = False
+        for step in steps:
+            if step.extras.get("conflict"):
+                report.setdefault("conflicts", []).append({"harness": harness_name,
+                    "path": str(step.target), "reason": step.extras["conflict"]})
         report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps]})
 
     if not dry_run:
@@ -300,6 +428,7 @@ def sync(
     main skill of their pack for every target harness, so later plain syncs
     keep them (``uninstall(developer=True)`` deselects them).
     """
+    mechanism = mechanism or "symlink"
     all_descriptors = list_skills()
     extras = discovery.list_extras(all_descriptors)
     all_units = all_descriptors + extras
@@ -335,6 +464,7 @@ def sync(
             key: copy.deepcopy(current_state.get(key, {}).get(harness_name))
             for key in ("skills", "installs", "disabled_defaults")
         }
+        owned_sources, _declared = _ownership_sources(adapter, all_units, current_state, state_path)
         previous_view_ids: set[str] = set()
         descriptors = _sync_descriptors_for_harness(
             all_descriptors,
@@ -387,23 +517,26 @@ def sync(
                 changed = False
             registry_changes[harness_name] = changed
             descriptors = [gateway, *visible]
-        kwargs: dict = {"force": force}
-        if harness_name == "hermes":
-            kwargs["mechanism"] = mechanism
+        selected_mechanism = mechanism if harness_name == "hermes" or mechanism != "external-dir" else "symlink"
+        kwargs: dict = {"force": force, "mechanism": selected_mechanism, "owned_sources": owned_sources}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(descriptors)
         if dry_run:
             steps = adapter.plan("install", descriptors, **kwargs)
         else:
             steps = adapter.apply("install", descriptors, **kwargs)
+            conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
             disabled_before = list(current_state["disabled_defaults"].get(harness_name, []))
             for descriptor in descriptors:
                 target = adapter.target_for(descriptor)
+                if target in conflicts_by_target:
+                    continue
                 state.record_install(
                     current_state,
                     harness_name,
                     descriptor.skill_id,
                     target=str(target),
+                    source=str(descriptor.skill_dir.resolve()),
                     mechanism=(
                         kwargs["mechanism"]
                         if kwargs.get("mechanism") == "external-dir"
@@ -413,34 +546,30 @@ def sync(
             current_state["disabled_defaults"][harness_name] = disabled_before
             # Prune orphan installs from state.
             installed_ids = {d.skill_id for d in descriptors}
-            current_state["installs"][harness_name] = {
-                pid: info
-                for pid, info in current_state["installs"].get(harness_name, {}).items()
-                if pid in installed_ids
-            }
-            # Prune stale ``astrid-*`` symlinks whose pack is no longer
-            # discoverable. A pack that merely isn't linked this run (e.g.
-            # gateway-only mode) is still discovered, so it survives; only
-            # packs that vanished entirely are removed.
+            # Retain unresolved/conflicting records as evidence for later cleanup.
             skills_dir = getattr(adapter, "skills_dir", None)
             if skills_dir is not None and kwargs.get("mechanism", "symlink") != "external-dir":
                 from .harnesses.base import prune_orphan_skill_links
 
-                disabled_ids = set(
-                    current_state.get("disabled_defaults", {}).get(harness_name, [])
-                )
-                known_ids = {
-                    d.skill_id for d in all_units if d.pack_id not in disabled_ids
-                }
-                for removed in prune_orphan_skill_links(skills_dir, known_ids):
+                disabled_ids = set(current_state.get("disabled_defaults", {}).get(harness_name, []))
+                known_ids = {d.skill_id for d in all_units if d.pack_id not in disabled_ids}
+                prune_conflicts = []
+                removed_paths = prune_orphan_skill_links(
+                    skills_dir, known_ids, owned_sources=owned_sources,
+                    declared_sources=_declared, conflicts=prune_conflicts)
+                steps.extend(prune_conflicts)
+                for removed in removed_paths:
                     steps.append(_pruned_step(removed))
                     removed_id = _link_pack_id(removed.name)
-                    state.record_uninstall(
-                        current_state,
-                        harness_name,
-                        removed_id,
-                        default=removed_id in default_pack_ids(all_descriptors),
-                    )
+                    state.record_uninstall(current_state, harness_name, removed_id,
+                        default=removed_id in default_pack_ids(all_descriptors))
+            # Forget only absent obsolete entries. A preserved path keeps its record.
+            for skill_id, record in list(current_state["installs"][harness_name].items()):
+                if skill_id in installed_ids or not isinstance(record, dict) or not record.get("target"):
+                    continue
+                target = Path(record["target"]).expanduser()
+                if not target.exists() and not target.is_symlink():
+                    state.record_uninstall(current_state, harness_name, skill_id)
         outdated = []
         changed = []
         composed_ids = {d.pack_id for d in _sync_descriptors_for_harness(
@@ -448,6 +577,8 @@ def sync(
         )}
         for unit in all_units:
             if unit.pack_id not in composed_ids:
+                continue
+            if not dry_run and adapter.target_for(unit) in conflicts_by_target:
                 continue
             entry = _inventory(current_state, harness_name, unit)
             digest = discovery.unit_digest(unit, extras)
@@ -475,6 +606,10 @@ def sync(
              "outdated": outdated, "changed": changed,
              **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})}
         )
+        for step in steps:
+            if step.extras.get("conflict"):
+                report.setdefault("conflicts", []).append({"harness": harness_name,
+                    "path": str(step.target) if step.target else None, "reason": step.extras["conflict"]})
 
     if not dry_run:
         state.save(current_state, state_path)
@@ -705,6 +840,7 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
                         descriptor.pack_id,
                         target=str(fs_record.target),
                         mechanism=fs_record.mechanism,
+                        source=str(descriptor.skill_dir.resolve()),
                     )
                     state_changed = True
                     report["healed"].append(
@@ -920,17 +1056,20 @@ def _sync_descriptors_for_harness(
         if isinstance(setup_selection, dict)
         else []
     )
-    selected_ids = {
-        skill_id.split("-", 1)[0]
+    selected_units = {
+        skill_id
         for skill_id, item in current_state.get("skills", {}).get(harness_name, {}).get("skills", {}).items()
         if item.get("selected")
     }
+    units = list(all_descriptors)
+    if selected_units - {d.skill_id for d in units}:
+        units.extend(discovery.list_extras(all_descriptors))
+    selected_ids = {d.pack_id for d in units if d.skill_id in selected_units}
     expected_ids = (
         installed_ids | selected_ids
         | set(default_pack_ids(all_descriptors))
         | {str(value) for value in retained_integrations}
         | {str(value) for value in selected_pack_ids}
-        | (_route_pack_ids(all_descriptors) if view_routes else set())
     )
     expected_ids.difference_update(disabled)
     expected_ids.add("_core")
@@ -962,7 +1101,6 @@ def _link_pack_id(link_name: str) -> str:
 
 
 __all__ = [
-    "DEFAULT_FIRST_PARTY_SKILL_IDS",
     "check",
     "default_descriptors",
     "default_pack_ids",

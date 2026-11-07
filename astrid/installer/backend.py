@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -36,10 +37,217 @@ from .core import (
     read_json,
     write_json,
 )
-from .launcher import install_shim, owned_shim, remove_shim
+from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import binary, clone_source, install_tools, source
+from .tools import asset_downloads, binary, clone_source, install_tools, source, validate_pack_build
+
+
+class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlsplit(newurl)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            raise ValueError("Shared-module lock redirect must use HTTPS.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _stage_pack_toolchain(folder: Path, agent: Path, env: dict[str, str], manifest: dict) -> Path:
+    """Admit the selected App lock and publish a private managed descriptor."""
+    from .. import pack_build
+    from ..core.pack.cli_manage import _TOOLCHAIN_FIELDS
+
+    spec = validate_pack_build(manifest["pack_build"])
+    if manifest["tools"]["node"]["version"] != "20.19.4":
+        raise ValueError("Pack-build requires Node 20.19.4.")
+    folder = absolute(folder)
+
+    def read_input(path: Path) -> bytes:
+        if (not path.is_absolute() or not path.is_relative_to(folder)
+                or any(part in {".", ".."} for part in path.parts)):
+            raise ValueError("Pack-build input is outside the staged version.")
+        # Open every component without following links. Never change source or
+        # npm-cache inodes: executables and API are copied into the private stage.
+        if os.name == "nt":
+            current_path = folder
+            for part in path.relative_to(folder).parts:
+                current_path = current_path / part
+                if current_path.is_symlink():
+                    raise ValueError("Aliased pack-build input.")
+            if not current_path.is_file():
+                raise ValueError("Pack-build input must be a regular file.")
+            return current_path.read_bytes()
+        opened = []
+        try:
+            directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            opened.append(directory)
+            if os.fstat(directory).st_uid != os.geteuid():
+                raise ValueError("Foreign-owned pack-build stage.")
+            parts = path.relative_to(folder).parts
+            for part in parts[:-1]:
+                directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                opened.append(directory)
+                info = os.fstat(directory)
+                if info.st_uid != os.geteuid():
+                    raise ValueError("Foreign-owned pack-build input.")
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode):
+                raise ValueError("Pack-build input must be an owned regular file.")
+            with os.fdopen(os.dup(fd), "rb") as source_file:
+                return source_file.read()
+        except OSError as exc:
+            raise ValueError("Missing or aliased pack-build input.") from exc
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    source_node = Path(env["ASTRID_NODE_EXECUTABLE"])
+    if not source_node.is_relative_to(folder / "tools" / "node") or agent != folder / "a":
+        raise ValueError("Pack-build tools must come from the managed version.")
+    modules_dir = agent / "remotion" / "node_modules"
+    source_api = modules_dir / "esbuild" / "lib" / "main.js"
+    if os.name == "nt":
+        matches = list((modules_dir / "@esbuild").glob("win32-*/esbuild.exe"))
+        if len(matches) != 1:
+            raise ValueError("Expected exactly one managed native esbuild executable.")
+        source_esbuild = matches[0]
+    else:
+        source_esbuild = modules_dir / "esbuild" / "bin" / "esbuild"
+    node_bytes, esbuild_bytes = read_input(source_node), read_input(source_esbuild)
+    api_bytes = read_input(source_api)
+    if hashlib.sha256(api_bytes).hexdigest() != pack_build._API_HASH:
+        raise ValueError("Pack-build JavaScript API does not match the pinned compiler.")
+    destination = folder / "pack-build"
+    destination.mkdir(mode=0o700)  # exclusive creation rejects existing aliases
+    node = destination / ("node.exe" if os.name == "nt" else "node")
+    esbuild = destination / "esbuild" / "bin" / ("esbuild.exe" if os.name == "nt" else "esbuild")
+    api = esbuild.parent.parent / "lib" / "main.js"
+    for target, content, mode in ((node, node_bytes, 0o700), (esbuild, esbuild_bytes, 0o700), (api, api_bytes, 0o600)):
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+    clean_env = {"PATH": "", "LANG": "C.UTF-8", "ESBUILD_BINARY_PATH": str(esbuild)}
+    for executable, expected in ((node, "v20.19.4"), (esbuild, "0.27.7")):
+        result = subprocess.run([str(executable), "--version"], env=clean_env, capture_output=True,
+                                text=True, timeout=15, check=True)
+        if result.stdout.strip() != expected:
+            raise ValueError("Pack-build tool version does not match the release pin.")
+
+    shared = spec["shared_modules"]
+    request = urllib.request.Request(shared["url"], headers={"User-Agent": "astrid-installer"})
+    with urllib.request.build_opener(_HttpsRedirect()).open(request, timeout=120) as response:
+        payload = response.read(1024 * 1024 + 1)
+    if len(payload) > 1024 * 1024 or hashlib.sha256(payload).hexdigest() != shared["sha256"]:
+        raise ValueError("Shared-module lock checksum mismatch.")
+    lock = json.loads(payload)
+    if (not isinstance(lock, dict) or set(lock) != {"version", "shared_modules"}
+            or type(lock["version"]) is not int or lock["version"] != 1):
+        raise ValueError("Invalid shared-module lock.")
+    modules = lock["shared_modules"]
+    if not isinstance(modules, dict) or set(modules) != pack_build._SINGLETONS:
+        raise ValueError("Invalid shared-module contract.")
+    for item in modules.values():
+        if (not isinstance(item, dict) or set(item) != {"url", "sha256", "version"}
+                or not isinstance(item["url"], str) or not item["url"].startswith("/")
+                or item["url"].startswith("//") or "%" in item["url"]
+                or not pack_build._relative(item["url"][1:])
+                or not isinstance(item["sha256"], str) or not pack_build._HASH.fullmatch(item["sha256"])
+                or not isinstance(item["version"], str) or not pack_build._VERSION.fullmatch(item["version"])):
+            raise ValueError("Invalid shared-module binding.")
+
+    lock_path, descriptor = destination / "shared-modules.json", destination / "toolchain.json"
+    value = {"version": 1, "node_path": str(node), "node_version": "20.19.4",
+             "node_sha256": hashlib.sha256(node.read_bytes()).hexdigest(),
+             "esbuild_path": str(esbuild), "esbuild_version": "0.27.7",
+             "esbuild_sha256": hashlib.sha256(esbuild.read_bytes()).hexdigest(),
+             "shared_modules_lock": str(lock_path)}
+    if set(value) != _TOOLCHAIN_FIELDS:
+        raise ValueError("Pack-build descriptor contract changed.")
+    for target, content in ((lock_path, payload), (descriptor, json.dumps(value, sort_keys=True).encode() + b"\n")):
+        fd, temporary = platform.private_temporary(destination, ".pack-build-")
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        platform.durable_replace(Path(temporary), target)
+    return descriptor
+
+
+def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
+    """Secure only the new venv's guarded inputs, detaching shared file inodes."""
+    if os.name == "nt":
+        return  # Windows admission uses ACLs rather than POSIX modes.
+    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+    venv_root = folder / "py"
+    try:
+        relative_root = product_root.relative_to(venv_root)
+    except ValueError as exc:
+        raise ValueError("installed timeline schema root is outside the candidate") from exc
+    if not relative_root.parts or ".." in relative_root.parts:
+        raise ValueError("installed timeline schema root is outside the candidate")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    opened = []
+    try:
+        # Walk from the candidate itself: no resolved alias may escape it.
+        fd = os.open(folder, flags)
+        opened.append(fd)
+        for part in ("py", *relative_root.parts):
+            fd = os.open(part, flags, dir_fd=fd)
+            opened.append(fd)
+            facts = os.fstat(fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        root_fd = fd
+        dirs = {(): root_fd}
+        # runtime.lock.json is the reader's pin source; installer-owned, so secured too.
+        files = (SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"), *READER_INPUTS)
+        # Check all path components without following links before modifying any.
+        for relative in files:
+            parent = root_fd
+            for index, part in enumerate(relative.parts[:-1], 1):
+                key = relative.parts[:index]
+                if key not in dirs:
+                    child = os.open(part, flags, dir_fd=parent)
+                    opened.append(child)
+                    facts = os.fstat(child)
+                    if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                        raise ValueError("installed timeline schema input has a foreign owner or type")
+                    dirs[key] = child
+                parent = dirs[key]
+            leaf = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(leaf)
+            facts = os.fstat(leaf)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        for directory in dirs.values():
+            # Explicit, umask-independent: the reader refuses group/other-writable dirs.
+            os.fchmod(directory, 0o755)
+        # Each replacement is private even if uv linked its original to cache.
+        for relative in files:
+            parent = dirs[relative.parts[:-1]]
+            source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(source_fd)
+            facts = os.fstat(source_fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+            name = ".astrid-schema-" + uuid.uuid4().hex
+            dest_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o600, dir_fd=parent)
+            opened.append(dest_fd)
+            with os.fdopen(os.dup(source_fd), "rb") as src, os.fdopen(os.dup(dest_fd), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.fchmod(dest_fd, 0o644)
+            os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+    except OSError as exc:
+        raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -1003,6 +1211,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     def stage(self, manifest: dict, root: Path, data: Path, *, copy_from: Path | None = None) -> Version:
         install_release(manifest)
+        if "pack_build" in manifest:
+            validate_pack_build(manifest["pack_build"])
+            node_pin = manifest["tools"]["node"]
+            asset = node_pin.get("assets", {}).get(platform_target())
+            if (node_pin.get("version") != "20.19.4" or not isinstance(asset, dict)
+                    or any(not checksum for _, checksum in asset_downloads(asset))):
+                raise ValueError("Pack-build requires a SHA256-pinned Node 20.19.4 archive.")
         # Repair needs only the installed Runtime. Require bootstrap inputs
         # only when dispatch actually prepares a fresh candidate.
         if not self.uv.is_absolute() or not self.uv.is_file():
@@ -1052,13 +1267,25 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         version = Version(folder, python, profile, env, **install_identity(folder))
         env = version.env
         npm = binary(folder / "tools" / "node", "npm-cli.js")
-        self.install_remotion_dependencies(agent, env, npm)
+        remotion_ready = self.install_remotion_dependencies(agent, env, npm)
+        if "pack_build" in manifest:
+            if not remotion_ready:
+                raise ValueError("Pack-build requires successful frozen Remotion dependencies.")
+            from ..core.pack.cli_manage import TOOLCHAIN_ENV
+
+            env[TOOLCHAIN_ENV] = str(_stage_pack_toolchain(folder, agent, env, manifest))
         product_root = self._installed_product_root(python, env)
         # The wheel contains the schema and its reader. Retain the producer's
         # unmodified lock beside the installed package, then admit those bytes
         # before declaring services. The source and npm trees never substitute
         # for a missing or changed wheel resource.
-        shutil.copyfile(agent / "runtime.lock.json", product_root / "runtime.lock.json")
+        _secure_installed_schema_inputs(folder, product_root)
+        # Exclusive creation refuses pre-existing objects (including symlinks).
+        with (agent / "runtime.lock.json").open("rb") as source_lock:
+            with (product_root / "runtime.lock.json").open("xb") as installed_lock:
+                shutil.copyfileobj(source_lock, installed_lock)
+                if os.name != "nt":
+                    os.fchmod(installed_lock.fileno(), 0o600)
         schema = self._verify_local_timeline_schema(product_root)
         env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema)
         self._verify_installed_timeline_schema(python, product_root, env)
@@ -1246,9 +1473,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                            "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
 
-    def persist_identity(self, version: Version) -> None:
+    def persist_identity(self, version: Version, *, persist_choices: bool = True) -> None:
         """Upgrade legacy version and selection records without service changes."""
-        persist_install_identity(version, self.root, selection=self.service.selection)
+        choices = getattr(self.service, "choices", None) if persist_choices else None
+        fields = {"choices": choices} if choices is not None else None
+        if fields is not None and not self.service.recorded():
+            # Never publish a choices-only selection: recorded() must be able
+            # to authenticate it before startup registration. Fresh installs
+            # and healthy legacy repair already have an owned install marker.
+            marker = read_json(self.root / "install.json")
+            if marker.get("owner") == LABEL and marker.get("data_root"):
+                data = absolute(marker["data_root"])
+                fields.update(owner=LABEL, program_root=str(self.root), data_root=str(data))
+            else:
+                fields = None  # Registration will publish the complete receipt.
+        persist_install_identity(version, self.root, selection=self.service.selection,
+                                 fields=fields)
 
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
@@ -1412,13 +1652,44 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if state == "crashed":
                 raise service_failure(crashed=True)
 
-    def sync_skills(self, version: Version) -> None:
+    def sync_skills(self, version: Version) -> dict:
         """Best-effort install of Astrid's skill view into detected harnesses."""
-        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync"]
+        choices = getattr(self.service, "choices", None) or {}
+        skills_on = choices.get("skills", True)
+        copies_on = choices.get("skill_copies", False)
+        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+                "--skills", "on" if skills_on else "off",
+                "--skill-copies", "on" if copies_on else "off"]
+        return self._run_skills(version, argv)
+
+    def remove_skills(self, version: Version) -> dict:
+        """Clean proven owned targets without changing the saved install policy."""
+        script = "import json; from astrid.skills import disable_owned; print(json.dumps(disable_owned()))"
+        return self._run_skills(version, [version.python, "-X", "utf8", "-I", "-c", script], action="cleanup")
+
+    def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
         failed = False
         try:
-            self.run(argv, extra_env=version.env, timeout=60)
-            outcome = "Astrid skills sync completed successfully.\n"
+            output = self.run(argv, extra_env=version.env, timeout=60)
+            report = json.loads(output)
+            actions = report.get("actions", [])
+            destinations = sorted({
+                str(step["target"])
+                for action in actions if isinstance(action, dict)
+                for step in action.get("steps", [])
+                if isinstance(step, dict) and isinstance(step.get("target"), str)
+            })
+            removed = sorted({
+                str(path)
+                for action in actions if isinstance(action, dict)
+                for path in action.get("removed", [])
+                if isinstance(path, str)
+            })
+            conflicts = [*report.get("conflicts", []), *report.get("ambiguous", [])]
+            outcome = f"Astrid skills {action} completed successfully.\n"
+            for conflict in conflicts:
+                if isinstance(conflict, dict):
+                    outcome += f"Preserved skill target {conflict.get('path', '(unknown path)')}: {conflict.get('reason', 'ownership is ambiguous')}.\n"
         except (OSError, subprocess.SubprocessError) as exc:
             failed = True
             output = "" if isinstance(exc, subprocess.CalledProcessError) else (
@@ -1426,12 +1697,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             )
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
-            outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
+            outcome = str(output) + f"\nAstrid skills {action} failed ({type(exc).__name__}).\n"
+            destinations = []
+            removed = []
+            conflicts = []
+        except (ValueError, TypeError, AttributeError) as exc:
+            failed = True
+            outcome = f"Astrid skills {action} returned an unreadable result ({type(exc).__name__}).\n"
+            destinations = []
+            removed = []
+            conflicts = []
         with self.log.open("a", encoding="utf-8") as stream:
             platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
-            self.say("Couldn't add Astrid's skill to your agents; see the log.")
+            self.say("Couldn't clean up Astrid's skills; see the log." if action == "cleanup" else
+                     "Couldn't add Astrid's skill to your agents; see the log.")
+        result = {"ok": not failed, "destinations": destinations}
+        if removed:
+            result["removed"] = removed
+        if conflicts:
+            result["conflicts"] = conflicts
+        return result
 
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
         # Keep the immediately previous program and backup. Failures cleaning an
@@ -1533,7 +1820,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                                expected_realm_id=expected_realm_id)
         if expected_realm is not None and realm_root != expected_realm:
             raise ValueError("The selected workspace changed; no files were removed.")
-        remove_shim(self.service)
+        remove_owned_command(self.service, marker.get("command_shim"), marker.get("command_path"))
+        if self.service.system != "win32":
+            command_shim = self.service.home / ".local" / "bin" / "astrid"
+            if os.path.lexists(command_shim):
+                # POSIX command shims live outside the program tree. Keep a
+                # retained foreign or edited file visible as uninstall residue.
+                residue.append(command_shim)
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:
             data_targets.insert(0, realm_root)
@@ -1601,14 +1894,65 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
-        shim = hint = None
-        try:
-            shim, hint = install_shim(self.service, say=report)
-        except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
-            report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
         marker = self.root / "install.json"
-        command_shim = shim if self.service.system == "win32" or hint is None else None
-        write_json(marker, {**read_json(marker), "command_shim": str(command_shim) if command_shim else None})
+        current_marker = read_json(marker)
+        choices = getattr(self.service, "choices", None) or {}
+        command_on = choices.get("command", True)
+        if not command_on:
+            removed = {"shim": False, "path": False}
+            error = None
+            try:
+                removed = remove_owned_command(
+                    self.service, current_marker.get("command_shim"), current_marker.get("command_path"))
+            except Exception as exc:  # noqa: BLE001 - optional command cleanup must not stop setup
+                error = type(exc).__name__
+                report(f"Astrid command cleanup failed ({error}); check the recorded shim and PATH entry.")
+            command_shim = (self.root / "astrid.cmd" if self.service.system == "win32" else
+                            self.service.home / ".local" / "bin" / "astrid")
+            preserved_shim = os.path.lexists(command_shim) and not removed["shim"]
+            if preserved_shim:
+                report(f"Astrid command shim preserved at {command_shim}; ownership could not be verified.")
+            self.command_result = {
+                "action": "disabled", "path": None, "path_hint": None, "error": error,
+                "path_added": None, "path_present": False,
+                "removed_shim": removed["shim"], "removed_path": removed["path"],
+                "preserved_shim": preserved_shim,
+            }
+            if error is None:
+                write_json(marker, {**current_marker, "command_shim": None, "command_path": None})
+            try:
+                webbrowser.open("https://astrid.haus/?connect=1")
+            except OSError:
+                pass
+            return
+
+        shim = hint = None
+        error = None
+        effects = {}
+        try:
+            # Once Astrid has recorded a PATH entry it added, maintenance may
+            # retain it but must not restore it after the user removes it. A
+            # prior shim receipt also marks this as maintenance: don't add a
+            # PATH entry that was pre-existing and later removed by the user.
+            previously_owned_path = current_marker.get("command_path")
+            shim, hint = install_shim(self.service, say=report,
+                                      manage_path=not bool(previously_owned_path or current_marker.get("command_shim")),
+                                      details=effects)
+        except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
+            error = type(exc).__name__
+            report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
+        self.command_result = {
+            "action": "ready" if shim else "skipped",
+            "path": str(shim) if shim else None,
+            "path_hint": hint,
+            "error": error,
+            "path_added": effects.get("path_added"),
+            "path_present": effects.get("path_present", False),
+            "shim_change": effects.get("shim_change"),
+        }
+        write_json(marker, {**current_marker,
+                            "command_shim": str(shim) if shim else current_marker.get("command_shim"),
+                            "command_path": effects.get("path_added") or previously_owned_path})
         try:
             webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:

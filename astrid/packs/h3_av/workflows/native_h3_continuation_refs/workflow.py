@@ -27,7 +27,7 @@ DEFAULT_SEED_8 = 918273645
 EXISTING_VIDEO = 'Existing Video'
 FIXED = 'fixed'
 GUIDE_STRENGTH = 0.95
-LORA_NAME = 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors'
+LORA_NAME = 'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors'
 MATCH = 'match'
 UNET_NAME = 'minimax_h3_ref2va_pruned_int8_convrot.safetensors'
 VIDEO_H264_MP4 = 'video/h264-mp4'
@@ -42,8 +42,11 @@ MODEL_ASSETS = {
     ),
     'turbo_lora': ModelAsset(
         filename=LORA_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/0f7fb980293fcc4d55c1158cbda920806682ed5d/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors',
         subdir='loras',
+        sha256='5b9ab5ade15d0775676d01a907268a69a1468dc6033b3b0d3ded5502f3ebb84c',
+        hf_revision='0f7fb980293fcc4d55c1158cbda920806682ed5d',
+        size_bytes=1956193000,
     ),
     'ref2va': ModelAsset(
         filename=UNET_NAME,
@@ -249,6 +252,8 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
             _outputs=('width', 'height'),
             generated_height=resolutionselector.out('HEIGHT'),
             generated_width=resolutionselector.out('WIDTH'),
+            source_height=minimaxh3cropto32.out('height'),
+            source_width=minimaxh3cropto32.out('width'),
             start_mode=minimaxh3avstartmodeparam.out('start_mode'),
         )
 
@@ -418,6 +423,7 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
             indexing='1-based',
             crop='disabled',
             conditioning=minimaxh3referencetovideo_8.out('positive'),
+            keyframe_image_1=loadimage_3.out('IMAGE'),
             latent=minimaxh3referencetovideo_8.out('LATENT'),
             vae=vaeloader.out('VAE'),
             _mode=4,
@@ -440,7 +446,7 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
         )
 
         basicguider_8 = BasicGuider(
-            conditioning=minimaxh3referencetovideo_8.out('positive'),
+            conditioning=minimaxh3customkeyframes.out('conditioning'),
             model=minimaxh3sigmashift.out('MODEL'),
             _mode=4,
         )
