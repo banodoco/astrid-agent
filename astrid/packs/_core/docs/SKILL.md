@@ -29,6 +29,14 @@ Choose the route by the requested result. Read only that route's guidance:
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 | Develop Astrid itself: its repositories, builds, tests and releases | [Developing Astrid](../../developer/docs/SKILL.md) |
 
+For contributions to Astrid, [**astrid-dev**](https://github.com/banodoco/astrid-dev)
+has agent workflows: **Dev** (repository orientation), **Plan** (scope new work),
+**Bug fixing** (investigate, reproduce frontend issues in a browser when useful,
+recover users and file an issue), **Iterate** (implement and test scoped changes),
+and **Release** (integrate and publish authorized changes). See its
+[skills index](https://github.com/banodoco/astrid-dev/blob/main/skills/README.md)
+for the guides and how to sync them.
+
 For the exact distinction between managed setup, bring-your-own engines, and
 remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
 Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with

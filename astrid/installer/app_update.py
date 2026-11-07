@@ -26,6 +26,7 @@ from .core import (
     pending_transaction,
     read_json,
     recover_transaction,
+    schema_unchanged,
     separate_roots,
     switch,
     update_required,
@@ -520,9 +521,14 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
         # C2b treats equal/older input as repair until manifest trust lands.
         repair = not update_required("update" if force else "install", manifest, old,
                                      managed_by="pinokio")
+        migrating = not no_migration and not repair
+        prepared: Version | None = None
         say("Preparing the new app while Astrid keeps running.")
 
         def prepare() -> Version:
+            nonlocal migrating, prepared
+            if prepared is not None:
+                return prepared
             custody = getattr(backend, "_pinokio_custody", None)
             if custody is not None:
                 custody.check()
@@ -531,6 +537,10 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             lifecycle.validate(candidate)
             if no_migration and inspect_schema(backend, candidate, realm) != prior_schema:
                 raise ValueError("The storage layout changed. Choose Pinokio's Update button to migrate it.")
+            # As for direct updates, an unchanged schema needs no backup or
+            # Runtime upgrade (which refuses while custody holds the lifetime lock).
+            if migrating and schema_unchanged(backend, old, candidate, realm):
+                migrating = False
             if selection(root, backend) != (old, data, identity):
                 raise ValueError("The selected installation changed while preparing the update.")
             selected_realm = backend.workspace(old, data)
@@ -540,6 +550,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             # after migration, with the retained version still selected.
             publish_runtime_runner(root)
             say("Restarting Astrid with the prepared app.")
+            prepared = candidate
             return candidate
 
         def select(candidate: Version) -> None:
@@ -578,14 +589,16 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             backend.stop(candidate, workspace)
 
         installer = Installer(root, data, backend, say=say, managed_by="pinokio")
+        # Choose the workspace policy before constructing the transaction.
+        prepare()
         installer._run_update_transaction(
             old, realm, prepare=prepare, stop=lifecycle.stop,
             switch_candidate=select, switch_old=select_old,
             activate=activate,
             activate_old=lambda previous, workspace, selected_realm: lifecycle.start(
                 previous, workspace, selected_realm["realm_id"]),
-            backup=backend.backup if not no_migration and not repair else None,
-            migrate=migrate if not no_migration and not repair else None,
+            backup=backend.backup if migrating else None,
+            migrate=migrate if migrating else None,
             restore_workspace=not no_migration and not repair,
             kind="app" if no_migration or repair else "migration",
         )

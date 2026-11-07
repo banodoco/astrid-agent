@@ -2171,8 +2171,31 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
-    """Exercise the installed SDK through a settled, materialized SFX output."""
+def _sdk_result(text: str) -> dict:
+    """Parse the SDK's result object; tolerate only leading `{"diagnostic": ...}` lines.
+
+    The captured stream combines stdout and stderr. Some installs (Pinokio) emit
+    one-line Runtime diagnostics before the result. Anything else is still an error.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        lines = [line for line in text.splitlines() if line.strip()]
+        if not lines:
+            raise
+        for line in lines[:-1]:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}") from None
+            if not (isinstance(item, dict) and isinstance(item.get("diagnostic"), str)):
+                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}")
+        return json.loads(lines[-1])
+
+
+def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
+                duration_s: float = 0.1) -> str:
+    """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
     SDK_CAPTURE_RECEIPTS.pop(evidence.absolute(), None)
     for name in ("project.json", "sdk-invocation.json"):
         (evidence / name).unlink(missing_ok=True)
@@ -2190,8 +2213,8 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
-               "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
-    invocation = json.loads(installed_cli_with_capture(version, [json.dumps(request)], evidence,
+               "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
+    invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
                                           "sdk-invocation.json", module="astrid.omp_invoke",
                                           status_name="sdk-capture-status.json"))
     if invocation.get("ok") is False:
@@ -2200,13 +2223,18 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
     refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if len(refs) != 1 or not refs[0].get("task_id"):
         raise RuntimeError("Installed SDK did not admit exactly one task")
-    task_id = refs[0]["task_id"]
+    return refs[0]["task_id"]
+
+
+def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
+    """Exercise the installed SDK through a settled, materialized SFX output."""
+    task_id = submit_task(version, evidence, project, create_project=create_project)
     try:
         installed_cli(version, ["tasks", "follow", task_id, "--project", project,
                                 "--poll-seconds", "2", "--timeout-seconds", "900", "--json"],
                       evidence, "task-follow.jsonl", timeout=960)
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
-        state = json.loads(installed_cli(version, ["tasks", "show", task_id, "--project", project,
+        state = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-follow-failure.json"))
         if (state.get("data") or {}).get("state") not in TERMINAL:
             installed_cli(version, ["tasks", "cancel", task_id, "--project", project, "--json"],
@@ -2217,12 +2245,12 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
                               evidence, "task-cancel-follow.jsonl", timeout=360)
             except (RuntimeError, subprocess.TimeoutExpired):
                 pass
-        final = json.loads(installed_cli(version, ["tasks", "show", task_id, "--project", project,
+        final = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                  "--json"], evidence, "task-after-cancel.json"))
         if (final.get("data") or {}).get("state") not in TERMINAL:
             raise RuntimeError("Task remained nonterminal after cancellation") from exc
         raise RuntimeError(f"Task follow failed: {exc}") from exc
-    settled = json.loads(installed_cli(version, ["tasks", "show", task_id, "--project", project,
+    settled = _sdk_result(installed_cli(version, ["tasks", "show", task_id, "--project", project,
                                                "--json"], evidence, "task-settled.json"))
     row = settled.get("data") or {}
     outputs = {item.get("name"): item for item in (row.get("result") or {}).get("outputs", [])}

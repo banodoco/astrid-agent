@@ -310,7 +310,7 @@ def test_r1_1_pinokio_matrix_has_exact_three_rows_and_own_checker(tmp_path):
     assert len({row["job_id"] for row in rows}) == 3
     assert all(row["leg"] == "fresh-install" for row in rows)
     assert journey_matrix.validate_job("pinokio-linux", "pinokio-backend")["os"] == "linux"
-    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_1_pinokio_matrix({}, tmp_path)} == {
+    assert {error.split(":", 1)[0] for error in gate.evaluate_release1_1_pinokio_matrix(None, tmp_path)} == {
         "pinokio-linux", "pinokio-macos", "pinokio-windows",
     }
     assert {error.split(":", 1)[0] for error in gate.evaluate_release1_matrix({}, tmp_path)} == {
@@ -318,15 +318,105 @@ def test_r1_1_pinokio_matrix_has_exact_three_rows_and_own_checker(tmp_path):
     }
 
 
-def test_pinokio_dispatch_selects_only_r1_1_pinokio_rows():
+PINOKIO_STEPS = ("install", "start_task", "stop_start", "busy_stop_data", "update_ready_task", "uninstall_data")
+PINOKIO_OS = {"pinokio-linux": "linux", "pinokio-macos": "macos", "pinokio-windows": "windows"}
+
+
+def _pinokio_row(job_id, sha="a" * 40):
+    steps = [{"name": name, "status": "pass", "detail": "ok"} for name in PINOKIO_STEPS]
+    return {"schema": "pinokio-row-v1", "job_id": job_id, "os": PINOKIO_OS[job_id],
+            "pinokio_sha": sha, "steps": steps}
+
+
+def _write_pinokio_rows(root, rows):
+    root.mkdir(parents=True, exist_ok=True)
+    for index, row in enumerate(rows):
+        path = root / f"row-{index}" / "journey-result.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(row), encoding="utf-8")
+
+
+def _all_pinokio_rows():
+    return [_pinokio_row(job_id) for job_id in ("pinokio-linux", "pinokio-macos", "pinokio-windows")]
+
+
+def test_pinokio_row_receipts_accept_exact_complete_green_set(tmp_path):
+    _write_pinokio_rows(tmp_path, _all_pinokio_rows())
+    assert gate.evaluate_release1_1_pinokio_matrix({"pinokio": "a" * 40}, tmp_path) == []
+
+
+def test_pinokio_row_receipts_accept_only_the_selected_job(tmp_path):
+    _write_pinokio_rows(tmp_path / "one", [_pinokio_row("pinokio-linux")])
+    assert gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "one", ["pinokio-linux"]) == []
+    _write_pinokio_rows(tmp_path / "extra", _all_pinokio_rows()[:2])
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "extra", ["pinokio-linux"])
+    assert any(error.endswith("Pinokio job pinokio-macos was not selected for this run") for error in errors)
+    assert gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "one", ["pinokio-freebsd"]) != []
+
+
+def test_pinokio_row_receipts_reject_missing_row_step_and_failed_step(tmp_path):
+    _write_pinokio_rows(tmp_path / "missing-row", _all_pinokio_rows()[:2])
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "missing-row")
+    assert any("pinokio-windows: missing" in error for error in errors)
+
+    rows = _all_pinokio_rows()
+    rows[0]["steps"] = rows[0]["steps"][1:]
+    rows[1]["steps"][1] = {"name": "start_task", "status": "fail", "detail": "task did not start"}
+    _write_pinokio_rows(tmp_path / "bad-steps", rows)
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "bad-steps")
+    assert any("step names are missing, extra or duplicated" in error for error in errors)
+    assert any("start_task status is not pass" in error for error in errors)
+
+
+def test_pinokio_row_receipts_reject_duplicate_and_mismatched_jobs(tmp_path):
+    rows = _all_pinokio_rows()
+    _write_pinokio_rows(tmp_path / "duplicate", rows + [copy.deepcopy(rows[0])])
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path / "duplicate")
+    assert any("pinokio-linux: duplicate" in error for error in errors)
+
+    mismatched = copy.deepcopy(rows)
+    mismatched[0]["os"] = "windows"
+    mismatched[1]["job_id"] = "pinokio-linux"
+    mismatched[2]["pinokio_sha"] = "b" * 40
+    _write_pinokio_rows(tmp_path / "mismatch", mismatched)
+    errors = gate.evaluate_release1_1_pinokio_matrix({"pinokio": "a" * 40}, tmp_path / "mismatch")
+    assert any("job id and OS do not match" in error for error in errors)
+    assert any("duplicate Pinokio receipt" in error for error in errors)
+    assert any("pinokio SHA differs from candidate" in error for error in errors)
+
+
+def test_pinokio_row_receipts_reject_malformed_schema_and_fields(tmp_path):
+    rows = _all_pinokio_rows()
+    rows[0]["schema"] = "pinokio-row-v2"
+    rows[1]["steps"][0]["error"] = "unexpected"
+    rows[2]["extra"] = True
+    _write_pinokio_rows(tmp_path, rows)
+    errors = gate.evaluate_release1_1_pinokio_matrix(None, tmp_path)
+    assert any("schema is not" in error for error in errors)
+    assert any("step is not a name/status/detail object" in error for error in errors)
+    assert any("receipt fields do not match" in error for error in errors)
+
+
+def test_pinokio_dispatch_selects_r1_1_pinokio_rows_and_skips_old_launcher_inputs():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
-    assert "- pinokio" in workflow
-    assert 'pinokio_only = journey_row == "pinokio"' in workflow
+    for row in ("pinokio-linux", "pinokio-macos", "pinokio-windows", "pinokio"):
+        assert f"          - {row}\n" in workflow
+    assert 'pinokio_only = journey_row == "pinokio" or journey_row in pinokio_job_ids' in workflow
     assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_1_PINOKIO_MATRIX]" in workflow
     assert "journey_row not in {\"direct\", \"pinokio\"}" in workflow
-    assert "row=pinokio runs only the three R1.1 Pinokio journey rows" in workflow
-    assert "--aggregate-release1-1-pinokio" in workflow
+    assert "if not pinokio_only:" in workflow
+    assert "pinokio rows run only the R1.1 Pinokio journey rows" in workflow
+    assert "--aggregate-release1-1-pinokio --pinokio-job-ids" in workflow
     assert "outputs.pinokio_only == 'true'" in workflow
+    assert "required: true" not in workflow.split("workflow_dispatch:")[0].split("old_launcher_ref:")[1].split("\n      ")[1]
+
+
+def test_pinokio_row_steps_run_driver_and_keep_the_evidence_boundary_path():
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
+    assert "if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}" in workflow
+    assert "if: ${{ startsWith(matrix.job_id, 'pinokio-') }}" in workflow
+    assert "scripts/pinokio_row_driver.py" in workflow or "agent/scripts/pinokio_row_driver.py" in workflow
+    assert "evidence-upload/after-cleanup/journey-result.json" in workflow
 
 
 def test_release1_aggregate_accepts_full_staged_receipts_with_capture_status(tmp_path):

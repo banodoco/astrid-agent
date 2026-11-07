@@ -205,6 +205,17 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
     return value
 
 
+def schema_unchanged(backend, old: Version, candidate: Version, realm: dict) -> bool:
+    """Whether ``candidate`` serves the current workspace without Runtime ``upgrade``.
+
+    Direct and Pinokio updates skip the backup and ``upgrade`` when this holds.
+    """
+    old_schema = inspect_schema(backend, old, realm, require_current=False)
+    candidate_schema = inspect_schema(backend, candidate, realm, require_current=False)
+    return (old_schema == candidate_schema
+            and candidate_schema["identity"]["version"] == candidate_schema["target"])
+
+
 def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str | None = None) -> bool:
     """C2b numeric dispatch, shared by service and foreground adapters."""
     release = install_release(manifest)
@@ -668,10 +679,7 @@ class Installer:
                     return prepared_candidate
                 candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
-                old_schema = inspect_schema(self.backend, old, realm, require_current=False)
-                candidate_schema = inspect_schema(self.backend, candidate, realm, require_current=False)
-                same_schema = (old_schema == candidate_schema
-                               and candidate_schema["identity"]["version"] == candidate_schema["target"])
+                same_schema = schema_unchanged(self.backend, old, candidate, realm)
                 prepared_candidate = candidate
                 return candidate
 
