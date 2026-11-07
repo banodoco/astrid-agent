@@ -145,6 +145,11 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
+    # Core-hosted packs (astrid/core/**/pack.yaml) load their docs/SKILL.md and other
+    # resources from the installed wheel exactly like astrid/packs/**; mirror that rule.
+    "core/**/pack.yaml",
+    "core/**/docs/*",
+    "core/**/docs/**/*",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
 
