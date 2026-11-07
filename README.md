@@ -1,78 +1,49 @@
 # Astrid
 
-Tools and knowledge for agents and humans to make art with open models.
+Open tools and knowledge for humans and agents to make art.
+
+## Get started
 
 <!-- BEGIN GENERATED AGENT BANNER -->
 
-### Give this to your agent
+### Give this to your agent (recommended)
 
 ```text
-╭──────────────────────────── ◇ ─────────────────────────────╮
-│                                                            │
-│                   A   S   T   R   I   D                    │
-│                                                            │
-│              agents harnessed, humans free —               │
-│               open tools for what could be:                │
-│              moving image, voice, and frame,               │
-│       open Astrid, make something, share its flame.        │
-│                                                            │
-│                          ·  ·  ·                           │
-│                                                            │
-│          Agent instructions: docs/setup/SKILL.md           │
-│                                                            │
-│       $ curl -fsSL https://astrid.haus/install | sh        │
-│        $ irm https://astrid.haus/install.ps1 | iex         │
-│             open https://astrid.haus to begin.             │
-│                                                            │
-│                          ·  ·  ·                           │
-│                                                            │
-│                 ask the maker what to do,                  │
-│             bring a spark and see it through —             │
-│              no map, no plan, no perfect day:              │
-│         begin, hold fast  — you'll find your way.          │
-│                                                            │
-╰──────────────────────────── ◇ ─────────────────────────────╯
+Help me set up Astrid on this computer. Follow:
+https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+
+Preserve my existing work and credentials, confirm that the
+Runtime is connected, and help me begin at https://astrid.haus.
 ```
 
 <!-- END GENERATED AGENT BANNER -->
 
-**Set up Astrid:** open Terminal on macOS or Linux, or PowerShell on Windows;
-run the installer for your operating system, then open
-[astrid.haus](https://astrid.haus).
+### Set it up yourself
 
-**Windows support is in beta.** It has had less testing than macOS and Linux;
-if something goes wrong, see [Get help](docs/setup/troubleshooting.md).
+Follow the [manual setup guide](docs/getting-started.md), or run the installer for your operating system. Review the installer before running it.
 
-**Want step-by-step instructions?** [Set up Astrid →](docs/getting-started.md)
-
-**Testing the installer?** Follow the [tester guide](docs/testing/TESTING.md), which records a known chat-history
-gap in the currently published agent engine.
-
-macOS and Linux:
+macOS or Linux (Terminal):
 
 ```sh
 curl -fsSL https://astrid.haus/install | sh
 ```
 
-Windows PowerShell:
+Windows (PowerShell; support is in beta):
 
 ```powershell
 irm https://astrid.haus/install.ps1 | iex
 ```
 
-Astrid is used at [astrid.haus](https://astrid.haus). Do not install
-`astrid-app` to use Astrid; that repository is for app developers.
+Then use the app at **[astrid.haus](https://astrid.haus)** (recommended). Astrid Runtime runs locally and keeps your projects and media on your computer. You do **not** need to clone `astrid-app` to use Astrid; that repository is for contributors who want to modify the editor. You can also [run the editor from source](docs/getting-started.md#run-everything-on-your-computer).
 
-The CI default lane uses the committed `tests/.test_durations` file to balance its eight pytest shards. After a full default-lane run, refresh it with `python -m pytest -q --store-durations --durations-path tests/.test_durations`, then commit the updated file.
+If installation fails, see [troubleshooting](docs/setup/troubleshooting.md).
 
-### More info
+## Learn and contribute
 
 - [How Astrid works](docs/guides/how-it-works.md)
-- [When and how to create a pack](docs/guides/create-a-pack.md)
-- [Contributing knowledge](docs/guides/contributing-knowledge.md)
-- [Get help](docs/setup/troubleshooting.md)
+- [Create a pack](docs/guides/create-a-pack.md)
+- [Contribute knowledge](docs/guides/contributing-knowledge.md)
+- [Contribute to Astrid development](https://github.com/banodoco/astrid-dev) (issues, plans and agent workflow)
+- [Develop this repository](AGENTS.md)
 
----
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
-See [NOTICE](NOTICE) for copyright information.
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
