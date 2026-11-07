@@ -451,7 +451,11 @@ def stages(row: Row) -> list[tuple[str, list]]:
 
 
 def _step(name: str, status: str, detail: str) -> dict:
-    text = re.sub(r"\s+", " ", str(detail)).strip()[:500] or status
+    text = re.sub(r"\s+", " ", str(detail)).strip()
+    if len(text) > 500:
+        # Keep the start and the end: installers print long output before the actual error.
+        text = text[:150] + " ... " + text[-345:]
+    text = text or status
     return {"name": name, "status": status, "detail": text}
 
 
@@ -475,6 +479,8 @@ def run_row(row: Row) -> list[dict]:
             if isinstance(exc, json.JSONDecodeError):
                 # Show what could not be parsed, so a hosted failure is diagnosable from the receipt.
                 detail += f" | text: {exc.doc[:1500]!r}"
+            # The receipt keeps a short form; the job log gets the whole failure.
+            print(f"[pinokio-row] {name} failed:\n{detail}", file=sys.stderr, flush=True)
             steps.append(_step(name, "fail", detail))
     return steps
 
