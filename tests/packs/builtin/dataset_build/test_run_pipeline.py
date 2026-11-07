@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from astrid.core.contracts.errors import AstridError
+from astrid.packs.training.actions.dataset_build import phases as dataset_phases
 from astrid.packs.training.actions.dataset_build import run as dataset_run
 from astrid.packs.training.actions.dataset_build.source_providers.local_folder import (
     LocalFolderSourceProvider,
@@ -523,6 +524,7 @@ def test_run_pipeline_threads_services_through_filter_caption_and_human_review(t
         return {"text": "Service caption.", "schema_version": 1, "confidence": 0.8, "model": "stub"}
 
     install_child_invoker(monkeypatch, FakeChildInvoker(respond, attempt_root=run_dir))
+    monkeypatch.setattr(dataset_phases, "_human_review_argv", lambda: ["review-capability-stub"])
 
     def human_review_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append("human_review")
@@ -1075,3 +1077,10 @@ def test_dataset_build_cli_preflights_no_spend_api_config_before_run_dir_creatio
         dataset_run.main(["--config", str(config_path), "--out", str(out_dir)])
     assert "budgets.max_api_calls must be positive" in raised.value.cause
     assert not out_dir.exists()
+
+
+def test_human_review_command_requires_the_editorial_pack_when_absent(tmp_path: Path) -> None:
+    with pytest.raises(AstridError, match="requires pack 'editorial'"):
+        dataset_phases._run_human_review(
+            tmp_path, tmp_path / "data.json", tmp_path / "state.json", lambda *a, **k: None
+        )
