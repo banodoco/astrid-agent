@@ -224,8 +224,8 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
             if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
                 raise ValueError("installed timeline schema input has a foreign owner or type")
         for directory in dirs.values():
-            facts = os.fstat(directory)
-            os.fchmod(directory, stat.S_IMODE(facts.st_mode) & ~0o022)
+            # Explicit, umask-independent: the reader refuses group/other-writable dirs.
+            os.fchmod(directory, 0o755)
         # Each replacement is private even if uv linked its original to cache.
         for relative in files:
             parent = dirs[relative.parts[:-1]]
@@ -240,7 +240,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
             opened.append(dest_fd)
             with os.fdopen(os.dup(source_fd), "rb") as src, os.fdopen(os.dup(dest_fd), "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            os.fchmod(dest_fd, stat.S_IMODE(facts.st_mode) & ~0o022)
+            os.fchmod(dest_fd, 0o644)
             os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
     except OSError as exc:
         raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
