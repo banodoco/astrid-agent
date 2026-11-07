@@ -181,7 +181,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
     """Secure only the new venv's guarded inputs, detaching shared file inodes."""
     if os.name == "nt":
         return  # Windows admission uses ACLs rather than POSIX modes.
-    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH, runtime_lock_path
 
     venv_root = folder / "py"
     try:
@@ -204,8 +204,13 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
                 raise ValueError("installed timeline schema input has a foreign owner or type")
         root_fd = fd
         dirs = {(): root_fd}
-        # runtime.lock.json is the reader's pin source; installer-owned, so secured too.
-        files = (SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"), *READER_INPUTS)
+        # The reader's pin source, resolved exactly as the reader resolves it (installed copy, else package data).
+        lock = runtime_lock_path(product_root)
+        try:
+            lock_relative = lock.relative_to(product_root)
+        except ValueError as exc:
+            raise ValueError("installed Runtime lock is outside the candidate") from exc
+        files = (SCHEMA_RELATIVE_PATH, lock_relative, *READER_INPUTS)
         # Check all path components without following links before modifying any.
         for relative in files:
             parent = root_fd

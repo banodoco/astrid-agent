@@ -14,6 +14,13 @@ and tear down with a composite session that guarantees cleanup.
 
 ## Ordinary generation on a RunPod target
 
+`--target runpod` requires an installed layout. The Agent derives its RunPod source root
+from the release manifest: it populates `<data-root>/runpod/sources` with clean checkouts at the
+pinned commits (Runtime from `runtime.lock.json`, VibeComfy from the recipe pin, and the other
+packages from the installed release manifest), then validates them. There is no developer-checkout
+route and no environment variable to set; outside an installed layout the command fails with a
+`ManagedSourcesError` (see M02-26).
+
 `astrid generate image --target runpod` uses the retained host adapter, its
 single lease owner, and the existing attached ComfyUI transport. The selected
 executor environment must contain the manifest-installed Agent, Runtime,

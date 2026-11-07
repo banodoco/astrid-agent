@@ -99,13 +99,6 @@ dev = [
     "wheel==0.46.3",
 ]
 
-# Runtime installs need a configured package index or local wheelhouse because
-# runpod-lifecycle is not published on public PyPI.
-# Install: pip install 'astrid[runpod]'
-runpod = [
-    "runpod-lifecycle>=0.3.1.dev0,<0.4",
-]
-
 [tool.setuptools]
 # Only the package-data patterns below are release inputs.  In particular,
 # do not let setuptools' VCS/egg-info package-data defaults pull authoring
@@ -145,8 +138,10 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
-    # The core Hivemind pack manifest declares its agent-facing skill as a resource.
-    "core/hivemind/docs/*",
+    # Core-hosted packs (astrid/core/**/pack.yaml) load their docs/SKILL.md and other
+    # resources from the installed wheel exactly like astrid/packs/**; core/**/*.yaml covers pack.yaml.
+    "core/**/docs/*",
+    "core/**/docs/**/*",
     "core/hivemind/LICENSE",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
