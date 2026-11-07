@@ -204,3 +204,12 @@ def test_maintenance_identity_write_preserves_choices_and_owned_fields(tmp_path)
     assert record["uninstall_receipt"] == {"state": "retained"}
     assert record["unknown_field"] == ["retained"]
     assert record["identity"] == version.document()["identity"]
+
+
+def test_rerun_with_yes_appends_consent_to_the_invoked_command():
+    from astrid.installer.cli import rerun_with_yes
+
+    assert rerun_with_yes(["astrid", "--autostart", "on", "--skills", "off"]) == (
+        "astrid --autostart on --skills off --yes")
+    assert rerun_with_yes(["/tmp/my installer/astrid", "--update"]) == (
+        "'/tmp/my installer/astrid' --update --yes")
