@@ -83,7 +83,7 @@ def case(tmp_path, monkeypatch, request):
         action = manifest["actions"]["calculate"]
         action["inputs"] = []
         action["invocation"] = {"kind": "command", "command": {
-            "argv": ["{python_exec}", "-m", "unrelated.emit"]}}
+            "argv": ["{python_exec}", "-m", "astrid.packs.unrelated.emit"]}}
         path.write_text(yaml.safe_dump(manifest))
     host.discover()
     definition, admission = host.admit("executor", "unrelated.calculate")
@@ -199,45 +199,18 @@ def test_capture_after_bind_mutation_is_rejected_before_execution(case):
         custody.descriptor(case.record)
 
 
-def _run_captured(encoded, selected, contents):
-    """Run a captured command through the one ``--pack-command`` route."""
-    return worker._run_pack_command(worker.captured_pack_command(selected, json.loads(encoded)), selected=selected)
-
-
 def test_command_loader_executes_captured_descendants_after_last_check(case, capsys):
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         # The child receives only the inherited handle, not task/admission JSON.
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    (case.root / "actions/helper.py").write_text("raise AssertionError('live child source')\n")
-    assert _run_captured(json.dumps(["-m", "unrelated.emit"]), selected, contents) == 0
+    control = worker.captured_pack_command(selected, ["-m", "astrid.packs.unrelated.emit"])
+    assert worker._run_pack_command(control, selected=selected) == 0
     assert capsys.readouterr().out == "captured\n"
-
-
-def test_python_action_loader_executes_captured_descendants_after_last_check(case, monkeypatch):
-    from astrid.core.execution.executor import runner
-    from astrid.core.execution.executor.registry import ExecutorRegistry
-    from astrid.core.execution.executor.schema import validate_executor_definition
-
-    custody = _bind(case)
-    with custody.descriptor(case.record) as channel:
-        _, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    original = runner._PackSourceLoader.exec_module
-    mutated = []
-    def mutate_then_load(self, module):
-        if not mutated:
-            (case.root / "actions/helper.py").write_text("raise AssertionError('live action source')\n")
-            mutated.append(True)
-        return original(self, module)
-    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    monkeypatch.setattr(runner._PackSourceLoader, "exec_module", mutate_then_load)
-    result = runner.run_executor(runner.ExecutorRunRequest(executor_id=case.record.id, out=str(case.root.parent / "action-output"),
-        project="demo", project_was_auto_resolved=True, invocation="runtime"),
-        ExecutorRegistry([validate_executor_definition(case.definition)]),
-        _admission=case.admission, _captured_source=contents)
-    assert result.ok, result.error
-    assert result.payload["action_result"] == "captured"
-    assert mutated == [True]
+    # The single --pack-command route fails closed on a post-launch source change.
+    (case.root / "actions/helper.py").write_text("raise AssertionError('live child source')\n")
+    with pytest.raises(ValueError, match="source digest changed"):
+        worker._run_pack_command(control, selected=selected)
 
 
 @pytest.mark.parametrize("mutation", [False, True])
@@ -277,6 +250,11 @@ def test_production_command_executes_only_capture_after_last_check(case, tmp_pat
     attempt = tmp_path / "attempt"
     outputs = attempt / "outputs"
     outputs.mkdir(parents=True)
+    if mutation:
+        # One --pack-command route: a post-launch source change fails closed.
+        with pytest.raises(host_module.HostError, match="source digest changed"):
+            case.host._run_command_definition(case.record, {}, outputs, attempt, admission=case.admission)
+        return
     result = case.host._run_command_definition(case.record, {}, outputs, attempt,
         admission=case.admission)
     assert result.returncode == 0
@@ -325,18 +303,10 @@ def test_package_main_uses_captured_loader(case, capsys):
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
+    control = worker.captured_pack_command(selected, ["-m", "astrid.packs.unrelated"])
     (case.root / "__main__.py").write_text("raise AssertionError('live main')\n")
-    assert _run_captured(json.dumps(["-m", "unrelated"]), selected, contents) == 0
-    assert capsys.readouterr().out == "captured\n"
-
-
-def test_captured_command_refuses_installed_namespace_collision(case):
-    custody = _bind(case)
-    with custody.descriptor(case.record) as channel:
-        selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    contents["json.py"] = b"raise AssertionError('installed collision')\n"
-    with pytest.raises(ValueError, match="installed package"):
-        _run_captured(json.dumps(["-m", "unrelated.emit"]), selected, contents)
+    with pytest.raises(ValueError, match="source digest changed"):
+        worker._run_pack_command(control, selected=selected)
 
 
 def test_standalone_runtime_launcher_keeps_its_own_private_handle_class(case, monkeypatch):

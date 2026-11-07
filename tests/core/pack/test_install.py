@@ -63,7 +63,7 @@ def root(tmp_path):
 
 def install(repo, root, **kwargs):
     return install_pack(source=repo.bare, revision=repo.commit, pack_id="hello_ext",
-                        packs_root=root, python_packages={}, **kwargs)
+                        packs_root=root, **kwargs)
 
 
 def snapshot(root: Path):
@@ -850,7 +850,7 @@ os.stat = observe_stat(os.stat)
 os.lstat = observe_stat(os.lstat)
 try:
     result = installer.install_pack(source=sys.argv[1], revision=sys.argv[2] if kind == 'git' else None,
-                                    pack_id=pack_id, packs_root=sys.argv[3], python_packages={})
+                                    pack_id=pack_id, packs_root=sys.argv[3])
 except installer.PackInstallError as error:
     assert kind == 'reserved' and error.code == 'reserved_id', error
 else:
@@ -881,10 +881,10 @@ def observe(event, args):
         lookups.append(event)
 sys.addaudithook(observe)
 source, root = Path(sys.argv[1]), Path(sys.argv[2])
-first = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages={}, **kwargs)
+first = install_pack(source=source, pack_id='hello_ext', packs_root=root, **kwargs)
 old_inode = first.path.stat().st_ino
 (source / 'payload.txt').write_text('new\\n')
-updated = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages={}, **kwargs)
+updated = install_pack(source=source, pack_id='hello_ext', packs_root=root, **kwargs)
 assert updated.changed and updated.path.stat().st_ino != old_inode
 assert (updated.path / 'payload.txt').read_text() == 'new\\n'
 assert not lookups, lookups
@@ -980,8 +980,7 @@ class Inventory(dict):
         assert name == 'selected-demo', name
         return super().__getitem__(name)
 try:
-    install_pack(source=source, pack_id='hello_ext', packs_root=root,
-                 python_packages=Inventory({'selected-demo': '1.0', 'unrelated-demo': '1.0'}))
+    install_pack(source=source, pack_id='hello_ext', packs_root=root)
 except PackInstallError as error:
     assert error.code == 'missing_python', error.code
 else:
