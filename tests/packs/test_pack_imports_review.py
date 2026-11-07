@@ -218,3 +218,19 @@ def test_production_caller_supplies_personal_pins_markers(tmp_path, monkeypatch)
     assert call["canonical_personal_root"] == str((tmp_path / "home-packs" / "personal").resolve())
     assert isinstance(call["release_pins"], dict)
     assert call["python_environment"] == default_environment()
+
+
+def test_private_and_unknown_sdk_imports_are_rejected(tmp_path):
+    """Ported from the retired import_compat checker's SDK assertions."""
+    pack = _pack(tmp_path)
+    contract = ImportContract(sdk_names=frozenset({"dto"}))
+    for statement, module in (
+        ("from astrid.sdk._private import value\n", "astrid.sdk._private"),
+        ("from astrid.sdk import _private\n", "astrid.sdk._private"),
+        ("from astrid.sdk.missing import value\n", "astrid.sdk.missing"),
+    ):
+        (pack / "entry.py").write_text(statement, encoding="utf-8")
+        found = check_pack_imports(pack, contract=contract, manifest=_manifest())
+        assert [(item.module, item.code) for item in found] == [(module, "deep_import")], statement
+    (pack / "entry.py").write_text("from astrid.sdk import dto\n", encoding="utf-8")
+    assert check_pack_imports(pack, contract=contract, manifest=_manifest()) == []
