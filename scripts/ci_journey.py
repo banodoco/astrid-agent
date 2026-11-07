@@ -56,6 +56,8 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 HEALTH_URL = windows.HEALTH_URL
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
+# Packs the journeys need that no longer ship in the Agent: name -> (source, pinned commit).
+JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "ebe8d7e073746c493e460ef4e9a781f5232e037e")}
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
@@ -2208,6 +2210,29 @@ def _sdk_result(text: str) -> dict:
         return json.loads(lines[-1])
 
 
+def _pack_rows(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _pack_rows(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _pack_rows(child)
+
+
+def install_journey_packs(run_cli) -> None:
+    """Install each JOURNEY_PACKS pack from its pinned source through the public `packs add` path.
+
+    ``run_cli(argv, name)`` runs the installed ``astrid`` CLI and returns its stdout.
+    """
+    for pack_id, (source, revision) in JOURNEY_PACKS.items():
+        listing = json.loads(run_cli(["packs", "list", "--json"], "journey-packs-list.json"))
+        if any(row.get("id") == pack_id for row in _pack_rows(listing)):
+            continue
+        run_cli(["packs", "add", source, "--revision", revision, "--pack-id", pack_id,
+                 "--subpath", pack_id, "--yes"], f"journey-pack-{pack_id}.log")
+
+
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
                 duration_s: float = 0.1) -> str:
     """Admit one chiptune SFX task through the installed SDK and return its id, unfollowed."""
@@ -2227,6 +2252,7 @@ def submit_task(version: dict, evidence: Path, project: str, *, create_project: 
                                                    status_name="project-create-capture-status.json"))
         if created.get("ok") is not True:
             raise RuntimeError("Installed project creation failed")
+    install_journey_packs(lambda argv, name: installed_cli(version, argv, evidence, name, timeout=600))
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": duration_s}}
     invocation = _sdk_result(installed_cli_with_capture(version, [json.dumps(request)], evidence,
