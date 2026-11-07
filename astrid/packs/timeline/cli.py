@@ -1,4 +1,4 @@
-"""Timeline execution handlers and compatibility exports for the product CLI.
+"""Timeline execution handlers for the product CLI.
 
 The product parser is owned by ``astrid.core.cli.domain_timelines`` so CLI
 and MCP parser construction does not require the optional Timeline pack.
@@ -3240,50 +3240,11 @@ def _cmd_assets(parsed: argparse.Namespace) -> int:
     return 0
 
 
-# The product parser is core-owned; keep existing Timeline consumers compatible.
-from astrid.core.cli.domain_timelines import (  # noqa: F401,E402
+# The product parser is owned by astrid.core.cli.domain_timelines; these three names are the module's
+# declared public surface (__all__) and the inspect configurator used below.
+from astrid.core.cli.domain_timelines import (  # noqa: E402
     COMMANDS,
-    PRESET_CHOICES,
-    _FAMILY,
-    _JsonFlag,
-    _add_idempotency_key,
-    _add_json_flag,
-    _add_project_arg,
-    _configure_apply,
-    _configure_archive,
-    _configure_assets,
-    _configure_check,
-    _configure_checkout,
-    _configure_commit,
-    _configure_create,
-    _configure_diff,
-    _configure_edit,
-    _configure_elements,
-    _configure_export,
-    _configure_find,
-    _configure_history,
-    _configure_history_edit,
-    _configure_import,
     _configure_inspect,
-    _configure_list,
-    _configure_log,
-    _configure_pending_verb,
-    _configure_place_element,
-    _configure_recover,
-    _configure_render,
-    _configure_replace_parent_media,
-    _configure_script,
-    _configure_show,
-    _configure_status,
-    _configure_update_element,
-    _configure_visualize,
-    _configure_working_verb,
-    _json_object_or_path,
-    _parse_canvas,
-    _parse_insert,
-    _parse_json_object,
-    _positive_int,
-    _visualize_format_argument,
     build_parser,
 )
 

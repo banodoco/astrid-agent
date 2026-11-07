@@ -10,8 +10,8 @@ import pytest
 from astrid.core.generation import cli, entries
 
 
-@pytest.mark.parametrize('verb', [['audio', '--mode', 'sfx'], ['foley']])
-def test_public_foley_alias_and_audio_share_declared_inputs(monkeypatch, tmp_path, capsys, verb):
+@pytest.mark.parametrize('verb', [['audio', '--mode', 'sfx']])
+def test_public_sfx_route_receives_declared_inputs(monkeypatch, tmp_path, capsys, verb):
     from astrid import console
     video = tmp_path / 'clip.mp4'
     video.write_bytes(b'synthetic local fixture')
@@ -33,7 +33,7 @@ def test_foley_help_and_describe_show_license_without_runtime(monkeypatch, capsy
     assert console.main(['generate', 'describe', '--entry', 'audio/hunyuan_video_foley']) == 0
     assert notice in capsys.readouterr().out
     with pytest.raises(SystemExit) as result:
-        cli.main(['foley', '--entry', 'audio/hunyuan_video_foley', '--help'])
+        cli.main(['audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley', '--help'])
     assert result.value.code == 0
     assert notice in capsys.readouterr().out
 

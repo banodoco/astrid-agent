@@ -418,7 +418,6 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                  selected: Mapping[str, PackFacts] | None = None,
                  release_pins: Mapping[str, PinFacts] | None = None,
                  import_contract: ImportContract | None = None,
-                 python_packages: Mapping[str, str] | None = None,
                  python_environment: LockedPythonEnvironment | None = None,
                  before_swap: Callable[[Path], None] | None = None,
                  publication: PublicationPolicy = _PUBLICATION) -> InstallResult:
@@ -443,12 +442,8 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     only after parsing the staged manifest, then passes them to the validator.
     Inventory keys use normalized names (lowercase, dots/underscores replaced
     by hyphens). Only declared requirement names are read. Missing inventory
-    fails closed. Legacy ``python_packages`` snapshots are accepted for call
-    compatibility but supply no admission facts: package names/versions alone
-    cannot establish locked provenance. There is no ambient fallback.
+    fails closed. There is no ambient fallback.
     """
-    if python_environment is not None and python_packages is not None:
-        raise PackInstallError("python_inventory_failed", "Declare exactly one locked Python inventory.")
     if not isinstance(pack_id, str) or not _ID.fullmatch(pack_id):
         raise PackInstallError("invalid_id", "Pack id must be a safe Python identifier.")
     bundled_root = Path(__file__).resolve().parents[2] / "packs"

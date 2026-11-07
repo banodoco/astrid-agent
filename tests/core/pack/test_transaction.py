@@ -415,7 +415,7 @@ def test_single_pack_primitive_refuses_to_mutate_a_group_transaction_root(
     before = group_bytes(packs_root)
     with pytest.raises(PackInstallError) as failure:
         install_pack(source=repo.bare, revision=repo.commit, subpath="packs/alpha",
-                     pack_id="alpha", packs_root=packs_root, python_packages={})
+                     pack_id="alpha", packs_root=packs_root)
     assert failure.value.code == "group_transaction_required"
     assert group_bytes(packs_root) == before
 
