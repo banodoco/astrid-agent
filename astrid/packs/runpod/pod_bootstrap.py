@@ -56,8 +56,8 @@ install_runpod_from_lock() {
 
 # Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
-REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
-BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}"
+REALM_ROOT="${ASTRID_REALM_ROOT:-/root/astrid/realm}"
+BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/root/astrid/bootstrap}"
 ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/root/astrid/engines/vibecomfy-h3}"
 # uv caches and managed Pythons live under the data root unless the caller set them.
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}"

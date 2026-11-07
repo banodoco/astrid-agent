@@ -51,11 +51,13 @@ PLACEMENT = "runpod"
 ENGINE_ID = "vibecomfy-h3"
 DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
-POD_ROOT = "/workspace/astrid"
-# Engine custody (astrid.core.generation.engine_custody) needs owner-only directories. /workspace is a
-# FUSE mount that ignores mkdir's mode, so the engine root lives on the pod's container disk, like the
-# scripts/pod_session.py route. Models may still be cached on /workspace.
-ENGINE_BASE = "/root/astrid/engines"
+# One pod storage root on the container disk. Attempts, outputs, engines, bootstrap and runs all derive
+# from it. /workspace is a small mount on an ephemeral pod (and FUSE: it ignores mkdir's mode), so the
+# task-storage free-space guard would measure the wrong device there.
+POD_ROOT = "/root/astrid"
+# Engine custody (astrid.core.generation.engine_custody) needs owner-only directories, which the
+# container disk honours; this is the scripts/pod_session.py route.
+ENGINE_BASE = f"{POD_ROOT}/engines"
 ENGINE_ROOT = f"{ENGINE_BASE}/{ENGINE_ID}"
 BOOTSTRAP_ROOT = f"{POD_ROOT}/bootstrap"
 RUNS_ROOT = f"{POD_ROOT}/runs"

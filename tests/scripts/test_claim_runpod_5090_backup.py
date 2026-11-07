@@ -158,20 +158,20 @@ def test_release_preflight_accepts_canonical_install_root() -> None:
             return 0, "python=3.12.8", ""
 
     pod = Pod()
-    result = asyncio.run(claim._preflight_release(pod, "/workspace/astrid/engines/vibecomfy-h3"))
+    result = asyncio.run(claim._preflight_release(pod, "/root/astrid/engines/vibecomfy-h3"))
 
-    assert result["release_root"] == "/workspace/astrid/engines/vibecomfy-h3"
-    assert result["release_python"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python"
-    assert result["release_launcher"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/launch-comfy.sh"
+    assert result["release_root"] == "/root/astrid/engines/vibecomfy-h3"
+    assert result["release_python"] == "/root/astrid/engines/vibecomfy-h3/runtime/venv/bin/python"
+    assert result["release_launcher"] == "/root/astrid/engines/vibecomfy-h3/runtime/launch-comfy.sh"
     assert len(pod.commands) == 1
-    assert "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python" in pod.commands[0]
+    assert "/root/astrid/engines/vibecomfy-h3/runtime/venv/bin/python" in pod.commands[0]
 
 
 @pytest.mark.parametrize("release_root", [
-    "/workspace/astrid/engines/vibecomfy-h3/",
-    "/workspace/astrid/engines/vibecomfy-h3/../other",
+    "/root/astrid/engines/vibecomfy-h3/",
+    "/root/astrid/engines/vibecomfy-h3/../other",
     "/workspace/astrid/engines/other",
-    "/workspace/astrid/engines/vibecomfy-h3; echo injected",
+    "/root/astrid/engines/vibecomfy-h3; echo injected",
     "/workspace/release",
 ])
 def test_release_preflight_refuses_other_roots_before_contacting_pod(release_root: str) -> None:
