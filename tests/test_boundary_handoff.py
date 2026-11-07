@@ -87,6 +87,9 @@ elif args == ["--user", "enable", "--now", "astrid-r1.service"]:
     assert not state["enabled"] and not state["running"], "two service owners"
     state.update(r1="active", r1_enabled=True)
     path.write_text(json.dumps(state))
+elif args in (["--user", "enable", "astrid-r1.service"], ["--user", "disable", "astrid-r1.service"]):
+    state["r1_enabled"] = args[1] == "enable"
+    path.write_text(json.dumps(state))
 else:
     raise SystemExit("unexpected manager mutation: " + repr(args))
 ''')
@@ -821,12 +824,162 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
     assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
     assert read_json(c.service.selection)['choices'] == saved
 
-    # Completed-handoff fast path: a requested change is refused, no change is silent.
+    # Completed handoff: a requested change is not refused by handoff; handle()
+    # returns False so the caller's normal install applies it. An incomplete
+    # journal still refuses with the one message and changes nothing.
     monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
-    assert cli.main(['--root', str(c.root), '--command', 'off']) == 1
-    assert 'cannot apply setup choice changes (command)' in capsys.readouterr().out
-    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    journal = handoff.journal_path(c.service)
+    complete = read_json(journal)
+    assert handoff.handle(c.root, c.data, c.backend, policy_change={'command': False}) is False
+    assert read_json(journal) == complete
+    write_json(journal, {**complete, 'phase': 'switching'})
+    midway = journal.read_bytes()
+    with pytest.raises(ValueError, match=r'cannot apply setup choice changes \(command\)'):
+        handoff.handle(c.root, c.data, c.backend, policy_change={'command': False})
+    assert journal.read_bytes() == midway
+    write_json(journal, complete)
+    assert cli.main([*args, '--autostart', 'on']) == 0
+    assert read_json(c.service.selection)['choices']['autostart'] is True
+    applied = read_json(c.service.selection)
+    assert cli.main([*args, '--autostart', 'on']) == 0
+    assert read_json(c.service.selection) == applied
+    # Command and skills branches of the same completed-policy apply: R1 operations only, no R0 stop.
+    opened, synced = [], []
+    monkeypatch.setattr(c.backend, 'open', lambda *a, **k: opened.append('open'), raising=False)
+    monkeypatch.setattr(c.backend, 'sync_skills', lambda *a, **k: synced.append(a), raising=False)
+    c.service.choices = {**applied['choices'], 'command': False}
+    assert handoff.apply_completed_policy(c.backend, {'command': False}) == {'command': {'ok': True, 'reason': None}}
+    assert opened == ['open'] and synced == []
+    assert read_json(c.service.selection)['choices']['command'] is False
+    c.service.choices = {**read_json(c.service.selection)['choices'], 'skills': False, 'skill_copies': True}
+    assert handoff.apply_completed_policy(c.backend, {'skills': False, 'skill_copies': True}).keys() == {'skills', 'skill_copies'}
+    assert opened == ['open'] and len(synced) == 1
+    assert read_json(c.service.selection)['choices']['skill_copies'] is True
+    capsys.readouterr()
     assert cli.main(['--root', str(c.root)]) == 0
     out = capsys.readouterr().out
-    assert 'Astrid setup summary:' in out and 'Astrid will not start at sign-in' in out
-    assert read_json(c.service.selection)['choices'] == saved
+    assert 'Astrid setup summary:' in out
+    assert read_json(c.service.selection)['choices'] == {**saved, 'autostart': True, 'command': False, 'skills': False, 'skill_copies': True}
+
+
+@pytest.fixture
+def completed(case, monkeypatch):
+    c = case
+    manifest = c.root.parent / 'manifest.json'
+    write_json(manifest, c.manifest)
+    saved = {'autostart': False, 'command': True, 'skills': True, 'skill_copies': False}
+    write_json(c.service.selection, {**read_json(c.service.selection), 'choices': saved})
+    monkeypatch.setattr(cli, 'Backend', lambda *a, **kw: c.backend)
+    monkeypatch.setattr(cli, 'validate_manifest', lambda value: value)
+    monkeypatch.setattr(cli, '_prompt_choices', lambda: pytest.fail('no prompt'))
+    args = ['--root', str(c.root), '--manifest', str(manifest), '--uv', sys.executable]
+    assert cli.main(args) == 0
+    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
+    return c, args, saved
+
+
+def _fail_once(monkeypatch, target, name):
+    calls = []
+
+    def step(*a, **k):
+        calls.append(a)
+        if len(calls) == 1:
+            raise RuntimeError('boom')
+    monkeypatch.setattr(target, name, step, raising=False)
+    return calls
+
+
+def _retry(c, args, flag, value, key, new, old, capsys):
+    capsys.readouterr()
+    assert cli.main([*args, flag, value]) == 1
+    out = capsys.readouterr().out
+    assert f'{key}: failed (boom); not saved, rerun to retry' in out and 'Applied' not in out
+    assert read_json(c.service.selection)['choices'][key] == old
+    assert cli.main([*args, flag, value]) == 0
+    assert f'{key}: applied' in capsys.readouterr().out
+    assert read_json(c.service.selection)['choices'][key] == new
+
+
+def test_completed_policy_autostart_failure_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _fail_once(monkeypatch, registration.BoundaryRegistration, 'set_autostart')
+    _retry(c, args, '--autostart', 'on', 'autostart', True, False, capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_command_failure_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _fail_once(monkeypatch, c.backend, 'open')
+    _retry(c, args, '--command', 'off', 'command', False, True, capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skills_failure_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _fail_once(monkeypatch, c.backend, 'sync_skills')
+    _retry(c, args, '--skills', 'off', 'skills', False, True, capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skill_copies_failure_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _fail_once(monkeypatch, c.backend, 'sync_skills')
+    _retry(c, args, '--skill-copies', 'on', 'skill_copies', True, False, capsys)
+    assert len(calls) == 2
+
+
+def _soft_fail_once(monkeypatch, backend, name, fail_result, ok_result):
+    # The real backend reports failure in its return value or recorded state, not by raising.
+    calls = []
+
+    def step(*a, **k):
+        calls.append(a)
+        return fail_result(backend) if len(calls) == 1 else ok_result(backend)
+    monkeypatch.setattr(backend, name, step, raising=False)
+    return calls
+
+
+def _retry_soft(c, args, flag, value, key, new, old, reason, capsys):
+    capsys.readouterr()
+    assert cli.main([*args, flag, value]) == 1
+    out = capsys.readouterr().out
+    assert f'{key}: failed ({reason}); not saved, rerun to retry' in out
+    assert f'{key}: applied' not in out and 'Applied' not in out
+    assert read_json(c.service.selection)['choices'][key] == old
+    assert cli.main([*args, flag, value]) == 0
+    assert f'{key}: applied' in capsys.readouterr().out
+    assert read_json(c.service.selection)['choices'][key] == new
+
+
+def test_completed_policy_command_error_result_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'open',
+        lambda b: setattr(b, 'command_result', {'error': 'OSError'}),
+        lambda b: setattr(b, 'command_result', {'error': None}))
+    _retry_soft(c, args, '--command', 'off', 'command', False, True,
+                'command failed (OSError)', capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skills_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'sync_skills',
+        lambda b: {'ok': False, 'destinations': []},
+        lambda b: {'ok': True, 'destinations': []})
+    _retry_soft(c, args, '--skills', 'off', 'skills', False, True,
+                'skill sync failed; see the installer log', capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skill_copies_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'sync_skills',
+        lambda b: {'ok': False, 'destinations': []},
+        lambda b: {'ok': True, 'destinations': []})
+    _retry_soft(c, args, '--skill-copies', 'on', 'skill_copies', True, False,
+                'skill sync failed; see the installer log', capsys)
+    assert len(calls) == 2

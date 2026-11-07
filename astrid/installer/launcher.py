@@ -164,17 +164,6 @@ def remove_owned_command(service, shim_path: str | None, path_entry: str | None)
     return {"shim": removed_shim, "path": removed_path}
 
 
-def remove_shim(service) -> None:
-    windows = service.system == "win32"
-    target = service.root / "astrid.cmd" if windows else service.home / ".local" / "bin" / "astrid"
-    if owned_shim(target):
-        # A second installation may have taken over the shared POSIX command.
-        if windows or f'exec {shlex.quote(str(service.root.absolute() / "run-astrid"))} "$@"' in target.read_text(encoding="utf-8").splitlines():
-            target.unlink()
-    if windows:
-        _update_user_path(service, add=False)
-
-
 _RUNNER = '''import json, os, re, sys
 from pathlib import Path
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import sys
 import traceback
 from pathlib import Path
@@ -98,9 +97,16 @@ def _way_back_command(choices: dict[str, bool] | None, *, mode: str) -> str:
     return f"curl -fsSL https://astrid.haus/install | sh -s -- {arguments}"
 
 
-def rerun_with_yes(argv) -> str:
-    """The invoked command line with --yes appended: the exact consent rerun."""
-    return " ".join(shlex.quote(str(arg)) for arg in [*argv, "--yes"])
+PUBLIC_INSTALL_LINE = "curl -fsSL https://astrid.haus/install | sh -s --"
+PUBLIC_INSTALL_LINE_WINDOWS = "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))"
+
+
+def consent_rerun_command(choices, *, windows: bool) -> str:
+    """The public install line with --yes and the user's own choice flags: the exact consent rerun."""
+    flags = [f"{'--skill-copies' if name == 'skill_copies' else '--' + name} {'on' if choices[name] else 'off'}"
+             for name in CHOICE_NAMES if name in choices]
+    line = PUBLIC_INSTALL_LINE_WINDOWS if windows else PUBLIC_INSTALL_LINE
+    return " ".join([line, "--yes", *flags])
 
 
 def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
@@ -599,7 +605,7 @@ def main(argv: list[str] | None = None) -> int:
                         existing_install=existing_install, accept_recommended=args.yes,
                         interactive=sys.stdin.isatty()):
                     print(render_plan(resolved_choices))
-                    print("Exact rerun command: " + rerun_with_yes(sys.argv))
+                    print("Exact rerun command: " + consent_rerun_command(args.choices, windows=backend.service.system == "win32"))
                     summary_choices = resolved_choices
                     _print_run_summary(
                         summary_choices, mode=mode,
@@ -612,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
                     policy_change = {name: value for name, value in args.choices.items()
                                      if value != previous_skill_policy[name]} or None
                 if mode in {"install", "update", "rollback"} and managed_by != "pinokio":
-                    from .boundary_handoff import handle
+                    from .boundary_handoff import apply_completed_policy, handle
 
                     def candidate_manifest():
                         if not uv.is_absolute() or not uv.is_file():
@@ -635,6 +641,21 @@ def main(argv: list[str] | None = None) -> int:
                                 summary_choices, mode=mode, install_root=summary_root,
                                 result_note="R0 to R1 handoff handled; saved setup choices were kept and no command, autostart or skills change was made by it.")
                         return 0
+                    applied = (apply_completed_policy(backend, policy_change)
+                               if mode in {"install", "update"} else False)
+                    if applied:
+                        # Completed handoff: the changed choices were applied to R1
+                        # in place. The R0 stop path and legacy discovery are not used.
+                        parts = [f"{name}: applied" if item["ok"] else
+                                 f"{name}: failed ({item['reason']}); not saved, rerun to retry"
+                                 for name, item in applied.items()]
+                        failed = any(not item["ok"] for item in applied.values())
+                        # Summary reflects what was persisted, not what was requested.
+                        saved_choices = read_json(backend.service.selection).get("choices", {})
+                        _print_run_summary(
+                            {**summary_choices, **saved_choices}, mode=mode, install_root=summary_root,
+                            result_note="; ".join(parts) + ("." if failed else "; R0 was not touched."))
+                        return 1 if failed else 0
                 else:
                     from .boundary_registration import journal_path
                     from .r0_stop import refuse_unintegrated_r1_handoff
