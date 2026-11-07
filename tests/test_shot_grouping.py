@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.remote import RemoteShots
 from astrid.sdk.shot_grouping import group_timeline_clips
-from astrid.packs.shots.cli import build_parser
+from astrid.core.cli.domain_shots import build_parser
 
 
 def test_legacy_grouping_is_typed_410_without_runtime_calls() -> None:
