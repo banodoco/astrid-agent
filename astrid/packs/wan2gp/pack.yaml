@@ -252,3 +252,11 @@ resources:
     path: src/driver.py
   - kind: support
     path: src/persistent.py
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        validate_settings:
+          reasons:
+          - no-artifact
+          note: Compiles and validates Wan2GP settings without producing a media artifact.

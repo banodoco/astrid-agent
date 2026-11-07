@@ -947,3 +947,23 @@ resources:
   path: shared/requirements.txt
 - kind: documentation
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        ls:
+          reasons:
+          - no-artifact
+          note: Lists the retained owner's current RunPod lease without producing a media artifact.
+        release:
+          reasons:
+          - no-artifact
+          note: Releases the retained RunPod target without producing a media artifact.
+        setup:
+          reasons:
+          - no-artifact
+          note: Saves validated RunPod preferences without producing a media artifact.
+        status:
+          reasons:
+          - no-artifact
+          note: Inspects the retained RunPod target without producing a media artifact.

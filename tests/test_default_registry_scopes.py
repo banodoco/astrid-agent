@@ -15,15 +15,12 @@ class DefaultRegistryScopeTest(unittest.TestCase):
         canonical_ids = set(canonical.as_mapping())
 
         self.assertIn("rendering.render", canonical_ids)
+        # youtube, moirae, understanding and video_editing moved to poms_packs;
+        # a core-only registry must not carry them.
+        for moved in ("youtube.upload", "moirae.moirae", "understanding.audio_understand", "video_editing.hype"):
+            self.assertNotIn(moved, canonical_ids)
         self.assertIn("vibecomfy.run", canonical_ids)
         self.assertIn("vibecomfy.validate", canonical_ids)
-
-        # youtube, moirae, understanding and video_editing live in poms_packs.
-        for moved in ("youtube", "moirae", "understanding", "video_editing"):
-            with self.subTest(moved=moved):
-                self.assertFalse(
-                    any(eid.split(".", 1)[0] == moved for eid in canonical_ids)
-                )
 
         vibecomfy = canonical.get("vibecomfy.run")
         self.assertEqual(vibecomfy.kind, "external")
@@ -37,10 +34,9 @@ class DefaultRegistryScopeTest(unittest.TestCase):
         canonical = load_orchestrator_registry(executor_registry=load_executor_registry())
         canonical_ids = set(canonical.as_mapping())
 
-        # Only metadata.local_orchestrator actions are orchestrators; no core
-        # pack declares one now (h3_av.transform is a plain executor).
+        # Only metadata.local_orchestrator actions are orchestrators; the
+        # core packs declare none (the video_editing workflows moved to poms_packs).
         self.assertEqual(canonical_ids, set())
-        self.assertIn("h3_av.transform", load_executor_registry().as_mapping())
         self.assertFalse(any("vibecomfy" in orchestrator_id for orchestrator_id in canonical_ids))
         self.assertFalse(any(orchestrator_id == "youtube.upload" for orchestrator_id in canonical_ids))
         with self.assertRaises(KeyError):
@@ -54,8 +50,6 @@ class DefaultRegistryScopeTest(unittest.TestCase):
     def test_external_executor_roots_are_pack_native(self) -> None:
         registry = load_executor_registry()
 
-        with self.assertRaises(KeyError):
-            registry.get("moirae.moirae")
         vibecomfy = registry.get("vibecomfy.run").metadata
         self.assertTrue(vibecomfy["pack_root"].endswith("astrid/packs/vibecomfy"))
         self.assertEqual(vibecomfy["runtime_file"], "actions/run/run.py")
