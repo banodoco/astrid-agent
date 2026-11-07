@@ -821,11 +821,20 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
     assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
     assert read_json(c.service.selection)['choices'] == saved
 
-    # Completed-handoff fast path: a requested change is refused, no change is silent.
+    # Completed handoff: a requested change is not refused by handoff; handle()
+    # returns False so the caller's normal install applies it. An incomplete
+    # journal still refuses with the one message and changes nothing.
     monkeypatch.setattr(c.backend, 'verify', lambda *a: None)
-    assert cli.main(['--root', str(c.root), '--command', 'off']) == 1
-    assert 'cannot apply setup choice changes (command)' in capsys.readouterr().out
-    assert read_json(handoff.journal_path(c.service))['phase'] == 'complete'
+    journal = handoff.journal_path(c.service)
+    complete = read_json(journal)
+    assert handoff.handle(c.root, c.data, c.backend, policy_change={'command': False}) is False
+    assert read_json(journal) == complete
+    write_json(journal, {**complete, 'phase': 'switching'})
+    midway = journal.read_bytes()
+    with pytest.raises(ValueError, match=r'cannot apply setup choice changes \(command\)'):
+        handoff.handle(c.root, c.data, c.backend, policy_change={'command': False})
+    assert journal.read_bytes() == midway
+    write_json(journal, complete)
     assert cli.main(['--root', str(c.root)]) == 0
     out = capsys.readouterr().out
     assert 'Astrid setup summary:' in out and 'Astrid will not start at sign-in' in out

@@ -279,13 +279,18 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     The handoff never changes command, autostart or skill policy. A requested
     change (``policy_change``) is therefore refused before any handoff work
     instead of being silently dropped; unchanged saved policy is carried over.
+    Once the handoff is complete, changed choices are not handled here (False is
+    returned) so a later explicit install applies them.
     """
     path = journal_path(backend.service)
     if os.path.lexists(path):
-        if policy_change:
-            raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
         transaction = BoundaryHandoff(backend)
         value = transaction._load()
+        if policy_change and value["phase"] == "complete" and not rollback:
+            # The handoff is finished: the caller's normal install applies the new choices.
+            return False
+        if policy_change:
+            raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
         if value["phase"] == "complete" and not rollback:
             candidate, destination = transaction.validate_active(value)
             backend.verify(candidate, destination, value["realm_id"])

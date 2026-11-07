@@ -14,11 +14,13 @@ FLAGS = (
 
 
 def test_maintained_setup_guides_explain_approved_default_execution():
+    # README is main-owned onboarding (#291 removed its install commands); it keeps the consent text only.
     for relative in ("docs/setup/SKILL.md", "docs/getting-started.md", "README.md"):
         content = (ROOT / relative).read_text(encoding="utf-8")
-        for flag in FLAGS:
-            assert flag in content, (relative, flag)
-        assert DEFAULTS in content, relative
+        if relative != "README.md":
+            for flag in FLAGS:
+                assert flag in content, (relative, flag)
+            assert DEFAULTS in content, relative
         assert "--yes" in content, relative
         assert "consent" in content.lower(), relative
         assert "approved" in content.lower(), relative
@@ -39,6 +41,6 @@ def test_setup_guides_have_one_approved_installer_command_per_platform():
         "curl -fsSL https://astrid.haus/install | sh -s -- --yes " + DEFAULTS,
         "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes " + DEFAULTS,
     )
-    for relative in ("docs/setup/SKILL.md", "docs/getting-started.md", "README.md"):
+    for relative in ("docs/setup/SKILL.md", "docs/getting-started.md"):
         content = (ROOT / relative).read_text(encoding="utf-8")
         assert all(command in content for command in expected), relative
