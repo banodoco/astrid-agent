@@ -99,13 +99,6 @@ dev = [
     "wheel==0.46.3",
 ]
 
-# Runtime installs need a configured package index or local wheelhouse because
-# runpod-lifecycle is not published on public PyPI.
-# Install: pip install 'astrid[runpod]'
-runpod = [
-    "runpod-lifecycle>=0.3.1.dev0,<0.4",
-]
-
 [tool.setuptools]
 # Only the package-data patterns below are release inputs.  In particular,
 # do not let setuptools' VCS/egg-info package-data defaults pull authoring
