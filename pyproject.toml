@@ -196,8 +196,6 @@ astrid = [
     # Additional resources are declared by the V3 pack manifests/elements;
     # keep these exact directories/files narrow so no unrelated media enters
     # the wheel.
-    "packs/astrid_motion/preview/render.mjs",
-    "packs/blender/server/blender-render-api.service",
     "packs/rendering/actions/timeline_visualize/motion/element_motion.mjs",
     "packs/local/rendering/elements/effects/end-codex-transform/assets/*.png",
     "packs/local/rendering/elements/effects/end-codex-transform/assets/plate.mp4",
