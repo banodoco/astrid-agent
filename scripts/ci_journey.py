@@ -1448,6 +1448,8 @@ def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     """Describe Windows login-install selection state without recording paths or values."""
     default = program_root()
     record_path = selection_path()
+    private = default.parent / "Astrid Installer" / "astrid-install.json"
+    legacy = default.parent / "astrid-install.json"
     present = record_path.exists()
     selection = None
     readable = None
@@ -1461,6 +1463,9 @@ def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     return {
         "default_install_marker_present": (default / "install.json").exists(),
         "default_current_marker_present": (default / "current").exists(),
+        "private_selection_present": private.exists(),
+        "legacy_selection_present": legacy.exists(),
+        "selection_location": ("private" if record_path == private else "legacy") if present else None,
         "selection_present": present,
         "selection_readable": readable,
         "selection_is_object": is_object,
@@ -1495,12 +1500,6 @@ def _same_path(a, b) -> bool:
         return os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b)
     except (OSError, ValueError):
         return False
-
-
-def refusal_prior_selection(run_root: Path) -> tuple[Path, Path]:
-    """Return the fresh journey's roots whose uninstalled receipt the refusal leg may inherit."""
-    prior_run = run_root.with_name("astrid-r1-direct-windows")
-    return prior_run / "program", prior_run / "data"
 
 
 def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_check: bool = False,
@@ -2533,8 +2532,10 @@ def execute(args: argparse.Namespace) -> dict:
             except Exception as diagnostic_error:
                 host_availability_diagnostic = {"capture_error": type(diagnostic_error).__name__}
         if narrow_refusal:
+            prior_run = run_root.with_name("astrid-r1-direct-windows")
+            related_selection = (prior_run / "program", prior_run / "data")
             assert_host_available(host_leg, root, data, skip_process_check=True,
-                                  related_uninstalled_selection=refusal_prior_selection(run_root))
+                                  related_uninstalled_selection=related_selection)
         else:
             assert_host_available(host_leg, root, data)
     except Exception as exc:
@@ -2633,12 +2634,7 @@ def execute(args: argparse.Namespace) -> dict:
                                 assert_host_available("cleanup", root, data, release=1)
                             else:
                                 if narrow_refusal:
-                                    # The refusal's R0 selection is discarded by the candidate's
-                                    # migration when the prior fresh leg's receipt is retained at
-                                    # the private path, so only that exact receipt is related.
-                                    assert_host_available(
-                                        "cleanup", root, data, skip_process_check=True,
-                                        related_uninstalled_selection=refusal_prior_selection(run_root))
+                                    assert_host_available("cleanup", root, data, skip_process_check=True)
                                 else:
                                     assert_host_available("cleanup", root, data)
                             if not narrow_refusal and not cleanup_sentinel["alive"]:
@@ -2658,6 +2654,13 @@ def execute(args: argparse.Namespace) -> dict:
                                     "schema_version": 1, "scenario": args.leg}
                                 recorded.update(status="fail", final_cleanup="fail",
                                                 cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
+                                if sys.platform == "win32":
+                                    try:
+                                        recorded["cleanup_windows_login_selection_diagnostic"] = (
+                                            windows_login_selection_diagnostic(root, data))
+                                    except Exception as diagnostic_error:
+                                        recorded["cleanup_windows_login_selection_diagnostic"] = {
+                                            "capture_error": type(diagnostic_error).__name__}
                                 write_json(result_path, recorded)
                             except Exception as receipt_error:
                                 print(f"Journey cleanup receipt failed: {type(receipt_error).__name__}: {receipt_error}",
