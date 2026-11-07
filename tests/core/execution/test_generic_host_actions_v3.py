@@ -764,7 +764,7 @@ def pack(tmp_path, *, code="def run(value='default'):\n    return value\n", path
     }
     if conditions is not None:
         declaration["conditions"] = conditions
-    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "unrelated", "name": "Unrelated", "version": "1.0.0", "actions": {"calculate": declaration}}))
+    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "unrelated", "name": "Unrelated", "version": "1.0.0", "pack_api": "2.0", "actions": {"calculate": declaration}}))
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[root], client=runtime)
     records = host.discover()

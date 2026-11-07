@@ -145,6 +145,9 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
+    # The core Hivemind pack manifest declares its agent-facing skill as a resource.
+    "core/hivemind/docs/*",
+    "core/hivemind/LICENSE",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
 

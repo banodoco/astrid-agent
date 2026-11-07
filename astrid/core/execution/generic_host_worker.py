@@ -93,7 +93,12 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
 
 
 def _run_captured_command(encoded: str, selected, contents) -> int:
-    """Compatibility entry for retained Runtime descriptors; code stays live."""
+    """Run a command named by a Runtime source descriptor through the selected-pack route.
+
+    The pack id and root come from the descriptor; the command is then checked
+    and executed exactly as ``--pack-command`` does. Emitted by the generic host
+    for non-bridged captured commands and by the orchestrator runner.
+    """
     from astrid.core.pack.identity import pack_digest
 
     root = Path(selected["source"]["root"])
