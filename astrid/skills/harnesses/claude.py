@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ..discovery import SkillDescriptor
+from astrid.core.contracts.errors import AstridError
 from .base import (
     Action,
     HarnessAdapter,
@@ -14,6 +15,7 @@ from .base import (
     ensure_symlink,
     managed_target_matches,
     remove_symlink,
+    require_owned_target,
 )
 
 
@@ -37,6 +39,13 @@ class ClaudeAdapter(HarnessAdapter):
         steps: list[PlannedStep] = []
         for descriptor in descriptors:
             target = self.target_for(descriptor)
+            try:
+                require_owned_target(target, (descriptor.skill_dir.resolve(),
+                    *opts.get("owned_sources", {}).get(target, ())))
+            except AstridError as exc:
+                steps.append(PlannedStep(str(exc), target=target,
+                    extras={"changed": False, "conflict": str(exc)}))
+                continue
             if action == "install":
                 steps.append(
                     PlannedStep(
@@ -54,7 +63,12 @@ class ClaudeAdapter(HarnessAdapter):
         for descriptor in descriptors:
             target = self.target_for(descriptor)
             if action == "install":
-                changed = ensure_symlink(target, descriptor.skill_dir, force=force)
+                try:
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=opts.get("mechanism", "symlink"),
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("created" if changed else "ok") + f" {target}",
@@ -63,7 +77,12 @@ class ClaudeAdapter(HarnessAdapter):
                     )
                 )
             else:
-                changed = remove_symlink(target)
+                try:
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir.resolve(),
+                        *opts.get("owned_sources", {}).get(target, ())))
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("removed" if changed else "absent") + f" {target}",

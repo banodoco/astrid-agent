@@ -13,13 +13,24 @@ path below. Both paths use the same installed Runtime and workspace.
 Run the install line for this operating system. It installs Astrid on a new
 machine, repairs or restarts an existing installation, and keeps existing
 work. Open Terminal on macOS or Linux, or PowerShell on Windows. Use the line
-from [Getting Started](../getting-started.md). Read the installer before running it:
+from [Getting Started](../getting-started.md). Read the installer before running it.
+On a fresh install, ask for consent once if it has not already been given. After
+the user approves a handoff, keep its selected values and run its single
+execution command as approved; do not ask again. `--yes` records consent that
+was already given and must not be used to bypass the consent question.
 
-- macOS or Linux: `curl -fsSL https://astrid.haus/install | sh`
-- Windows PowerShell: `irm https://astrid.haus/install.ps1 | iex`
+The recommended choices are startup at sign-in on, the `astrid` terminal
+command on, Astrid skills on, and skill copies off. The supported choice flags
+are `--autostart on|off`, `--command on|off`, `--skills on|off`, and
+`--skill-copies on|off`. For the recommended choices, run one command after
+consent:
+
+- macOS or Linux: `curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off`
+- Windows PowerShell: `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off`
 
 For an agent using another shell on Windows (such as Git Bash), run
-`powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astrid.haus/install.ps1 | iex"`.
+`powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off"`
+after consent, or preserve the user's approved choice values in that command.
 
 If the agent runs inside an MSIX-packaged Windows desktop app, use standalone
 PowerShell opened from the Start menu for installation. Launching PowerShell

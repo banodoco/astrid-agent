@@ -1,0 +1,878 @@
+{
+  "version": 1,
+  "install_line": "curl -fsSL https://astrid.haus/install | sh -s --",
+  "cases": [
+    {
+      "id": "untouched",
+      "argv": [
+        "--yes"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "already-set-up",
+      "argv": [
+        "--yes"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-autostart-off",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-command-off",
+      "argv": [
+        "--yes",
+        "--command",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-skills-off",
+      "argv": [
+        "--yes",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "edit-skill-copies-on",
+      "argv": [
+        "--yes",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "combined-0000",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "settings-0000",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-0000",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-0001",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-0001",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-0001",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "combined-0010",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "settings-0010",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-0010",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--command",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-0011",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-0011",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-0011",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--command",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "combined-0100",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "settings-0100",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "on",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-0100",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-0101",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-0101",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "on",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-0101",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-0110",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "on",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-0110",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-0111",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-0111",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "off",
+        "--command",
+        "on",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-0111",
+      "argv": [
+        "--yes",
+        "--update",
+        "--autostart",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "off",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "combined-1000",
+      "argv": [
+        "--yes",
+        "--command",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "settings-1000",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-1000",
+      "argv": [
+        "--yes",
+        "--update",
+        "--command",
+        "off",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-1001",
+      "argv": [
+        "--yes",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1001",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-1001",
+      "argv": [
+        "--yes",
+        "--update",
+        "--command",
+        "off",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1010",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "off",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-1010",
+      "argv": [
+        "--yes",
+        "--update",
+        "--command",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-1011",
+      "argv": [
+        "--yes",
+        "--command",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1011",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "off",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-1011",
+      "argv": [
+        "--yes",
+        "--update",
+        "--command",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "off",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1100",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "on",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-1100",
+      "argv": [
+        "--yes",
+        "--update",
+        "--skills",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "combined-1101",
+      "argv": [
+        "--yes",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1101",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "on",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-1101",
+      "argv": [
+        "--yes",
+        "--update",
+        "--skills",
+        "off",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "off",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "settings-1110",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "on",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "off"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "update-1110",
+      "argv": [
+        "--yes",
+        "--update"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    },
+    {
+      "id": "settings-1111",
+      "argv": [
+        "--yes",
+        "--autostart",
+        "on",
+        "--command",
+        "on",
+        "--skills",
+        "on",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-1111",
+      "argv": [
+        "--yes",
+        "--update",
+        "--skill-copies",
+        "on"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "on"
+      }
+    },
+    {
+      "id": "update-legacy-saved-defaults",
+      "argv": [
+        "--update"
+      ],
+      "choices": {
+        "autostart": "on",
+        "command": "on",
+        "skills": "on",
+        "skill_copies": "off"
+      }
+    }
+  ]
+}

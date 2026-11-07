@@ -36,7 +36,7 @@ from .core import (
     read_json,
     write_json,
 )
-from .launcher import install_shim, owned_shim, remove_shim
+from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, clone_source, install_tools, source
@@ -1246,9 +1246,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                            "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
 
-    def persist_identity(self, version: Version) -> None:
+    def persist_identity(self, version: Version, *, persist_choices: bool = True) -> None:
         """Upgrade legacy version and selection records without service changes."""
-        persist_install_identity(version, self.root, selection=self.service.selection)
+        choices = getattr(self.service, "choices", None) if persist_choices else None
+        fields = {"choices": choices} if choices is not None else None
+        if fields is not None and not self.service.recorded():
+            # Never publish a choices-only selection: recorded() must be able
+            # to authenticate it before startup registration. Fresh installs
+            # and healthy legacy repair already have an owned install marker.
+            marker = read_json(self.root / "install.json")
+            if marker.get("owner") == LABEL and marker.get("data_root"):
+                data = absolute(marker["data_root"])
+                fields.update(owner=LABEL, program_root=str(self.root), data_root=str(data))
+            else:
+                fields = None  # Registration will publish the complete receipt.
+        persist_install_identity(version, self.root, selection=self.service.selection,
+                                 fields=fields)
 
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
@@ -1412,13 +1425,44 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if state == "crashed":
                 raise service_failure(crashed=True)
 
-    def sync_skills(self, version: Version) -> None:
+    def sync_skills(self, version: Version) -> dict:
         """Best-effort install of Astrid's skill view into detected harnesses."""
-        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync"]
+        choices = getattr(self.service, "choices", None) or {}
+        skills_on = choices.get("skills", True)
+        copies_on = choices.get("skill_copies", False)
+        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+                "--skills", "on" if skills_on else "off",
+                "--skill-copies", "on" if copies_on else "off"]
+        return self._run_skills(version, argv)
+
+    def remove_skills(self, version: Version) -> dict:
+        """Clean proven owned targets without changing the saved install policy."""
+        script = "import json; from astrid.skills import disable_owned; print(json.dumps(disable_owned()))"
+        return self._run_skills(version, [version.python, "-X", "utf8", "-I", "-c", script], action="cleanup")
+
+    def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
         failed = False
         try:
-            self.run(argv, extra_env=version.env, timeout=60)
-            outcome = "Astrid skills sync completed successfully.\n"
+            output = self.run(argv, extra_env=version.env, timeout=60)
+            report = json.loads(output)
+            actions = report.get("actions", [])
+            destinations = sorted({
+                str(step["target"])
+                for action in actions if isinstance(action, dict)
+                for step in action.get("steps", [])
+                if isinstance(step, dict) and isinstance(step.get("target"), str)
+            })
+            removed = sorted({
+                str(path)
+                for action in actions if isinstance(action, dict)
+                for path in action.get("removed", [])
+                if isinstance(path, str)
+            })
+            conflicts = [*report.get("conflicts", []), *report.get("ambiguous", [])]
+            outcome = f"Astrid skills {action} completed successfully.\n"
+            for conflict in conflicts:
+                if isinstance(conflict, dict):
+                    outcome += f"Preserved skill target {conflict.get('path', '(unknown path)')}: {conflict.get('reason', 'ownership is ambiguous')}.\n"
         except (OSError, subprocess.SubprocessError) as exc:
             failed = True
             output = "" if isinstance(exc, subprocess.CalledProcessError) else (
@@ -1426,12 +1470,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             )
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
-            outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
+            outcome = str(output) + f"\nAstrid skills {action} failed ({type(exc).__name__}).\n"
+            destinations = []
+            removed = []
+            conflicts = []
+        except (ValueError, TypeError, AttributeError) as exc:
+            failed = True
+            outcome = f"Astrid skills {action} returned an unreadable result ({type(exc).__name__}).\n"
+            destinations = []
+            removed = []
+            conflicts = []
         with self.log.open("a", encoding="utf-8") as stream:
             platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
-            self.say("Couldn't add Astrid's skill to your agents; see the log.")
+            self.say("Couldn't clean up Astrid's skills; see the log." if action == "cleanup" else
+                     "Couldn't add Astrid's skill to your agents; see the log.")
+        result = {"ok": not failed, "destinations": destinations}
+        if removed:
+            result["removed"] = removed
+        if conflicts:
+            result["conflicts"] = conflicts
+        return result
 
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
         # Keep the immediately previous program and backup. Failures cleaning an
@@ -1533,7 +1593,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                                expected_realm_id=expected_realm_id)
         if expected_realm is not None and realm_root != expected_realm:
             raise ValueError("The selected workspace changed; no files were removed.")
-        remove_shim(self.service)
+        remove_owned_command(self.service, marker.get("command_shim"), marker.get("command_path"))
+        if self.service.system != "win32":
+            command_shim = self.service.home / ".local" / "bin" / "astrid"
+            if os.path.lexists(command_shim):
+                # POSIX command shims live outside the program tree. Keep a
+                # retained foreign or edited file visible as uninstall residue.
+                residue.append(command_shim)
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:
             data_targets.insert(0, realm_root)
@@ -1601,14 +1667,65 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
-        shim = hint = None
-        try:
-            shim, hint = install_shim(self.service, say=report)
-        except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
-            report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
         marker = self.root / "install.json"
-        command_shim = shim if self.service.system == "win32" or hint is None else None
-        write_json(marker, {**read_json(marker), "command_shim": str(command_shim) if command_shim else None})
+        current_marker = read_json(marker)
+        choices = getattr(self.service, "choices", None) or {}
+        command_on = choices.get("command", True)
+        if not command_on:
+            removed = {"shim": False, "path": False}
+            error = None
+            try:
+                removed = remove_owned_command(
+                    self.service, current_marker.get("command_shim"), current_marker.get("command_path"))
+            except Exception as exc:  # noqa: BLE001 - optional command cleanup must not stop setup
+                error = type(exc).__name__
+                report(f"Astrid command cleanup failed ({error}); check the recorded shim and PATH entry.")
+            command_shim = (self.root / "astrid.cmd" if self.service.system == "win32" else
+                            self.service.home / ".local" / "bin" / "astrid")
+            preserved_shim = os.path.lexists(command_shim) and not removed["shim"]
+            if preserved_shim:
+                report(f"Astrid command shim preserved at {command_shim}; ownership could not be verified.")
+            self.command_result = {
+                "action": "disabled", "path": None, "path_hint": None, "error": error,
+                "path_added": None, "path_present": False,
+                "removed_shim": removed["shim"], "removed_path": removed["path"],
+                "preserved_shim": preserved_shim,
+            }
+            if error is None:
+                write_json(marker, {**current_marker, "command_shim": None, "command_path": None})
+            try:
+                webbrowser.open("https://astrid.haus/?connect=1")
+            except OSError:
+                pass
+            return
+
+        shim = hint = None
+        error = None
+        effects = {}
+        try:
+            # Once Astrid has recorded a PATH entry it added, maintenance may
+            # retain it but must not restore it after the user removes it. A
+            # prior shim receipt also marks this as maintenance: don't add a
+            # PATH entry that was pre-existing and later removed by the user.
+            previously_owned_path = current_marker.get("command_path")
+            shim, hint = install_shim(self.service, say=report,
+                                      manage_path=not bool(previously_owned_path or current_marker.get("command_shim")),
+                                      details=effects)
+        except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
+            error = type(exc).__name__
+            report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
+        self.command_result = {
+            "action": "ready" if shim else "skipped",
+            "path": str(shim) if shim else None,
+            "path_hint": hint,
+            "error": error,
+            "path_added": effects.get("path_added"),
+            "path_present": effects.get("path_present", False),
+            "shim_change": effects.get("shim_change"),
+        }
+        write_json(marker, {**current_marker,
+                            "command_shim": str(shim) if shim else current_marker.get("command_shim"),
+                            "command_path": effects.get("path_added") or previously_owned_path})
         try:
             webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:

@@ -10,18 +10,27 @@ path below. Both paths keep projects, media, models and your agent on your
 computer through Astrid Runtime.
 
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
-before running it. It keeps your existing workspace and credentials.
+before running it. It keeps your existing workspace and credentials. Ask for
+consent once before a fresh install if it has not already been given. If an
+approved handoff already includes setup choices, keep those choices and run
+its command unchanged without asking again.
+
+Recommended choices are startup at sign-in on, the `astrid` terminal command
+on, Astrid skills on, and skill copies off. You can select each with
+`--autostart on|off`, `--command on|off`, `--skills on|off`, and
+`--skill-copies on|off`. After consent, run one installer command for your OS
+with those recommended values:
 
 On macOS or Linux, run:
 
 ```sh
-curl -fsSL https://astrid.haus/install | sh
+curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off
 ```
 
 On Windows, open PowerShell and run:
 
 ```powershell
-irm https://astrid.haus/install.ps1 | iex
+& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off
 ```
 
 Then open [astrid.haus](https://astrid.haus) and follow the on-screen steps.
