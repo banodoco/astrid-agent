@@ -61,6 +61,10 @@ def prepare_retained_generation(
         sources[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     if dict(installation.compatibility) != lease_owner.selection.compatibility:
         raise PreparedWorkerError("installer and retained lease compatibility differ")
+    if placement.source_root is None:
+        # Lazy on first RunPod prepare: the Agent derives its pinned bootstrap sources.
+        from astrid.packs.runpod import managed_sources
+        placement.source_root = managed_sources.ensure_managed_sources()
     bootstrap_digest = installation.validate_sources(placement.source_root)
     with lease_owner.lock:
         prior = lease_owner._read()

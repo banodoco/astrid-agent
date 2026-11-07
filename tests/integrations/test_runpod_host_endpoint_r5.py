@@ -78,7 +78,7 @@ def retained_host(retained, tmp_path, monkeypatch, real_runtime, tuple_sources):
     monkeypatch.setattr(remote_placement, "subprocess", subprocess)
     monkeypatch.setattr(target_selection, "resolve_runtime_data_root", lambda: tmp_path / "machine")
     monkeypatch.setattr(target_selection, "read_runpod_preferences", lambda: c.prefs)
-    monkeypatch.setenv("ASTRID_RUNPOD_SOURCE_ROOT", str(tuple_sources))
+    monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     c.pod.marker = f"{remote_placement.BOOTSTRAP_ROOT}/{remote_placement.source_digest(tuple_sources)}/ok"
     c.context.deadline = time.monotonic() + 600
@@ -265,7 +265,7 @@ def test_runtime_claim_binds_one_endpoint_and_delivers(retained, comfy, tmp_path
     c.context.deadline = time.monotonic() + 180
     monkeypatch.setattr(target_selection, "resolve_runtime_data_root", lambda: tmp_path / "machine")
     monkeypatch.setattr(target_selection, "read_runpod_preferences", lambda: c.prefs)
-    monkeypatch.setenv("ASTRID_RUNPOD_SOURCE_ROOT", str(c.placement.source_root))
+    monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(c.placement.source_root))
     # This synthetic node has no model-loader role; the route must not bypass
     # the ordinary ambiguity gate for a fictitious loader.
     del comfy.schema["SeedImage"]["input"]["required"]["ckpt_name"]

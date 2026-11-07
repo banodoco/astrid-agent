@@ -1119,11 +1119,13 @@ def run_remote_placement(
     """Run ``h3_av.transform`` args on a claimed RunPod pod and return the local result shape."""
     env = os.environ if env is None else env
     out = Path(args.out).expanduser().resolve()
-    source = env.get("ASTRID_RUNPOD_SOURCE_ROOT")
+    from .managed_sources import ensure_managed_sources
+
+    source = ensure_managed_sources()
     wrapper = RemotePlacement(
         provider or LifecyclePodProvider(out / "runpod-claims"),
         limits=Limits.from_env(env),
-        source_root=Path(source) if source else None,
+        source_root=source,
         leave_running=env.get("ASTRID_RUNPOD_LEAVE_RUNNING", "") in ("1", "true", "yes"),
         pod_id=env.get("ASTRID_RUNPOD_POD_ID") or None,
         **overrides,

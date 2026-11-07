@@ -65,7 +65,7 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
                     f'{remote_placement.source_digest(c.placement.source_root)}/ok')
     monkeypatch.setattr(target_selection, 'resolve_runtime_data_root', lambda: tmp_path / 'machine')
     monkeypatch.setattr(target_selection, 'read_runpod_preferences', lambda: c.prefs)
-    monkeypatch.setenv('ASTRID_RUNPOD_SOURCE_ROOT', str(c.placement.source_root))
+    monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(c.placement.source_root))
     engine_root = '/workspace/astrid/engines/vibecomfy-h3'
     recipe = engine_recipe.load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
     plan = engine_runner.plan_install(recipe, root=engine_root, placement='local')

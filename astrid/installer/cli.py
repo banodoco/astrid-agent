@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import traceback
 from pathlib import Path
@@ -95,6 +96,11 @@ def _way_back_command(choices: dict[str, bool] | None, *, mode: str) -> str:
     if sys.platform == "win32":
         return f"& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) {arguments}"
     return f"curl -fsSL https://astrid.haus/install | sh -s -- {arguments}"
+
+
+def rerun_with_yes(argv) -> str:
+    """The invoked command line with --yes appended: the exact consent rerun."""
+    return " ".join(shlex.quote(str(arg)) for arg in [*argv, "--yes"])
 
 
 def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=False,
@@ -593,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                         existing_install=existing_install, accept_recommended=args.yes,
                         interactive=sys.stdin.isatty()):
                     print(render_plan(resolved_choices))
+                    print("Exact rerun command: " + rerun_with_yes(sys.argv))
                     summary_choices = resolved_choices
                     _print_run_summary(
                         summary_choices, mode=mode,

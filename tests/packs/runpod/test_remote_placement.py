@@ -596,13 +596,14 @@ def test_transform_runpod_calls_the_wrapper(tmp_path, monkeypatch):
     assert not hasattr(transform, "PlacementNotImplemented")
 
 
-def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs):
+def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs, monkeypatch):
     provider = _provider(sources)
     request, asset_map = inputs
     args = SimpleNamespace(request=request, asset_map=asset_map, out=tmp_path / "o", project=None,
                            editorial_approved=False, execution_request=None, cleanup_receipt=None)
     env = {"ASTRID_RUNPOD_MAX_SPEND_EUR": "3.5", "ASTRID_RUNPOD_DEADLINE_SECONDS": "7200",
-           "ASTRID_RUNPOD_SOURCE_ROOT": str(sources), "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
+           "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
+    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: sources)
     result = rp.run_remote_placement(
         args, provider=provider, env=env, verify_fn=lambda *_: None, ffprobe_fn=lambda *_: None,
         sleep=lambda s: None)
