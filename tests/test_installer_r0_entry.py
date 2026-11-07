@@ -656,3 +656,32 @@ def test_public_cli_windows_r0_refuses_with_exact_line_before_any_change(tmp_pat
     assert (snapshot(root), snapshot(data), service.selection.read_bytes(), service.path.read_bytes()) == before
     assert state(manager)["calls"] == []
     assert not r0_stop._marker_path(made[-1].service).exists()
+
+
+def test_public_cli_windows_r0_refusal_keeps_the_legacy_selection_r0_reads(tmp_path, monkeypatch, capsys):
+    """Run 42406972807: migration moved R0's live record before the refusal."""
+    from astrid.installer import boundary_handoff
+    from astrid.installer.service import install_selection
+
+    root, data, _, service, manager = public_case(tmp_path, monkeypatch)
+    local = tmp_path / "local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    legacy = local / "astrid-install.json"
+    write_json(legacy, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
+    before = legacy.read_bytes()
+    # On Windows the R1 selection is the private record, which R0 never wrote.
+    service.selection.unlink()
+
+    def windows_backend(*args, **kwargs):
+        backend = Backend(*args, **kwargs)
+        backend.service.system = "win32"
+        backend.service.powershell = lambda script: pytest.fail("Task Scheduler must not be called")
+        return backend
+
+    monkeypatch.setattr(cli, "Backend", windows_backend)
+    monkeypatch.setattr(Installer, "run", lambda *a, **kw: pytest.fail("installer ran before refusal"))
+    assert cli.main(["--update", "--root", str(root), "--uv", sys.executable]) == 1
+    assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in capsys.readouterr().out.splitlines()
+    assert legacy.read_bytes() == before
+    assert not os.path.lexists(install_selection(Path.home(), "win32"))
+    assert state(manager)["calls"] == []

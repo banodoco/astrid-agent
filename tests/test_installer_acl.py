@@ -405,12 +405,12 @@ def test_windows_leaves_unowned_or_contended_legacy_selection_untouched(tmp_path
     assert not install_selection(home, "win32").exists()
 
 
-def test_windows_retained_private_selection_wins_over_legacy(tmp_path, monkeypatch, windows_dacls):
+def test_windows_retained_private_selection_wins_over_legacy_receipt(tmp_path, monkeypatch, windows_dacls):
     from astrid.installer.service import install_selection, migrate_install_selection
 
     local, home = tmp_path / "local", tmp_path / "home"
     monkeypatch.setenv("LOCALAPPDATA", str(local))
-    legacy = _legacy_selection(local, {"owner": LABEL, "data_root": "stale"})
+    legacy = _legacy_selection(local, {"owner": LABEL, "data_root": "stale", "uninstalled": True})
     selection = install_selection(home, "win32")
     write_json(selection, {"owner": LABEL, "data_root": "current"})
     monkeypatch.setattr(platform, "lock_file", Mock())
@@ -419,6 +419,139 @@ def test_windows_retained_private_selection_wins_over_legacy(tmp_path, monkeypat
     migrate_install_selection(home, "win32")
 
     assert read_json(selection) == {"owner": LABEL, "data_root": "current"}
+    assert not legacy.exists()
+
+
+def _selected_release(root, release):
+    from astrid.installer.core import Version
+
+    folder = root / "versions" / f"v{release}"
+    folder.mkdir(parents=True)
+    version = Version(folder, folder / "py" / "Scripts" / "python.exe", folder / "profile.json", {}, release)
+    (folder / "version.json").write_text(json.dumps(version.document()), encoding="utf-8")
+    (root / "current").write_text(folder.name + "\n", encoding="utf-8")
+
+
+def _login_record(root, **fields):
+    return {"owner": LABEL, "program_root": str(root), "data_root": str(root.parent / "data"), **fields}
+
+
+@pytest.mark.parametrize("retained", [None, "uninstalled-receipt"])
+def test_windows_live_r0_login_selection_stays_where_r0_reads_it(tmp_path, monkeypatch, windows_dacls, retained):
+    """The R1 installer refuses a Windows login R0 upgrade; R0 keeps its own record.
+
+    Run 42406972807: the candidate moved a live R0 record into the private
+    directory before refusing, so the retained R0 uninstall found no record.
+    """
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root = tmp_path / "r0"
+    _selected_release(root, 0)
+    legacy = _legacy_selection(local, _login_record(root))
+    before = legacy.read_bytes()
+    selection = install_selection(home, "win32")
+    receipt = _login_record(tmp_path / "earlier", uninstalled=True)
+    if retained:
+        write_json(selection, receipt)
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert legacy.read_bytes() == before
+    assert read_json(selection) == (receipt if retained else {})
+    assert os.path.lexists(selection) is bool(retained)
+
+
+@pytest.mark.parametrize("state", ["no-current", "linked-root", "malformed-version", "no-program-root"])
+def test_windows_unproven_live_login_selection_is_left_untouched(tmp_path, monkeypatch, windows_dacls, state):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root = tmp_path / "program"
+    if state == "linked-root":
+        _selected_release(tmp_path / "target", 1)
+        root.symlink_to(tmp_path / "target", target_is_directory=True)
+    elif state == "malformed-version":
+        _selected_release(root, 1)
+        (root / "versions" / "v1" / "version.json").write_text("[", encoding="utf-8")
+    else:
+        root.mkdir()
+    record = _login_record(root)
+    if state == "no-program-root":
+        record.pop("program_root")
+    legacy = _legacy_selection(local, record)
+    before = legacy.read_bytes()
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert legacy.read_bytes() == before
+    assert not os.path.lexists(install_selection(home, "win32"))
+
+
+def test_windows_live_legacy_selection_beats_a_private_uninstalled_receipt(tmp_path, monkeypatch, windows_dacls):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root = tmp_path / "r1"
+    _selected_release(root, 1)
+    live = _login_record(root)
+    legacy = _legacy_selection(local, live)
+    selection = install_selection(home, "win32")
+    write_json(selection, _login_record(tmp_path / "earlier", uninstalled=True))
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert read_json(selection) == live
+    assert not legacy.exists()
+    assert _runtime_private_read(selection)
+
+
+def test_windows_never_deletes_a_live_legacy_selection_it_did_not_migrate(tmp_path, monkeypatch, windows_dacls):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root, other = tmp_path / "r1", tmp_path / "other"
+    _selected_release(root, 1)
+    legacy = _legacy_selection(local, _login_record(root))
+    before = legacy.read_bytes()
+    selection = install_selection(home, "win32")
+    private = _login_record(other)
+    write_json(selection, private)
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert read_json(selection) == private
+    assert legacy.read_bytes() == before
+
+
+@pytest.mark.parametrize("release", [0, 1])
+def test_windows_uninstalled_receipt_migrates_for_reinstall(tmp_path, monkeypatch, windows_dacls, release):
+    from astrid.installer.service import install_selection, migrate_install_selection
+
+    local, home = tmp_path / "local", tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    root = tmp_path / "program"
+    _selected_release(root, release)
+    receipt = _login_record(root, uninstalled=True)
+    legacy = _legacy_selection(local, receipt)
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
+
+    migrate_install_selection(home, "win32")
+
+    assert read_json(install_selection(home, "win32")) == receipt
     assert not legacy.exists()
 
 
