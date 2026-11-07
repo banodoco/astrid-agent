@@ -11,7 +11,7 @@ _REGISTRY = Path(__file__).with_name("audio_curves.json")
 
 
 @lru_cache(maxsize=1)
-def registry() -> dict[str, dict[str, float | str]]:
+def audio_curve_registry() -> dict[str, dict[str, float | str]]:
     data = json.loads(_REGISTRY.read_text(encoding="utf-8"))
     if data.get("version") != 1 or not isinstance(data.get("curves"), dict):
         raise ValueError("invalid audio curve registry")
@@ -19,18 +19,18 @@ def registry() -> dict[str, dict[str, float | str]]:
 
 
 def names() -> tuple[str, ...]:
-    return tuple(registry())
+    return tuple(audio_curve_registry())
 
 
 def validate(name: str) -> str:
-    if name not in registry():
+    if name not in audio_curve_registry():
         raise ValueError(f"unknown audio curve {name!r}; choose {', '.join(names())}")
     return name
 
 
 def gain(name: str, progress: float, *, fade_in: bool = True) -> float:
     """Return a clamped amplitude multiplier at normalized fade progress."""
-    spec = registry()[validate(name)]
+    spec = audio_curve_registry()[validate(name)]
     t = min(1.0, max(0.0, float(progress)))
     if not fade_in:
         t = 1.0 - t

@@ -192,17 +192,6 @@ _EXPORTS = {
     'timeline_render_duration_frames': 'astrid.core.timeline',
 }
 
-_ALIASES = {
-    "audio_curve_registry": "registry",
-    "signal_pipeline_process_group": "_signal_process_group",
-    "pipeline_process_group_exists": "_process_group_exists",
-    "terminate_pipeline_process_group": "_terminate_process_group",
-    "pipeline_callback_cancelled": "_callback_cancelled",
-    "asset_kind_for_sentinel": "_asset_kind_for_sentinel",
-    "register_step_outputs": "_register_step_outputs",
-    "redact_pipeline_command": "_redact_command",
-}
-
 __all__ = ("VERSION", *_EXPORTS)
 
 
@@ -214,7 +203,7 @@ def __getattr__(name: str):
     loaded = _import_module(module)
     if name == "clip_fields":
         return loaded
-    return getattr(loaded, _ALIASES.get(name, name))
+    return getattr(loaded, name)
 
 
 def __dir__() -> list[str]:

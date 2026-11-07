@@ -44,17 +44,17 @@ def print_log_tail(step_name: str, log_path: Path) -> None:
     )
 
 
-def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
+def signal_pipeline_process_group(process: subprocess.Popen, sig: int) -> None:
     """Signal the owned child session, using its stable keeper when set."""
     _signal_owned_group(process, sig)
 
 
-def _process_group_exists(process: subprocess.Popen) -> bool:
+def pipeline_process_group_exists(process: subprocess.Popen) -> bool:
     """Return whether any member of the owned session is still alive."""
     return _owned_group_exists(process)
 
 
-def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
+def terminate_pipeline_process_group(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
     """Terminate the complete child session and reap its direct child.
 
     A callback can handle SIGTERM by exiting immediately while one of its
@@ -65,7 +65,7 @@ def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float 
     _terminate_owned_group(process, grace_seconds=grace_seconds)
 
 
-def _callback_cancelled(args: argparse.Namespace) -> bool:
+def pipeline_callback_cancelled(args: argparse.Namespace) -> bool:
     callback = getattr(args, "cancelled", None)
     if callable(callback) and callback():
         return True
@@ -156,7 +156,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                             sys.stdout.flush()
                 except queue.Empty:
                     pass
-                if _callback_cancelled(args):
+                if pipeline_callback_cancelled(args):
                     cancelled = True
                     if internal_worker:
                         # The callback shares the admitted worker's session;
@@ -164,14 +164,14 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                         # worker remains able to report cancellation upstream.
                         _terminate_owned_tree(process)
                     else:
-                        _terminate_process_group(process)
+                        terminate_pipeline_process_group(process)
                     break
                 if time.monotonic() >= deadline:
                     timed_out = True
                     if internal_worker:
                         _terminate_owned_tree(process)
                     else:
-                        _terminate_process_group(process)
+                        terminate_pipeline_process_group(process)
                     break
                 time.sleep(0.02)
             returncode = process.wait()
@@ -249,7 +249,7 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                             sys.stdout.flush()
                 except queue.Empty:
                     pass
-                if _callback_cancelled(args):
+                if pipeline_callback_cancelled(args):
                     cancelled = True
                     if internal_worker:
                         # Nested command steps inherit the outer worker
@@ -258,14 +258,14 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
                         # worker that must report cancellation upstream.
                         _terminate_owned_tree(process)
                     else:
-                        _terminate_process_group(process)
+                        terminate_pipeline_process_group(process)
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     timed_out = True
                     if internal_worker:
                         _terminate_owned_tree(process)
                     else:
-                        _terminate_process_group(process)
+                        terminate_pipeline_process_group(process)
                     break
                 time.sleep(0.02)
             returncode = process.wait()
@@ -292,12 +292,12 @@ def run_step(step: Step, cmd: list[str], args: argparse.Namespace) -> int:
     if returncode != 0:
         print_log_tail(step.name, log_path)
     elif getattr(args, "audit", None) is not None:
-        output_ids = _register_step_outputs(step, cmd, args, log_path)
+        output_ids = register_step_outputs(step, cmd, args, log_path)
         if output_ids:
             args.audit_parent_ids = output_ids
     return returncode
 
-def _asset_kind_for_sentinel(name: str) -> str:
+def asset_kind_for_sentinel(name: str) -> str:
     return {
         "transcript.json": "transcript",
         "scenes.json": "scenes",
@@ -317,7 +317,7 @@ def _asset_kind_for_sentinel(name: str) -> str:
         "validation.json": "validation",
     }.get(name, Path(name).suffix.lstrip(".") or "artifact")
 
-def _register_step_outputs(step: Step, cmd: list[str], args: argparse.Namespace, log_path: Path) -> list[str]:
+def register_step_outputs(step: Step, cmd: list[str], args: argparse.Namespace, log_path: Path) -> list[str]:
     audit: AuditContext = args.audit
     parent_ids = list(getattr(args, "audit_parent_ids", []))
     output_ids: list[str] = []
@@ -326,7 +326,7 @@ def _register_step_outputs(step: Step, cmd: list[str], args: argparse.Namespace,
             continue
         output_ids.append(
             audit.register_asset(
-                kind=_asset_kind_for_sentinel(path.name),
+                kind=asset_kind_for_sentinel(path.name),
                 path=path,
                 label=f"{step.name}: {path.name}",
                 parents=parent_ids,
@@ -346,13 +346,13 @@ def _register_step_outputs(step: Step, cmd: list[str], args: argparse.Namespace,
         stage=step.name,
         label=f"Pipeline step: {step.name}",
         parents=parent_ids,
-        metadata={"command": _redact_command(cmd)},
+        metadata={"command": redact_pipeline_command(cmd)},
         outputs=[*output_ids, log_id],
         registration_source="pipeline_fallback",
     )
     return output_ids or [log_id]
 
-def _redact_command(cmd: list[str]) -> list[str]:
+def redact_pipeline_command(cmd: list[str]) -> list[str]:
     safe: list[str] = []
     skip_next = False
     for token in cmd:

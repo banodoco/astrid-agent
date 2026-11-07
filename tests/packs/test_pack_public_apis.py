@@ -36,7 +36,7 @@ def test_pack_and_sdk_facades_expose_pipeline_and_media_contracts():
     assert pack_api.GeminiClient is llm_clients.GeminiClient
     assert pack_api.build_gemini_client is llm_clients.build_gemini_client
     assert pack_api.run_step is pipeline_step.run_step
-    assert pack_api.redact_pipeline_command is pipeline_step._redact_command
+    assert pack_api.redact_pipeline_command is pipeline_step.redact_pipeline_command
     assert sdk.MEDIA_TRANSCRIPT_SCHEMA == media_transcript.SCHEMA
     assert sdk.WHISPER_SOURCE == media_transcript.WHISPER_SOURCE
     assert sdk.write_transcript is media_transcript.write_transcript
@@ -52,7 +52,7 @@ def test_moving_packs_can_access_existing_media_and_timeline_contracts():
     from astrid.sdk import media_handles, timeline
 
     assert pack_api.clip_fields is clip_fields
-    assert pack_api.audio_curve_registry is audio_curves.registry
+    assert pack_api.audio_curve_registry is audio_curves.audio_curve_registry
     assert pack_api.ASTRID_REMOTION_PROJECT_DIR == env_vars.ASTRID_REMOTION_PROJECT_DIR
     assert pack_api.resolve_remotion_project_dir is remotion_runtime.resolve_remotion_project_dir
     assert pack_api.load_rgba is media.load_rgba
