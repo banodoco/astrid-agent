@@ -485,9 +485,19 @@ def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):
     assert c.deletes == ["pod-1"]
 
 
-def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained):
+def test_retained_actual_gpu_id_mismatch_never_starts_preparation(retained, monkeypatch):
+    # The accepted GPU id is confirmed from the provider's GraphQL pod.machine / gpuTypes catalog
+    # (REST has no gpuTypeId on a fresh pod); the acquisition-time confirmation (stubbed) passed.
+    from astrid.packs.runpod import worker_preparation
+    from astrid.packs.runpod.worker_preparation import TargetObservationError
     c = retained
     c.actual_gpu_id = "wrong-provider-gpu"
+
+    def provider_confirmation(api_key, contract, *, timeout_seconds):
+        if contract.gpu_type == "gpu-provider-exact":
+            raise TargetObservationError(f"GPU mismatch: provider reports {c.actual_gpu_id!r}")
+        return contract.gpu_type, contract.datacenter_id
+    monkeypatch.setattr(worker_preparation, "confirm_acquired_machine", provider_confirmation)
     with pytest.raises(Exception, match="requires cleanup"):
         c.adapter.prepare(c.request, c.grant)
     assert c.creates == 1 and not c.pod.job_log
