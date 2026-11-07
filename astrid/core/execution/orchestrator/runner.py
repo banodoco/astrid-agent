@@ -334,10 +334,13 @@ def _run_python_orchestrator_subprocess(
             source_channel.seek(0)
             # Keep the existing subprocess worker and request/result protocol. Only
             # its import source changes, through the host's inherited byte loader.
-            command = json.dumps(["-c", "from astrid.core.execution.python_runtime_worker import run; import sys; run(sys.argv[1])",
-                                  str(request_path)])
+            from astrid.core.execution.generic_host_worker import captured_pack_command
+
+            command = captured_pack_command(selected, [
+                "-c", "from astrid.core.execution.python_runtime_worker import run; import sys; run(sys.argv[1])",
+                str(request_path)])
             argv = _captured_worker_argv([sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
-                "--external-source-fd", str(source_channel.fileno()), "--captured-command", command])
+                "--external-source-fd", str(source_channel.fileno()), "--pack-command", command])
             launch_options["pass_fds"] = (source_channel.fileno(),)
         if source_channel is not None:
             from runtime_protocol import platform

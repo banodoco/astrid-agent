@@ -9954,8 +9954,13 @@ class GenericPackHost:
                 raise HostError("captured external commands require the admitted Python interpreter")
             inherited_fds += (source_channel.fileno(),)
             if child_bridge is None:
+                from astrid.core.pack.identity import pack_digest
+
+                captured_root = Path(record.source_root)
                 argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
-                        "--captured-command", json.dumps(argv[1:])]
+                        "--pack-command", json.dumps({
+                            "pack_id": captured_root.name, "root": str(captured_root),
+                            "source_digest": pack_digest(captured_root), "argv": argv[1:]})]
             worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # The descriptor proves Runtime selection/custody; execution reads raw source.

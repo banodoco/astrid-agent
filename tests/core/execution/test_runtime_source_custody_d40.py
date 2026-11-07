@@ -199,13 +199,18 @@ def test_capture_after_bind_mutation_is_rejected_before_execution(case):
         custody.descriptor(case.record)
 
 
+def _run_captured(encoded, selected, contents):
+    """Run a captured command through the one ``--pack-command`` route."""
+    return worker._run_pack_command(worker.captured_pack_command(selected, json.loads(encoded)), selected=selected)
+
+
 def test_command_loader_executes_captured_descendants_after_last_check(case, capsys):
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         # The child receives only the inherited handle, not task/admission JSON.
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
     (case.root / "actions/helper.py").write_text("raise AssertionError('live child source')\n")
-    assert worker._run_captured_command(json.dumps(["-m", "unrelated.emit"]), selected, contents) == 0
+    assert _run_captured(json.dumps(["-m", "unrelated.emit"]), selected, contents) == 0
     assert capsys.readouterr().out == "captured\n"
 
 
@@ -321,7 +326,7 @@ def test_package_main_uses_captured_loader(case, capsys):
     with custody.descriptor(case.record) as channel:
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
     (case.root / "__main__.py").write_text("raise AssertionError('live main')\n")
-    assert worker._run_captured_command(json.dumps(["-m", "unrelated"]), selected, contents) == 0
+    assert _run_captured(json.dumps(["-m", "unrelated"]), selected, contents) == 0
     assert capsys.readouterr().out == "captured\n"
 
 
@@ -331,7 +336,7 @@ def test_captured_command_refuses_installed_namespace_collision(case):
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
     contents["json.py"] = b"raise AssertionError('installed collision')\n"
     with pytest.raises(ValueError, match="installed package"):
-        worker._run_captured_command(json.dumps(["-m", "unrelated.emit"]), selected, contents)
+        _run_captured(json.dumps(["-m", "unrelated.emit"]), selected, contents)
 
 
 def test_standalone_runtime_launcher_keeps_its_own_private_handle_class(case, monkeypatch):

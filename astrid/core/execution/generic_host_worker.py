@@ -41,6 +41,15 @@ def _read_captured_source(fd: int):
     return selected, contents
 
 
+def captured_pack_command(selected, argv: list[str]) -> str:
+    """Encode a Runtime-selected Python command for the one ``--pack-command`` route."""
+    from astrid.core.pack.identity import pack_digest
+
+    root = Path(selected["source"]["root"])
+    return json.dumps({"pack_id": root.name, "root": str(root),
+                       "source_digest": pack_digest(root), "argv": list(argv)})
+
+
 def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = None) -> int:
     """Execute live selected source under the same name as a Python action."""
     from astrid.core.pack.identity import pack_digest
@@ -92,20 +101,6 @@ def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = No
             bridge.close()
 
 
-def _run_captured_command(encoded: str, selected, contents) -> int:
-    """Run a command named by a Runtime source descriptor through the selected-pack route.
-
-    The pack id and root come from the descriptor; the command is then checked
-    and executed exactly as ``--pack-command`` does. Emitted by the generic host
-    for non-bridged captured commands and by the orchestrator runner.
-    """
-    from astrid.core.pack.identity import pack_digest
-
-    root = Path(selected["source"]["root"])
-    return _run_pack_command(json.dumps({"pack_id": root.name, "root": str(root),
-        "source_digest": pack_digest(root), "argv": json.loads(encoded)}), selected=selected)
-
-
 def _install_inherited_bridge(fd: str):
     from astrid.sdk._child_bridge import _install_child_bridge
 
@@ -142,7 +137,7 @@ def _run_child_command(fd: str | None, encoded: str, *, renderer: bool = False, 
 
         observe_action_entry("worker_entry")
         if captured is not None:
-            return _run_captured_command(encoded, *captured)
+            return _run_pack_command(captured_pack_command(captured[0], json.loads(encoded)), selected=captured[0])
         if args[0] == "-c":
             sys.argv = ["-c", *args[2:]]
             sys.path[0] = ""
@@ -294,8 +289,6 @@ if __name__ == "__main__":
                                                bridge_fd=sys.argv[4] if len(sys.argv) == 5 else None))
         if len(sys.argv) == 3 and sys.argv[1] == "--python-command" and captured is None:
             raise SystemExit(_run_child_command(None, sys.argv[2]))
-        if len(sys.argv) == 3 and sys.argv[1] == "--captured-command" and captured is not None:
-            raise SystemExit(_run_captured_command(sys.argv[2], *captured))
         if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command"}:
             raise SystemExit(_run_child_command(sys.argv[2], sys.argv[3], renderer=sys.argv[1] == "--renderer-command", captured=captured))
         bridge = None
