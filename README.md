@@ -22,29 +22,24 @@ Runtime is connected, and help me begin at https://astrid.haus.
 
 Follow the [manual setup guide](docs/getting-started.md), or run the installer for your operating system. Review the installer before running it.
 
-**Want step-by-step instructions?** [Set up Astrid →](docs/getting-started.md)
-
 The recommended setup starts Astrid at sign-in, adds the `astrid` terminal
 command, installs Astrid skills, and leaves skill copies off. The four choices
 are controlled by `--autostart on|off`, `--command on|off`, `--skills on|off`,
 and `--skill-copies on|off`. Ask for consent once for a fresh install when it
-has not already been given. After consent, use one installer command with the
-approved values. An already-approved handoff needs no second consent question;
-preserve all its choices.
-
-**Testing the installer?** Follow the [tester guide](docs/testing/TESTING.md), which records a known chat-history
-gap in the currently published agent engine.
+has not already been given. Pass `--yes` to accept the recommended choices without a prompt.
+After consent, use one installer command with the approved values. An
+already-approved handoff needs no second consent question; preserve all its choices.
 
 macOS or Linux (Terminal):
 
 ```sh
-curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off
+curl -fsSL https://astrid.haus/install | sh
 ```
 
 Windows (PowerShell; support is in beta):
 
 ```powershell
-& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off
+irm https://astrid.haus/install.ps1 | iex
 ```
 
 Then use the app at **[astrid.haus](https://astrid.haus)** (recommended). Astrid Runtime runs locally and keeps your projects and media on your computer. You do **not** need to clone `astrid-app` to use Astrid; that repository is for contributors who want to modify the editor. You can also [run the editor from source](docs/getting-started.md#run-everything-on-your-computer).

@@ -206,10 +206,34 @@ def test_maintenance_identity_write_preserves_choices_and_owned_fields(tmp_path)
     assert record["identity"] == version.document()["identity"]
 
 
-def test_rerun_with_yes_appends_consent_to_the_invoked_command():
-    from astrid.installer.cli import rerun_with_yes
+def test_consent_rerun_command_uses_public_install_line_and_user_flags():
+    from astrid.installer.cli import consent_rerun_command
 
-    assert rerun_with_yes(["astrid", "--autostart", "on", "--skills", "off"]) == (
-        "astrid --autostart on --skills off --yes")
-    assert rerun_with_yes(["/tmp/my installer/astrid", "--update"]) == (
-        "'/tmp/my installer/astrid' --update --yes")
+    assert consent_rerun_command({}, windows=False) == "curl -fsSL https://astrid.haus/install | sh -s -- --yes"
+    assert consent_rerun_command({"autostart": False, "skill_copies": True}, windows=False) == (
+        "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --skill-copies on")
+    assert consent_rerun_command({"command": True}, windows=True) == (
+        "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --command on")
+
+
+def test_existing_install_update_needs_no_consent_flag_and_keeps_saved_policy():
+    # The plain update command (no choice flags, no --yes) must not refuse, and the
+    # Agent keeps the saved policy; a legacy install without a record keeps its baseline.
+    from astrid.installer.choices import LEGACY_CHOICES, resolve_choices, unattended_consent_required
+
+    assert not unattended_consent_required(existing_install=True, accept_recommended=False, interactive=False)
+    saved = {"autostart": False, "command": True, "skills": True, "skill_copies": False}
+    assert resolve_choices(saved=saved, existing_install=True) == saved
+    assert resolve_choices(existing_install=True) == LEGACY_CHOICES
+
+
+def test_exact_no_flag_update_argv_applies_the_saved_policy():
+    # The App's existing-install command, parsed by the real CLI, carries no choice flags;
+    # resolving it for an existing install returns the saved policy unchanged.
+    from astrid.installer import cli
+    from astrid.installer.choices import resolve_choices
+
+    args = cli.parser().parse_args(["--update"])
+    assert args.choices == {} and args.yes is False
+    saved = {"autostart": False, "command": True, "skills": False, "skill_copies": True}
+    assert resolve_choices(explicit=args.choices, saved=saved, existing_install=True) == saved
