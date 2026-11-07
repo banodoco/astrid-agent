@@ -2186,26 +2186,7 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def _sdk_result(text: str) -> dict:
-    """Parse the SDK's result object; tolerate only leading `{"diagnostic": ...}` lines.
-
-    The captured stream combines stdout and stderr. Some installs (Pinokio) emit
-    one-line Runtime diagnostics before the result. Anything else is still an error.
-    """
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        lines = [line for line in text.splitlines() if line.strip()]
-        if not lines:
-            raise
-        for line in lines[:-1]:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}") from None
-            if not (isinstance(item, dict) and isinstance(item.get("diagnostic"), str)):
-                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}")
-        return json.loads(lines[-1])
+_sdk_result = windows.sdk_result
 
 
 def submit_task(version: dict, evidence: Path, project: str, *, create_project: bool = True,
