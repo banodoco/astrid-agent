@@ -366,11 +366,23 @@ def apply_completed_policy(backend, policy_change, *, say=print):
     steps = []
     if "autostart" in policy_change:
         steps.append((("autostart",), lambda: transaction.registration.set_autostart(policy_change["autostart"])))
+    def command_step():
+        backend.open()
+        # Backend reports a failed command as a recorded error, not an exception.
+        error = (getattr(backend, "command_result", None) or {}).get("error")
+        if error:
+            raise RuntimeError(f"command failed ({error})")
+
+    def skills_step():
+        outcome = backend.sync_skills(candidate)
+        if outcome and outcome.get("ok") is False:
+            raise RuntimeError("skill sync failed; see the installer log")
+
     if "command" in policy_change:
-        steps.append((("command",), backend.open))
+        steps.append((("command",), command_step))
     skill_names = tuple(name for name in ("skills", "skill_copies") if name in policy_change)
     if skill_names:
-        steps.append((skill_names, lambda: backend.sync_skills(candidate)))
+        steps.append((skill_names, skills_step))
     results = {}
     for names, step in steps:
         try:

@@ -650,8 +650,10 @@ def main(argv: list[str] | None = None) -> int:
                                  f"{name}: failed ({item['reason']}); not saved, rerun to retry"
                                  for name, item in applied.items()]
                         failed = any(not item["ok"] for item in applied.values())
+                        # Summary reflects what was persisted, not what was requested.
+                        saved_choices = read_json(backend.service.selection).get("choices", {})
                         _print_run_summary(
-                            summary_choices, mode=mode, install_root=summary_root,
+                            {**summary_choices, **saved_choices}, mode=mode, install_root=summary_root,
                             result_note="; ".join(parts) + ("." if failed else "; R0 was not touched."))
                         return 1 if failed else 0
                 else:

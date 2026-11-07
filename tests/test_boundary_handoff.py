@@ -927,3 +927,59 @@ def test_completed_policy_skill_copies_failure_retries(completed, monkeypatch, c
     calls = _fail_once(monkeypatch, c.backend, 'sync_skills')
     _retry(c, args, '--skill-copies', 'on', 'skill_copies', True, False, capsys)
     assert len(calls) == 2
+
+
+def _soft_fail_once(monkeypatch, backend, name, fail_result, ok_result):
+    # The real backend reports failure in its return value or recorded state, not by raising.
+    calls = []
+
+    def step(*a, **k):
+        calls.append(a)
+        return fail_result(backend) if len(calls) == 1 else ok_result(backend)
+    monkeypatch.setattr(backend, name, step, raising=False)
+    return calls
+
+
+def _retry_soft(c, args, flag, value, key, new, old, reason, capsys):
+    capsys.readouterr()
+    assert cli.main([*args, flag, value]) == 1
+    out = capsys.readouterr().out
+    assert f'{key}: failed ({reason}); not saved, rerun to retry' in out
+    assert f'{key}: applied' not in out and 'Applied' not in out
+    assert read_json(c.service.selection)['choices'][key] == old
+    assert cli.main([*args, flag, value]) == 0
+    assert f'{key}: applied' in capsys.readouterr().out
+    assert read_json(c.service.selection)['choices'][key] == new
+
+
+def test_completed_policy_command_error_result_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'open',
+        lambda b: setattr(b, 'command_result', {'error': 'OSError'}),
+        lambda b: setattr(b, 'command_result', {'error': None}))
+    _retry_soft(c, args, '--command', 'off', 'command', False, True,
+                'command failed (OSError)', capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skills_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'sync_skills',
+        lambda b: {'ok': False, 'destinations': []},
+        lambda b: {'ok': True, 'destinations': []})
+    _retry_soft(c, args, '--skills', 'off', 'skills', False, True,
+                'skill sync failed; see the installer log', capsys)
+    assert len(calls) == 2
+
+
+def test_completed_policy_skill_copies_not_ok_is_a_failed_step_and_retries(completed, monkeypatch, capsys):
+    c, args, _ = completed
+    calls = _soft_fail_once(
+        monkeypatch, c.backend, 'sync_skills',
+        lambda b: {'ok': False, 'destinations': []},
+        lambda b: {'ok': True, 'destinations': []})
+    _retry_soft(c, args, '--skill-copies', 'on', 'skill_copies', True, False,
+                'skill sync failed; see the installer log', capsys)
+    assert len(calls) == 2
