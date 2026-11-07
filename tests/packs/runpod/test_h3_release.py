@@ -473,18 +473,24 @@ def test_produced_manifest_passes_existing_staging_validators(tmp_path):
 def test_real_lock_and_recipe_pins():
     from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
+    from scripts import vibecomfy_pin
+
+    pinned = vibecomfy_pin.read()
     inputs = build.release_inputs()
     models = inputs["lock"]["models"]
-    assert len(models) == 5
-    assert sum(row["bytes"] for row in models) == 53484234760
+    # The shipped model lock owns the row set; derive it, never restate it.
+    shipped = json.loads((Path(build.__file__).parent / "models.lock.json").read_text())["models"]
+    assert [row["path"] for row in models] == [row["path"] for row in shipped]
+    assert len(models) == len(shipped) > 0
+    assert sum(row["bytes"] for row in models) == sum(row["bytes"] for row in shipped)
     assert all(len(row["sha256"]) == 64 and len(row["revision"]) == 40 for row in models)
     from astrid.core.generation.gpu_environment import _description
 
     _, windows = _description("vibecomfy")
-    assert VIBECOMFY_ENGINE_REVISION == "2401b8bf8c0f01ff10e87e599767cff36fbe16e6"
+    assert VIBECOMFY_ENGINE_REVISION == pinned
     assert inputs["recipe"]["vibecomfy_source"] == {
         "repository": "https://github.com/banodoco/VibeComfy.git",
-        "revision": "2401b8bf8c0f01ff10e87e599767cff36fbe16e6",
+        "revision": pinned,
     }
     assert windows["vibecomfy_source"] == {
         "repository": "https://github.com/banodoco/VibeComfy.git",
@@ -695,9 +701,13 @@ def test_bootstrap_packages_exact_product_sources_deterministically():
     package = Path(build.__file__).parents[2]
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         assert set(archive.namelist()) == {
-            *("astrid/" + name for name in bootstrap._SOURCES), f"astrid-{bootstrap.__version__}.dist-info/METADATA",
+            *("astrid/" + name for name in bootstrap._SOURCES), "astrid/packs/__init__.py",
+            f"astrid-{bootstrap.__version__}.dist-info/METADATA",
             *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
         }
+        # The product's pack initializer needs astrid.core.pack, which a stdlib-only
+        # cold target cannot import; it receives the namespace-only body.
+        assert archive.read("astrid/packs/__init__.py") == bootstrap._PACKS_NAMESPACE
         for name in bootstrap._SOURCES:
             assert archive.read("astrid/" + name) == (package / name).read_bytes()
         runtime = Path(bootstrap.runtime_protocol.__file__).resolve().parent

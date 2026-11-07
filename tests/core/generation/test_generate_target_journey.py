@@ -411,29 +411,35 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             (tmp_path / "h3-task-state.json").write_text(json.dumps(tasks.data, indent=2, default=str), encoding="utf-8")
 
 
-def _target_schema():
-    """Expose the shipped default image graph with exact installed role names."""
+def _target_schema(*entry_ids):
+    """Expose the shipped default image graphs with exact installed role names.
+
+    The default image entry owns its failure (no fallback to another model), so
+    the target must serve the preferred default's assets as well as z-image.
+    """
     from astrid.core.model_catalog.registry import ModelRegistry
     from vibecomfy.porting.object_info import get_class
     from vibecomfy.registry.ready import workflow_from_ready
 
-    entry = ModelRegistry.load_default().get("z-image")
-    spec = entry.modes["t2i"].backends["local"]
-    workflow = workflow_from_ready(spec.template)
     schema = {}
-    for node in workflow.runtime_nodes().values():
-        definition = get_class(node.class_type)
-        assert definition is not None
-        schema[node.class_type] = {
-            "input": copy.deepcopy(definition["inputs"]),
-            "input_order": copy.deepcopy(definition["input_order"]),
-            "output": [output["type"] for output in definition["outputs"]],
-            "output_name": [output["name"] for output in definition["outputs"]],
-            "output_is_list": [output["is_list"] for output in definition["outputs"]],
-            "output_node": node.class_type == "SaveImage",
-        }
-    for role in spec.model_roles.values():
-        schema[role.node_class]["input"]["required"][role.input] = [[role.names[0]]]
+    for entry_id in entry_ids or ("z-image", "qwen-image-2.1-turbo"):
+        spec = ModelRegistry.load_default().get(entry_id).modes["t2i"].backends["local"]
+        workflow = workflow_from_ready(spec.template)
+        for node in workflow.runtime_nodes().values():
+            definition = get_class(node.class_type)
+            assert definition is not None
+            schema.setdefault(node.class_type, {
+                "input": copy.deepcopy(definition["inputs"]),
+                "input_order": copy.deepcopy(definition["input_order"]),
+                "output": [output["type"] for output in definition["outputs"]],
+                "output_name": [output["name"] for output in definition["outputs"]],
+                "output_is_list": [output["is_list"] for output in definition["outputs"]],
+                "output_node": node.class_type == "SaveImage",
+            })
+        for role in spec.model_roles.values():
+            choices = schema[role.node_class]["input"]["required"].get(role.input)
+            names = list(choices[0]) if choices and isinstance(choices[0], list) else []
+            schema[role.node_class]["input"]["required"][role.input] = [list(dict.fromkeys([*names, role.names[0]]))]
     return schema
 
 

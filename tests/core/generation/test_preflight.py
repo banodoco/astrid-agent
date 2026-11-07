@@ -17,7 +17,9 @@ def z_image_entry() -> Any:
 
 
 @pytest.mark.parametrize('backend', ['cloud', 'local'])
-def test_catalog_qualification_follows_matrix_and_input_validation(backend):
+def test_catalog_qualification_follows_matrix_and_input_validation(backend, monkeypatch):
+    from tests.core.generation.availability_fixtures import declare_wan_unqualified
+    declare_wan_unqualified(monkeypatch)
     from astrid.core.contracts.errors import AstridError
     from astrid.core.generation.preflight import validate_generation_request
     from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
@@ -40,6 +42,8 @@ def test_generic_catalog_refuses_before_dispatch(tmp_path, monkeypatch, dry_run)
     from astrid.sdk import invocation
     from astrid.core.contracts.errors import AstridError
     from unittest.mock import Mock
+    from tests.core.generation.availability_fixtures import declare_wan_unqualified
+    declare_wan_unqualified(monkeypatch)
     admitted = Mock(side_effect=AssertionError('unqualified request dispatched'))
     monkeypatch.setattr(invocation, '_kernel_invoke', admitted)
     with pytest.raises(AstridError) as caught:
