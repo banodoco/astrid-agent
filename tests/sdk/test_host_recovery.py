@@ -1226,4 +1226,106 @@ def test_stale_supervised_registration_is_left_to_the_normal_path(harness, monke
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
     monkeypatch.setattr(host_bootstrap.time, "sleep", lambda _s: pytest.fail("a stale host must not be waited on"))
 
-    host_bootstrap._await_supervised_startup(h.support / "generic-host.json", h.support / "generic-host.ready.json")
+    host_bootstrap._await_supervised_startup(h.support / "generic-host.json",
+                                             h.support / "generic-host.ready.json", lambda: {})
+
+
+STARTING_ROW = {"name": "pack-host", "state": "starting", "last_exit": None, "restart_count": 0, "reason": None}
+RUNNING_ROW = {"name": "pack-host", "state": "running", "last_exit": None, "restart_count": 0, "reason": None}
+
+
+def _runtime_supervises(monkeypatch, rows, *, typed: bool = False) -> None:
+    """Make the Runtime's health report these service rows, as a dict or as the typed Health."""
+    base = {"status": "ok", "protocol": "workspace.v1", "schema_digest": "schema-1",
+            "runtime_epoch": "epoch-1", "runtime_session_id": "session-1",
+            "runtime_instance_id": "instance-1", "identity": None}
+
+    def health(self):
+        if typed:
+            return SimpleNamespace(**base, services=tuple(SimpleNamespace(**row) for row in rows))
+        return {**base, "services": [dict(row) for row in rows]}
+
+    monkeypatch.setattr(generic_host.RuntimeProtocolClient, "health", health)
+
+
+def test_runtime_supervised_host_registered_late_attaches_once_ready(harness, monkeypatch, tmp_path):
+    h = harness
+    second = tmp_path / "second-source"
+    (second / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(second)
+    h.value["source_checkout"] = str(second)
+    registration = (h.support / "generic-host.json").read_bytes()
+    ready_record = (h.support / "generic-host.ready.json").read_bytes()
+    (h.support / "generic-host.json").unlink()  # launch validation still running: no registration yet
+    (h.support / "generic-host.ready.json").unlink()
+    _runtime_supervises(monkeypatch, [STARTING_ROW], typed=True)
+    polls = []
+
+    def host_progress(seconds):
+        polls.append(seconds)
+        if len(polls) == 1:
+            (h.support / "generic-host.json").write_bytes(registration)  # registered, no ready record
+        if len(polls) == 3:
+            (h.support / "generic-host.ready.json").write_bytes(ready_record)
+
+    monkeypatch.setattr(host_bootstrap.time, "sleep", host_progress)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    _forbid_retirement(monkeypatch)
+    from astrid.core.gateway import dispatch
+    monkeypatch.setattr(
+        dispatch, "compose_profile_handoff",
+        lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
+    )
+
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert result["host_status"] == "ready"
+    assert result["host_pid"] == FAKE_PID
+    assert len(polls) == 3
+    assert h.launches == []
+
+
+def test_runtime_supervised_host_that_never_becomes_ready_is_left_alone(harness, monkeypatch):
+    h = harness
+    (h.support / "generic-host.ready.json").unlink()
+    _runtime_supervises(monkeypatch, [RUNNING_ROW])  # the Runtime owns the host; its registration has no launch id
+    monkeypatch.setattr(host_bootstrap, "_STARTUP_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(host_bootstrap, "_STARTUP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    _forbid_retirement(monkeypatch)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="still starting") as raised:
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert "no retained Job custody" not in str(raised.value)
+    assert str(FAKE_PID) in str(raised.value)
+    assert h.launches == []
+
+
+def test_runtime_supervised_host_whose_service_failed_names_the_reason(harness, monkeypatch):
+    h = harness
+    (h.support / "generic-host.json").unlink()
+    (h.support / "generic-host.ready.json").unlink()
+    _runtime_supervises(monkeypatch, [{"name": "pack-host", "state": "failed", "last_exit": 1,
+                                       "restart_count": 3, "reason": "pack host exited with status 1"}])
+    _forbid_retirement(monkeypatch)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="failed") as raised:
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert "pack host exited with status 1" in str(raised.value)
+    assert h.launches == []
+
+
+def test_no_supervisor_and_no_registration_keeps_the_launch_path(harness, monkeypatch):
+    h = harness
+    (h.support / "generic-host.json").unlink()
+    (h.support / "generic-host.ready.json").unlink()
+    _runtime_supervises(monkeypatch, [])
+
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert result["host_status"] == "ready"
+    assert len(h.launches) == 1

@@ -1941,42 +1941,95 @@ def _attach_resident_host(
 # startup, which can take minutes (Windows launch validation alone took 69 s).
 _STARTUP_WAIT_SECONDS = 180.0
 _STARTUP_POLL_SECONDS = 0.5
+_STARTUP_HEALTH_SECONDS = 5.0
+_PACK_HOST_SERVICE = "pack-host"
+_LIVE_SERVICE_STATES = frozenset({"starting", "running", "restarting"})
 
 
-def _await_supervised_startup(state_path: Path, ready_path: Path) -> None:
-    """Wait while this Runtime's foreground host is still starting, then return.
+def _supervised_service_rows(health: Any) -> dict[str, dict[str, Any]]:
+    """The Runtime's service rows by name, from a raw Mapping or the typed Health."""
+    rows = health.get("services") if isinstance(health, Mapping) else getattr(health, "services", None)
+    found: dict[str, dict[str, Any]] = {}
+    for row in rows or ():
+        if isinstance(row, Mapping):
+            data = dict(row)
+        else:
+            data = {key: getattr(row, key, None) for key in ("name", "state", "last_exit", "restart_count", "reason")}
+        if isinstance(data.get("name"), str):
+            found[data["name"]] = data
+    return found
 
-    Returns once the ready record matches the live registration; the normal attach
-    path decides from there. A supervised host is never signalled from here: its
-    retirement belongs to the Runtime.
+
+def _await_supervised_startup(state_path: Path, ready_path: Path,
+                              read_services: Callable[[], Mapping[str, Mapping[str, Any]]]) -> None:
+    """Hold an SDK caller while the Runtime's pack host starts. Never launches or retires it.
+
+    The Runtime decides supervision: a ``pack-host`` row in its health (re-read every
+    few seconds) or a registration carrying the supervisor's launch id. Returns once
+    a live registration has a ready record for its pid and birth id; the caller's
+    locked section then attaches. Without a supervisor and without such a registration,
+    returns at once and the caller's normal path decides.
     """
     deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    next_health = 0.0
+    row: Mapping[str, Any] | None = None
     seen_live = False
     while True:
+        if time.monotonic() >= next_health:
+            try:
+                row = read_services().get(_PACK_HOST_SERVICE)
+            except Exception as exc:
+                raise PackHostBootstrapError("Astrid's task host could not report its service state; try again") from exc
+            next_health = time.monotonic() + _STARTUP_HEALTH_SECONDS
+            if row is not None and str(row.get("state")) not in _LIVE_SERVICE_STATES:
+                raise PackHostBootstrapError(
+                    f"Astrid's task host service is {row.get('state')}: "
+                    f"{row.get('reason') or 'no reason reported'}; restart Astrid"
+                )
         state = _read_object(state_path)
-        if not state or state.get("runtime_service_launch_id") is None:
-            return  # not Runtime-supervised: the caller's normal path decides
-        status = _registered_host_status(state)
-        if status != "ours" and not seen_live:
-            return  # a stale registration from an earlier host: the normal path decides
-        if status != "ours":
-            raise PackHostBootstrapError(
-                f"Astrid's task host stopped during startup (pid {state.get('pid')}, "
-                f"registration status {status}); try again"
-            )
-        ready = _read_object(ready_path)
-        if (ready and str(ready.get("status")) == "ready"
-                and str(ready.get("pid")) == str(state.get("pid"))
-                and str(ready.get("process_birth_id")) == str(state.get("process_birth_id"))):
-            return
-        seen_live = True
+        file_supervised = bool(state) and state.get("runtime_service_launch_id") is not None
+        if row is None and not file_supervised:
+            return  # no supervisor: the caller's normal path decides
+        status = None
+        if state:
+            status = _registered_host_status(state)
+            if status == "ours":
+                seen_live = True
+                ready = _read_object(ready_path)
+                if (ready and str(ready.get("status")) == "ready"
+                        and str(ready.get("pid")) == str(state.get("pid"))
+                        and str(ready.get("process_birth_id")) == str(state.get("process_birth_id"))):
+                    return
+            elif seen_live:
+                raise PackHostBootstrapError(
+                    f"Astrid's task host stopped during startup (pid {state.get('pid')}, "
+                    f"registration status {status}); try again"
+                )
+            elif row is None:
+                return  # a stale registration from an earlier host, with no supervisor
+            # else: a stale registration while the Runtime starts its replacement; keep waiting
         if time.monotonic() >= deadline:
+            where = (f"pid {state.get('pid')}, registration status {status}" if state
+                     else "no registration yet")
             raise PackHostBootstrapError(
-                f"Astrid's task host is still starting (pid {state.get('pid')}, registration status "
-                f"{status}; no ready record after {_STARTUP_WAIT_SECONDS:g}s); try again"
+                f"Astrid's task host is still starting ({where}; no ready record after "
+                f"{_STARTUP_WAIT_SECONDS:g}s); try again"
             )
         time.sleep(_STARTUP_POLL_SECONDS)
 
+
+def _supervised_unready_message(current: Mapping[str, Any] | None, status: str | None,
+                                attach_rejections: list[str]) -> str:
+    """Why a Runtime-supervised host cannot be used yet. Never a retirement or launch instruction."""
+    if current is None:
+        return "Astrid's task host is still starting (no registration yet); try again"
+    pid = current.get("pid")
+    if status != "ours":
+        return f"Astrid's task host stopped during startup (pid {pid}, registration status {status}); try again"
+    if attach_rejections:
+        return f"Astrid's task host is up but could not be attached (pid {pid}; {attach_rejections[-1]}); try again"
+    return (f"Astrid's task host is still starting (pid {pid}, registration status ours; "
+            "no matching ready record); try again")
 
 def ensure_pack_host(
     value: Mapping[str, Any], *, reconfigure_action: str,
@@ -2071,6 +2124,7 @@ def ensure_pack_host(
         "runtime_instance_id": getattr(health, "runtime_instance_id", None),
         "coordinator_epoch": getattr(health, "coordinator_epoch", None),
     }
+    runtime_supervised = _PACK_HOST_SERVICE in _supervised_service_rows(health)
     if str(health_value.get("status", "")) != "ok":
         raise PackHostBootstrapError(
             f"generic Astrid pack host runtime is not healthy; {reconfigure_action}",
@@ -2101,7 +2155,8 @@ def ensure_pack_host(
     if not _foreground:
         # Wait outside the registration lock: the supervised host writes its ready
         # record without this lock, and the locked section re-reads it afterwards.
-        _await_supervised_startup(state_path, ready_path)
+        _await_supervised_startup(state_path, ready_path,
+                                  lambda: _supervised_service_rows(runtime_client.health()))
     try:
         lock_handle = lock_path.open("a+")
         platform.owner_only(lock_handle.fileno())
@@ -2195,6 +2250,10 @@ def ensure_pack_host(
                 "host_boot_manifest_path": str(boot_manifest_path),
                 "host_boot_manifest_hash": boot_manifest_hash,
             }
+        supervised = runtime_supervised or (current is not None and current.get("runtime_service_launch_id") is not None)
+        if supervised and not _foreground:
+            # The Runtime launches and retires its own host; an SDK caller does neither.
+            raise PackHostBootstrapError(_supervised_unready_message(current, status, attach_rejections))
         if current:
             # Any Astrid process may replace the host its registration names, but
             # reconfiguration is not cancellation: a host with child work is left
