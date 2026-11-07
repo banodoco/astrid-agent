@@ -337,6 +337,27 @@ class BoundaryRegistration:
             if not self._mac_state(value):
                 raise ValueError("R1 activation is uncertain; recovery intent retained.")
 
+    def set_autostart(self, enabled):
+        """Change sign-in startup of the active R1 service without restarting it."""
+        value = read_json(_regular(self.journal))
+        if value.get("program_root") != str(self.root):
+            raise ValueError("R1 registration does not bind this installer.")
+        if any(not path.exists() for path in self._check_files(value)):
+            raise ValueError("R1 registration is incomplete.")
+        if self.system == "linux":
+            if self._linux_state() is None:
+                raise ValueError("R1 manager entry is missing.")
+            self._run(["systemctl", "--user", "enable" if enabled else "disable", R1_LINUX])
+            state = self._linux_state()
+            if state is None or (state.get("UnitFileState") == "enabled") != enabled:
+                raise ValueError("R1 autostart change is uncertain; recovery intent retained.")
+        else:
+            target = f"gui/{self.uid}/{R1_MAC}"
+            loaded = self._mac_state(value)
+            self._run(["launchctl", "enable" if enabled else "disable", target])
+            if enabled and not loaded:
+                self._run(["launchctl", "bootstrap", f"gui/{self.uid}", self.r1_path])
+
     def recover(self, *, restore_selection=None):
         """Disable owned R1, wait for its lock, remove owned files, restore R0."""
         if not os.path.lexists(self.journal):

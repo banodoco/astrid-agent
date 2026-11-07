@@ -98,6 +98,10 @@ class PinokioBackend:
         self.calls.append(("doctor", version, data, bundle))
         return bundle
 
+    def remove_skills(self, version):
+        self.calls.append(("remove_skills", version))
+        return {"ok": True, "destinations": []}
+
     def unregister(self):
         self.calls.append(("unregister",))
 
@@ -388,6 +392,7 @@ def _stub_cli_install(tmp_path, monkeypatch, home):
                 selection=selection,
                 recorded=lambda: read_json(selection),
                 login_service_exists=lambda: False,
+                home=home, system=sys.platform, path=tmp_path / "astrid.service",
             )
 
         def existing(self, _data):
@@ -455,6 +460,23 @@ def test_second_pinokio_root_is_allowed_after_first_root_is_deleted(tmp_path, mo
     recorded = read_json(selection)
     assert recorded["managed_by"] == "pinokio"
     assert recorded["program_root"] == str(second_root)
+
+
+def test_pinokio_install_saves_explicit_skill_policy(tmp_path, monkeypatch):
+    home = _cli_home(tmp_path, monkeypatch)
+    selection, captured = _stub_cli_install(tmp_path, monkeypatch, home)
+    monkeypatch.setattr(cli, "download", lambda _url, path: write_json(path, {}))
+    monkeypatch.setattr(cli, "validate_manifest", lambda manifest: manifest)
+
+    assert cli.main([
+        "--managed-by", "pinokio", "--root", str(tmp_path / "pinokio-app"), "--yes",
+        "--skills", "off", "--skill-copies", "on",
+    ]) == 0
+
+    assert captured["mode"] == "install"
+    saved = read_json(selection)["choices"]
+    assert saved["skills"] is False
+    assert saved["skill_copies"] is True
 
 
 def test_pinokio_install_refuses_existing_login_install(tmp_path, monkeypatch, capsys):
@@ -609,7 +631,10 @@ def test_managed_successful_uninstall_releases_pointer_but_keeps_workspace(tmp_p
     workspace_file.parent.mkdir()
     workspace_file.write_text("preserved", encoding="utf-8")
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
 
     backend.unregister()
     residue = backend.remove(root, data, delete_data=False)
@@ -644,7 +669,10 @@ def test_managed_uninstall_keeps_manager_pointer_when_files_remain(tmp_path, mon
         "chat_settings": {},
     })
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
     original_rmtree = __import__("shutil").rmtree
 
     def fail_versions(path, *args, **kwargs):
@@ -699,7 +727,10 @@ def test_partial_uninstall_recreates_owned_marker_when_empty_program_directory_i
         record["managed_by"] = manager
     write_json(backend.service.selection, record)
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
     original = Path.rmdir
 
     def locked(path):

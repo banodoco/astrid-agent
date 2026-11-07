@@ -13,6 +13,7 @@ import pytest
 
 from astrid.installer import launcher
 from astrid.installer.backend import Backend
+from astrid.installer.cli import _print_run_summary
 from astrid.installer.core import Installer, Version, read_json, write_json
 from astrid.installer.service import LABEL, Service
 from tests.test_installer_lifecycle import LifecycleBackend
@@ -63,7 +64,8 @@ def manager(request, tmp_path, monkeypatch, registry):
 
 
 def test_shim_written_idempotent_and_removed(manager):
-    target, hint = launcher.install_shim(manager)
+    details = {}
+    target, hint = launcher.install_shim(manager, details=details)
     contents = target.read_bytes()
     assert launcher.owned_shim(target)
     assert launcher.install_shim(manager) == (target, hint)
@@ -78,8 +80,8 @@ def test_shim_written_idempotent_and_removed(manager):
     else:
         assert target.stat().st_mode & 0o777 == 0o755
         assert hint == launcher.PATH_HINT
-    launcher.remove_shim(manager)
-    launcher.remove_shim(manager)
+    launcher.remove_owned_command(manager, str(target), details.get("path_added"))
+    launcher.remove_owned_command(manager, str(target), details.get("path_added"))
     assert not target.exists()
 
 
@@ -98,7 +100,7 @@ def test_foreign_command_is_preserved_and_reported_once(manager, monkeypatch, lo
     lines = []
     assert launcher.install_shim(manager, say=lines.append) == (None, None)
     assert len(lines) == 1 and str(foreign) in lines[0] and "run-astrid" in lines[0]
-    launcher.remove_shim(manager)
+    launcher.remove_owned_command(manager, None, None)
     assert os.path.lexists(foreign)
     if location == "earlier-path":
         assert not target.exists()
@@ -132,23 +134,59 @@ def test_installer_bootstrap_entry_point_does_not_block_shim(manager, monkeypatc
 
 
 @pytest.mark.parametrize("kind", [1, 2])
-def test_windows_user_path_preserves_kind_expansion_and_removes_duplicates(tmp_path, monkeypatch, registry, kind):
+def test_windows_preexisting_equivalent_path_is_preserved_and_not_claimed(tmp_path, monkeypatch, registry, kind):
     values, writes = registry
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     root = tmp_path / "Astrid"
     root.mkdir()
     service = Service(root, tmp_path / "log", Mock(return_value=""), home=tmp_path, system="win32")
-    values["user"] = f'%LOCALAPPDATA%/Astrid;C:\\Tools;{str(root).upper()}/', kind
+    existing = f'%LOCALAPPDATA%/Astrid;C:\\Tools;{str(root).upper()}/'
+    values["user"] = existing, kind
     values["machine"] = r"%SystemRoot%\System32", 2
     monkeypatch.setenv("PATH", "")
-    assert launcher.install_shim(service)[0] == root / "astrid.cmd"
-    assert values["user"] == (r"%LOCALAPPDATA%/Astrid;C:\Tools", kind)
+    details = {}
+    assert launcher.install_shim(service, details=details)[0] == root / "astrid.cmd"
+    assert details["path_added"] is None and details["path_present"] is True
+    assert values["user"] == (existing, kind)
     assert values["machine"] == (r"%SystemRoot%\System32", 2)
-    launcher.install_shim(service)
+    assert len(writes) == 0
+    result = launcher.remove_owned_command(service, str(root / "astrid.cmd"), None)
+    assert result == {"shim": True, "path": False}
+    assert values["user"] == (existing, kind)
+    assert service.run.call_count == 0
+
+
+def test_windows_owned_path_removal_is_exact_and_preserves_user_edits(tmp_path, monkeypatch, registry):
+    values, writes = registry
+    root = tmp_path / "Astrid"
+    service = Service(root, tmp_path / "log", Mock(return_value=""), home=tmp_path, system="win32")
+    monkeypatch.setenv("PATH", "")
+    details = {}
+    shim, _ = launcher.install_shim(service, details=details)
+    owned = str(root)
+    assert details["path_added"] == owned
+    assert values["user"][0] == owned
+
+    # A user edit changes the owned entry's spelling; off must preserve it.
+    edited = str(root).upper()
+    values["user"] = f"C:\\Tools;{edited};C:\\Later", values["user"][1]
+    result = launcher.remove_owned_command(service, str(shim), owned)
+    assert result == {"shim": True, "path": False}
+    assert values["user"][0] == f"C:\\Tools;{edited};C:\\Later"
     assert len(writes) == 1
-    launcher.remove_shim(service)
-    assert values["user"] == (r"C:\Tools", kind)
-    assert len(writes) == 2 and service.run.call_count == 2
+
+
+def test_windows_owned_path_removal_preserves_unrelated_entries(tmp_path, monkeypatch, registry):
+    values, _writes = registry
+    root = tmp_path / "Astrid"
+    service = Service(root, tmp_path / "log", Mock(return_value=""), home=tmp_path, system="win32")
+    monkeypatch.setenv("PATH", "")
+    details = {}
+    shim, _ = launcher.install_shim(service, details=details)
+    values["user"] = f"C:\\Before;{details['path_added']};C:\\After", values["user"][1]
+    result = launcher.remove_owned_command(service, str(shim), details["path_added"])
+    assert result == {"shim": True, "path": True}
+    assert values["user"][0] == r"C:\Before;C:\After"
 
 
 def test_windows_detects_registry_path_clash(tmp_path, monkeypatch, registry):
@@ -182,9 +220,9 @@ def test_upgrade_repoints_posix_shim_and_old_uninstall_keeps_it(tmp_path, monkey
     previous = shim.read_text()
     assert launcher.install_shim(services[1])[0] == shim
     assert shim.read_text() != previous
-    launcher.remove_shim(services[0])
+    launcher.remove_owned_command(services[0], None, None)
     assert shim.exists()
-    launcher.remove_shim(services[1])
+    launcher.remove_owned_command(services[1], None, None)
     assert not shim.exists()
 
 
@@ -220,7 +258,7 @@ def test_verified_lifecycle_records_shim_and_prints_final_hint(tmp_path, monkeyp
         assert launcher.owned_shim(Path(record["command_shim"]))
         assert "old content" not in Path(record["command_shim"]).read_text()
     else:
-        assert record["command_shim"] is None
+        assert record["command_shim"] == str(shim_path)
     hint = "Open a new terminal, then run astrid." if system == "win32" else launcher.PATH_HINT
     assert lines[-1] == hint and lines.count(hint) == 1
     # The real removal boundary cleans up the shim before deleting programs.
@@ -260,6 +298,232 @@ def test_open_records_posix_shim_only_when_its_folder_is_on_path(tmp_path, monke
     backend.open()
     record = read_json(root / "install.json")
     assert record["command_shim"] == str(backend.service.home / ".local/bin/astrid")
+
+
+@pytest.mark.parametrize("system", ["linux", "win32"])
+def test_command_off_removes_only_recorded_artifacts_and_reports_actual_result(
+        tmp_path, monkeypatch, registry, system):
+    root = tmp_path / "program"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(return_value=""), home=tmp_path / "home", system=system)
+    backend.service.choices = {"command": True}
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+    monkeypatch.setenv("PATH", "")
+    if system == "win32":
+        values, _ = registry
+        values["user"] = r"C:\Before;C:\After", 2
+    backend.open()
+    marker = read_json(root / "install.json")
+    assert marker["command_shim"]
+    if system == "win32":
+        assert marker["command_path"] == str(root)
+        values["user"] = f"C:\\Before;{marker['command_path']};C:\\After", values["user"][1]
+    else:
+        assert marker["command_path"] is None
+
+    backend.service.choices = {"command": False}
+    backend.open()
+    marker = read_json(root / "install.json")
+    assert marker["command_shim"] is None and marker["command_path"] is None
+    assert backend.command_result["action"] == "disabled"
+    assert backend.command_result["removed_shim"] is True
+    if system == "win32":
+        assert backend.command_result["removed_path"] is True
+        assert values["user"][0] == r"C:\Before;C:\After"
+    else:
+        assert backend.command_result["removed_path"] is False
+        assert not (backend.service.home / ".local/bin/astrid").exists()
+
+
+def test_command_off_removes_exact_legacy_posix_shim_without_receipt(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "program"
+    root.mkdir()
+    home = tmp_path / "home"
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.service.choices = {"command": False}
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.parent.mkdir(parents=True, exist_ok=True)
+    rc.write_bytes(b"# user's shell setup  \nexport X=1\n")
+    rc_before = rc.read_bytes()
+    path_before = "/existing/bin:/usr/bin"
+    monkeypatch.setenv("PATH", path_before)
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+
+    assert not shim.exists()
+    assert backend.command_result["removed_shim"] is True
+    assert backend.command_result["preserved_shim"] is False
+    _print_run_summary({"command": False}, mode="install", outcomes={"command": backend.command_result})
+    assert "Astrid's command shim removed" in capsys.readouterr().out
+    assert os.environ["PATH"] == path_before
+    assert rc.read_bytes() == rc_before
+
+
+@pytest.mark.parametrize("kind", ["foreign", "edited", "newline-edited", "other-install"])
+def test_command_off_preserves_and_reports_unverified_posix_shim(tmp_path, monkeypatch, kind, capsys):
+    root = tmp_path / "program"
+    root.mkdir()
+    home = tmp_path / "home"
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.service.choices = {"command": False}
+    monkeypatch.setenv("PATH", "")
+    if kind == "other-install":
+        other_service = Service(
+            tmp_path / "other-program", tmp_path / "other.log", Mock(), home=home, system="linux")
+        shim, _ = launcher.install_shim(other_service)
+    else:
+        shim, _ = launcher.install_shim(backend.service)
+    if kind == "edited":
+        shim.write_text(shim.read_text() + "# user edit\n")
+    elif kind == "newline-edited":
+        shim.write_bytes(shim.read_bytes().replace(b"\n", b"\r\n"))
+    elif kind == "foreign":
+        shim.write_text("#!/bin/sh\n# user command\nexit 0\n")
+    original = shim.read_bytes()
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.write_bytes(b"export KEEP=1  \n\n")
+    rc_before = rc.read_bytes()
+    monkeypatch.setenv("PATH", "/existing/bin:/usr/bin")
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+    _print_run_summary({"command": False}, mode="install", outcomes={"command": backend.command_result})
+
+    summary = capsys.readouterr().out
+    assert shim.read_bytes() == original
+    assert backend.command_result["removed_shim"] is False
+    assert backend.command_result["preserved_shim"] is True
+    assert f"preserved at {shim}" in backend.log.read_text()
+    assert "preserved because ownership could not be verified" in summary
+    assert os.environ["PATH"] == "/existing/bin:/usr/bin"
+    assert rc.read_bytes() == rc_before
+
+
+def test_uninstall_removes_exact_legacy_posix_shim_without_receipt(tmp_path, monkeypatch):
+    root, home = tmp_path / "program", tmp_path / "home"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.uv = tmp_path / "uv"
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
+
+    residue = backend.remove(root, tmp_path / "data", delete_data=False)
+
+    assert not shim.exists()
+    assert not root.exists()
+    assert residue == []
+
+
+def test_uninstall_reports_retained_edited_legacy_posix_shim(tmp_path, monkeypatch):
+    root, home = tmp_path / "program", tmp_path / "home"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(), home=home, system="linux")
+    backend.uv = tmp_path / "uv"
+    monkeypatch.setenv("PATH", "")
+    shim, _ = launcher.install_shim(backend.service)
+    shim.write_text(shim.read_text() + "# user edit\n")
+    original = shim.read_bytes()
+    write_json(root / "install.json", {"owner": LABEL, "command_shim": None, "command_path": None})
+    rc = home / ".bashrc"
+    rc.write_bytes(b"export KEEP=1  \n\n")
+    rc_before = rc.read_bytes()
+    path_before = "/existing/bin:/usr/bin"
+    monkeypatch.setenv("PATH", path_before)
+    monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
+
+    residue = backend.remove(root, tmp_path / "data", delete_data=False)
+
+    assert shim.read_bytes() == original
+    assert residue == [shim]
+    assert os.environ["PATH"] == path_before
+    assert rc.read_bytes() == rc_before
+
+
+@pytest.mark.parametrize("system", ["linux", "win32"])
+def test_fresh_command_off_creates_no_shim_or_path_change(tmp_path, monkeypatch, registry, system):
+    root = tmp_path / "program"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(return_value=""), home=tmp_path / "home", system=system)
+    backend.service.choices = {"command": False}
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+    monkeypatch.setenv("PATH", "")
+    if system == "win32":
+        values, _ = registry
+        values["user"] = r"C:\Before;C:\After", 2
+    backend.open()
+    marker = read_json(root / "install.json")
+    assert marker["command_shim"] is None and marker["command_path"] is None
+    assert backend.command_result["action"] == "disabled"
+    if system == "win32":
+        assert values["user"] == (r"C:\Before;C:\After", 2)
+        assert not (root / "astrid.cmd").exists()
+    else:
+        assert not (backend.service.home / ".local/bin/astrid").exists()
+
+
+def test_backend_does_not_claim_a_preexisting_windows_path_entry(tmp_path, monkeypatch, registry):
+    root = tmp_path / "program"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(return_value=""), home=tmp_path, system="win32")
+    backend.service.choices = {"command": True}
+    values, writes = registry
+    existing = f"C:\\Tools;{str(root).upper()}/;C:\\Other"
+    values["user"] = existing, 2
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+
+    marker = read_json(root / "install.json")
+    assert marker["command_shim"] == str(root / "astrid.cmd")
+    assert marker["command_path"] is None
+    assert values["user"] == (existing, 2) and writes == []
+
+    # The equivalent path pre-dated this install. Its later removal is still
+    # the user's choice; repair must not recreate it.
+    values["user"] = r"C:\Tools;C:\Other", 2
+    backend.open()
+    assert values["user"] == (r"C:\Tools;C:\Other", 2)
+    assert backend.command_result["path_added"] is None
+    assert backend.command_result["path_present"] is False
+    assert "Add " + str(root) in backend.command_result["path_hint"]
+
+
+def test_repair_does_not_restore_a_removed_owned_windows_path_entry(tmp_path, monkeypatch, registry):
+    root = tmp_path / "program"
+    root.mkdir()
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
+    backend.service = Service(root, backend.log, Mock(return_value=""), home=tmp_path, system="win32")
+    backend.service.choices = {"command": True}
+    values, _ = registry
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr("webbrowser.open", lambda *_: None)
+
+    backend.open()
+    owned = read_json(root / "install.json")["command_path"]
+    assert owned == str(root) and values["user"][0] == owned
+    values["user"] = r"C:\Tools", values["user"][1]
+
+    backend.open()
+    assert values["user"][0] == r"C:\Tools"
+    assert read_json(root / "install.json")["command_path"] == owned
+    assert backend.command_result["path_added"] is None
+    assert backend.command_result["path_present"] is False
+    assert "Add " + owned in backend.command_result["path_hint"]
 
 
 def test_open_shim_failure_is_logged_and_does_not_fail_install(tmp_path, monkeypatch):

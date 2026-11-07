@@ -50,6 +50,22 @@ def _json(value):
     return json.dumps(value, sort_keys=True) + "\n"
 
 
+# Saved setup choices (and the command receipt they produce) may change after a
+# completed handoff; they are policy, not handoff identity.
+POLICY_FIELDS = (("command_shim", "command_path"), ("choices",), ())
+
+
+def _matches(path, expected, ignore):
+    text = _text(path)
+    if text in expected:
+        return True
+    if text is None or not ignore:
+        return False
+    def strip(content):
+        return {k: v for k, v in json.loads(content).items() if k not in ignore}
+    return strip(text) in [strip(e) for e in expected]
+
+
 class BoundaryHandoff:
     def __init__(self, backend):
         self.backend = backend
@@ -119,8 +135,8 @@ class BoundaryHandoff:
         new = self._records(value) if value.get("candidate") else old
         # Validate all three before the first mutation. A partial replay may
         # contain either side at each file, never a third party's replacement.
-        for path, before, after in zip(paths, old, new):
-            if _text(path) not in (before, after):
+        for path, before, after, ignore in zip(paths, old, new, POLICY_FIELDS):
+            if not _matches(path, (before, after), ignore):
                 raise ValueError(f"Handoff selection changed; R0 was not restarted: {path}")
         for path, before in zip(paths, old):
             if _text(path) != before:
@@ -168,9 +184,9 @@ class BoundaryHandoff:
     def validate_active(self, value):
         if value["phase"] != "complete" or not value.get("receipt"):
             raise ValueError("The R1 handoff is not complete.")
-        for path, expected in zip((self.root / "install.json", self.service.selection, self.root / "current"),
-                                  self._records(value)):
-            if _text(path) != expected:
+        for path, expected, ignore in zip((self.root / "install.json", self.service.selection, self.root / "current"),
+                                          self._records(value), POLICY_FIELDS):
+            if not _matches(path, (expected,), ignore):
                 raise ValueError("R1 handoff selection changed; both roots were kept.")
         candidate = Version.load(value["candidate"])
         if read_json(registration._regular(candidate.root / "version.json")) != candidate.document():
@@ -269,12 +285,28 @@ class BoundaryHandoff:
             raise
 
 
-def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=print):
-    """Return True when the public entry is handled without any legacy path."""
+POLICY_REFUSAL = ("The R0 to R1 handoff is copy-only and cannot apply setup choice changes "
+                  "({names}). Nothing was changed; rerun without those flags, or change them after the handoff.")
+
+
+def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=print, policy_change=None):
+    """Return True when the public entry is handled without any legacy path.
+
+    The handoff never changes command, autostart or skill policy. A requested
+    change (``policy_change``) is therefore refused before any handoff work
+    instead of being silently dropped; unchanged saved policy is carried over.
+    Once the handoff is complete, changed choices are not handled here (False is
+    returned) so a later explicit install applies them.
+    """
     path = journal_path(backend.service)
     if os.path.lexists(path):
         transaction = BoundaryHandoff(backend)
         value = transaction._load()
+        if policy_change and value["phase"] == "complete" and not rollback:
+            # The handoff is finished: the caller's normal install applies the new choices.
+            return False
+        if policy_change:
+            raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
         if value["phase"] == "complete" and not rollback:
             candidate, destination = transaction.validate_active(value)
             backend.verify(candidate, destination, value["realm_id"])
@@ -307,8 +339,70 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
         raise ValueError(WINDOWS_UPGRADE_REFUSAL)
     if manifest_loader is None:
         raise ValueError("The copy-only upgrade requires a candidate manifest.")
+    if policy_change:
+        raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
     BoundaryHandoff(backend).run(data, manifest_loader, say=say)
     return True
+
+
+def apply_completed_policy(backend, policy_change, *, say=print):
+    """Apply changed setup choices to a completed R1 in place; no R0 stop path.
+
+    Returns False when there is no completed handoff, else a dict of per-choice
+    results ``{name: {"ok": bool, "reason": str | None}}``. Each changed choice is
+    applied first and only then saved (that one key); a failed step leaves the
+    saved value unchanged so a rerun retries. The R0 discovery file is
+    never read: R1 operations only use the validated journal and R1 records.
+    Only the changed names are re-registered; unchanged saved policy is kept.
+    """
+    if not policy_change or not os.path.lexists(journal_path(backend.service)):
+        return False
+    transaction = BoundaryHandoff(backend)
+    value = transaction._load()
+    if value["phase"] != "complete":
+        return False
+    candidate, _destination = transaction.validate_active(value)
+    wanted = {name: backend.service.choices[name] for name in policy_change}
+    steps = []
+    if "autostart" in policy_change:
+        steps.append((("autostart",), lambda: transaction.registration.set_autostart(policy_change["autostart"])))
+    def command_step():
+        backend.open()
+        # Backend reports a failed command as a recorded error, not an exception.
+        error = (getattr(backend, "command_result", None) or {}).get("error")
+        if error:
+            raise RuntimeError(f"command failed ({error})")
+
+    def skills_step():
+        outcome = backend.sync_skills(candidate)
+        if outcome and outcome.get("ok") is False:
+            raise RuntimeError("skill sync failed; see the installer log")
+
+    if "command" in policy_change:
+        steps.append((("command",), command_step))
+    skill_names = tuple(name for name in ("skills", "skill_copies") if name in policy_change)
+    if skill_names:
+        steps.append((skill_names, skills_step))
+    results = {}
+    for names, step in steps:
+        try:
+            step()
+        except Exception as error:  # noqa: BLE001 - reported per choice; other choices still apply
+            reason = (str(error) or type(error).__name__).splitlines()[0]
+            for name in names:
+                results[name] = {"ok": False, "reason": reason}
+            continue
+        # Persist only the choices whose step succeeded; a failed step keeps the
+        # saved value so a rerun of the same flag sees the change and retries.
+        saved = read_json(backend.service.selection)
+        registration._publish(backend.service.selection, _json(
+            {**saved, "choices": {**saved.get("choices", {}), **{name: wanted[name] for name in names}}}),
+            exclusive=False)
+        for name in names:
+            results[name] = {"ok": True, "reason": None}
+    if all(item["ok"] for item in results.values()):
+        say("Applied the changed setup choices to the running R1 install; R0 was not touched.")
+    return results
 
 
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
