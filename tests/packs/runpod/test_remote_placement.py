@@ -178,11 +178,15 @@ class FakeProvider:
 
 
 @pytest.fixture
-def sources(tmp_path: Path) -> Path:
+def sources(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "sources"
     for directory in rp.SOURCE_DIRS:
         (root / directory).mkdir(parents=True)
         (root / directory / "mod.py").write_text(f"# {directory}\n", encoding="utf-8")
+    (root / "src/astrid-agent/runtime.lock.json").write_text('{"source_commit": "1"}', encoding="utf-8")
+    from astrid.packs.runpod import managed_sources
+    monkeypatch.setattr(managed_sources, "_pins", lambda: {
+        d: (f"https://example.invalid/{Path(d).name}", f"{i}" * 40) for i, d in enumerate(rp.SOURCE_DIRS)})
     return root
 
 
@@ -609,3 +613,22 @@ def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs, mon
         sleep=lambda s: None)
     assert (provider.spec.max_spend_eur, provider.spec.deadline_seconds) == (3.5, 7200)
     assert result["pod"]["leave_running"] is True and provider.releases == 0
+
+
+def test_source_archive_carries_git_and_the_one_identity_manifest_the_verifier_reads(tmp_path, sources):
+    import tarfile
+    (sources / "src/astrid-runtime/.git").mkdir()
+    (sources / "src/astrid-runtime/.git/HEAD").write_text("ref")
+    (sources / "src/astrid-runtime/.gitignore").write_text("x")
+    (sources / "src/astrid-runtime/mod.pyc").write_bytes(b"x")
+    archive = rp._build_source_archive(sources, tmp_path / "a.tar.gz")
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+        manifest = json.loads(tar.extractfile("src/.pod-source.json").read())
+    assert "src/astrid-runtime/.git/HEAD" in names and "src/astrid-runtime/.gitignore" in names
+    assert "src/astrid-runtime/mod.pyc" not in names
+    # pod_source_identity._verify requires exactly these keys, resolved against root "src".
+    assert set(manifest) == {"heads", "runtime_lock_sha256"}
+    assert manifest["heads"] == {Path(d).name: f"{i}" * 40 for i, d in enumerate(rp.SOURCE_DIRS)}
+    assert set(manifest["heads"]) == {"astrid-agent", "astrid-runtime", "runpod-lifecycle", "VibeComfy"}
+    assert manifest["runtime_lock_sha256"] == rp.sha256_file(sources / "src/astrid-agent/runtime.lock.json")

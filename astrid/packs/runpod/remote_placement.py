@@ -235,16 +235,38 @@ def source_digest(source_root: Path) -> str:
     return hashlib.sha256(listing.encode()).hexdigest()[:16]
 
 
-def _build_source_archive(source_root: Path, destination: Path) -> Path:
+def pod_source_manifest(source_root: Path, pins: Mapping[str, tuple[str, str]] | None = None) -> bytes:
+    """The one transported identity record, in exactly the shape pod_source_identity checks.
+
+    Heads come from the pinned (repository, sha) of each source dir; the lock digest is of the
+    astrid-agent runtime.lock.json that is shipped in the same archive.
+    """
+    if pins is None:
+        from .managed_sources import _pins
+        pins = _pins()
+    heads = {Path(directory).name: pins[directory][1] for directory in SOURCE_DIRS}
+    lock = Path(source_root) / "src/astrid-agent" / "runtime.lock.json"
+    manifest = {"heads": heads, "runtime_lock_sha256": sha256_file(lock)}
+    return (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+
+
+def _build_source_archive(source_root: Path, destination: Path,
+                          pins: Mapping[str, tuple[str, str]] | None = None) -> Path:
+    # Each source dir ships with its own .git (depth-1 clean detached managed clone): the pod
+    # verifier reads git state. Only bytecode is dropped.
+    manifest = pod_source_manifest(source_root, pins)
     with tarfile.open(destination, "w:gz") as archive:
         for directory in SOURCE_DIRS:
             archive.add(
                 Path(source_root) / directory,
                 arcname=directory,
                 filter=lambda info: None
-                if info.name.endswith(".pyc") or "/.git" in info.name or "__pycache__" in info.name
+                if info.name.endswith(".pyc") or "__pycache__" in info.name
                 else info,
             )
+        info = tarfile.TarInfo("src/.pod-source.json")
+        info.size, info.mode, info.mtime = len(manifest), 0o644, 0
+        archive.addfile(info, io.BytesIO(manifest))
     return destination
 
 
