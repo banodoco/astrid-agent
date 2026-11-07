@@ -66,6 +66,11 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
         executors: Iterable[ExecutorDefinition | dict[str, Any]] = (),
     ) -> None:
         super().__init__()
+        # Pack namespaces known to be installed.  ``None`` means unknown, in
+        # which case every dangling dependency is an error.  load_default_registry
+        # sets this from pack discovery.
+        self.installed_namespaces: set[str] | None = None
+        self._unavailable: dict[str, str] = {}
         for executor in executors:
             self.register(executor)
 
@@ -127,16 +132,36 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
             {eid: self._resolve_entry(entry) for eid, entry in self._entries.items()}
         )
 
+    def unavailable_reason(self, executor_id: str) -> str | None:
+        """Why *executor_id* cannot run here (a dependency's pack is not installed)."""
+        return self._unavailable.get(executor_id)
+
     def _validate_graph_references(self) -> None:
         known_ids = set(self._entries)  # keys are strings, unchanged
+        self._unavailable = {}
         # Winners only.
         for executor in (self._resolve_entry(entry) for entry in self._entries.values()):
+            missing_packs: list[str] = []
             for dependency in executor.graph.depends_on:
                 resolved = dependency
                 if resolved not in known_ids:
+                    namespace = resolved.split(".", 1)[0]
+                    if self.installed_namespaces is not None and namespace not in self.installed_namespaces:
+                        if namespace not in missing_packs:
+                            missing_packs.append(namespace)
+                        continue
                     raise ExecutorRegistryError(f"executor {executor.id!r} depends on unknown executor {resolved!r}")
                 if resolved == executor.id:
                     raise ExecutorRegistryError(f"executor {executor.id!r} cannot depend on itself")
+            if missing_packs:
+                packs = ", ".join(f"'{name}'" for name in missing_packs)
+                reason = f"requires pack {packs} (install from poms_packs)"
+                self._unavailable[executor.id] = reason
+                entry = self._entries[executor.id]
+                entry[0] = replace(
+                    entry[0],
+                    metadata={**entry[0].metadata, "available": False, "unavailable_reason": reason},
+                )
 
 def load_default_registry(
     banodoco_config: "BanodocoCatalogConfig | None" = None,
@@ -157,6 +182,7 @@ def load_default_registry(
         extra_pack_roots=extra_pack_roots,
     )
     registry = ExecutorRegistry()
+    registry.installed_namespaces = {pack.id for pack in packs}
     local_parent_ids: set[str] = set()
     for executor in _load_pack_executors_from_packs(packs):
         registry.register(executor)
