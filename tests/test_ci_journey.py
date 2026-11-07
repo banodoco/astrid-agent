@@ -1952,3 +1952,22 @@ def test_hosted_windows_captures_bounded_logs_from_real_profile_even_without_own
     assert status["status"] == "captured"
     assert status["probe"]["task_found"] is False
     assert status["captured_bytes"] <= journey.WINDOWS_PROFILE_SERVICE_LOG_LIMIT
+
+
+@pytest.mark.parametrize("system", ["linux", "win32"])
+def test_selection_path_follows_the_installer_lock(tmp_path, monkeypatch, system):
+    from astrid.installer.service import install_selection
+
+    local = tmp_path / "local"
+    monkeypatch.setattr(journey.sys, "platform", system)
+    monkeypatch.setattr(journey, "program_root", lambda: local / "Astrid")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("XDG_DATA_HOME", str(local))
+    assert journey.selection_path() == install_selection(tmp_path / "home", system)
+    if system == "win32":
+        # An older release under test keeps its record until the installer migrates it.
+        legacy = local / "astrid-install.json"
+        journey.write_json(legacy, {"owner": "haus.astrid.runtime"})
+        assert journey.selection_path() == legacy
+        journey.write_json(install_selection(tmp_path / "home", system), {"owner": "haus.astrid.runtime"})
+        assert journey.selection_path() == local / "Astrid Installer" / "astrid-install.json"

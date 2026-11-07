@@ -24,7 +24,14 @@ from .core import (
     separate_roots,
     write_json,
 )
-from .service import LABEL, default_program_root, default_uv, installer_lock_path, pinokio_owned
+from .service import (
+    LABEL,
+    default_program_root,
+    default_uv,
+    installer_lock_path,
+    migrate_install_selection,
+    pinokio_owned,
+)
 from .support import FAILURE_MESSAGE, default_doctor_bundle
 from .tools import download, validate_manifest
 
@@ -187,6 +194,9 @@ def main(argv: list[str] | None = None) -> int:
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
         backend.console_diagnostics = True
+        if mode != "doctor":
+            # Before any selection read, including the Pinokio update path.
+            migrate_install_selection(backend.service.home, backend.service.system)
         if mode == "uninstall":
             # This read-only gate precedes installer lock/log creation and all
             # service or selection work. lexists also refuses partial journals.

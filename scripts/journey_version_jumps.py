@@ -405,7 +405,7 @@ def schema_summary(before: dict, after: dict) -> dict:
 
 
 def service_action(root: Path, data: Path, version: dict, old: dict | None = None) -> dict:
-    selection = journey.read_json(journey.program_root().parent / "astrid-install.json")
+    selection = journey.read_json(journey.selection_path())
     if (selection.get("program_root") != str(root) or selection.get("data_root") != str(data)
             or selection.get("identity") != version.get("identity")
             or not isinstance(version.get("identity"), dict)):

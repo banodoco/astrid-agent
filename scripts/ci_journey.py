@@ -1421,6 +1421,21 @@ def program_root() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share") / "astrid"
 
 
+def selection_path() -> Path:
+    """Return the installer's per-user selection record, beside its lock.
+
+    Windows keeps it in the private ``Astrid Installer`` directory. An older
+    release under test may still have its record in LOCALAPPDATA until the
+    candidate installer migrates it.
+    """
+    parent = program_root().parent
+    if sys.platform != "win32":
+        return parent / "astrid-install.json"
+    private = parent / "Astrid Installer" / "astrid-install.json"
+    legacy = parent / "astrid-install.json"
+    return legacy if not private.exists() and legacy.exists() else private
+
+
 def windows_task_owned(output: str, root: Path) -> bool:
     lines = [line.strip().strip('"') for line in output.splitlines() if line.strip()]
     if not lines or lines[0] != "present" or len(lines) != 2:
@@ -1432,13 +1447,13 @@ def windows_task_owned(output: str, root: Path) -> bool:
 def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     """Describe Windows login-install selection state without recording paths or values."""
     default = program_root()
-    selection_path = default.parent / "astrid-install.json"
-    present = selection_path.exists()
+    record_path = selection_path()
+    present = record_path.exists()
     selection = None
     readable = None
     if present:
         try:
-            selection = read_json(selection_path)
+            selection = read_json(record_path)
             readable = True
         except Exception:
             readable = False
@@ -1490,8 +1505,8 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
         raise ValueError("Host availability supports only release 0 or release 1")
     r1_cleanup = leg == "cleanup" and release == 1
     default = program_root()
-    selection_path = default.parent / "astrid-install.json"
-    selection = read_json(selection_path) if selection_path.exists() else None
+    record_path = selection_path()
+    selection = read_json(record_path) if record_path.exists() else None
     owned_uninstalled = (leg == "cleanup" and isinstance(selection, dict)
                          and selection.get("owner") == "haus.astrid.runtime"
                          and _same_path(selection.get("program_root"), root)
@@ -1654,8 +1669,8 @@ def assert_direct_service_ownership(root: Path, data: Path, *, release: int = 0)
     """Prove the selected direct service matches the lifecycle release phase."""
     if release not in {0, 1}:
         raise ValueError("Direct service ownership supports only release 0 or release 1")
-    selection_path = program_root().parent / "astrid-install.json"
-    if selection_path.is_file() and read_json(selection_path).get("foreground"):
+    record_path = selection_path()
+    if record_path.is_file() and read_json(record_path).get("foreground"):
         raise RuntimeError("Direct journey selected a forbidden foreground fallback")
     if sys.platform == "linux":
         unit_dir = data.parent / "home" / ".config" / "systemd" / "user"

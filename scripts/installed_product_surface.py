@@ -686,7 +686,8 @@ def execute(
         if scenario.get("mode") == "direct":
             if installed["managed_by"] is not None:
                 raise SurfaceError("direct installation is marked as Pinokio-managed")
-            selection = root.parent / "astrid-install.json"
+            # The installer keeps the selection beside its lock.
+            selection = (root.parent / "Astrid Installer" if scenario["os"] == "windows" else root.parent) / "astrid-install.json"
             if selection.exists() and _read_json(selection, "install selection").get("foreground"):
                 raise SurfaceError("direct installation selected a foreground fallback")
             observation["service_manager"] = _manager_version(str(scenario["os"]))

@@ -221,6 +221,122 @@ def test_staging_verifies_the_local_schema_before_declaring_services(tmp_path, m
     assert version.profile.is_file()
 
 
+def test_windows_pinokio_stage_copies_packages_so_schema_inputs_inherit_the_private_root(
+        tmp_path, monkeypatch):
+    """Hosted pinokio-windows run 42382564371: a hard-linked uv cache DACL reached the version.
+
+    The Pinokio program root is created private (cli.py private_directory), so
+    files created inside it inherit owner/SYSTEM only. A uv hard link instead
+    shares the cache file's descriptor; the cache here sits outside the root
+    under a parent whose DACL grants BUILTIN\\Users read, as under D:\\a\\_temp.
+    The model below keys each file's DACL by inode, exactly what a hard link
+    shares, and runs the real schema admission walk with the Windows branch.
+    """
+    import os
+    import shutil
+    import types
+
+    import astrid.installer.backend as backend_module
+    from astrid.core.rendering import _local_schema
+
+    root = tmp_path / "pinokio-home" / "api" / "astrid" / "app" / "astrid"
+    cache = tmp_path / "localappdata" / "uv" / "cache"  # Users-readable parent
+    backend = Backend(root, tmp_path / "install.log", tmp_path / "uv", managed_by="pinokio")
+    backend.uv.touch()
+    backend.service.system = "win32"
+    monkeypatch.setattr(backend, "existing", lambda _data: None)
+    monkeypatch.setattr(backend, "_installed_product_root",
+                        lambda python, _env: python.parent / "Lib" / "site-packages")
+    inputs = (_local_schema.SCHEMA_RELATIVE_PATH, *_local_schema.READER_INPUTS)
+
+    def source(_name, _sha, destination, **_kwargs):
+        destination.mkdir(parents=True)
+        if destination.name == "a":
+            (destination / "remotion").mkdir()
+            (destination / "remotion/package-lock.json").write_text("{}\n")
+            staged = destination / _local_schema.SCHEMA_RELATIVE_PATH
+            staged.parent.mkdir(parents=True)
+            staged.write_bytes((ROOT / _local_schema.SCHEMA_RELATIVE_PATH).read_bytes())
+            (destination / "runtime.lock.json").write_bytes((ROOT / "runtime.lock.json").read_bytes())
+        else:
+            (destination / "packages" / "python").mkdir(parents=True)
+        return destination
+
+    monkeypatch.setattr(backend_module, "source", source)
+    monkeypatch.setattr(backend_module, "install_tools", lambda *_args: {
+        "PATH": "/tools", "ASTRID_NODE_EXECUTABLE": "/tools/node", "ASTRID_BUN_EXECUTABLE": "/tools/bun",
+    })
+    monkeypatch.setattr(backend_module, "binary", lambda *_args: Path("/tools/npm-cli.js"))
+
+    def cache_inodes():
+        return {(entry.stat().st_dev, entry.stat().st_ino) for entry in cache.rglob("*") if entry.is_file()}
+
+    rejected = []
+
+    def dacl_is_private(path):
+        info = path.stat()
+        if (info.st_dev, info.st_ino) in cache_inodes():
+            rejected.append(path.name)  # The shared cache DACL grants Users (ace_trustee_allowed).
+            return False
+        return path == root or path.is_relative_to(root)
+
+    fake_sys = types.SimpleNamespace(platform="win32", prefix="", stderr=None)
+    monkeypatch.setattr(_local_schema, "sys", fake_sys)
+    monkeypatch.setattr(_local_schema, "_windows_schema_path_is_safe", dacl_is_private)
+    installs = []
+
+    def run(argv, *, extra_env=None, cwd=None, **_kwargs):
+        call = [str(value) for value in argv]
+        if call[0].endswith("uv") and call[1:] == ["--version"]:
+            return "uv 1.0.0"
+        if call[1:3] == ["pip", "install"]:
+            installs.append(call)
+            if "--no-deps" in call:
+                # uv's default Windows link mode is hardlink from its global cache.
+                copy = "--link-mode" in call and call[call.index("--link-mode") + 1] == "copy"
+                site = Path(call[call.index("--python") + 1]).parent / "Lib" / "site-packages"
+                for relative in inputs:
+                    cached, installed = cache / relative, site / relative
+                    for path in (cached, installed):
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                    cached.write_bytes((ROOT / relative).read_bytes())
+                    (shutil.copyfile if copy else os.link)(cached, installed)
+        if call[1:3] == ["/tools/npm-cli.js", "ci"]:
+            Path(cwd, "node_modules").mkdir()
+        if "load_verified_schema" in " ".join(call):
+            product_root = Path(call[-1])
+            fake_sys.prefix = str(product_root.parents[2])  # <version>/py
+            try:
+                _local_schema.verified_schema_path(product_root, extra_env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"])
+            except ValueError as exc:
+                raise subprocess.CalledProcessError(1, call[0], output=str(exc)) from exc
+        if "source_checkout_digest" in " ".join(call):
+            return "digest"
+        return ""
+
+    monkeypatch.setattr(backend, "run", run)
+
+    def declare(*, folder, **_kwargs):
+        destination = folder / "services.json"
+        destination.write_text('{"version":1,"services":[]}', encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr(backend, "_declare_services", declare)
+    manifest = {"agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40},
+                "tools": {"uv": {"version": "1.0.0"}, "python": {"version": "3.11.9"}}}
+
+    try:
+        version = backend.stage(manifest, root, tmp_path / "workspace")
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(f"Windows Pinokio staging refused its own schema inputs: {exc.output}")
+
+    assert not rejected
+    assert len(installs) == 2
+    assert all(call[3:5] == ["--link-mode", "copy"] for call in installs)
+    installed = version.python.parent / "Lib" / "site-packages" / _local_schema.SCHEMA_RELATIVE_PATH
+    assert installed.stat().st_nlink == 1
+
+
 def test_local_schema_verification_rejects_a_changed_schema(tmp_path):
     agent = tmp_path / "agent"
     schema = agent / "astrid/core/timeline/schema/timeline-config.schema.json"
