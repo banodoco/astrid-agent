@@ -225,3 +225,15 @@ def test_existing_install_update_needs_no_consent_flag_and_keeps_saved_policy():
     saved = {"autostart": False, "command": True, "skills": True, "skill_copies": False}
     assert resolve_choices(saved=saved, existing_install=True) == saved
     assert resolve_choices(existing_install=True) == LEGACY_CHOICES
+
+
+def test_exact_no_flag_update_argv_applies_the_saved_policy():
+    # The App's existing-install command, parsed by the real CLI, carries no choice flags;
+    # resolving it for an existing install returns the saved policy unchanged.
+    from astrid.installer import cli
+    from astrid.installer.choices import resolve_choices
+
+    args = cli.parser().parse_args(["--update"])
+    assert args.choices == {} and args.yes is False
+    saved = {"autostart": False, "command": True, "skills": False, "skill_copies": True}
+    assert resolve_choices(explicit=args.choices, saved=saved, existing_install=True) == saved
