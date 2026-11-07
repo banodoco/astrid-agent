@@ -500,6 +500,41 @@ def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selecti
             )
 
 
+def test_windows_refusal_cleanup_accepts_only_the_prior_fresh_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    default = tmp_path / "default" / "Astrid"
+    default.parent.mkdir()
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    monkeypatch.setattr(journey.windows, "scheduled_task_diagnostics", lambda **unused: {
+        "status": "absent", "tasks": [],
+    })
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    run_root = tmp_path / "astrid-r1-direct-windows-refusal"
+    refusal_program, refusal_data = run_root / "program", run_root / "data"
+    # The fresh leg's uninstall retains its receipt at the private path; the
+    # refusal's R0 record is discarded by migration, so only the prior receipt remains.
+    receipt = {"owner": "haus.astrid.runtime", "program_root": str(tmp_path / "astrid-r1-direct-windows" / "program"),
+               "data_root": str(tmp_path / "astrid-r1-direct-windows" / "data"), "uninstalled": True}
+    journey.write_json(default.parent / "Astrid Installer" / "astrid-install.json", receipt)
+
+    assert journey.refusal_prior_selection(run_root) == (
+        tmp_path / "astrid-r1-direct-windows" / "program", tmp_path / "astrid-r1-direct-windows" / "data")
+    with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
+        journey.assert_host_available("cleanup", refusal_program, refusal_data, skip_process_check=True)
+    journey.assert_host_available(
+        "cleanup", refusal_program, refusal_data, skip_process_check=True,
+        related_uninstalled_selection=journey.refusal_prior_selection(run_root),
+    )
+    for changed in ({**receipt, "uninstalled": False},
+                    {**receipt, "program_root": str(tmp_path / "foreign" / "program")}):
+        journey.write_json(default.parent / "Astrid Installer" / "astrid-install.json", changed)
+        with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
+            journey.assert_host_available(
+                "cleanup", refusal_program, refusal_data, skip_process_check=True,
+                related_uninstalled_selection=journey.refusal_prior_selection(run_root),
+            )
+
+
 @pytest.mark.windows_native
 def test_same_path_matches_windows_spelling_variants(tmp_path):
     assert journey._same_path(r"C:\A\B", "c:/a/b/")
