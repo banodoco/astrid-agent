@@ -228,7 +228,14 @@ class Row:
         return argv + ["--manifest", str(manifest)]
 
     def install(self, manifest: Path, *, expected: dict) -> None:
-        self.command(self.installer_argv(manifest), timeout=3600)
+        argv = self.installer_argv(manifest)
+        if self.published is None:
+            # A fresh install asks for setup consent. Pinokio's terminal is
+            # interactive and the person answers there; this row has no
+            # terminal, so it accepts the recommended choices as a person would.
+            # Updates of the existing install ask nothing, as in Pinokio.
+            argv.append("--yes")
+        self.command(argv, timeout=3600)
         self.data, version, record = self.record()
         installed = read_json(version / "manifest.json")
         if any(installed.get(key) != value for key, value in expected.items()):

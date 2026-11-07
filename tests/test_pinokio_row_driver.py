@@ -210,6 +210,11 @@ def test_uninstall_runs_the_installed_candidate_manifest_never_the_published_one
     assert "--uninstall" in uninstall
     assert uninstall[uninstall.index("--manifest") + 1] == str(row.standin)
     assert uninstall[uninstall.index("--root") + 1] == str(row.root)
+    # The fresh install has no terminal for setup consent, so it accepts the
+    # recommended choices; the update and uninstall ask nothing (main run 42420524996).
+    first_install, update = commands[0], commands[1]
+    assert first_install.count("--yes") == 1
+    assert "--yes" not in update and "--yes" not in uninstall
 
 
 def _release_row(tmp_path, monkeypatch, release):
@@ -279,3 +284,4 @@ def test_candidate_release_must_be_an_integer_at_least_one(tmp_path, monkeypatch
 
 def read_manifest_release(version):
     return json.loads((version / "manifest.json").read_text(encoding="utf-8"))["release"]
+
