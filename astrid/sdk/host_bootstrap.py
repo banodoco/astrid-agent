@@ -1014,9 +1014,9 @@ def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
                 "legacy Windows host registration lacks a matching Runtime Job-drain receipt; "
                 "automatic retirement is blocked"
             )
-        suffix = f" ({attach_reason})" if attach_reason else ""
+        detail = f"registration status {status}" + (f"; {attach_reason}" if attach_reason else "")
         raise PackHostBootstrapError(
-            "registered Windows host has no retained Job custody; retirement blocked" + suffix
+            "registered Windows host has no retained Job custody; retirement blocked" + f" ({detail})"
         )
     if status != "reused":
         return _stop_group(int(state["pid"]), leader_birth=str(state.get("process_birth_id") or "") or None)
@@ -1937,6 +1937,43 @@ def _attach_resident_host(
     }
 
 
+# A Runtime-supervised foreground host writes its ready record only after its own
+# startup, which can take minutes (Windows launch validation alone took 69 s).
+_STARTUP_WAIT_SECONDS = 180.0
+_STARTUP_POLL_SECONDS = 0.5
+
+
+def _await_supervised_startup(state_path: Path, ready_path: Path) -> None:
+    """Wait while this Runtime's foreground host is still starting, then return.
+
+    Returns once the ready record matches the live registration; the normal attach
+    path decides from there. A supervised host is never signalled from here: its
+    retirement belongs to the Runtime.
+    """
+    deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    while True:
+        state = _read_object(state_path)
+        if not state or state.get("runtime_service_launch_id") is None:
+            return  # not Runtime-supervised: the caller's normal path decides
+        status = _registered_host_status(state)
+        if status != "ours":
+            raise PackHostBootstrapError(
+                f"Astrid's task host stopped during startup (pid {state.get('pid')}, "
+                f"registration status {status}); try again"
+            )
+        ready = _read_object(ready_path)
+        if (ready and str(ready.get("status")) == "ready"
+                and str(ready.get("pid")) == str(state.get("pid"))
+                and str(ready.get("process_birth_id")) == str(state.get("process_birth_id"))):
+            return
+        if time.monotonic() >= deadline:
+            raise PackHostBootstrapError(
+                f"Astrid's task host is still starting (pid {state.get('pid')}, registration status "
+                f"{status}; no ready record after {_STARTUP_WAIT_SECONDS:g}s); try again"
+            )
+        time.sleep(_STARTUP_POLL_SECONDS)
+
+
 def ensure_pack_host(
     value: Mapping[str, Any], *, reconfigure_action: str,
     startup_idle_seconds: float = HOST_STARTUP_IDLE_SECONDS,
@@ -2057,6 +2094,10 @@ def ensure_pack_host(
     ready_path = runtime_support / "generic-host.ready.json"
     lock_path = runtime_support / "generic-host.lock"
     endpoint = str(value["endpoint"]).rstrip("/")
+    if not _foreground:
+        # Wait outside the registration lock: the supervised host writes its ready
+        # record without this lock, and the locked section re-reads it afterwards.
+        _await_supervised_startup(state_path, ready_path)
     try:
         lock_handle = lock_path.open("a+")
         platform.owner_only(lock_handle.fileno())

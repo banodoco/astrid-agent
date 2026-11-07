@@ -1134,3 +1134,86 @@ def test_stop_registered_host_refuses_superseded_registration(monkeypatch, tmp_p
 
     assert json.loads(registration.read_text(encoding="utf-8")) == successor
     assert readiness.read_bytes() == b"successor readiness"
+
+
+def _supervise(h) -> None:
+    """Mark the registration as this Runtime's supervised foreground host."""
+    data = h.marker()
+    data["runtime_service_launch_id"] = "a" * 32
+    (h.support / "generic-host.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _forbid_retirement(monkeypatch) -> None:
+    monkeypatch.setattr(host_bootstrap, "_retire_host_locked",
+                        lambda *_a, **_kw: pytest.fail("retired a Runtime-supervised host from an SDK caller"))
+    monkeypatch.setattr(host_bootstrap, "_terminate_old_host",
+                        lambda *_a, **_kw: pytest.fail("signalled a Runtime-supervised host from an SDK caller"))
+
+
+def test_supervised_starting_host_attaches_once_its_ready_record_appears(harness, monkeypatch, tmp_path):
+    h = harness
+    second = tmp_path / "second-source"
+    (second / "astrid" / "packs").mkdir(parents=True)
+    _materialize_source_closure(second)
+    h.value["source_checkout"] = str(second)
+    _supervise(h)
+    ready_record = (h.support / "generic-host.ready.json").read_bytes()
+    (h.support / "generic-host.ready.json").unlink()  # still starting: no ready record yet
+    polls = []
+
+    def sleep_until_ready(seconds):
+        polls.append(seconds)
+        if len(polls) == 2:
+            (h.support / "generic-host.ready.json").write_bytes(ready_record)
+
+    monkeypatch.setattr(host_bootstrap.time, "sleep", sleep_until_ready)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    _forbid_retirement(monkeypatch)
+    from astrid.core.gateway import dispatch
+    monkeypatch.setattr(
+        dispatch, "compose_profile_handoff",
+        lambda *_args, **_kwargs: pytest.fail("attach must preserve the resident boot manifest"),
+    )
+
+    result = host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert result["host_status"] == "ready"
+    assert result["host_pid"] == FAKE_PID
+    assert len(polls) == 2
+    assert h.launches == []
+
+
+def test_supervised_host_that_never_becomes_ready_is_left_alone(harness, monkeypatch):
+    h = harness
+    _supervise(h)
+    (h.support / "generic-host.ready.json").unlink()
+    monkeypatch.setattr(host_bootstrap, "_STARTUP_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(host_bootstrap, "_STARTUP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    _forbid_retirement(monkeypatch)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="still starting") as raised:
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert "no retained Job custody" not in str(raised.value)
+    assert str(FAKE_PID) in str(raised.value)
+    assert h.launches == []
+
+
+def test_supervised_host_that_dies_while_starting_raises_clearly(harness, monkeypatch):
+    h = harness
+    _supervise(h)
+    (h.support / "generic-host.ready.json").unlink()
+    statuses = iter(["ours", "gone"])
+    monkeypatch.setattr(host_bootstrap, "_STARTUP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: next(statuses))
+    monkeypatch.setattr(host_bootstrap, "_host_idle", lambda *_args: True)
+    _forbid_retirement(monkeypatch)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="stopped during startup") as raised:
+        host_bootstrap.ensure_pack_host(h.value, reconfigure_action="reconfigure", attach_healthy=True)
+
+    assert "no retained Job custody" not in str(raised.value)
+    assert h.launches == []

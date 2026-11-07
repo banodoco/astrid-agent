@@ -71,4 +71,5 @@ def test_refusal_text_carries_the_attach_reason(monkeypatch):
     else:
         raise AssertionError("live Windows host without custody must be refused")
     assert message.startswith("registered Windows host has no retained Job custody; retirement blocked")
-    assert message.endswith(f"({reason})")
+    assert "(registration status ours; " in message
+    assert message.endswith(f"; {reason})")
