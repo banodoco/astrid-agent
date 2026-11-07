@@ -12,7 +12,7 @@ from astrid.core.pack.identity import pack_digest, read_pin, write_pin
 def _published_tree(root: Path) -> None:
     (root / "shared").mkdir(parents=True)
     (root / "pack.yaml").write_text(
-        'schema_version: 3\nid: hello_ext\nname: Hello\nversion: 1.0.0\npack_api: "1.0"\n',
+        'schema_version: 3\nid: hello_ext\nname: Hello\nversion: 1.0.0\npack_api: "2.0"\n',
         encoding="utf-8",
         newline="",
     )

@@ -39,7 +39,7 @@ def _manifest(pack_id: str, *, schema_version: int = 3, availability=None) -> di
         "id": pack_id,
         "name": "Moved Data Fixture",
         "version": "1.0.0",
-        "pack_api": "1.0",
+        "pack_api": "2.0",
         "status": "active",
         "domain": "media",
         "stability": "experimental",

@@ -70,7 +70,6 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
         # which case every dangling dependency is an error.  load_default_registry
         # sets this from pack discovery.
         self.installed_namespaces: set[str] | None = None
-        self._unavailable: dict[str, str] = {}
         for executor in executors:
             self.register(executor)
 
@@ -134,11 +133,11 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
 
     def unavailable_reason(self, executor_id: str) -> str | None:
         """Why *executor_id* cannot run here (a dependency's pack is not installed)."""
-        return self._unavailable.get(executor_id)
+        entry = self._entries.get(executor_id)
+        return entry[0].metadata.get("unavailable_reason") if entry else None
 
     def _validate_graph_references(self) -> None:
         known_ids = set(self._entries)  # keys are strings, unchanged
-        self._unavailable = {}
         # Winners only.
         for executor in (self._resolve_entry(entry) for entry in self._entries.values()):
             missing_packs: list[str] = []
@@ -156,7 +155,6 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
             if missing_packs:
                 packs = ", ".join(f"'{name}'" for name in missing_packs)
                 reason = f"requires pack {packs} (install from poms_packs)"
-                self._unavailable[executor.id] = reason
                 entry = self._entries[executor.id]
                 entry[0] = replace(
                     entry[0],

@@ -46,7 +46,7 @@ def _write_hello_ext(collection: Path) -> Path:
     (pack / "greeting.py").write_text("MESSAGE = 'hello from outside core'\n", encoding="utf-8")
     manifest = {
         "schema_version": 3, "id": "hello_ext", "name": "Hello extension", "version": "1.0.0",
-        "pack_api": "1.0", "documentation": {"kind": "none", "reason": "PK-6 pilot fixture."},
+        "pack_api": "2.0", "documentation": {"kind": "none", "reason": "PK-6 pilot fixture."},
         "actions": {"greet": {
             "description": "Print a greeting", "short_description": "Print a greeting",
             "invocation": {"kind": "command", "command": {"argv": ["echo", "hello"]}},

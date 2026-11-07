@@ -22,7 +22,7 @@ def _write_pack(root: Path, pack_id: str, body: str) -> Path:
     (pack / "actions" / "report").mkdir(parents=True)
     (pack / "actions" / "report" / "run.py").write_text(body, encoding="utf-8")
     manifest = {
-        "schema_version": 3, "id": pack_id, "name": pack_id, "version": "1.0.0", "pack_api": "1.0",
+        "schema_version": 3, "id": pack_id, "name": pack_id, "version": "1.0.0", "pack_api": "2.0",
         "documentation": {"kind": "none", "reason": "PK-7 fixture."},
         "actions": {"report": {
             "description": "Report the public API version", "short_description": "Report API version",

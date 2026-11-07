@@ -39,7 +39,7 @@ class SourceRepo:
         self.pack.mkdir(parents=True, exist_ok=True)
         (self.pack / "pack.yaml").write_text(
             "schema_version: 3\nid: alpha\nname: Alpha\nversion: 1.0.0\n"
-            'pack_api: "1.0"\ndocumentation: {kind: none, reason: R8 H3 fixture.}\n' + extra,
+            'pack_api: "2.0"\ndocumentation: {kind: none, reason: R8 H3 fixture.}\n' + extra,
             encoding="utf-8",
         )
         (self.pack / "payload.txt").write_text("alpha payload\n", encoding="utf-8")

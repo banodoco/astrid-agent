@@ -13,7 +13,7 @@ def write_folder(root: Path, payload: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "pack.yaml").write_text(
         "schema_version: 3\nid: local_ext\nname: Local\nversion: 1.0.0\n"
-        'pack_api: "1.0"\n'
+        'pack_api: "2.0"\n'
         "documentation: {kind: none, reason: Folder transaction fixture.}\n",
         encoding="utf-8",
     )

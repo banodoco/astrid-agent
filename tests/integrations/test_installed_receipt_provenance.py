@@ -28,7 +28,7 @@ collection = Path(sys.argv[1])
 pack = collection / "receipted"
 pack.mkdir(parents=True)
 (pack / "pack.yaml").write_text(yaml.safe_dump({
-    "schema_version": 3, "id": "receipted", "name": "Receipted", "version": "1.0.0", "pack_api": "1.0",
+    "schema_version": 3, "id": "receipted", "name": "Receipted", "version": "1.0.0", "pack_api": "2.0",
     "documentation": {"kind": "none", "reason": "PK-7 fixture."},
     "actions": {"run": {"description": "Run", "short_description": "Run",
                          "invocation": {"kind": "command", "command": {"argv": ["echo", "ok"]}},

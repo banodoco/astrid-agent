@@ -20,7 +20,7 @@ def git(root: Path, *args: str) -> str:
 
 def pack_manifest(pack_id: str) -> str:
     return (f"schema_version: 3\nid: {pack_id}\nname: {pack_id}\nversion: 1.0.0\n"
-            'pack_api: "1.0"\ndocumentation: {kind: none, reason: Fixture.}\n')
+            'pack_api: "2.0"\ndocumentation: {kind: none, reason: Fixture.}\n')
 
 
 class Repository:

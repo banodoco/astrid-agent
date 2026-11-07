@@ -13,7 +13,7 @@ def _make(root: Path, pack_id: str, *, dependencies=(), source="") -> Path:
     path = root / pack_id
     path.mkdir(parents=True)
     manifest = {"schema_version": 3, "id": pack_id, "name": pack_id,
-                "version": "1.0.0", "pack_api": "1.0", "resources": [],
+                "version": "1.0.0", "pack_api": "2.0", "resources": [],
                 "dependencies": {"packs": list(dependencies)}}
     (path / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     if source:

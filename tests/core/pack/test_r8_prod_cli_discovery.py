@@ -28,7 +28,7 @@ def _manifest(pack_id: str, *, version: str = "1.0.0", dependencies: tuple[str, 
         dependency_section = "dependencies:\n  packs: [" + ", ".join(dependencies) + "]\n"
     return (
         f"schema_version: 3\nid: {pack_id}\nname: {pack_id.title()}\nversion: {version}\n"
-        'pack_api: "1.0"\n'
+        'pack_api: "2.0"\n'
         + dependency_section
         + "documentation: {kind: none, reason: R8 CLI discovery fixture.}\n"
     )

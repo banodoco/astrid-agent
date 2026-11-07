@@ -36,7 +36,7 @@ def _isolated(tmp_path, script, *arguments):
 def _manifest(root, dependencies=(), actions=None):
     root.mkdir(parents=True, exist_ok=True)
     (root / "pack.yaml").write_text(yaml.safe_dump({
-        "schema_version": 3, "pack_api": "1.0", "id": root.name,
+        "schema_version": 3, "pack_api": "2.0", "id": root.name,
         "name": root.name, "version": "1.0.0", "dependencies": {"packs": list(dependencies)},
         "actions": actions or {},
     }))

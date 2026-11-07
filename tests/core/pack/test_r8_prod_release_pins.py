@@ -23,7 +23,7 @@ def _manifest(pack_id: str, dependencies: tuple[str, ...] = ()) -> str:
     if dependencies:
         dependency_field = "dependencies:\n  packs: [" + ", ".join(dependencies) + "]\n"
     return (f"schema_version: 3\nid: {pack_id}\nname: {pack_id.title()}\nversion: 1.0.0\n"
-            'pack_api: "1.0"\n' + dependency_field +
+            'pack_api: "2.0"\n' + dependency_field +
             "documentation: {kind: none, reason: R8 release-pin fixture.}\n")
 
 

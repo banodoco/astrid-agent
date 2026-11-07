@@ -6,34 +6,7 @@
 
 | id | short_description |
 | --- | --- |
-| `blender.render` | Render a Blender scene (declarative spec or .blend file) to a still or animation, locally or on a cloud render host. |
-| `capture.web_page` | Capture one admitted HTTPS web page to PNG with a provenance receipt. |
-| `chiptune.compose` | Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking. |
-| `chiptune.midi` | Play a MIDI file as an NES-style chiptune: melody on pulse 1, arpeggiated chords on pulse 2, bass on the triangle. |
-| `chiptune.sfx` | Render a retro one-shot sound effect (WAV plus JSON), or a batch of kinds as one zip. |
 | `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
-| `discord_local.command` | Preview, submit once, or recover one Discord generation as an experiment-ready run. |
-| `editorial.arrange` | Compose a brief-specific shot arrangement from runtime-materialized inputs. |
-| `editorial.boundary_candidates` | Package candidate video frames for visual scene-boundary review. |
-| `editorial.editor_review` | Run heuristic editorial reviewers over an arrangement and emit notes. |
-| `editorial.human_notes` | Convert human editorial notes into structured pipeline inputs. |
-| `editorial.human_review` | Serve a small HTML page locally, collect human decisions as JSON, block until submit. |
-| `editorial.inspect_cut` | Inspect a generated cut run directory and report timeline/asset health. |
-| `editorial.pacing` | Render an immutable timeline rhythm sheet for editorial review. |
-| `editorial.quality_zones` | Tag arrangement clips with per-zone quality grades for downstream picks. |
-| `editorial.quote_scout` | Scan a transcript for quotable lines suitable for hype clips. |
-| `editorial.refine` | Apply targeted reviewer-driven refinements using runtime-materialized media. |
-| `editorial.scenes` | Detect source-video scene boundaries with ffmpeg-driven analysis. |
-| `editorial.script_pipeline` | Generate short scripts through rough attempts, synthesis, style pass, and optional judging. |
-| `editorial.shots` | Slice scenes into shot windows for downstream pool building. |
-| `editorial.transcribe` | Transcribe source audio to transcript.json via Whisper. |
-| `editorial.triage` | Triage source-video scenes by quality before pool building. |
-| `editorial.validate` | Validate the rendered video against its declared timeline and metadata. |
-| `fal.fal_foley` | Generate Foley audio for one short video clip via fal.ai's hunyuan-video-foley model. |
-| `fal.h3_video` | Generate MiniMax H3 text-to-video or multimodal reference-to-video clips through fal.ai. |
-| `foley.foley_map` | Spatial Foley pipeline: tile a video, prompt a VLM, and score Foley per tile. |
-| `foley.foley_review` | Build a static review.html pairing each tile clip with its generated Foley audio for sense-checking. |
-| `foley.tile_video` | Crop a video into an MxN grid of overlapping spatial tiles plus first-frame PNGs. |
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends. v2: model→mode→backend with music mode. |
 | `generation.generate_image` | Bounded registry-backed cloud text-to-image generation. |
 | `generation.generate_image_cloud_i2i` | One bounded z-image cloud i2i task with CAS source custody and enforced storage limits. |
@@ -49,23 +22,6 @@
 | `h3_av.publication_finalizer` | Copy one verified H3 candidate into the Runtime publication spool. |
 | `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
 | `h3_av.verify` | Verify H3 artifact custody and protected-source evidence. |
-| `iteration.assemble` | Adapt runtime-materialized iteration data into result-only timeline and render artifacts. |
-| `iteration.experiment_import` | Import an unmanaged run root into an experiment without rewriting history or guessing ambiguous associations. |
-| `iteration.experiment_prepare` | Normalize an experiment's provider manifests into a provider-independent review model with diagnostics. |
-| `iteration.experiment_review` | Render a deterministic HTML gallery comparing provider outputs with prompt, parameters, warnings, and diagnostics. |
-| `iteration.experiment_review_session` | Interactive rubric review session over a prepared experiment, reusing editorial.human_review with safe mounted media. |
-| `media.clip_extract` | Extract a clip segment from a video using ffmpeg stream copy. |
-| `media.gif_search` | Search GIPHY for GIF or sticker assets and optionally download a selected rendition. |
-| `media.speech_repair_lavasr` | Repair weak-mic speech with hotter pre-lift, fal.ai LavaSR, optional DeepFilterNet3, and a final loudness pass. |
-| `moirae.moirae` | Run a Moirae screenplay through the terminal-as-cinema renderer to produce a video. |
-| `music.align` | Find the offset and tempo ratio between MIDI/audio or two recordings. |
-| `music.beats` | Infer beats, downbeats, and bars for imported music. |
-| `music.duck` | Bake smooth speech-keyed ducking into a timeline music asset. |
-| `music.level` | Measure integrated EBU R128 loudness for a clip's used source span. |
-| `pixel.cutout` | Remove a flat, chroma-key, or light background into hard-alpha RGBA, optionally on the snapped pixel grid. |
-| `pixel.snap` | Snap a generated image onto a logical pixel grid with mode downsampling, optional palette, and a scaled preview. |
-| `pixel.sprites` | Turn one generated sheet into individually trimmed, native RGBA sprites. |
-| `pixel.strip` | Join ordered pixel-art frames into one shared-grid horizontal sprite strip. |
 | `rendering.assemble_timeline` | Author a canonical two-child timeline from runtime-resolved visual outputs. |
 | `rendering.html_canvas_effect` | Scaffold a local Remotion HTML-in-canvas effect element. |
 | `rendering.render` | Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected backend. |
@@ -75,45 +31,28 @@
 | `rendering.timeline_storyboard` | Build a static visual storyboard of image inputs associated with timeline shots. |
 | `rendering.timeline_visualize` | Private backend for composed timeline visualization. |
 | `runpod.exec` | Execute a script on an existing RunPod pod and download artifacts. |
+| `runpod.ls` | List the retained owner's current RunPod lease, if any. |
 | `runpod.provision` | Provision a RunPod GPU pod and emit a pod handle for later exec/teardown. |
 | `runpod.pull` | Pull artifacts from an existing RunPod pod into local storage. |
+| `runpod.release` | Release the exact retained target. |
 | `runpod.session` | Composite provision → exec → teardown session with guaranteed cleanup. |
+| `runpod.setup` | Save validated RunPod preferences through the retained owner. |
+| `runpod.status` | Inspect the retained target and optionally observe an offer. |
 | `runpod.teardown` | Terminate a RunPod pod. Idempotent. |
-| `seedance_local.reference_video` | Generate one Seedance 2.0 video from ordered local image references and/or a reference clip. |
-| `stream_content.clip_candidates` | Score transcript windows as publishable stream clip candidates. |
-| `stream_content.distill` | Distill a long event stream into segments, extracted blocks, candidates, and a review page. |
-| `stream_content.segment_map` | Fuse OCR, transcript density, and scene cuts into a complete stream timeline. |
 | `training.dataset_build` | Build a generic reviewed video training dataset from configured sources. |
 | `training.pool_build` | Build the candidate clip pool from triaged source-video scenes. |
 | `training.pool_merge` | Update a candidate clip pool with available generative effect entries. |
 | `training.search_loras` | Search Hugging Face Hub for LoRAs associated with a base model. |
 | `training.training_run` | Run a generic LoRA training job from a prepared dataset manifest. |
-| `typed_timeline.map` | Map typed rows to a validated timeline JSON. |
-| `understanding.audio_understand` | Inspect audio clips or sampled windows with an audio-understanding LLM. |
-| `understanding.scene_describe` | Caption each detected scene with a vision model for downstream selection. |
-| `understanding.understand` | Dispatch to the audio, visual, or video understanding action based on --mode. |
-| `understanding.video_understand` | Inspect synchronized audio/video windows with a video-understanding model. |
-| `understanding.visual_understand` | Inspect images or sampled video frames with a vision LLM — free-text or JSON-schema-constrained. |
-| `vibecomfy.character_animation` | Unavailable: vibecomfy.character_animation is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
+| `vibecomfy.character_animation` | Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
 | `vibecomfy.edit` | Create an immutable canonical successor through a typed edit or explicit capture. |
 | `vibecomfy.import` | Import a ComfyUI workflow into VibeComfy's canonical editable bundle. |
 | `vibecomfy.inspect` | Render a ComfyUI workflow as readable Python-like VibeComfy IR. |
 | `vibecomfy.run` | Run a VibeComfy / ComfyUI workflow and settle its artifact inventory. |
 | `vibecomfy.validate` | Validate workflow structure offline; runtime checks belong to vibecomfy.run. |
 | `vibecomfy.video_enhance` | Bounded VibeComfy video upscale with source-FPS/audio preservation. |
-| `video_editing.animate_image` | Unavailable: video_editing.animate_image is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Restyle a video opening frame and animate it using the reference video's motion. |
-| `video_editing.cut` | Assemble an editorial arrangement into a timeline, asset registry, and metadata files. |
-| `video_editing.event_talks` | Plan event-talk work and run local template, transcript, and holding-screen steps. |
-| `video_editing.hype` | Run the cache-aware hype pipeline from source video and creative brief to a rendered edit. |
-| `video_editing.iteration_video` | Assemble one admitted historical iteration selection and render it through the public Rendering action. |
-| `video_editing.logo_ideas` | Draft distinct logo concepts and render them as a contact sheet or individual images. |
-| `video_editing.sync_draft_voiceover` | Reconcile temporary narration with pinned timeline scripts. |
-| `video_editing.thumbnail_maker` | Unavailable: video_editing.thumbnail_maker generation is not implemented. Fix: retry after the generation availability declaration marks this route available. Plan source evidence and prepare references for a thumbnail request. |
-| `video_editing.vary_grid` | Select cells from an image grid and generate a new grid of variations. |
-| `wan2gp.generate_video` | Unavailable: wan2gp.generate_video is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Host-mediated native Wan2GP video generation. |
+| `wan2gp.generate_video` | Host-mediated native Wan2GP video generation. |
 | `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
-| `youtube.upload` | Upload a finished video to YouTube via the shared banodoco-social Zapier integration. |
-| `youtube.youtube_audio` | Download a YouTube video's audio (MP3) or video (MP4) — by search query or direct URL. |
 
 ### Orchestrators
 
@@ -131,42 +70,8 @@
 | `animations/slide-left` | Slide left entrance animation. |
 | `animations/slide-up` | Slide up exit animation. |
 | `animations/type-on` | Typewriter-style text reveal animation. |
-| `effects/am-burst` | Pop-up burst: pixel cutouts or glyphs stamp in on an arc, each with a 6 px psychic ring. |
-| `effects/am-callout` | Floating white callout card joined to an anchor by a stepped orange curved connector with dot end-caps. |
-| `effects/am-churn` | Ledger of obsession: real git totals count up on a timeline, commits stamp in, a heartbeat grows. |
-| `effects/am-discord` | Pixel-styled Discord channel reconstruction with stepped camera, highlighter and annotation. |
-| `effects/am-droste` | Endless recursive zoom into a screen inside a pixel plate, on stepped moves. |
-| `effects/am-flap` | Split-flap readout that flips through a drum to each target, left to right. |
-| `effects/am-footage` | Real-footage slot: a filmed shot with crop, push and pixelate in/out; a slot card when the media is missing. |
-| `effects/am-orbit` | Small pixel orbit HUD: the Earth steps round the Sun past twelve month ticks, with a month readout. |
-| `effects/am-orgchart` | Recursive pixel org chart: agents managing agents, row by row, with an optional rubber stamp. |
-| `effects/am-pixel-shape` | Procedural pixel shape (ring, dot, underline, arrow or rect) on the sticker pixel grid. |
-| `effects/am-pixel-wipe` | Pixel-block wipe that covers or reveals the frame in a diagonal, seeded-random or scan order. |
-| `effects/am-presenter` | Animated pixel presenter overlay with mouth, blinks, bob, punch and crisp REC/label chrome. |
-| `effects/am-quote` | Quotation card that reveals on the VO's words, strikes through word by word and takes a rubber stamp. |
-| `effects/am-seasons` | A window onto a street through the year, drawn on the 320x180 grid (procedural, no assets). |
-| `effects/am-snap-plate` | Pixel plate with integer zoom, stepped pans and block-wipe enter or exit. |
-| `effects/am-sprite` | Transparent pixel cutout with stepped keyframes, stamp or slide entrance and run-cycle strips. |
-| `effects/am-terminal` | Pixel terminal window: commands type in after an orange prompt, output lands whole, a progress line counts. |
-| `effects/am-tweet` | Reconstructed post card with a visible slot for the real text, a generic avatar and a RECONSTRUCTION chip. |
-| `effects/am-type` | Editorial type with masked slide-up or stepped typewriter reveal, rust italic word and orange underline. |
-| `effects/am-ui-sketch` | Animated app window whose interface, behaviour and data layers swap in stepped pixel flickers with orange sparks. |
-| `effects/animated-media-transform` | Animate one managed image or video through editable position, size and opacity keyframes. |
 | `effects/audio-reactive-colour` | Fill the frame with colours selected by frozen integer-frame markers. |
-| `effects/end-codex-transform` | Reference images connect into timeline images and transform them. |
-| `effects/end-mid-combined` | One continuous codex-then-minimax insert over a single plate. |
-| `effects/end-minimax-animate` | Timeline images lift out below while their videos load and play above. |
-| `effects/end-spanning-layer` | Flexible amber workflow timeline with real moving output and keyframe references. |
-| `effects/ending-carousel` | Image carousel insert that flies cards through, picks one, and lays them onto a timeline. |
-| `effects/event-card` | DOM-to-canvas Remotion effect for post-processed cards. |
-| `effects/frame-overlay` | Full-frame tight amber border overlay. |
-| `effects/model-trends` | Animated stacked-area chart of model-family share-of-conversation, driven by Remotion frame. |
-| `effects/neon-orbit-card` | DOM-to-canvas Remotion effect for post-processed cards. |
-| `effects/scrolling-guide` | Transparent orange and cream scrolling guide for the video-making workflow. |
-| `effects/sliding-media` | Full-screen media clip with slide-in/out motion. |
 | `effects/text-card` | Default text card effect for captions and titles. |
-| `effects/vibe-comfy-asset-overlay` | Asset-driven Vibe Comfy overlay with procedural noodle. |
-| `effects/vibe-comfy-bumper` | Procedural Remotion bumper for Vibe Comfy. |
 | `transitions/cross-fade` | Cross fade transition. |
 | `transitions/fade` | Fade-through-black transition. |
 

@@ -28,7 +28,7 @@ def _external_pack(parent: Path) -> Path:
     }), encoding="utf-8")
     (pack / "pack.yaml").write_text(json.dumps({
         "schema_version": 3, "id": "selected_res", "name": "Selected", "version": "1.0.0",
-        "pack_api": "1.0", "documentation": {"kind": "none", "reason": "Test fixture."},
+        "pack_api": "2.0", "documentation": {"kind": "none", "reason": "Test fixture."},
         "rendering": {"renderer_0": {"type": "renderer", "path": "rendering/a.yaml"}},
         "resources": [{"path": "data/table.json", "kind": "example"}],
     }), encoding="utf-8")
