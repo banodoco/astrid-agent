@@ -695,8 +695,76 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
         runpy.run_path(str(runner))
 
 
+def _candidate_targets_newer_schema(env):
+    """The candidate Runtime targets a newer schema, so the update migrates."""
+    inspect = env.backend.run
+
+    def run(argv, **kwargs):
+        if argv[0] == env.candidate.python:
+            return json.dumps({**env.schema, "target": env.schema["target"] + 1})
+        return inspect(argv, **kwargs)
+
+    env.backend.run = run
+
+
+def test_same_schema_pinokio_update_skips_runtime_upgrade_under_stopped_custody(installed):
+    """R1 -> stand-in R2: custody holds the lifetime lock Runtime upgrade takes.
+
+    Like a direct update, an unchanged schema needs neither backup nor
+    ``astrid_runtime upgrade``, whose own installer admission refuses here.
+    """
+    from astrid_runtime.operator_upgrade import OperatorUpgradeError, _installer_mutex
+    from astrid_runtime.paths import _install_record_path
+
+    env = installed
+    selection = _install_record_path(env.tmp_path)
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    write_json(selection, {"owner": LABEL, "program_root": str(env.root),
+                           "data_root": str(env.data), "managed_by": "pinokio"})
+    runtime_paths = SimpleNamespace(home=env.tmp_path, runtime_support=env.data / "runtime")
+    events = []
+
+    def runtime_upgrade(_candidate, _data):
+        # The Runtime's admission, exactly as `astrid_runtime upgrade` takes it.
+        try:
+            with _installer_mutex(runtime_paths):
+                events.append("upgrade")
+        except OperatorUpgradeError as exc:
+            raise RuntimeOperationError(str(exc)) from exc
+
+    env.backend.upgrade = runtime_upgrade
+    env.backend.backup = lambda *_args: events.append("backup") or {
+        "root": str(env.root / "backups" / "test")}
+    env.backend.restore = lambda *_args: events.append("restore")
+    env.backend.register = lambda candidate, _data: events.append("register:" + candidate.root.name)
+    env.backend.sync_skills = lambda *_args: None
+    start = env.lifecycle.start
+
+    def candidate_start(version, *args):
+        if version == env.candidate:
+            env.backend._pinokio_custody.check()
+            with pytest.raises(OperatorUpgradeError, match="installation lifetime lock"):
+                with _installer_mutex(runtime_paths):
+                    pass
+        return start(version, *args)
+
+    env.lifecycle.start = candidate_start
+    update.update_pinokio(env.root, env.backend, {"release": 12}, lifecycle=env.lifecycle,
+                          say=lambda _message: None, force=True)
+
+    journal = read_json(env.root / "update-transaction.json")
+    assert journal["step"] == "complete"
+    assert journal["transaction_kind"] == "migration"
+    assert journal["backup"] is None
+    assert "backed_up" not in env.journal_steps and "migrated" not in env.journal_steps
+    assert events == ["register:new"]
+    assert current(env.root) == env.candidate
+    assert env.owner == {"version": "new", "running": True}
+
+
 def test_unified_pinokio_migration_uses_shared_transaction_and_readiness_gate(installed):
     """Migration updates use C2's journal and retain the old workspace until ready."""
+    _candidate_targets_newer_schema(installed)
     data_bytes = installed.workspace.read_bytes()
     events = []
 
@@ -755,6 +823,7 @@ def test_unified_pinokio_migration_uses_shared_transaction_and_readiness_gate(in
 
 
 def test_unified_pinokio_migration_readiness_failure_restores_workspace_and_old_owner(installed):
+    _candidate_targets_newer_schema(installed)
     data_bytes = installed.workspace.read_bytes()
     events = []
 

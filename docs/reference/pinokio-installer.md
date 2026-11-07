@@ -39,9 +39,10 @@ This excludes foreground startup and installer mutations in both directions.
 The OS releases the lock when its owner exits or crashes; descendants do not
 retain it. Discovery is not the admission gate. A retry can recover an
 interrupted update even if its detached temporary migration daemon remains
-alive, stopping that daemon through Runtime's `down` lifecycle. Updates still
-back up, migrate and roll back through the normal Runtime APIs. They finish
-stopped. Workspace identity is
+alive, stopping that daemon through Runtime's `down` lifecycle. Updates that
+change the workspace schema still back up, migrate and roll back through the
+normal Runtime APIs; as for direct updates, an unchanged schema skips the backup
+and Runtime `upgrade`. They finish stopped. Workspace identity is
 checked without starting a browser door. Pinokio performs startup/readiness.
 
 Doctor is read-only and does not take the exclusive installer lock. It uses
