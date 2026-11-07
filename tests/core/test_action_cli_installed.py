@@ -144,7 +144,7 @@ def installed(tmp_path_factory):
     _snapshot(ROOT, _git(ROOT, "rev-parse", "HEAD").decode().strip(),
               sources / "astrid-agent", working=True)
     _snapshot(runtime, lock["source_commit"], sources / "astrid-runtime")
-    for name in ("runpod-python", "runpod-lifecycle", "VibeComfy"):
+    for name in ("runpod-lifecycle", "VibeComfy"):
         target = sources / name
         target.mkdir()
         (target / "fixture.txt").write_text("unused offline transport companion\n")
@@ -318,7 +318,7 @@ def test_named_runtime_head_cannot_replace_the_exact_lock_tuple(installed, tmp_p
     sources = tmp_path / "mismatched-tuple"
     sources.mkdir()
     _snapshot(runtime, named, sources / "astrid-runtime")
-    for name in ("runpod-python", "runpod-lifecycle", "VibeComfy"):
+    for name in ("runpod-lifecycle", "VibeComfy"):
         (sources / name).symlink_to(installed.root / name, target_is_directory=True)
     with pytest.raises(installed.session.SessionError, match="Runtime HEAD differs from Agent runtime.lock.json"):
         installed.session.build_bundle(installed.root / "astrid-agent", sources, tmp_path / "refused.tgz")
