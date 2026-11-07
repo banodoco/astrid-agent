@@ -31,6 +31,7 @@ from .worker_preparation import (
     inspect_volume_records, reconcile_target, replace_target_record, resolve_existing_volume, target_owner,
     _validate_completed_release, write_target_record,
 )
+from . import worker_preparation
 
 
 class PaidSelectionError(TargetObservationError):
@@ -462,21 +463,28 @@ class RunPodSelectionOwner:
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or exact.get("networkVolumeId") != p.volume_id):
                     raise PaidSelectionError("provider did not confirm the exact volume mount")
-                machine = exact.get("machine") if isinstance(exact.get("machine"), Mapping) else {}
-                if (offer.gpu_type_id is not None
-                        and (exact.get("gpuTypeId") or machine.get("gpuTypeId")) != offer.gpu_type_id):
-                    raise PaidSelectionError("provider did not confirm the accepted exact GPU id")
-                if (datacenter is not None
-                        and (exact.get("dataCenterId") or machine.get("dataCenterId")) != datacenter):
-                    raise PaidSelectionError("provider did not confirm the accepted exact datacenter")
+                # GPU and datacenter come from GraphQL pod.machine and the provider gpuTypes
+                # catalog (REST reports machine {} and no gpuTypeId/dataCenterId on a correct
+                # fresh pod). Unreported or unequal fails closed; no REST fallback.
+                await asyncio.to_thread(
+                    worker_preparation.confirm_acquired_machine, config.api_key,
+                    RunPodTargetContract(
+                        observation.pod_id, offer.gpu_type_id or offer.gpu_type, p.image, p.volume_id,
+                        p.volume_name, p.volume_size_gb, record["request_name"], datacenter,
+                    ),
+                    timeout_seconds=0,
+                )
                 if _number(self.observed_hourly_usd(observation.pod_id), "actual hourly USD rate") != offer.hourly_usd:
                     raise PaidSelectionError("actual rate changed; fresh consent is required before work")
                 if self.clock() >= expires:
                     raise PaidSelectionError("claim preparation consumed its paid lifetime")
-            except Exception:
+            except Exception as exc:
                 pending = {**acquired_record, "state": "cleanup_pending", "reconciliation_required": True}
                 replace_target_record(self.path, pending, operation_id=record["operation_id"])
-                raise PaidSelectionError("unconfirmed price or lifetime; exact claim requires cleanup") from None
+                # Our own gate messages are fixed, secret-free text naming the failed gate.
+                detail = (f"provider fields: {exc}" if isinstance(exc, TargetObservationError)
+                          else "price or lifetime")
+                raise PaidSelectionError(f"unconfirmed {detail}; exact claim requires cleanup") from None
             claimed = {
                 **acquired_record, "schema_version": "astrid.runpod.claim.v1", "state": "claimed",
                 "pod_id": observation.pod_id, "name": observation.pod_name,
