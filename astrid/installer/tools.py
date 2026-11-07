@@ -25,8 +25,10 @@ FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
 DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@18.12.6"
 MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
-    "runpod": "https://github.com/runpod/runpod-python.git",
 }
+# The pins schema (astrid.engine-pins.v1) takes no extra keys, so the lifecycle
+# version lives here; its repository and revision live in packs/runpod/pins.json.
+LIFECYCLE_VERSION = "0.3.1.dev0"
 
 
 def omp_source(pin: dict) -> str | dict:
@@ -66,21 +68,19 @@ def validate_manifest(value: dict) -> dict:
     if type(release) is not int or release < 0:
         raise ValueError("The install manifest release must be a nonnegative integer.")
     sources = ("agent", "runtime") + (("vibecomfy",) if "vibecomfy" in value else ())
-    runpod_sources = ("lifecycle", "runpod")
-    if any(name in value for name in runpod_sources):
-        if not all(name in value for name in runpod_sources):
-            raise ValueError("The manifest must pin both lifecycle and runpod sources together.")
-        for name in runpod_sources:
-            pin = value[name]
-            if (not isinstance(pin, dict) or set(pin) != {"repo", "sha", "version"}
-                    or not isinstance(pin["sha"], str)
-                    or not re.fullmatch(r"[0-9a-f]{40}", pin["sha"])
-                    or not isinstance(pin["version"], str)
-                    or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
-                raise ValueError(f"The {name} source must include a full git SHA and exact version.")
-            repository = source_repo(pin["repo"])
-            if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES[name]:
-                raise ValueError(f"The {name} source repository does not match its reviewed identity.")
+    if "runpod" in value:
+        raise ValueError("The runpod SDK installs from the hashed runtime lock, not a manifest source.")
+    if "lifecycle" in value:
+        pin = value["lifecycle"]
+        if (not isinstance(pin, dict) or set(pin) != {"repo", "sha", "version"}
+                or not isinstance(pin["sha"], str)
+                or not re.fullmatch(r"[0-9a-f]{40}", pin["sha"])
+                or not isinstance(pin["version"], str)
+                or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
+            raise ValueError("The lifecycle source must include a full git SHA and exact version.")
+        repository = source_repo(pin["repo"])
+        if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES["lifecycle"]:
+            raise ValueError("The lifecycle source repository does not match its reviewed identity.")
     for name in sources:
         pin = value[name]
         if (not isinstance(pin, dict) or not isinstance(pin.get("sha"), str)

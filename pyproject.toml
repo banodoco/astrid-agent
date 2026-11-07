@@ -23,9 +23,11 @@ dependencies = [
     "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
-    # Third-party runtime requirements for the manifest-installed RunPod
-    # lifecycle and SDK sources. Those two distributions themselves are
-    # installed from immutable manifest commits with --no-deps.
+    # RunPod SDK from PyPI through the hashed runtime lock. The lifecycle
+    # source is a manifest sibling installed with --no-deps, so its own
+    # third-party requirements stay listed here.
+    "runpod>=1.10.1,<1.11; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "runpod>=1.12,<2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "aiohttp[speedups]>=3.14.3",
     "aiohttp-retry>=2.9.1",
     "backoff>=2.2.1",
