@@ -39,6 +39,7 @@ from astrid.core.generation.engine_contracts import (
     DownloadResult, HealthEvidence, InstallReceipt, ModelLock, ModelSpec, StartSpec, StepReceipt,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
+from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from astrid.core.generation.engine_release import canonical, interpreter_identity
 from astrid.core.generation.engine_runner import _json, _plain, _sha, helper_manifest
 from tests._checkouts import runtime_checkout, vibecomfy_checkout, vibecomfy_git_root
@@ -48,7 +49,7 @@ ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = runtime_checkout()
 VIBECOMFY_SOURCE = vibecomfy_checkout()
-VIBECOMFY_REVISION = "2401b8bf8c0f01ff10e87e599767cff36fbe16e6"
+VIBECOMFY_REVISION = VIBECOMFY_ENGINE_REVISION
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -391,7 +392,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     if recipe.engine == "comfyui":
         assert dict(receipt.source_commits) == {
             "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": "2401b8bf8c0f01ff10e87e599767cff36fbe16e6",
+            "vibecomfy": VIBECOMFY_REVISION,
         }
     inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
                          "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),
