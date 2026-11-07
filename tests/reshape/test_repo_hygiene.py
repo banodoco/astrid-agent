@@ -44,7 +44,6 @@ def test_intentional_tracked_root_directories_are_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tracked_paths = [
-        ".vscode/settings.json",
         "examples/p7/composition.json",
         "guides/operator-notes.md",
     ]
@@ -56,10 +55,10 @@ def test_intentional_tracked_root_directories_are_allowed(
     assert check_repo_hygiene.find_unknown_root_entries(tracked_paths) == []
 
 
-def test_storyboard_root_is_narrowly_allowlisted(
+def test_retired_storyboard_root_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Keep authored storyboard/test source while rejecting other root drift."""
+    """Reject old project-specific root folders rather than allowlisting them."""
     tracked_paths = [
         "storyboards/intro.storyboard.json",
         "scratch.py",
@@ -70,7 +69,8 @@ def test_storyboard_root_is_narrowly_allowlisted(
     monkeypatch.setattr(check_repo_hygiene, "REPO_ROOT", tmp_path)
 
     assert check_repo_hygiene.find_unknown_root_entries(tracked_paths) == [
-        "scratch.py"
+        "scratch.py",
+        "storyboards/",
     ]
 
 
