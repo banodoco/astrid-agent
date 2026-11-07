@@ -6,7 +6,7 @@ extracted into a disposable interpreter. Real discovery, the element catalog,
 the renderer registry and the ``rendering.render`` facade then render a
 timeline whose only clip is the core ``rendering`` pack's ``text-card``
 effect. Only the external Node renderer is a deterministic harness (shared
-with ``tests/packs/rendering/test_installed_render_composition.py``).
+with ``tests/helpers/installed_render.py``).
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.packs.rendering.test_installed_render_composition import build_installed_render
+from tests.helpers.installed_render import build_installed_render
 
 CORE = ("generation", "rendering", "timeline", "vibecomfy")
 PROBE = Path(__file__).with_name("core_only_render_probe.py")
