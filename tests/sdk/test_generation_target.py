@@ -777,7 +777,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             from vibecomfy.workflow_bundle import load_bundle
             from vibecomfy.security.provenance import Provenance
             receipt_path = tmp_path / 'admission.json'
-            code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+            code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                 '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
                 '--target', f'http://127.0.0.1:{server.server_port}',
                 '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
@@ -809,7 +809,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
         with ThreadPoolExecutor(max_workers=1) as worker:
             settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
             try:
-                code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+                code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                     '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
                     '--target', f'http://127.0.0.1:{server.server_port}',
                     '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
