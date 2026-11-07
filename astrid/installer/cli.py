@@ -641,13 +641,19 @@ def main(argv: list[str] | None = None) -> int:
                                 summary_choices, mode=mode, install_root=summary_root,
                                 result_note="R0 to R1 handoff handled; saved setup choices were kept and no command, autostart or skills change was made by it.")
                         return 0
-                    if (mode in {"install", "update"} and apply_completed_policy(backend, policy_change)):
+                    applied = (apply_completed_policy(backend, policy_change)
+                               if mode in {"install", "update"} else False)
+                    if applied:
                         # Completed handoff: the changed choices were applied to R1
                         # in place. The R0 stop path and legacy discovery are not used.
+                        parts = [f"{name}: applied" if item["ok"] else
+                                 f"{name}: failed ({item['reason']}); not saved, rerun to retry"
+                                 for name, item in applied.items()]
+                        failed = any(not item["ok"] for item in applied.values())
                         _print_run_summary(
                             summary_choices, mode=mode, install_root=summary_root,
-                            result_note="setup choices applied to R1; R0 was not touched.")
-                        return 0
+                            result_note="; ".join(parts) + ("." if failed else "; R0 was not touched."))
+                        return 1 if failed else 0
                 else:
                     from .boundary_registration import journal_path
                     from .r0_stop import refuse_unintegrated_r1_handoff

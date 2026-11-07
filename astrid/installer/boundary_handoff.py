@@ -348,7 +348,10 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
 def apply_completed_policy(backend, policy_change, *, say=print):
     """Apply changed setup choices to a completed R1 in place; no R0 stop path.
 
-    Returns False when there is no completed handoff. The R0 discovery file is
+    Returns False when there is no completed handoff, else a dict of per-choice
+    results ``{name: {"ok": bool, "reason": str | None}}``. Each changed choice is
+    applied first and only then saved (that one key); a failed step leaves the
+    saved value unchanged so a rerun retries. The R0 discovery file is
     never read: R1 operations only use the validated journal and R1 records.
     Only the changed names are re-registered; unchanged saved policy is kept.
     """
@@ -359,17 +362,35 @@ def apply_completed_policy(backend, policy_change, *, say=print):
     if value["phase"] != "complete":
         return False
     candidate, _destination = transaction.validate_active(value)
-    saved = read_json(backend.service.selection)
-    registration._publish(backend.service.selection, _json(
-        {**saved, "choices": {**saved.get("choices", {}), **backend.service.choices}}), exclusive=False)
+    wanted = {name: backend.service.choices[name] for name in policy_change}
+    steps = []
     if "autostart" in policy_change:
-        transaction.registration.set_autostart(policy_change["autostart"])
+        steps.append((("autostart",), lambda: transaction.registration.set_autostart(policy_change["autostart"])))
     if "command" in policy_change:
-        backend.open()
-    if "skills" in policy_change or "skill_copies" in policy_change:
-        backend.sync_skills(candidate)
-    say("Applied the changed setup choices to the running R1 install; R0 was not touched.")
-    return True
+        steps.append((("command",), backend.open))
+    skill_names = tuple(name for name in ("skills", "skill_copies") if name in policy_change)
+    if skill_names:
+        steps.append((skill_names, lambda: backend.sync_skills(candidate)))
+    results = {}
+    for names, step in steps:
+        try:
+            step()
+        except Exception as error:  # noqa: BLE001 - reported per choice; other choices still apply
+            reason = (str(error) or type(error).__name__).splitlines()[0]
+            for name in names:
+                results[name] = {"ok": False, "reason": reason}
+            continue
+        # Persist only the choices whose step succeeded; a failed step keeps the
+        # saved value so a rerun of the same flag sees the change and retries.
+        saved = read_json(backend.service.selection)
+        registration._publish(backend.service.selection, _json(
+            {**saved, "choices": {**saved.get("choices", {}), **{name: wanted[name] for name in names}}}),
+            exclusive=False)
+        for name in names:
+            results[name] = {"ok": True, "reason": None}
+    if all(item["ok"] for item in results.values()):
+        say("Applied the changed setup choices to the running R1 install; R0 was not touched.")
+    return results
 
 
 def uninstall_complete(backend, data, *, delete_data=False, say=print):
