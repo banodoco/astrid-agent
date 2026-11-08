@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash scripts/worker-env/agent-setup.sh:*)",
+      "Bash(bash scripts/worker-env/agent-pytest.sh:*)",
+      "Bash(bash scripts/worker-env/agent-pytest-pod.sh:*)",
+      "Bash(bash scripts/worker-env/smoke.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/agent-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/agent-pytest-pod.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/smoke.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/agent-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/vc-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/vc-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/agent-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/vc-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/vc-pytest.sh:*)"
+    ]
+  }
+}
