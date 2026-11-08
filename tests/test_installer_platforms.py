@@ -129,6 +129,39 @@ def test_launchd_pins_the_install_time_home(tmp_path):
     assert value['EnvironmentVariables']['HOME'] == str(install_home)
 
 
+def _darwin_service(tmp_path, process_home):
+    svc = service.Service(tmp_path / 'program', tmp_path / 'log', Mock(return_value=''),
+                          home=process_home, system='darwin')
+    svc.env_file = tmp_path / 'program' / 'service-env.json'
+    return svc
+
+
+def test_launchd_update_keeps_the_pinned_install_home(tmp_path):
+    version, data, log = sample('darwin')
+    install_home, update_home = tmp_path / 'install-home', tmp_path / 'launchd-home'
+    svc = _darwin_service(tmp_path, update_home)
+    svc.path.parent.mkdir(parents=True)
+    svc.path.write_bytes(service.render('darwin', version, data, log, home=install_home).encode())
+    assert svc._launch_home() == install_home
+
+
+def test_launchd_plist_from_before_the_pin_is_rewritten_with_home(tmp_path):
+    version, data, log = sample('darwin')
+    update_home = tmp_path / 'launchd-home'
+    svc = _darwin_service(tmp_path, update_home)
+    svc.path.parent.mkdir(parents=True)
+    old = plistlib.loads(service.render('darwin', version, data, log, home=tmp_path / 'x').encode())
+    del old['EnvironmentVariables']['HOME']
+    svc.path.write_bytes(plistlib.dumps(old))
+    assert svc._launch_home() == update_home
+    svc.settings = Mock(return_value={})
+    svc.autostart_enabled = Mock(return_value=True)
+    svc.run = Mock(return_value='')
+    svc.register(version, data)
+    rewritten = plistlib.loads(svc.path.read_bytes())
+    assert rewritten['EnvironmentVariables']['HOME'] == str(update_home)
+
+
 def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatch):
     current_user = Mock(return_value=501)
     monkeypatch.setattr(service.platform, 'current_user', current_user)

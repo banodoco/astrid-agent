@@ -1197,6 +1197,22 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
+    def _launch_home(self) -> Path:
+        """The HOME the Runtime service must run with.
+
+        An update runs in a launchd job whose HOME is the account's real home, so this
+        process's home can differ from the install-time home. Keep the home an existing
+        darwin plist pins; a plist from before the pin has none, so use this process's home.
+        """
+        if self.system == "darwin" and self.path.is_file():
+            try:
+                pinned = plistlib.loads(self.path.read_bytes()).get("EnvironmentVariables", {}).get("HOME")
+            except Exception:  # an unreadable plist is rewritten, never trusted for its home
+                pinned = None
+            if isinstance(pinned, str) and pinned:
+                return Path(pinned)
+        return self.home
+
     def register(self, version: Version, data: Path) -> None:
         if not self.env_file.exists():
             write_json(self.env_file, {})
@@ -1211,7 +1227,7 @@ class Service:
             user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
             _atomic_write_text(self.path, render(
                 self.system, version, data, self.log, user=user, env_file=self.env_file,
-                expected_lock=self.activation_lock_path, home=self.home,
+                expected_lock=self.activation_lock_path, home=self._launch_home(),
             ))
             if self.system == "darwin":
                 self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
