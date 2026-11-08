@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,15 +20,79 @@ if str(ROOT) not in sys.path:
 
 if __package__:
     from . import ci_windows_journey as windows
+    from . import journey_hosted_update as hosted
     from . import windows_update_process_capture as process_capture
 else:
     import ci_windows_journey as windows
+    import journey_hosted_update as hosted
     import windows_update_process_capture as process_capture
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 
 MARKER = "M-RT UPDATE TEST STAND-IN"
 SCHEDULER_EVENTS = "windows-update-scheduler-events.json"
 STOP_TASK_STATE = "windows-update-stop-task-state.json"
+
+
+_JOB_NAME = re.compile(r"astrid-update-[0-9a-f]{32}")
+WAIT_LOG_LIMIT = 256 * 1024
+
+
+def _scheduled_task_state(job_name):
+    """The update's scheduled task: state and last result. Diagnostics only."""
+    script = (f"$t = Get-ScheduledTask -TaskName '{job_name}' -ErrorAction SilentlyContinue; "
+              "if ($t) { $i = $t | Get-ScheduledTaskInfo; ConvertTo-Json -InputObject @{state=[string]$t.State; "
+              "last_result=$i.LastTaskResult; last_run=[string]$i.LastRunTime} -Compress } else { '{\"state\":\"absent\"}' }")
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=30, check=False)
+    return json.loads(completed.stdout) if completed.returncode == 0 and completed.stdout.strip() else {"state": "unavailable"}
+
+
+def make_wait_observer(evidence, root):
+    """Observe the Windows update each tick of the wait: status, process tree and scheduled task.
+
+    At the end of a failed wait the update job's own log is kept, since that is where the worker's error goes.
+    Every observation is best effort: diagnostics must never change the update result.
+    """
+    samples = Path(evidence) / "windows-update-wait.jsonl"
+    seen = {"job": None}
+
+    def tick(body, final=False):
+        entry = {"at": datetime.now(timezone.utc).isoformat(), "final": final,
+                 "status": None if body is None else {key: body.get(key) for key in (
+                     "state", "outcome", "reason", "launch_status", "result", "job_name", "target_release", "self_update")}}
+        try:
+            entry["tree"] = process_capture.tree_snapshot()
+        except Exception:
+            entry["tree"] = {"status": "unavailable"}
+        job = (body or {}).get("job_name") if isinstance(body, dict) else None
+        if isinstance(job, str) and _JOB_NAME.fullmatch(job):
+            seen["job"] = job
+        job = seen["job"]
+        if job is not None:
+            try:
+                entry["scheduled_task"] = _scheduled_task_state(job)
+            except Exception:
+                entry["scheduled_task"] = {"state": "unavailable"}
+            if final:
+                _keep_job_log(Path(evidence), Path(root), job)
+        with samples.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
+
+    return tick
+
+
+def _keep_job_log(evidence, root, job):
+    """Keep the update job's own log and the wrapper's log: a failure before the worker starts lives in the wrapper log."""
+    for source, name in ((root / "logs" / f"{job}.log", "windows-update-job.log"),
+                         (root / "logs" / f"{job}.wrapper.log", "windows-update-wrapper.log")):
+        try:
+            if source.is_symlink() or not source.is_file():
+                continue
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - WAIT_LOG_LIMIT))
+                (evidence / name).write_bytes(stream.read(WAIT_LOG_LIMIT))
+        except OSError:
+            pass  # Keep what can be kept; the failure stands either way.
 
 
 def capture_update_scheduler_events(evidence, started):
@@ -181,12 +246,22 @@ def assert_no_boundary(journey, root, data, boundary):
         raise RuntimeError("Unexpected R0 boundary handoff state")
 
 
+def wait_for_labels(labels, services, timeout=120, interval=2):
+    """The update worker's own transient task is removed shortly after the result is recorded."""
+    deadline = time.monotonic() + timeout
+    while task_labels() != labels or service_names() != services:
+        if time.monotonic() > deadline:
+            raise RuntimeError("Update changed Astrid task or service labels")
+        time.sleep(interval)
+
+
 def run_update(journey, args, app, manifest, root, data, evidence, sentinel, birth, project, marker, digest):
-    if manifest.get("release") != 1:
-        raise RuntimeError("Windows update requires a release-1 candidate")
+    baseline = manifest.get("release")
+    if isinstance(baseline, bool) or not isinstance(baseline, int) or baseline < 0:
+        raise RuntimeError("Windows update requires a candidate with an integer release")
     old_path, _, old = journey.installation(root, data)
-    if old.get("identity") != {"release": 1, "managed_by": None}:
-        raise RuntimeError("Windows update baseline is not direct release 1")
+    if old.get("identity") != {"release": baseline, "managed_by": None}:
+        raise RuntimeError(f"Windows update baseline is not direct release {baseline}")
     old_id = old_path.parent.name
     before_versions = {p.name for p in (root / "versions").iterdir()}
     before_health = journey.healthy(data)
@@ -222,7 +297,11 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     except Exception:
         pass
     try:
-        journey.bootstrap(app, manifest_path, args.shell, "update", evidence, root, data)
+        # The hosted page's own request: POST through the Runtime door, with the stand-in
+        # release served from the intercepted astrid.haus. No bootstrap is run by the journey.
+        hosted_record = hosted.run_hosted_update(
+            python=old["python"], app=app, manifest=raw, door_base=journey.HEALTH_URL,
+            root=root, evidence=evidence, tick=make_wait_observer(evidence, root))
     except Exception:
         try:
             if capture_before is not None:
@@ -250,18 +329,17 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     installed_raw = (version_path.parent / "manifest.json").read_bytes()
     if installed_raw != raw:
         raise RuntimeError("Installed stand-in manifest differs from canonical candidate")
-    if version.get("identity") != {"release": 2, "managed_by": None}:
+    if version.get("identity") != {"release": baseline + 1, "managed_by": None}:
         raise RuntimeError("Update selected the wrong release identity")
-    if task_labels() != labels_before or service_names() != services_before:
-        raise RuntimeError("Update changed Astrid task or service labels")
+    wait_for_labels(labels_before, services_before)
     assert_no_boundary(journey, root, data, boundary)
     journey.assert_direct_service_ownership(root, data, release=0)
     journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
     health = journey.healthy(data)
     if health["runtime_instance_id"] == before_runtime_instance_id:
         raise RuntimeError("Update did not restart the Runtime")
-    if health["identity"]["release"] != 2:
-        raise RuntimeError("Post-update Runtime health is not release 2")
+    if health["identity"]["release"] != baseline + 1:
+        raise RuntimeError(f"Post-update Runtime health is not release {baseline + 1}")
     assert_running_task()
     journey.assert_content(version, evidence, project, marker, digest)
     if not journey.sentinel_observation(sentinel, birth)["alive"]:
@@ -275,7 +353,7 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
     if not journey.sentinel_observation(sentinel, birth)["alive"]:
         raise RuntimeError("Unrelated sentinel did not survive the updated task")
     checks.update(verify_update="pass", task_settled="pass")
-    return {"outcome": "updated", "from_release": 1, "to_release": 2,
+    return {"outcome": "updated", "from_release": baseline, "to_release": baseline + 1, "hosted": hosted_record,
             "marker": MARKER, "manifest_sha256": sha, "old_version": old_id, "current_version": new_id,
             "task_labels": [{"path": path, "name": name} for path, name in labels_before],
             "service_names": services_before,

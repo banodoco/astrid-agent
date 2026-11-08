@@ -498,6 +498,16 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
           path: pinokio
           persist-credentials: false
+      - name: Check out the pinned Release 9 App for the release-0 leg
+        if: matrix.leg == 'release0-to-release1'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          # The App commit that pins Release 9's manifest and bootstrap bytes.
+          ref: 546c91b7aaf90835445136eb6e93459385ffe21c
+          path: release9-app
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -561,7 +571,12 @@ jobs:
           trap diagnose EXIT
 
           probe_isolated_unit() {
-            # Prove discovery from the exact future installation directory, not merely the bus.
+            # Prove discovery from the exact future installation directory, not merely the bus: the
+            # manager's own XDG_CONFIG_HOME/systemd/user must be the directory the installer writes to.
+            manager_config=$(timeout 10s systemctl --user show-environment | sed -n 's/^XDG_CONFIG_HOME=//p')
+            if [[ "$manager_config/systemd/user" != "$probe_dir" ]]; then
+              echo "::error::Manager XDG_CONFIG_HOME/systemd/user is '$manager_config/systemd/user', not the probe directory $probe_dir"; exit 1
+            fi
             mkdir -p "$probe_dir"
             probe_created=1
             printf '[Unit]\nDescription=Journey unit search path probe\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n' > "$probe_dir/$probe"
@@ -607,6 +622,21 @@ jobs:
           for attempt in {1..20}; do
             if timeout 3s systemctl --user show-environment >/dev/null; then break; fi
             sleep 1
+          done
+          # The drop-in sets the manager process's own environment, which decides where it looks for
+          # units. Units are started with the manager's activation environment, which is separate, so
+          # give it the install's XDG variables too and fail loudly unless it reports exactly them.
+          timeout 10s systemctl --user set-environment "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"
+          activation=$(timeout 10s systemctl --user show-environment)
+          for expected in "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"; do
+            name=${expected%%=*}
+            actual=$(printf '%s\n' "$activation" | sed -n "s/^$name=//p")
+            if [[ -z "$actual" ]]; then
+              echo "::error::The user manager's environment has no $name (expected ${expected#*=})"; exit 1
+            fi
+            if [[ "$actual" != "${expected#*=}" ]]; then
+              echo "::error::The user manager's $name is $actual, not ${expected#*=}"; exit 1
+            fi
           done
           probe_isolated_unit
           printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
@@ -725,10 +755,34 @@ jobs:
           name: journey-manager-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
+      # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
+      # the driver serves this build at https://astrid.haus through the update leg's intercept.
+      - name: Set up Node for the hosted App build
+        if: matrix.job_id == 'direct-linux-fresh'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+      - name: Build the candidate's hosted App and the browser that clicks it
+        if: matrix.job_id == 'direct-linux-fresh'
+        shell: bash
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm ci --legacy-peer-deps
+          # The door port the build compiles in is the installed Runtime's default; nothing may override it.
+          unset ASTRID_APP_DIRECT_DOOR_PORT
+          npm run build:hosted
+          test -f dist/index.html && test -f dist/build.json
+          npx playwright install --with-deps chromium
+          git status --porcelain --untracked-files=no | (! grep .)
       - name: Run the matrix-owned lifecycle driver
         if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_CI_HOSTED_APP_DIST: ${{ matrix.job_id == 'direct-linux-fresh' && format('{0}/app/dist', github.workspace) || '' }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
@@ -743,7 +797,7 @@ jobs:
           }
           if ('${{ matrix.leg }}' -eq 'release0-to-release1') {
             $release0Args = @(
-              '--release0-fixture', "$pwd/agent/tests/fixtures/release0",
+              '--release9-app-checkout', "$pwd/release9-app",
               '--allow-release0-to-release1'
             )
           }
@@ -798,6 +852,12 @@ jobs:
             if ($refusalExit -ne 0) { exit $refusalExit }
           }
           if ($freshExit -ne 0) { exit $freshExit }
+      - name: Make sure the hosted-update intercept left no trace on the runner
+        # The update leg maps astrid.haus to a local HTTPS stand-in with a CA only this runner trusts.
+        # The driver removes both in a finally block; this repeats the removal if the driver was killed.
+        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh') }}
+        timeout-minutes: 5
+        run: python agent/scripts/journey_hosted_update.py revert
       - name: Run the Pinokio launcher row driver
         if: ${{ startsWith(matrix.job_id, 'pinokio-') }}
         shell: bash
@@ -849,9 +909,12 @@ jobs:
             'update-bootstrap-process.json', 'update-bootstrap-stdout.log', 'update-bootstrap-stderr.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'verify-observe.json', 'verify-observe.log', 'windows-update-manifest.json',
-            'windows-update-SHA256SUMS', 'windows-update-scheduler-events.json', 'windows-update-process-capture.json', 'windows-update-stop-task-state.json', 'update-task-labels.log', 'update-task-state.log', 'update-service-labels.log',
+            'windows-update-SHA256SUMS', 'windows-update-scheduler-events.json', 'windows-update-process-capture.json', 'windows-update-wait.jsonl', 'windows-update-job.log', 'windows-update-wrapper.log', 'windows-update-stop-task-state.json', 'update-task-labels.log', 'update-task-state.log', 'update-service-labels.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
+            'update-job-journal.log', 'update-job-record.json', 'update-transaction.json',
+            'update-button.json', 'update-button.png',
+            'update-transaction-status.json', 'runtime-data-runtime.log', 'runtime-real-home-runtime.log', 'macos-file-listing.txt',
             'scheduled-task-before.xml', 'scheduled-task-after.xml',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-workspace.json',

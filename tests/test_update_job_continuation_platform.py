@@ -22,7 +22,7 @@ def _descriptor(tmp_path):
     job = {
         "job_name": f"astrid-update-{operation_id}",
         "operation_id": operation_id,
-        "program_root": str(root),
+        "program_root": str(root), "home": str(tmp_path / "install-home"),
         "data_root": str(tmp_path / "Workspace"),
         "log_path": str(log),
     }
@@ -100,7 +100,7 @@ def _mac_descriptor(tmp_path):
     root = tmp_path / "Astrid Program"
     log = root / "logs" / "update.log"
     job = {"job_name": f"astrid-update-{operation_id}", "operation_id": operation_id,
-           "program_root": str(root), "log_path": str(log)}
+           "program_root": str(root), "home": str(tmp_path / "install-home"), "log_path": str(log)}
     command = ["/Applications/Astrid/python", "-c", "print('hello; 雪')"]
     return platform.describe(job, command, system="darwin"), command
 
@@ -175,18 +175,13 @@ def _windows_descriptor(tmp_path, monkeypatch):
     sid = "S-1-5-21-12345"
     monkeypatch.setattr(platform, "_windows_sid", lambda: sid)
     job = {"job_name": f"astrid-update-{operation_id}", "operation_id": operation_id,
-           "program_root": str(root), "log_path": str(log)}
+           "program_root": str(root), "home": str(tmp_path / "install-home"), "log_path": str(log)}
     command = [r"C:\Astrid\python.exe", "-B", "-c", "print('hello; snow 雪')"]
     return platform.describe(job, command, system="win32"), command, sid
 
 
 def _windows_action(descriptor, command, sid):
-    worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                     f"$exe = {platform._ps_quote(command[0])}\n"
-                     f"$workerArgs = @({', '.join(platform._ps_quote(x) for x in command[1:])})\n"
-                     f"$log = {platform._ps_quote(descriptor['log_path'])}\n"
-                     "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                     "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+    worker_script = platform._worker_script(command, descriptor["log_path"])
     encoded_worker = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
     arguments = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_worker])
     return {"TaskPath": "\\", "TaskName": descriptor["task_name"], "UserId": sid,
