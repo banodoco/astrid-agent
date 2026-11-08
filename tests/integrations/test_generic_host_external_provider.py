@@ -749,3 +749,68 @@ def test_host_rejects_child_forged_broker_evidence_without_upstream_route(tmp_pa
     with pytest.raises(HostError, match="incomplete broker route evidence"):
         _run_provider(host, {"task": {"id": "forge-task", "capability": record.id, "spec": {"inputs": {}}}})
     assert (tmp_path / "attempt" / "outputs" / "proof").read_text(encoding="utf-8") == "child completed"
+
+
+def test_selected_v3_pack_command_installs_network_policy_under_run_task(tmp_path: Path) -> None:
+    """A v3 ``-m astrid.packs.<id>`` command gets its network policy and broker evidence.
+
+    Selected pack commands launch through the isolated worker with a replaced
+    import path, so the policy must come from the host's strict network
+    startup rather than an ambient sitecustomize hook.
+    """
+    class ProviderHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler API
+            body = b"selected-brokered-response"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        port = upstream.server_port
+        pack_root = tmp_path / "selected_broker_provider"
+        pack_root.mkdir(parents=True)
+        (pack_root / "__init__.py").write_text("\n", encoding="utf-8")
+        (pack_root / "fetch.py").write_text(
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "from urllib.request import urlopen\n"
+            "assert os.environ.get('ASTRID_NETWORK_POLICY'), 'network policy was not installed'\n"
+            f"body = urlopen('http://127.0.0.1:{port}/through-broker', timeout=2).read()\n"
+            "Path(sys.argv[1], 'body').write_bytes(body)\n",
+            encoding="utf-8",
+        )
+        _write_v3_pack(pack_root, "selected_broker_provider", "Selected Broker Provider", {
+            "fetch": {
+                "name": "Selected Broker Fetch", "version": "1.0",
+                "invocation": {"kind": "command", "command": {"argv": [
+                    "{python_exec}", "-m", "astrid.packs.selected_broker_provider.fetch", "{out}",
+                ]}},
+                "outputs": [{"name": "body", "type": "file", "path_template": "{out}/body"}],
+                "isolation": {"mode": "subprocess", "network": True},
+                "metadata": {"adapter_family": "provider", "network_policy": {
+                    "allowed_protocols": ["dns", "tcp"],
+                    "allowed_destinations": [f"127.0.0.1:{port}"],
+                    "allow_redirects": False,
+                    "broker": {"host_managed": True},
+                }},
+            },
+        })
+        host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
+        record = host.discover()[0]
+        assert record.definition.metadata.get("action_invocation")
+        host.preflight()
+        assert host.capabilities[record.id].ready
+        _run_provider(host, {"task": {"id": "selected-broker-task", "capability": record.id, "spec": {"inputs": {}}}})
+        assert (tmp_path / "attempt" / "outputs" / "body").read_bytes() == b"selected-brokered-response"
+        evidence = json.loads((tmp_path / "attempt" / "network-evidence.json").read_text(encoding="utf-8"))
+        assert any(event["kind"] == "broker_handshake" and event["allowed"] for event in evidence["events"])
+        assert any(event["kind"] == "broker_route" and event["allowed"] for event in evidence["events"])
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
