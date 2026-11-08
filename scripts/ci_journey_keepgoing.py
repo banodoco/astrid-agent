@@ -247,7 +247,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             state.update(app=app, candidate_path=path, manifest=manifest)
         def fresh_install():
             try:
-                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data,
+                                  agent=getattr(args, "candidate_agent_checkout", None))
             except Exception:
                 if getattr(args, "mode", "direct") == "direct":
                     journey.capture_failed_windows_fresh_install(root, evidence)

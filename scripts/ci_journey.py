@@ -1897,16 +1897,25 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     return output
 
 
-def installer_has_consent_gate(script: Path) -> bool:
-    """Whether this installer itself offers --yes (read from its source, not from a release number).
+def installer_has_consent_gate(agent: Path | None, manifest_path: Path) -> bool:
+    """Whether the Agent this manifest pins declares --yes on its `install` command.
 
-    The script is read, never run: an installer that predates --help or the consent gate
-    would treat a probe invocation as an install.
+    The App's scripts forward their arguments to that Agent, so the question is asked of the
+    Agent that will actually run the install: its CLI source at the pinned commit, read with
+    `git show` (nothing is executed, so an old installer can never take a probe for an install).
+    No checkout, an unknown pin or an unreadable manifest all mean no gate.
     """
-    try:
-        return "--yes" in script.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
+    if agent is None:
         return False
+    try:
+        pinned = (read_json(manifest_path).get("agent") or {}).get("sha")
+        if not isinstance(pinned, str) or not re.fullmatch(r"[0-9a-f]{40}", pinned):
+            return False
+        result = subprocess.run(["git", "-C", str(agent), "show", f"{pinned}:astrid/installer/cli.py"],
+                                capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and re.search(r"""add_argument\(\s*["']--yes["']""", result.stdout) is not None
 
 
 def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path,
@@ -1924,9 +1933,10 @@ def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path,
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
-    installer = app / "public" / ("install.ps1" if sys.platform == "win32" else "install")
-    flags = bootstrap_flags(manifest_path, mode, root, data, consent_gate=installer_has_consent_gate(installer))
+              evidence: Path, root: Path, data: Path, agent: Path | None = None) -> None:
+    # Only a fresh install can be asked for consent, so only it probes the candidate Agent CLI.
+    flags = bootstrap_flags(manifest_path, mode, root, data,
+                            consent_gate=mode == "install" and installer_has_consent_gate(agent, manifest_path))
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
@@ -2403,7 +2413,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
                       f"{type(diagnostic_error).__name__}", file=sys.stderr, flush=True)
         try:
             bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
-                      evidence, root, data)
+                      evidence, root, data, agent=getattr(args, "candidate_agent_checkout", None))
         except Exception:
             if args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct":
                 capture_failed_windows_fresh_install(root, evidence)

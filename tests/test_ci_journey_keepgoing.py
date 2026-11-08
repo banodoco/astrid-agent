@@ -49,7 +49,7 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
-    monkeypatch.setattr(journey, 'bootstrap', lambda *a: None)
+    monkeypatch.setattr(journey, 'bootstrap', lambda *a, **k: None)
     monkeypatch.setattr(jumps, 'start_direct_runtime', lambda *a: None)
     monkeypatch.setattr(journey, 'wait_ready', lambda *a, **k: None)
     monkeypatch.setattr(journey, 'installation', lambda *a: (root / 'version.json', data, manifest))
@@ -394,7 +394,7 @@ def test_failed_fresh_bootstrap_capture_preserves_stage_failure(tmp_path, monkey
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
-    def fail(*args):
+    def fail(*args, **kwargs):
         calls.append('bootstrap')
         raise ValueError('primary')
     def broken_capture(*args):

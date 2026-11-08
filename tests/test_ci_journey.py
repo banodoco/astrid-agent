@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -1709,7 +1710,7 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         calls.append("task")
         return "settled"
 
-    def bootstrap(*_args):
+    def bootstrap(*_args, **_kwargs):
         assert state["running"] and state["content"] is not None
         state.update(release=1, pid=state["pid"] + 1)
 
@@ -1816,7 +1817,7 @@ def test_windows_fresh_bootstrap_capture_precedes_snapshot_and_cleanup(tmp_path,
     def sentinel(*_):
         yield SimpleNamespace(pid=1), 'birth'
     monkeypatch.setattr(journey, 'sentinel_process', sentinel)
-    def bootstrap(*_):
+    def bootstrap(*_, **__):
         calls.append('bootstrap')
         raise ValueError('primary')
     def broken_capture(*_):
@@ -2012,20 +2013,63 @@ def test_selection_path_follows_the_installer_lock(tmp_path, monkeypatch, system
     ("repair", True, False), ("repair", False, False)])
 def test_bootstrap_accepts_recommended_setup_only_for_a_fresh_install_whose_installer_has_the_gate(
         tmp_path, monkeypatch, mode, gate, yes):
-    public = tmp_path / "app" / "public"
-    public.mkdir(parents=True)
-    body = "case $arg in --yes) yes=1 ;; esac\n" if gate else "case $arg in --manifest=*) ;; esac\n"
-    (public / "install").write_text(body)
-    (public / "install.ps1").write_text(body)
-    assert journey.installer_has_consent_gate(public / "install") is gate
     flags = journey.bootstrap_flags(tmp_path / "m.json", mode, tmp_path / "p", tmp_path / "d", consent_gate=gate)
     assert ("--yes" in flags) is yes and ("--update" in flags) is (mode == "update")
-    seen = []
+    seen, probes = [], []
     monkeypatch.setattr(journey, "run", lambda argv, log, **kw: seen.append(argv))
+    monkeypatch.setattr(journey, "installer_has_consent_gate", lambda agent, manifest: probes.append((agent, manifest)) or gate)
     monkeypatch.setattr(journey.sys, "platform", "linux")
-    journey.bootstrap(tmp_path / "app", tmp_path / "m.json", "sh", mode, tmp_path, tmp_path / "p", tmp_path / "d")
+    journey.bootstrap(tmp_path / "app", tmp_path / "m.json", "sh", mode, tmp_path, tmp_path / "p", tmp_path / "d",
+                      agent=tmp_path / "agent")
     assert ("--yes" in seen[0]) is yes
+    # Update and repair never even ask the installer.
+    assert probes == ([(tmp_path / "agent", tmp_path / "m.json")] if mode == "install" else [])
 
 
-def test_a_missing_installer_has_no_consent_gate(tmp_path):
-    assert journey.installer_has_consent_gate(tmp_path / "absent") is False
+def _agent_repo(tmp_path, source):
+    """A checkout with one commit whose installer CLI is `source`; returns (checkout, sha)."""
+    import subprocess as sp
+    repo = tmp_path / ("agent-" + hashlib.sha256(source.encode()).hexdigest()[:8])
+    (repo / "astrid" / "installer").mkdir(parents=True)
+    (repo / "astrid" / "installer" / "cli.py").write_text(source)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+        sp.run(["git", "-C", str(repo), *args], check=True, env=env)
+    sha = sp.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    return repo, sha
+
+
+def test_the_pinned_agent_decides_whether_a_fresh_install_gets_yes(tmp_path):
+    gated, gated_sha = _agent_repo(tmp_path, 'result.add_argument("--yes", action="store_true", help="accept")\n')
+    old, old_sha = _agent_repo(tmp_path, 'result.add_argument("--update", action="store_true")\n')
+
+    def manifest(sha):
+        path = tmp_path / f"manifest-{sha[:6]}.json"
+        path.write_text(json.dumps({"agent": {"sha": sha}}))
+        return path
+
+    # The candidate pin, on a checkout that holds it, has the gate.
+    assert journey.installer_has_consent_gate(gated, manifest(gated_sha)) is True
+    # The release-0 pin predates it: no --yes, even though the candidate checkout has the flag.
+    assert journey.installer_has_consent_gate(old, manifest(old_sha)) is False
+    assert journey.installer_has_consent_gate(gated, manifest(old_sha)) is False  # pin not in this checkout
+    # Unusable inputs are no gate.
+    assert journey.installer_has_consent_gate(None, manifest(gated_sha)) is False
+    assert journey.installer_has_consent_gate(gated, tmp_path / "absent.json") is False
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"agent": {"sha": "main"}}))
+    assert journey.installer_has_consent_gate(gated, bad) is False
+    flags = journey.bootstrap_flags(manifest(gated_sha), "install", tmp_path, tmp_path,
+                                    consent_gate=journey.installer_has_consent_gate(gated, manifest(gated_sha)))
+    assert "--yes" in flags
+    flags = journey.bootstrap_flags(manifest(old_sha), "install", tmp_path, tmp_path,
+                                    consent_gate=journey.installer_has_consent_gate(old, manifest(old_sha)))
+    assert "--yes" not in flags
+
+
+def test_the_real_agent_cli_at_head_declares_the_gate():
+    import subprocess as sp
+    head = sp.run(["git", "-C", str(journey.ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    cli = (journey.ROOT / "astrid/installer/cli.py").read_text()
+    assert 'add_argument("--yes"' in cli and re.fullmatch(r"[0-9a-f]{40}", head)
