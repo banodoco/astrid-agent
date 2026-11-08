@@ -223,29 +223,48 @@ def test_admitted_definition_and_source_are_fenced_before_child_dispatch(tmp_pat
         )
 
 
+def _write_v3_pack(pack_root: Path, pack_id: str, name: str, actions: dict, **header) -> None:
+    """Write a schema v3 fixture pack; ``kind: command`` actions project to external executors.
+
+    Pack schema v1/v2 manifests are quarantined by discovery ("needs an explicit schema upgrade").
+    """
+    from astrid.pack_api import VERSION as PACK_API_VERSION
+
+    pack_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 3, "id": pack_id, "name": name, "version": "1.0.0",
+        "pack_api": "%d.%d" % PACK_API_VERSION,
+        "status": "experimental", "domain": "integration", "stability": "experimental",
+        "support": "community", "visibility": "visible",
+        "description": f"{name} test fixture pack.",
+        "permissions": [{"id": "subprocess", "reason": "Fixture actions run as command subprocesses."}],
+        **header,
+        "actions": {
+            local_id: {"description": f"{local_id} fixture action.", "inputs": [], **action}
+            for local_id, action in actions.items()
+        },
+    }
+    # JSON is a YAML subset: the loader parses this pack.yaml unchanged.
+    (pack_root / "pack.yaml").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
 def test_external_pack_import_root_is_fenced_before_direct_command(tmp_path):
     """A mutation in an imported external-pack module blocks command launch."""
     pack_root = tmp_path / "fixture_provider"
-    executor_root = pack_root / "executors" / "echo"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: fixture_provider\nname: Fixture\nversion: 1.0\n"
-        "capabilities: [echo]\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
+    pack_root.mkdir()
+    (pack_root / "__init__.py").write_text("\n", encoding="utf-8")
     (pack_root / "helper.py").write_text("VALUE = 'before'\n", encoding="utf-8")
-    (executor_root / "executor.yaml").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "id": "fixture_provider.echo",
+    _write_v3_pack(pack_root, "fixture_provider", "Fixture", {
+        "echo": {
             "name": "Echo",
-            "kind": "external",
             "version": "1.0",
-            "command": {"argv": [sys.executable, "-c", "from fixture_provider import helper; from pathlib import Path; Path('{out}/answer').write_text(helper.VALUE)"]},
+            "invocation": {"kind": "command", "command": {"argv": [
+                "{python_exec}", "-c",
+                "from astrid.packs.fixture_provider import helper; from pathlib import Path; Path('{out}/answer').write_text(helper.VALUE)",
+            ]}},
             "outputs": [],
-        }),
-        encoding="utf-8",
-    )
+        },
+    }, capabilities=["echo"])
     host = GenericPackHost(pack_roots=[pack_root])
     host.discover()
     record = host.capabilities["fixture_provider.echo"]
@@ -282,46 +301,31 @@ def test_child_environment_carries_explicit_runtime_connection(tmp_path):
 
 
 def _write_credential_manifest(root: Path) -> None:
-    (root / "pack.yaml").write_text(
-        "schema_version: 1\nid: credential_test\nname: Credential Test\n"
-        "version: 1.0\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
-    executor_root = root / "executors" / "credential_echo"
-    executor_root.mkdir(parents=True)
-    (executor_root / "executor.yaml").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "id": "credential_test.echo",
-                "name": "Credential Echo",
-                "kind": "external",
-                "version": "1.0",
-                "command": {"argv": ["{python_exec}", "-c", "pass"]},
-                "outputs": [],
-                "isolation": {
-                    "mode": "subprocess",
-                    "network": False,
-                    "secrets_required": ["FAL_KEY"],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_v3_pack(root, "credential_test", "Credential Test", {
+        "echo": {
+            "name": "Credential Echo",
+            "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
+            "outputs": [],
+            "secrets": ["FAL_KEY"],
+            "isolation": {"mode": "subprocess", "network": False},
+        },
+    }, capabilities=["echo"])
 
 
 def test_manifest_credentials_use_shared_precedence_at_host_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Readiness and injection agree on shared-file precedence and scope."""
-    _write_credential_manifest(tmp_path)
+    pack_root = tmp_path / "credential_test"
+    _write_credential_manifest(pack_root)
     shared = tmp_path / "astrid.env"
     shared.write_text("FAL_KEY=from-shared\nUNRELATED_SECRET=must-not-cross\n", encoding="utf-8")
     monkeypatch.setenv("ASTRID_ENV_FILE", str(shared))
     monkeypatch.setenv("FAL_KEY", "stale-process")
     monkeypatch.setenv("OPENAI_API_KEY", "unrelated-process")
 
-    host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+    host = GenericPackHost(pack_roots=[pack_root], credential_source={})
     record = host.discover()[0]
     host.preflight(record.id)
     record = host.capabilities[record.id]
@@ -337,7 +341,7 @@ def test_manifest_credentials_use_shared_precedence_at_host_boundary(
         secrets.clear()
 
     explicit_host = GenericPackHost(
-        pack_roots=[tmp_path], credential_source={"FAL_KEY": "from-explicit"}
+        pack_roots=[pack_root], credential_source={"FAL_KEY": "from-explicit"}
     )
     explicit_record = explicit_host.discover()[0]
     explicit_host.preflight(explicit_record.id)
@@ -355,10 +359,11 @@ def test_manifest_credentials_use_shared_precedence_at_host_boundary(
 def test_manifest_credential_missing_from_all_sources_does_not_block_readiness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_credential_manifest(tmp_path)
+    pack_root = tmp_path / "credential_test"
+    _write_credential_manifest(pack_root)
     monkeypatch.setenv("ASTRID_ENV_FILE", str(tmp_path / "missing.env"))
     monkeypatch.delenv("FAL_KEY", raising=False)
-    host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+    host = GenericPackHost(pack_roots=[pack_root], credential_source={})
     record = host.discover()[0]
     host.preflight(record.id)
     record = host.capabilities[record.id]
@@ -2095,7 +2100,7 @@ def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypa
 
 
 def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
-    root = tmp_path / "timeline"
+    root = tmp_path / "structure_fixture"
     root.mkdir()
     (root / "executor.yaml").write_text(
         json.dumps(
