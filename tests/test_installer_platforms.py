@@ -99,7 +99,7 @@ def _service_envelope(rendered, system):
 @pytest.mark.parametrize('system,fixture', [('darwin','launchd.plist'), ('linux','systemd.service'), ('win32','task.xml')])
 def test_service_definitions_match_reviewed_snapshots(system, fixture):
     version, data, log = sample(system)
-    rendered = service.render(system, version, data, log, user='S-1-5-21-1234')
+    rendered = service.render(system, version, data, log, user='S-1-5-21-1234', home=Path('/Users/astrid-test'))
     if system == 'win32':
         root = ET.fromstring(rendered)
         ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
@@ -120,6 +120,13 @@ def test_launchd_is_foreground_keepalive_with_explicit_environment():
     assert arguments[:5] == [str(version.python), '-X', 'utf8', '-I', '-c']
     assert _runtime_argv(arguments[5]) == ['run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
     assert value['EnvironmentVariables']['PATH'] == version.env['PATH']
+
+
+def test_launchd_pins_the_install_time_home(tmp_path):
+    version, data, log = sample('darwin')
+    install_home = tmp_path / 'install-home'
+    value = plistlib.loads(service.render('darwin', version, data, log, home=install_home).encode())
+    assert value['EnvironmentVariables']['HOME'] == str(install_home)
 
 
 def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatch):
