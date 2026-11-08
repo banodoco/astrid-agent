@@ -967,3 +967,8 @@ def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkey
             probe()
     assert calls == [(payload, "instance")]
     assert path.read_bytes() == before
+
+
+def test_supported_actions_cover_every_action_runtime_sends():
+    # Runtime's request path: availability, reconcile, prepare (no action key), accept, launch.
+    assert {"availability", "reconcile", "prepare", "accept", "launch"} <= set(update_job.SUPPORTED_ACTIONS)
