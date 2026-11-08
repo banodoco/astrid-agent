@@ -77,7 +77,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
-    "update-transaction-status.json", "runtime-data-runtime.log",
+    "update-transaction-status.json", "runtime-data-runtime.log", "macos-file-listing.txt",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -676,10 +676,73 @@ def capture_update_transaction_status(evidence: Path, run_root: Path, phase: str
               file=sys.stderr, flush=True)
 
 
+LISTING_LIMIT = 2000
+
+
+def _listing(root: Path) -> list[str]:
+    """Names and sizes only, links not followed, at most LISTING_LIMIT entries."""
+    limit, lines = LISTING_LIMIT, []
+    if not root.is_dir() or root.is_symlink():
+        return [f"{root}: " + ("link, not followed" if root.is_symlink() else "absent")]
+    for directory, names, files in os.walk(root, followlinks=False):
+        for name in sorted(names) + sorted(files):
+            path = Path(directory) / name
+            if len(lines) >= limit:
+                return lines + [f"... truncated at {limit} entries"]
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                lines.append(f"{path}\t{type(exc).__name__}")
+                continue
+            kind = ("link" if stat.S_ISLNK(info.st_mode) else "dir" if stat.S_ISDIR(info.st_mode)
+                    else "file" if stat.S_ISREG(info.st_mode) else "other")
+            lines.append(f"{path}\t{kind}\t{info.st_size if kind == 'file' else '-'}")
+        names.sort()
+    return lines
+
+
+def capture_macos_listing(evidence: Path, run_root: Path, phase: str, home: Path | None = None) -> None:
+    """Show where the Runtime's files really are on macOS, and say which expected logs were found."""
+    home = home if home is not None else Path.home()
+    data = run_root / "data"
+    log_dirs = sorted({*(run_root / "home" / "Library" / "Logs").glob("Astrid*"),
+                       *(home / "Library" / "Logs").glob("Astrid*")})
+    expected = [data / "runtime" / "runtime.log",
+                *(run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / name
+                  for name in ("runtime.log", "runtime-service.log", "service-pack-host.log", "install.log"))]
+    out = [f"phase={phase}", "# expected logs"]
+    for path in expected:
+        info = _regular_file_info(path)
+        result = (f"found, {info.st_size} bytes" if info is not None
+                  else "missing" if not os.path.lexists(path) else "present but not a regular file")
+        out.append(f"{path}\t{result}")
+        print(f"Journey expected macOS log {path}: {result}", file=sys.stderr, flush=True)
+    for title, root, top_only in ((f"data root top level {data}", data, True),
+                                  (f"data root runtime {data / 'runtime'}", data / "runtime", False),
+                                  *((f"log directory {d}", d, False) for d in log_dirs)):
+        out.append(f"# {title}")
+        if top_only:
+            try:
+                out.extend(f"{c}\t{'dir' if c.is_dir() and not c.is_symlink() else 'link' if c.is_symlink() else 'file'}\t"
+                           f"{c.lstat().st_size if c.is_file() and not c.is_symlink() else '-'}"
+                           for c in sorted(root.iterdir())[:LISTING_LIMIT])
+            except OSError as exc:
+                out.append(f"{root}: {type(exc).__name__}")
+        else:
+            out.extend(_listing(root))
+    if not log_dirs:
+        out.append("# no Astrid* log directory under the profile or the real home")
+    try:
+        (evidence / "macos-file-listing.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"Journey macOS listing ({phase}) failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
     capture_update_transaction_status(evidence, run_root, phase)
     if sys.platform == "darwin":
+        capture_macos_listing(evidence, run_root, phase)
         # The Runtime's own log lives in the data root on macOS, beside its state.
         source = run_root / "data" / "runtime" / "runtime.log"
         if _regular_file_info(source) is not None:

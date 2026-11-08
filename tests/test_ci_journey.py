@@ -2139,3 +2139,71 @@ def test_the_new_log_names_are_in_both_allowlists():
     assert names <= journey.JOURNEY_EVIDENCE_NAMES
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
     assert all(f"'{name}'" in workflow for name in names)
+
+
+def _mac_tree(tmp_path):
+    run_root = tmp_path / "run"
+    home = tmp_path / "realhome"
+    (run_root / "data" / "runtime" / "realms").mkdir(parents=True)
+    (run_root / "data" / "runtime" / "runtime.log").write_bytes(b"12345")
+    (run_root / "data" / "runtime" / "realms" / "state.db").write_bytes(b"x" * 7)
+    (run_root / "data" / "top.txt").write_bytes(b"t")
+    logs = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    logs.mkdir(parents=True)
+    (logs / "runtime-service.log").write_bytes(b"abc")
+    (home / "Library" / "Logs" / "Astrid Other").mkdir(parents=True)
+    (home / "Library" / "Logs" / "Astrid Other" / "o.log").write_bytes(b"o")
+    (home / "Library" / "Logs" / "Unrelated").mkdir()
+    (home / "Library" / "Logs" / "Unrelated" / "secret.log").write_bytes(b"s")
+    return run_root, home
+
+
+def test_macos_listing_shows_names_and_sizes_only_and_what_was_found(tmp_path, capsys):
+    run_root, home = _mac_tree(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert f"{run_root}/data/runtime/runtime.log\tfound, 5 bytes" in text
+    assert "Astrid Runtime/runtime.log\tmissing" in text and "runtime-service.log\tfound, 3 bytes" in text
+    assert f"{run_root}/data/runtime/realms/state.db\tfile\t7" in text
+    assert f"{run_root}/data/top.txt\tfile\t1" in text and "Astrid Other/o.log\tfile\t1" in text
+    assert "Unrelated" not in text and "12345" not in text  # only Astrid* logs, and never contents
+    err = capsys.readouterr().err
+    assert f"Journey expected macOS log {run_root}/data/runtime/runtime.log: found, 5 bytes" in err
+    assert "runtime.log: missing" in err
+
+
+def test_macos_listing_is_bounded_and_does_not_follow_links(tmp_path, monkeypatch):
+    run_root, home = _mac_tree(tmp_path)
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "inside.txt").write_text("x")
+    (run_root / "data" / "runtime" / "link").symlink_to(secret)
+    monkeypatch.setattr(journey, "LISTING_LIMIT", 2)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert "truncated at 2 entries" in text
+    monkeypatch.setattr(journey, "LISTING_LIMIT", 2000)
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert "runtime/link\tlink\t-" in text and "inside.txt" not in text
+
+
+def test_macos_listing_is_captured_and_staged_with_the_logs_only_on_darwin(tmp_path, monkeypatch):
+    run_root, _ = _mac_tree(tmp_path)
+    monkeypatch.setattr(journey.Path, "home", classmethod(lambda cls: tmp_path / "realhome"))
+    for platform, expected in (("darwin", True), ("linux", False)):
+        evidence = run_root / "evidence" / platform
+        evidence.mkdir(parents=True)
+        monkeypatch.setattr(journey.sys, "platform", platform)
+        journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+        journey.retain_named_evidence(evidence, "before-cleanup")
+        assert (evidence / "macos-file-listing.txt").exists() is expected
+    assert (run_root / "evidence-upload" / "before-cleanup" / "macos-file-listing.txt").is_file()
+    assert (run_root / "evidence" / "darwin" / "runtime-data-runtime.log").read_bytes() == b"12345"
+    assert "macos-file-listing.txt" in journey.JOURNEY_EVIDENCE_NAMES
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+    assert "'macos-file-listing.txt'" in workflow
