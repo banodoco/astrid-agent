@@ -30,7 +30,7 @@ from astrid.sdk import AstridClient, generation
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
-from tests.integrations.runpod_slot_pod import PodComfy, receipt_files
+from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receipt_files
 from tests.integrations.test_runpod_cpu_path import ProviderHTTP
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
@@ -67,8 +67,7 @@ class SlotPod(ProviderHTTP):
         from astrid.core.generation import engine_recipe, entries
         required = {node for engine in entries.runpod_engines() for node in
                     engine_recipe.load_recipe(engine, "linux-x86_64-cu130").health.required_nodes}
-        h3 = json.loads((Path(__file__).resolve().parents[1] / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text())
-        self.comfy = PodComfy(set(classes) | required, self._installed_files, extra=h3)
+        self.comfy = PodComfy(set(classes) | required, self._installed_files, extra=pin_object_info())
 
     def _receipt_for(self, engine):
         """The pod's install receipt for any RunPod engine, synthesized from that engine's own recipe and lock."""
