@@ -261,9 +261,10 @@ def build_release(wheels, provenance, output, *, fixture=False):
         # Check real installed dispatch and the actual native/context/custody import closure.
         (work / 'run.py').write_bytes(entry)
         try:
+            # Same engine process env as every other runtime child (pycache prefix).
+            engine_env = runpy.run_path(str(Path(__file__).with_name('_engine_python_bootstrap.py')))['engine_process_env']
             check = subprocess.run([sys.executable, '-I', '-S', str(work / 'run.py'), 'check'],
-                                   env={'PATH': os.defpath, 'HOME': str(work),
-                                        'PYTHONDONTWRITEBYTECODE': '1'},
+                                   env=engine_env({'PATH': os.defpath, 'HOME': str(work)}, str(work)),
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=45)
             checked = check.returncode == 0
         except subprocess.TimeoutExpired:

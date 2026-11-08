@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from runtime_protocol import platform
 
+from astrid.core.generation._engine_python_bootstrap import engine_process_env
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.generation.model_downloader import _download_model
 
@@ -116,8 +118,9 @@ class Provisioner:
                             if not k.upper().startswith(("PIP_", "UV_"))
                             and k not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}}
         self.env.update({"UV_PYTHON_INSTALL_DIR": str(self.runtime / "python"),
-                                 "UV_CACHE_DIR": str(self.runtime / "uv-cache"),
-                                 "PYTHONDONTWRITEBYTECODE": "1"})
+                                 "UV_CACHE_DIR": str(self.runtime / "uv-cache")})
+        # The engine's one process env (pycache prefix), as every engine launch uses.
+        self.env = engine_process_env(self.env, str(self.root))
         # This provisioner establishes CPU readiness even when rented hardware
         # includes a GPU. Inference qualification belongs to the later worker.
         self.env["CUDA_VISIBLE_DEVICES"] = ""
@@ -246,10 +249,13 @@ assert not torch.cuda.is_initialized()
         text += "".join(f"  {name}: {name}\n" for name in ("diffusion_models", "text_encoders", "vae", "loras"))
         configuration.write_text(text)
         launcher = self.runtime / "launch-comfy.sh"
+        # Same pycache prefix as the engine's local ComfyUI launch (start_request).
+        pycache = engine_process_env({}, str(self.root))["PYTHONPYCACHEPREFIX"]
         script = '''#!/bin/sh
 set -eu
 RUNTIME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export VIBECOMFY_HEADLESS=1
+export PYTHONPYCACHEPREFIX=''' + shlex.quote(pycache) + '''
 cd "$RUNTIME/ComfyUI"
 exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-model-paths-config "$RUNTIME/extra_model_paths.yaml" "$@"
 '''

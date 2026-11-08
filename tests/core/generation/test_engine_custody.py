@@ -91,6 +91,14 @@ def _identity(root, recipe=None):
                 recipe_sha256=recipe_digest(recipe), helper_sha256=_sha(helper_manifest(recipe)))
 
 
+def _launch(recipe, root):
+    """The bound launch exactly as production builds it: the adapter's start request."""
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+
+    request = LinuxPlatformAdapter(recipe.platform).start_request(recipe, str(root), deadline=time.monotonic() + 5)
+    return {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
+
+
 def _client(identity):
     return custody.LinuxEngineServiceClient(**identity)
 
@@ -140,7 +148,7 @@ def session(tmp_path, monkeypatch):
                                      str(comfy), {"VIBECOMFY_HEADLESS": "1"}, "127.0.0.1", port),
                      health=replace(base.health, timeout_seconds=4, poll_interval_seconds=0.02))
     identity = _identity(root, recipe)
-    launch = {"argv": list(recipe.start.argv), "cwd": recipe.start.cwd, "env": dict(recipe.start.env)}
+    launch = _launch(recipe, root)
     # Exercise the real socket/lock/launch path. Only the internal recipe
     # dependency is replaced, to run an actual tiny HTTP child instead of GPU code.
     program = f'''
@@ -789,8 +797,7 @@ LocalLinuxExecutionContext.run=run
     monkeypatch.setattr(custody, "_supervisor_argv", lambda identity, lock_fd, token:
                         [sys.executable, "-c", supervisor, _json(identity), str(lock_fd), "--launch-token", token])
     client = _client(_identity(root, recipe))
-    payload = _payload(client.identity, recipe, {"argv": list(recipe.start.argv),
-                                               "cwd": recipe.start.cwd, "env": dict(recipe.start.env)})
+    payload = _payload(client.identity, recipe, _launch(recipe, root))
     digest = client.identity["helper_sha256"]
     (root / ".astrid-engine").mkdir(mode=0o700)
     state = root / ".astrid-engine/environments/cpu"

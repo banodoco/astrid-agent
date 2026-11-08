@@ -273,7 +273,10 @@ def installation(tmp_path_factory, request):
     identity = dict(root=str(root), engine=engine, platform=PLATFORM, recipe_sha256=recipe_digest(recipe),
                     helper_sha256=_sha(helper_manifest(recipe)))
     client = custody.LinuxEngineServiceClient(**identity)
-    launch = {"argv": tiny["argv"], "cwd": str(comfy), "env": {"VIBECOMFY_HEADLESS": "1"}}
+    from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
+    # The engine env (pycache prefix included) comes from the adapter, as the runner builds it.
+    bound = LinuxPlatformAdapter(PLATFORM).start_request(recipe, str(root), deadline=time.monotonic() + 5)
+    launch = {"argv": tiny["argv"], "cwd": str(comfy), "env": dict(bound.env)}
     payload = {**identity, "schema": custody._SCHEMA, "launch": launch, "owner_id": None,
                "timeout_seconds": recipe.health.timeout_seconds,
                "poll_interval_seconds": recipe.health.poll_interval_seconds}

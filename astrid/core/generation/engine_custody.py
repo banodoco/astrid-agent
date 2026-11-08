@@ -28,7 +28,7 @@ import uuid
 from runtime_protocol import platform as native
 
 from . import engine_recipe as recipes
-from ._engine_python_bootstrap import engine_child_env
+from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, EngineReinstallRequired, IntegrityError,
@@ -302,6 +302,7 @@ class LinuxEngineServiceClient:
                     _supervisor_argv(self.identity, lock, token), pass_fds=(lock,),
                     cwd=self.identity["root"], stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                    env=engine_process_env(dict(os.environ), self.identity["root"]),
                 )
             except BaseException as exc:
                 if isinstance(exc, EngineError):
