@@ -1433,6 +1433,11 @@ rendering:
     type: element
     path: rendering/elements/transitions/fade/element.yaml
 ui:
+  video-editor:
+    type: tool
+    entry: ui/video-editor/entry.json
+    target: astrid
+    compatibility: {host: '1'}
   transcript:
     type: editor
     entry: ui/transcript/extension.tsx

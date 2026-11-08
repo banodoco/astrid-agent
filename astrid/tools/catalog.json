@@ -1,4 +1,32 @@
 {
   "schema_version": 1,
-  "tools": []
+  "tools": [
+    {
+      "canonical_id": "rendering.video-editor",
+      "compatibility": {
+        "host": "1"
+      },
+      "dependencies": {
+        "npm": [],
+        "python": [],
+        "system": []
+      },
+      "entry": {
+        "host_entry": "video-editor",
+        "path": "ui/video-editor/entry.json",
+        "sha256": "ae53de8e3eb3b8fe6157a18f7bdaabda7d0f6886a120f45482e05c982a6523b0",
+        "size": 87
+      },
+      "id": "video-editor",
+      "manifest": {
+        "path": "pack.yaml",
+        "sha256": "7c354e2bce0d801cd5dbd6602d6b282e2546136dc4ac99dacf17b11988478793"
+      },
+      "pack_id": "rendering",
+      "pack_version": "1.0.0",
+      "release_sha256": "92d6b807374f8027db119b7a3808539a5a8f52b85cf9bba6eaad8fbef6414b3f",
+      "resources": [],
+      "target": "astrid"
+    }
+  ]
 }

@@ -19,7 +19,9 @@ def test_rendering_pack_declares_both_resolvable_v3_editor_entries() -> None:
     pack = load_pack_manifest(PACK_ROOT / "pack.yaml")
 
     assert pack.schema_version == "3"
-    assert set(pack.ui) == {"threejs-live-editor", "transcript"}
+    # video-editor is the core Tool surface the App host requires (M-64); it is a
+    # whole Tool declaration, not an editor entry, so the editor set is unchanged.
+    assert set(pack.ui) == {"threejs-live-editor", "transcript", "video-editor"}
     entries = _editor_entries(pack)
     assert set(entries) == {
         PACK_ROOT / "ui/threejs-live-editor/extension.tsx",
