@@ -871,8 +871,8 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: true}
-    metadata: {host_target_operation: status, network_policy: {allowed_protocols: [dns, tcp], allowed_destinations: [api.runpod.io:443, rest.runpod.io:443, graphql.runpod.io:443, runpod.io:443], allow_redirects: false, broker: {host_managed: true, kind: broker, enforced: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}}}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: status}
     invocation:
       kind: command
       command:
@@ -892,8 +892,8 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: true}
-    metadata: {host_target_operation: setup, network_policy: {allowed_protocols: [dns, tcp], allowed_destinations: [api.runpod.io:443, rest.runpod.io:443, graphql.runpod.io:443, runpod.io:443], allow_redirects: false, broker: {host_managed: true, kind: broker, enforced: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}}}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: setup}
     invocation:
       kind: command
       command:
@@ -913,8 +913,8 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: true}
-    metadata: {host_target_operation: ls, network_policy: {allowed_protocols: [dns, tcp], allowed_destinations: [api.runpod.io:443, rest.runpod.io:443, graphql.runpod.io:443, runpod.io:443], allow_redirects: false, broker: {host_managed: true, kind: broker, enforced: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}}}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: ls}
     invocation:
       kind: command
       command:
@@ -934,8 +934,8 @@ actions:
     cache: {mode: none}
     conditions: []
     graph: {consumes: [], provides: []}
-    isolation: {mode: subprocess, network: true}
-    metadata: {host_target_operation: release, network_policy: {allowed_protocols: [dns, tcp], allowed_destinations: [api.runpod.io:443, rest.runpod.io:443, graphql.runpod.io:443, runpod.io:443], allow_redirects: false, broker: {host_managed: true, kind: broker, enforced: true, observable: true, route: declared-http-routes, wrapper: astrid-generic-host}}}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: release}
     invocation:
       kind: command
       command:
