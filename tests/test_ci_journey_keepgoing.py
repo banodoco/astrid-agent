@@ -106,14 +106,14 @@ def test_fresh_admission_needs_an_integer_release_but_not_release_one(tmp_path, 
 ])
 def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
         tmp_path, monkeypatch, wrong_selection, change_at):
-    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    evidence = tmp_path / "run" / "evidence" / "release9-then-install"
     app = tmp_path / "app"
     app.mkdir()
     candidate = tmp_path / "candidate.json"
     candidate.write_text("{}")
     manifest0 = tmp_path / "manifest0.json"
     manifest0.write_text("{}")
-    args = SimpleNamespace(job_id="direct-linux", mode="direct", leg="release0-to-release1",
+    args = SimpleNamespace(job_id="direct-linux", mode="direct", leg="release9-then-install",
                            shell="sh", app_checkout=app, candidate=candidate)
     calls = []
     state = {"release": 9, "pid": 1, "snapshot": False, "checks": 0}
