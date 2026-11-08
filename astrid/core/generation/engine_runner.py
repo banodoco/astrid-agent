@@ -77,7 +77,7 @@ _CODE_PATHS = (
     "__init__.py", "version.py", "core/__init__.py", "core/generation/__init__.py",
     "core/generation/engine_contracts.py", "core/generation/engine_recipe.py",
     "core/generation/engine_runner.py", "core/generation/engine_runner_target.py",
-    "core/generation/model_downloader.py",
+    "core/generation/model_downloader.py", "core/generation/_engine_python_bootstrap.py",
 )
 # A2 must extend this list with its transitive custody/helper imports when landing.
 _A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py",
