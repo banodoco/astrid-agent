@@ -5,6 +5,7 @@ passed. bootstrap_release9 must hand its Agent checkout to the bootstrap helper,
 the pinned Agent's CLI is read and --yes is added.
 """
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import ci_journey as journey
 from scripts import journey_version_jumps as jumps
@@ -21,6 +22,29 @@ def test_bootstrap_release9_passes_agent_checkout_to_consent_probe(tmp_path, mon
     jumps.bootstrap_release9(tmp_path, tmp_path / "manifest.json", "sh", tmp_path / "ev",
                              tmp_path / "root", tmp_path / "data", agent=agent)
     assert calls == {"mode": "install", "agent": agent}
+
+
+def test_ci_leg_flags_reach_the_release9_consent_probe(tmp_path, monkeypatch):
+    """The CI release0-to-release1 step passes --candidate-agent-checkout and no --agent-checkout."""
+    calls = {}
+
+    def fake_bootstrap(app, manifest_path, shell, mode, evidence, root, data, agent=None):
+        calls["agent"] = agent
+
+    monkeypatch.setattr(jumps.journey, "bootstrap", fake_bootstrap)
+    candidate_agent = tmp_path / "candidate-agent"
+    args = SimpleNamespace(candidate_agent_checkout=candidate_agent, agent_checkout=None)
+    jumps.bootstrap_release9(tmp_path, tmp_path / "manifest.json", "sh", tmp_path / "ev",
+                             tmp_path / "root", tmp_path / "data",
+                             agent=jumps.release9_consent_agent(args))
+    assert calls["agent"] == candidate_agent
+
+
+def test_release9_consent_agent_prefers_candidate_checkout(tmp_path):
+    both = SimpleNamespace(candidate_agent_checkout=tmp_path / "c", agent_checkout=tmp_path / "a")
+    assert jumps.release9_consent_agent(both) == tmp_path / "c"
+    only_agent = SimpleNamespace(candidate_agent_checkout=None, agent_checkout=tmp_path / "a")
+    assert jumps.release9_consent_agent(only_agent) == tmp_path / "a"
 
 
 def test_fresh_install_with_consent_gate_adds_yes(tmp_path):
