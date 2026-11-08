@@ -1971,12 +1971,13 @@ def browser_records(snapshot, *, admitted_revision=None):
         assert snapshot.admissions[pack_id] == {
             **{field: record[field] for field in ("packId", "sourceDigest", "digest", "artifactManifestDigest",
                                                  "committedRevision", "transactionId")},
-            "artifact_manifest": artifact}
+            "artifact_manifest": artifact,
+            "definitionsDigest": hashlib.sha256((path / ".build/definitions.json").read_bytes()).hexdigest()}
         files = artifact["files"]
         assert [f["path"] for f in files] == sorted(f["path"] for f in files)
         assert any(f["path"].startswith("chunks/") for f in files)
         assert any(f["path"].startswith("assets/") for f in files)
-        expected = {manifest_path.relative_to(path).as_posix(), ".build/admission.json"}
+        expected = {manifest_path.relative_to(path).as_posix(), ".build/admission.json", ".build/definitions.json"}
         graph = []
         for item in files:
             assert item["disk"] == (f'.build/{record["sourceDigest"]}.js' if item["path"] == "index.js"
@@ -2134,7 +2135,9 @@ def test_retained_browser_records_keep_their_admission_revision_and_replacement_
     install(repo, packs_root, packs={"extra": "packs/extra"}, refresh=accepted_refresh)
     snapshot = read_group(packs_root)
     assert snapshot.revision == 2
-    assert set(snapshot.admissions) == set(GROUP)
+    # Every installed pack (including the ordinary "extra") is bound to its definitions record.
+    assert set(snapshot.admissions) == set(GROUP) | {"extra"}
+    assert "artifact_manifest" not in snapshot.admissions["extra"]
     for pack_id in GROUP:
         assert tree_bytes(snapshot.paths[pack_id]) == before[pack_id]
         record = json.loads((snapshot.paths[pack_id] / ".build/admission.json").read_bytes())
