@@ -52,10 +52,10 @@ def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    from astrid import core
+    from astrid.core import gateway
     from astrid.core.generation import cli
 
-    assert core.gateway.main(["generate", "audio", "--help"]) == 0
+    assert gateway.main(["generate", "audio", "--help"]) == 0
     help_output = capsys.readouterr().out
     assert "--mode {music,tts,sfx}" in help_output
     assert "generation history" not in help_output
@@ -65,8 +65,8 @@ def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
         audio=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(ok=True, kernel_task_id=None,
             to_dict=lambda: {"status": "preview"})))
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
-    assert core.gateway.main([
-        "generate", "audio", "--mode", "sfx", "--target", "runpod", "--dry-run", "--json",
+    assert gateway.main([
+        "generate", "audio", "waves", "--mode", "sfx", "--target", "runpod", "--dry-run", "--json",
     ]) == 0
     assert calls and calls[0]["mode"] == "sfx" and calls[0]["target"] == "runpod"
-    assert "foley_runpod_unsupported" not in capsys.readouterr().out
+    capsys.readouterr()

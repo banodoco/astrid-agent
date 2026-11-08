@@ -208,10 +208,15 @@ def test_host_endpoint_route_admits_local_task_with_only_policy(route, raw, monk
     assert route.owner.events == []
 
 
-def test_foley_runpod_refuses_before_owner_or_allocation(monkeypatch):
-    """Foley is Fal-only; refusal precedes registry, policy and owner work."""
-    from astrid.core.contracts.errors import AstridError
+def test_foley_runpod_sound_effects_resolves_before_owner_or_allocation(monkeypatch):
+    """Sound effects is an ordinary slot: it reaches normal registry resolution, not a refusal."""
     import astrid.sdk as sdk
+
+    class RegistryReached(Exception):
+        pass
+
+    def registry(**kwargs):
+        raise RegistryReached()
 
     calls = []
 
@@ -219,22 +224,15 @@ def test_foley_runpod_refuses_before_owner_or_allocation(monkeypatch):
         @property
         def runpod_generation_owner(self):
             calls.append('owner')
-            pytest.fail('RunPod owner constructed or accessed')
+            pytest.fail('RunPod owner constructed before resolution')
 
         def invoke_result(self, *args, **kwargs):
             calls.append(('invoke', args, kwargs))
 
-    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: pytest.fail('catalog/owner setup'))
-    monkeypatch.setattr('astrid.sdk.generation._runpod_target_policy',
-                        lambda *args, **kwargs: pytest.fail('RunPod policy constructed'))
-    client = NoOwnerClient()
-
-    with pytest.raises(AstridError) as caught:
+    monkeypatch.setattr(sdk, '_load_model_registry', registry)
+    with pytest.raises(RegistryReached):
         GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', target='runpod',
-                                 video_ref='clip.mp4', client=client)
-
-    assert caught.value.code == 'foley_runpod_unsupported'
-    assert 'Fal' in str(caught.value)
+                                 video_ref='clip.mp4', client=NoOwnerClient())
     assert calls == []
 
 
