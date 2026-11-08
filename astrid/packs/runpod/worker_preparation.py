@@ -488,7 +488,7 @@ def confirm_acquired_machine(
             gate="datacenter",
         )
     try:
-        gpu = runpod.get_gpu(contract.gpu_type, api_key=api_key)
+        gpu = _gpu_type_from_graphql(contract.gpu_type, api_key)
     except Exception:
         raise TargetObservationError(
             f"provider gpuTypes catalog could not resolve GPU type {contract.gpu_type!r}",
@@ -1644,3 +1644,16 @@ async def reconcile_target(
         observation=observation,
         acquisition_mode=mode,
     )
+
+
+def _gpu_type_from_graphql(gpu_id: str, api_key: str) -> dict:
+    """The GPU row from the provider's GraphQL gpuTypes catalog (the design source, not REST)."""
+    from runpod.api.graphql import run_graphql_query
+
+    query = "query { gpuTypes(input: {id: %s}) { id displayName } }" % json.dumps(gpu_id)
+    response = run_graphql_query(query, api_key=api_key)
+    rows = ((response or {}).get("data") or {}).get("gpuTypes") or []
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == gpu_id:
+            return row
+    raise LookupError(f"GPU type {gpu_id!r} is not in the gpuTypes catalog")

@@ -52,7 +52,9 @@ def test_acquisition_failure_releases_the_created_pod_by_create_response_id(
     # machine reports "Preferred GPU" but the catalog names the type "RTX 5090".
     monkeypatch.setattr(graphql, "get_pod", lambda pod_id, key=None: {
         "machine": {"gpuDisplayName": "Preferred GPU", "dataCenterId": "EU-RO-1"}})
-    monkeypatch.setattr(runpod, "get_gpu", lambda gpu_id, *a, **k: {"id": gpu_id, "displayName": "RTX 5090"})
+    import runpod.api.graphql as sdk_graphql
+    monkeypatch.setattr(sdk_graphql, "run_graphql_query", lambda query, api_key=None: {"data": {"gpuTypes": [
+        {"id": "NVIDIA GeForce RTX 5090", "displayName": "RTX 5090"}]}})
     owner = c.fresh()
 
     with pytest.raises(AcquisitionUnresolvedError, match="provider acquisition remains unresolved"):
