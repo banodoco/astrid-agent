@@ -15,6 +15,14 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+# Exit-code contract (ruled by M-INT on PR #319): 0 = the live release is the
+# target (updated, already-current, repaired); 3 = not updated, including a
+# declined run and a recovery-only run that leaves the release unchanged;
+# 2 = setup consent required (kept: the bootstrap and journeys rerun with --yes);
+# 1 = failed or rolled back. Readers: App public/install and install.ps1 pass
+# the code through; the Pinokio launcher and the journey harness treat every
+# non-zero code as "did not finish"; update_job's worker reads its job record,
+# never this code. tests/test_update_from_field_states.py pins the mapping.
 FORMAT = "astrid-last-run/v1"
 RECORD = "last-run.json"
 SUCCESS = ("updated", "already-current", "repaired")

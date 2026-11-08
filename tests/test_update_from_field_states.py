@@ -162,3 +162,19 @@ def test_resolver_reports_the_field_state(case, monkeypatch):
     state = Installation.resolve(c.service.home, system="linux")
     assert state.kind == "direct" and state.active_data_root == c.destination
     assert state.service_label == "astrid-r1.service"
+
+
+def test_exit_code_contract_read_by_bootstraps_pinokio_and_journeys():
+    """The codes every reader relies on (listed in PR #319): 0, 3, 2 for consent, 1."""
+    from astrid.installer.outcome import Outcome
+
+    codes = {(kind, reason): Outcome(kind, 1, 1, 2, reason).exit_code for kind, reason in (
+        ("updated", None), ("already-current", None), ("repaired", None),
+        ("not-updated", "installer-bug"), ("not-updated", "declined"),
+        ("not-updated", "recovered-previous-version"), ("not-updated", "consent-required"),
+        ("failed", "refused"), ("rolled-back", "error"))}
+    assert codes == {
+        ("updated", None): 0, ("already-current", None): 0, ("repaired", None): 0,
+        ("not-updated", "installer-bug"): 3, ("not-updated", "declined"): 3,
+        ("not-updated", "recovered-previous-version"): 3, ("not-updated", "consent-required"): 2,
+        ("failed", "refused"): 1, ("rolled-back", "error"): 1}
