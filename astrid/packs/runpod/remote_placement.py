@@ -82,6 +82,10 @@ class RemotePlacementError(AstridError):
     """A remote placement step failed. The pod has been released unless stated."""
 
 
+class PreparationDeadlineExceeded(RemotePlacementError):
+    """Preparation of a claimed pod ran past its disclosed preparation bound."""
+
+
 class DigestMismatch(RemotePlacementError):
     """A transferred file does not match its recorded sha256."""
 
@@ -399,6 +403,7 @@ class RemotePlacement:
         self._sleep = sleep
         self._claims_made = 0
         self._deadline_at: float | None = None
+        self._preparation_seconds: float | None = None
 
     # -- public ------------------------------------------------------------
 
@@ -414,6 +419,7 @@ class RemotePlacement:
         if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
         self._deadline_at = self._clock() + deadline_seconds
+        self._preparation_seconds = deadline_seconds
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
@@ -513,7 +519,17 @@ class RemotePlacement:
     # -- deadline ----------------------------------------------------------
 
     def _check_deadline(self, step: str) -> None:
-        if self._deadline_at is not None and self._clock() > self._deadline_at:
+        if self._deadline_at is None:
+            return
+        now = self._clock()
+        if self._preparation_seconds is not None:
+            # The pod-side install derives its --deadline from this one bound,
+            # so reaching it is the preparation deadline, not a job failure.
+            if now >= self._deadline_at:
+                raise PreparationDeadlineExceeded(
+                    f"preparation deadline of {self._preparation_seconds:g}s exceeded during {step}"
+                )
+        elif now > self._deadline_at:
             raise RemotePlacementError(
                 f"deadline of {self.limits.deadline_seconds}s exceeded during {step}"
             )
@@ -545,6 +561,7 @@ class RemotePlacement:
             raise
         state.claim = claim
         self._deadline_at = self._clock() + self.limits.deadline_seconds
+        self._preparation_seconds = None
         if claim.transport != "https":
             raise RemotePlacementError(f"claim used transport {claim.transport!r}, expected https")
         if claim.datacenter_id != self.limits.datacenter_id:
@@ -613,6 +630,7 @@ class RemotePlacement:
             _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
             _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(directory)}/stderr", 120)
         if record.get("exit_code") != 0:
+            self._check_deadline(what)
             raise RemotePlacementError(
                 f"{what} job {job_id} exited {record.get('exit_code')}: {stderr[-800:]}"
             )

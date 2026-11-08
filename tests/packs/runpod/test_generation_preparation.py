@@ -66,6 +66,9 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     c.actual_gpu_id = "gpu-provider-exact"
     c.create_kwargs, c.quotes, c.git_reads = [], [], []
     c.lost_start, c.cancel_unknown, c.dirty_sources = False, False, False
+    # Opt-in: the fake pod's install honours the command's own --deadline
+    # (seconds, as ``astrid engines install`` parses it) on ``c.monotonic``.
+    c.install_uses_command_deadline, c.monotonic = False, time.monotonic
 
     def volumes(key):
         assert persistent, "ephemeral route looked up network volumes"
@@ -156,7 +159,17 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             directory = "/workspace/.astrid-jobs/" + job_id
             for name in ("stdout", "stderr"):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
-            if "engines install" in command and not self.jobs[job_id]:
+            if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
+                seconds = float(command.split("--deadline ", 1)[1].split()[0])
+                try:
+                    receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
+                                                           deadline=c.monotonic() + seconds)
+                except Exception as exc:  # the pod-side process exits non-zero
+                    self.jobs[job_id] = 1
+                    self.files[directory + "/stderr"] = f"{type(exc).__name__}: {exc}".encode()
+                else:
+                    self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
+            elif "engines install" in command and not self.jobs[job_id]:
                 receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
                                                        deadline=context.deadline)
                 self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
@@ -467,6 +480,72 @@ def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
         c.adapter.prepare(c.request, replace(c.grant, invocation_id="retry"))
     c.host.release()
     assert c.creates == 1 and c.deletes == ["pod-1"]
+
+
+def test_retained_slow_model_download_stops_at_preparation_seconds_and_releases(retained, monkeypatch, tmp_path):
+    """--preparation-seconds bounds the whole preparation, including the model download."""
+    import time as real_time
+    from astrid.core.generation import engine_runner, model_downloader
+    from tests.core.generation import test_engine_runner as canonical
+
+    c = retained
+    assert c.grant.preparation_seconds == 60
+    # The paid claim lifetime (USD cap at the quoted rate) alone would not bound preparation.
+    assert c.grant.max_usd / c.actual_rate * 3600 > 10 * c.grant.preparation_seconds
+
+    class FakeTime:  # one fake clock for controller, pod-side runner and downloader
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+        monotonic = staticmethod(c.clock)
+        sleep = staticmethod(lambda seconds: None)
+    for module in (engine_runner, model_downloader, canonical):
+        monkeypatch.setattr(module, "time", FakeTime())
+    c.placement._clock = c.clock
+    c.monotonic = c.clock
+    c.install_uses_command_deadline = True
+    c.context.deadline = c.clock() + 10 ** 7
+    started = c.clock()
+    transferred = []
+
+    class SlowRange:  # a stalled transfer: 1 KiB per 5 fake seconds, never complete
+        status = 206
+
+        def __init__(self, request):
+            offset, end = request.headers["Range"].removeprefix("bytes=").split("-")
+            self.headers = {"Content-Range": f"bytes {offset}-{end}/{self.total}"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, size):
+            c.clock.now += 5
+            transferred.append(1024)
+            return b"\0" * min(1024, size)
+
+    def download(model, *, models_root, deadline):
+        SlowRange.total = model.bytes
+        return model_downloader.download_model(
+            model, models_root=str(tmp_path / "models"), deadline=deadline,
+            opener=lambda request, timeout: SlowRange(request))
+    c.context.download_model = download
+
+    with pytest.raises(Exception, match=r"preparation deadline of 60s exceeded during engine install"):
+        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
+                                retain_bridge=lambda lease, bridge: None,
+                                retire_bridge=lambda lease, **kwargs: None)
+    assert transferred, "the fake download never started"
+    assert c.clock() - started <= c.grant.preparation_seconds + 5
+    install = next(line for line in c.pod.job_log if "engines install" in line)
+    assert float(install.split("--deadline ", 1)[1].split()[0]) <= c.grant.preparation_seconds
+    record = c.read()
+    job = record["lease"]["preparation"]["job"]
+    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert c.pod.cancelled == [job["id"]] and job["state"] == "cancelled"
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert record["state"] == "cleanup_complete"
 
 
 def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):

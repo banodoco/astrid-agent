@@ -93,7 +93,11 @@ def prepare_retained_generation(
         save()
         try:
             claim = connect_claimed_for_preparation(claimed)
-            remaining = (_utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds()
+            # Preparation (bootstrap, engine install and its model download) is
+            # bounded by the disclosed --preparation-seconds, never only by the
+            # longer paid claim lifetime.
+            remaining = min(consent.preparation_seconds, (
+                _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
             state = placement.prepare_claimed(
                 claim, out=lease_owner.selection.path.parent / "preparation" / invocation.operation_id,
                 deadline_seconds=remaining, installation=installation,
@@ -203,7 +207,8 @@ class RunPodGenerationPreparer:
                             "network_volume_id", "volume_mount_path",
                         ))):
                     raise PreparedWorkerError("bootstrap transport differs from the journal-owned claim")
-                remaining = (_utc(claimed["paid_limits"]["expires_at"]) - self.owner.clock()).total_seconds()
+                remaining = min(self.consent.preparation_seconds, (
+                    _utc(claimed["paid_limits"]["expires_at"]) - self.owner.clock()).total_seconds())
                 state = self.placement.prepare_claimed(
                     claim, out=self.owner.path.parent / "preparation" / operation,
                     deadline_seconds=remaining,
