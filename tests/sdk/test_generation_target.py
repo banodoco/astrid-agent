@@ -581,7 +581,11 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
     assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
     assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
     assert inputs['generation_intent']['modality'] == 'audio'
-    assert inputs['generation_intent']['metadata'] == {'model': '00-audio-test', 'mode': mode}
+    # Without an entry the slot's preferred default owns the route; its declared
+    # output binds filename_prefix exactly as the installed entry's input does.
+    from astrid.sdk.generation import _DEFAULT_ENTRIES
+    selected = '00-audio-test' if explicit else _DEFAULT_ENTRIES[('audio', mode)][0]
+    assert inputs['generation_intent']['metadata'] == {'model': selected, 'mode': mode}
     assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
 
 
