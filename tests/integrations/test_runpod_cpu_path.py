@@ -259,7 +259,8 @@ class ProviderHTTP:
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0,
                 "imageName": record["worker_image"], "networkVolumeId": None,
                 "dataCenterId": "DC-unpinned", "machineType": "CPU fixture GPU",
-                "machine": {"gpuTypeId": "gpu-exact", "dataCenterId": "DC-unpinned"}})
+                "machine": {"gpuTypeId": "gpu-exact", "gpuDisplayName": "CPU fixture GPU",
+                    "dataCenterId": "DC-unpinned"}})
             return {"podFindAndDeployOnDemand": self.pods[0]}
         if "myself" in query:
             return {"myself": {"pods": self.pods}}
