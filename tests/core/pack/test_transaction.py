@@ -1391,8 +1391,13 @@ def test_external_root_swap_at_exchange_rolls_back_complete_generation(
     assert dict(after.admissions) == before_admissions
 
 
-def test_real_cli_composes_facts_while_generation_writer_is_held_out(
-        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_real_cli_refuses_when_collection_changes_during_consent(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    # Consent releases collection custody on purpose (dff903d2d), so a competing
+    # writer can publish while the human is answering. The CLI must refuse with
+    # collection_changed rather than compose against a collection that moved, and a
+    # rerun must then succeed against the new revision.
     import threading
 
     from astrid.core.pack import transaction
@@ -1420,18 +1425,27 @@ def test_real_cli_composes_facts_while_generation_writer_is_held_out(
                     writer_done.set()
             threading.Thread(target=racing_writer, daemon=True).start()
             assert writer_started.wait(2)
-            # Selection is already complete, yet the competing generation
-            # writer cannot publish until this CLI transaction releases custody.
+            # Selection is already complete, yet the competing writer cannot publish
+            # until the consent prompt releases custody.
             assert not writer_done.wait(0.1)
         return result
 
     monkeypatch.setattr(transaction, "_compose_resulting_facts", racing_compose)
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
-    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
-                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
-                           "--pack", "shared=packs/shared"]) == 0
+    command = ["update", "--source", str(repo.bare), "--revision", repo.commit,
+               "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+               "--pack", "shared=packs/shared"]
+    assert packs_cli_main(command) == 2
+    # The CLI renders the PackInstallError("collection_changed") message.
+    assert "changed during consent; retry." in capsys.readouterr().err
     assert writer_done.wait(10)
     assert not failure
+    # The refused CLI wrote nothing, so the racing writer's publish is the first revision.
+    assert read_group(packs_root).revision == 1
+
+    # The same command now succeeds against the collection the writer left behind.
+    monkeypatch.setattr(transaction, "_compose_resulting_facts", original_compose)
+    assert packs_cli_main(command) == 0
     assert read_group(packs_root).revision == 2
 
 
