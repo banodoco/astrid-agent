@@ -219,6 +219,7 @@ def _new_attempt(epoch: int) -> dict:
         "submit": "not-issued",
         "wrapper_sha256": None,
         "descriptor_sha256": None,
+        "handoff": None,
         "claim": None,
         "retirement": None,
     }
@@ -659,7 +660,7 @@ def _bootstrap_proof_valid(job: dict) -> bool:
             and claim.get("descriptor") == job.get("platform"))
 
 
-def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
+def _journal_is_accepted_preexisting(root: Path, job: dict, journal: dict | None) -> bool:
     """Recognize only the exact journal snapshot observed during acceptance."""
     if journal is None:
         return (job.get("prior_transaction_present") is False
@@ -667,8 +668,10 @@ def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
                 and job.get("prior_transaction_id") is None
                 and job.get("prior_transaction_sha256") is None)
     try:
-        encoded = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError):
+        if job.get("prior_transaction_hash_kind") != "raw-sha256/v1":
+            return False
+        encoded = (root / "update-transaction.json").read_bytes()
+    except OSError:
         return False
     digest = hashlib.sha256(encoded).hexdigest()
     return (job.get("prior_transaction_present") is True
@@ -1071,7 +1074,7 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
                                        disposition="confirmed-prior",
                                        ready_instance_id=ready_instance_id,
                                        ready_identity=ready_identity), False
-        if not _journal_is_accepted_preexisting(job, journal):
+        if not _journal_is_accepted_preexisting(root, job, journal):
             _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
         old = _validate_prebootstrap(root, job, data_root)
         expected = api.describe(job, _expected_worker_command(old, job))
@@ -1097,6 +1100,46 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         raise
     except (Exception, KeyboardInterrupt) as failure:
         raise _BusyRefusal("The unresolved update evidence could not be safely reconciled.") from failure
+
+
+def reconcile(request: dict) -> dict:
+    """Reconcile existing evidence under the installer lock before preparation."""
+    _require_update_job_available()
+    root = absolute(request.get("root", ""))
+    stream = _locked(root)
+    try:
+        marker = read_json(root / "install.json")
+        prior = marker.get("update_job")
+        if prior is not None and (not isinstance(prior, dict)
+                                  or prior.get("format") != JOB_FORMAT
+                                  or prior.get("state") not in JOB_STATES):
+            _busy("The prior update operation is unreadable or has an unknown state.")
+        path = root / "update-transaction.json"
+        if path.is_symlink():
+            _busy("The installer journal path cannot be trusted.")
+        try:
+            pending = read_json(path) if path.exists() else None
+        except (OSError, ValueError, TypeError) as failure:
+            raise _BusyRefusal("The installer journal cannot be read.") from failure
+        unresolved = (isinstance(prior, dict) and prior.get("state") in
+                      {"accepted", "launching", "active", "recovery-needed"})
+        unfinished = bool(isinstance(pending, dict) and pending.get("step") not in TERMINAL_STEPS)
+        if unfinished and not unresolved:
+            _busy("The installer must recover its pending update first.")
+        reconciled, continued = _reconcile_existing(root, marker, request)
+        if continued:
+            if reconciled is None:
+                _busy("The accepted update continuation could not be confirmed.")
+            return {"disposition": "continued-existing", "job": reconciled}
+        if unfinished and unresolved:
+            if reconciled is None:
+                _busy("The unfinished update could not be reconciled.")
+            return {"disposition": "recovered-this-request", "job": reconciled}
+        if reconciled is not None:
+            return {"disposition": "confirmed-prior", "job": reconciled}
+        return {"disposition": "prepare-new"}
+    finally:
+        _unlock(stream)
 
 
 def accept(request: dict) -> dict:
@@ -1163,8 +1206,9 @@ def accept(request: dict) -> dict:
         if pending is None or isinstance(pending, dict):
             job["prior_transaction_present"] = pending is not None
             job["prior_transaction_id"] = pending.get("operation_id") if isinstance(pending, dict) else None
+            job["prior_transaction_hash_kind"] = "raw-sha256/v1"
             job["prior_transaction_sha256"] = (
-                hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                hashlib.sha256(pending_path.read_bytes()).hexdigest()
                 if isinstance(pending, dict) else None)
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
@@ -1509,6 +1553,10 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
     current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
     current_attempt = dict(_attempt(current))
     current_attempt["submit"] = "acknowledged"
+    # Publish the grant together with the acknowledgement while the
+    # coordinator still owns the installer lock. A wrapper delivered after an
+    # unknown manager reply must never acquire bootstrap authority.
+    current_attempt["handoff"] = {"epoch": epoch, "nonce": nonce}
     if current.get("state") == "launching":
         return _write_job(root, operation_id, state="launching", message="Update job launched.",
                           fields={"launch_status": "acknowledged", "launch_error": None,
@@ -1540,9 +1588,13 @@ def launch_job(root: Path, operation_id: str) -> dict:
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
+            # Runtime reports a refused launch from launch_error; without it
+            # this policy refusal would read as an operating-system rejection.
             return _write_job(root, operation_id, state="failed",
                               message="Failed: saved autostart is off and the installer cannot preserve that choice.",
-                              fields={"launch_status": "refused", "cleanup_status": "not-needed"})
+                              fields={"launch_status": "refused",
+                                      "launch_error": "saved autostart is off and the installer cannot preserve that choice; no job was launched.",
+                                      "cleanup_status": "not-needed"})
         from .core import Version
         return _launch_current_attempt(root, job, Version.load(job["old_version"]), _platform_api())
     finally:
@@ -1884,6 +1936,11 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
         # even return/rewrite the replacement job, much less claim or enter it.
         job = _current_attempt(root, operation_id, epoch, nonce,
                                submitted=not direct_call)
+        if not direct_call:
+            attempt = _attempt(job)
+            if (attempt.get("submit") != "acknowledged"
+                    or attempt.get("handoff") != {"epoch": epoch, "nonce": nonce}):
+                _busy("The native update attempt has no acknowledged handoff.")
         if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed", "active"}:
             return job
         if job.get("state") not in {"accepted", "launching"}:
@@ -2021,9 +2078,18 @@ def main():
     if len(raw) > 65536:
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
-    action = value.get("action", "prepare")
+    if not isinstance(value, dict):
+        raise ValueError("The update helper request must be an object.")
+    # Runtime's prepare request carries no action key; only its absence means prepare.
+    action = value["action"] if "action" in value else "prepare"
     if action == "availability":
         print(json.dumps(update_job_availability()))
+    elif action == "reconcile":
+        try:
+            print(json.dumps(reconcile(value)))
+        except (_UnsupportedServiceManager, _BusyRefusal) as failure:
+            print(json.dumps({"reason": failure.reason, "message": _one_line(failure)}))
+            raise SystemExit(1)
     elif action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
