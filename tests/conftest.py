@@ -31,6 +31,40 @@ from tests.lanes import pytest_collection_modifyitems, pytest_configure, pytest_
 from tests.process_groups import ProcessGroups
 
 
+@pytest.fixture(autouse=True)
+def _installer_live_identity():
+    """Hermetic installer runs: the live Runtime reports the selected version's identity.
+
+    The run receipt (astrid.installer.outcome) probes the live Runtime over HTTP.
+    No test daemon answers that, so by default the selected version stands in for
+    it; a run that leaves the old version selected still fails its post-condition.
+    Tests that model the live Runtime separately patch ``probe_live`` themselves.
+    """
+    try:
+        from astrid.installer import installation
+    except ImportError:
+        yield
+        return
+
+    def selected_identity(_data_root, program_root=None):
+        try:
+            version = installation.current(program_root) if program_root is not None else None
+        except Exception:  # noqa: BLE001 - an unreadable selection has no live identity
+            return None
+        if version is None:
+            return None
+        return {"release": version.release, "managed_by": version.managed_by, "instance_id": "test"}
+
+    # Not the monkeypatch fixture: requesting it here would reorder every test's
+    # monkeypatch teardown after the test's own fixtures.
+    original = installation.probe_live
+    installation.probe_live = selected_identity
+    try:
+        yield
+    finally:
+        installation.probe_live = original
+
+
 @pytest.fixture
 def owned_process_groups():
     """Own process groups explicitly launched by this test until teardown."""

@@ -1218,7 +1218,7 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setattr(cli, "Backend", CliBackend)
-    monkeypatch.setattr(cli, "validate_manifest", lambda _value: {"pinned": True})
+    monkeypatch.setattr(cli, "validate_manifest", lambda _value: {"pinned": True, "release": 1})
     monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail("manifest should be read from disk"))
 
     arguments = ["--root", str(root), "--data-root", str(data),
@@ -1228,7 +1228,7 @@ def test_cli_loads_manifest_when_current_pointer_targets_missing_interpreter(
     result = cli.main(arguments)
 
     assert result == 0
-    assert backend.staged_manifest == {"pinned": True}
+    assert backend.staged_manifest == {"pinned": True, "release": 1}
     assert any(call[0] == "attach" for call in backend.calls)
     assert process_controls == [expected_control, expected_control]
 
@@ -1766,7 +1766,7 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
         "--uv", str(tmp_path / "unavailable-uv"),
     ])
 
-    assert result == 0
+    assert result == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert read_json(journal)["step"] == "rolled_back"
     assert current(backend.root).root == old_root
     assert read_json(paths.catalog_path)["selected_realm_id"] == "realm-1"

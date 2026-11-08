@@ -114,8 +114,13 @@ def _wrapper():
             'exec "$root/versions/$version/bin/runtime" "$@"\n')
 
 
-def stage_runtime_launcher(version: Version):
-    """Materialize the executable selected by the fixed launcher, in real staging."""
+def stage_runtime_launcher(version: Version, *, replace: bool = False):
+    """Materialize the executable selected by the fixed launcher, in real staging.
+
+    The script admits the handoff's records and their normalised direct form
+    (R1 as ``data_root``, R0 kept as ``retained_r0_data_root``). ``replace``
+    regenerates it for an already staged version before normalisation.
+    """
     if version.release < 1 or version.managed_by is not None or os.name == "nt":
         return  # Windows adoption/extensionless launcher is not qualified.
     program = absolute(version.root).parent.parent
@@ -126,19 +131,23 @@ version = {version.document()!r}
 args = sys.argv[1:]
 selection = json.loads(Path({str(install_selection(Path.home(), sys.platform))!r}).read_text(encoding="utf-8"))
 marker = json.loads((root / "install.json").read_text(encoding="utf-8"))
-data = selection.get("r1_data_root")
+legacy = "r1_data_root" in selection
+data = selection.get("r1_data_root") if legacy else selection.get("data_root")
+source = selection.get("data_root") if legacy else selection.get("retained_r0_data_root")
+realm = selection.get("r1_realm_root") if legacy else selection.get("realm_root")
 if (selection.get("owner") != "haus.astrid.runtime" or selection.get("program_root") != str(root)
         or not isinstance(data, str) or not Path(data).is_absolute()
-        or not isinstance(selection.get("data_root"), str) or data != selection["data_root"] + "-r1"
+        or not isinstance(source, str) or data != source + "-r1"
         or marker.get("owner") != "haus.astrid.runtime"
-        or marker.get("data_root") != selection["data_root"]
-        or marker.get("r1_data_root") != data
+        or marker.get("data_root") != selection.get("data_root")
+        or marker.get("r1_data_root") != (data if legacy else None)
+        or (not legacy and marker.get("retained_r0_data_root") != source)
         or not isinstance(selection.get("realm_id"), str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}", selection["realm_id"])
-        or selection.get("r1_realm_root") != str(Path(data) / "runtime/realms" / selection["realm_id"])
-        or not isinstance(selection.get("realm_root"), str)
-        or not Path(selection["realm_root"]).is_relative_to(Path(selection["data_root"]))
-        or marker.get("identity") != version["identity"]
+        or realm != str(Path(data) / "runtime/realms" / selection["realm_id"])
+        or (legacy and (not isinstance(selection.get("realm_root"), str)
+                        or not Path(selection["realm_root"]).is_relative_to(Path(selection["data_root"]))
+                        or marker.get("identity") != version["identity"]))
         or selection.get("identity") != version["identity"]
         or selection.get("service_label") != {R1_LINUX if sys.platform == 'linux' else R1_MAC!r}
         or args != ["run", "--profile", "astrid", "--data-root", data]
@@ -161,10 +170,12 @@ os.environ["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
 from astrid_runtime.cli import main
 raise SystemExit(main([*args, "--source-manifest", version["profile"]]))
 '''
-    _publish(version.root / "bin/runtime.py", script)
+    script_path, launcher_path = version.root / "bin/runtime.py", version.root / "bin/runtime"
+    _publish(script_path, script, exclusive=not (replace and os.path.lexists(script_path)))
     launcher = ('#!/bin/sh\nset -eu\nexec ' + shlex.quote(str(version.python))
                 + ' -X utf8 -I ' + shlex.quote(str(version.root / "bin/runtime.py")) + ' "$@"\n')
-    _publish(version.root / "bin/runtime", launcher, mode=0o755)
+    _publish(launcher_path, launcher, mode=0o755,
+             exclusive=not (replace and os.path.lexists(launcher_path)))
 
 
 class BoundaryRegistration:
