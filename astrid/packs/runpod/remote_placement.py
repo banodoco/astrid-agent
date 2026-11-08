@@ -256,10 +256,19 @@ def pod_source_manifest(source_root: Path, pins: Mapping[str, tuple[str, str]] |
     return (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
 
 
+def _root_owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    # The pod extracts as root with plain tar. Local uid/gid (macOS or non-root Linux users)
+    # would leave .git owned by a foreign uid and fail git's safe.directory check on the pod.
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    return info
+
+
 def _build_source_archive(source_root: Path, destination: Path,
                           pins: Mapping[str, tuple[str, str]] | None = None) -> Path:
     # Each source dir ships with its own .git (depth-1 clean detached managed clone): the pod
-    # verifier reads git state. Only bytecode is dropped.
+    # verifier reads git state. Only bytecode is dropped. Every member is root-owned so the
+    # archive is deterministic and extracts safely as root regardless of the local owner.
     manifest = pod_source_manifest(source_root, pins)
     with tarfile.open(destination, "w:gz") as archive:
         for directory in SOURCE_DIRS:
@@ -268,9 +277,9 @@ def _build_source_archive(source_root: Path, destination: Path,
                 arcname=directory,
                 filter=lambda info: None
                 if info.name.endswith(".pyc") or "__pycache__" in info.name
-                else info,
+                else _root_owned(info),
             )
-        info = tarfile.TarInfo("src/.pod-source.json")
+        info = _root_owned(tarfile.TarInfo("src/.pod-source.json"))
         info.size, info.mode, info.mtime = len(manifest), 0o644, 0
         archive.addfile(info, io.BytesIO(manifest))
     return destination
