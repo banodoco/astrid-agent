@@ -432,7 +432,8 @@ def _refuse_symlinked_collection(candidate: Path) -> None:
     # Nothing is written when any of them is a symlink.
     for ancestor in (candidate, *candidate.parents):
         if ancestor.is_symlink():
-            raise PackInstallError("unsafe_path", SYMLINKED_COLLECTION_REFUSAL)
+            # The shared reason stays exact; the offending link is named after it.
+            raise PackInstallError("unsafe_path", f"{SYMLINKED_COLLECTION_REFUSAL}: {ancestor}")
 
 
 def _selected_root(override: str | None) -> Path:

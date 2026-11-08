@@ -25,7 +25,8 @@ def test_symlinked_personal_collection_is_refused_with_the_runtime_text(tmp_path
     with pytest.raises(PackInstallError) as refusal:
         cli_manage._selected_root(None)
     assert refusal.value.code == "unsafe_path"
-    assert str(refusal.value) == cli_manage.SYMLINKED_COLLECTION_REFUSAL
+    assert str(refusal.value).startswith(cli_manage.SYMLINKED_COLLECTION_REFUSAL + ": ")
+    assert str(home / "Astrid" / "packs") in str(refusal.value)
     assert list(elsewhere.iterdir()) == []
 
 
@@ -37,7 +38,8 @@ def test_symlinked_parent_of_the_collection_is_refused(tmp_path, monkeypatch):
 
     with pytest.raises(PackInstallError) as refusal:
         cli_manage._selected_root(None)
-    assert str(refusal.value) == cli_manage.SYMLINKED_COLLECTION_REFUSAL
+    assert str(refusal.value).startswith(cli_manage.SYMLINKED_COLLECTION_REFUSAL + ": ")
+    assert str(alias) in str(refusal.value)
 
 
 def test_plain_personal_collection_is_selected(tmp_path, monkeypatch):
