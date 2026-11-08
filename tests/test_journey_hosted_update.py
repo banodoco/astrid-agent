@@ -324,3 +324,15 @@ def test_the_new_evidence_names_are_allowlisted_everywhere():
     assert names <= ci_journey.JOURNEY_EVIDENCE_NAMES
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
     assert all(f"'{name}'" in workflow for name in names)
+
+
+def test_wait_terminal_observes_about_every_minute_and_once_more_on_timeout(door):
+    server = door((200, {"state": "active", "operation_id": OPERATION, "job_name": "astrid-update-" + OPERATION}))
+    now, seen = [0.0], []
+    with pytest.raises(RuntimeError, match="did not finish"):
+        hosted.wait_terminal(server.url, OPERATION, timeout=200, interval=10,
+                             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds), clock=lambda: now[0],
+                             tick=lambda body, final=False: seen.append(body is not None))
+    # One observation at the start and about every 60 seconds after that, all with the status the door gave.
+    assert 3 <= len(seen) <= 5
+    assert all(seen)

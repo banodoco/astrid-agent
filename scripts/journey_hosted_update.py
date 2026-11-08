@@ -477,14 +477,22 @@ def post_update(base_url: str, *, timeout: float = 400) -> dict:
 
 
 def wait_terminal(base_url: str, operation_id: str, *, timeout: float, interval: float = 3.0,
-                  recovery_grace: float = 90.0, sleep=time.sleep, clock=time.monotonic) -> dict:
-    """Poll the page's status route until this operation ends; success only if it was ``updated``."""
+                  recovery_grace: float = 90.0, sleep=time.sleep, clock=time.monotonic, tick=None,
+                  tick_every: float = 60.0) -> dict:
+    """Poll the page's status route until this operation ends; success only if it was ``updated``.
+
+    ``tick(body)``, when given, observes the status about every ``tick_every`` seconds while the update runs.
+    """
     deadline, recovering_since, last = clock() + timeout, None, None
+    next_tick = clock()
     while clock() < deadline:
         try:
             status, body = door_request(base_url, "GET", STATUS_PATH, timeout=30)
         except (OSError, http.client.HTTPException):
             status, body = None, None  # The Runtime is restarting.
+        if tick is not None and clock() >= next_tick:
+            next_tick = clock() + tick_every
+            tick(body if status == 200 and body is not None and body.get("operation_id") == operation_id else None)
         if status == 200 and body is not None and body.get("operation_id") == operation_id:
             last = body
             if body.get("state") == "terminal":
@@ -563,7 +571,7 @@ def release_routes(app: Path, manifest: bytes) -> dict[str, bytes]:
 
 
 def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, door_base: str, root: Path,
-                      evidence: Path, timeout: float | None = None, intercept=Intercept) -> dict:
+                      evidence: Path, timeout: float | None = None, intercept=Intercept, tick=None) -> dict:
     """POST the hosted page's Update request and wait for it to finish; returns the evidence record.
 
     Raises when the door refuses, the stand-in is not what Runtime fetched, the update does not end as
@@ -583,7 +591,13 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
             try:
                 accepted = post_update(door_base)
                 record["request"].update(status=accepted["status"], operation_id=accepted["operation_id"])
-                record["final"] = wait_terminal(door_base, accepted["operation_id"], timeout=timeout)
+                observed = {} if tick is None else {"tick": tick}
+                try:
+                    record["final"] = wait_terminal(door_base, accepted["operation_id"], timeout=timeout, **observed)
+                except RuntimeError:
+                    if tick is not None:
+                        tick(None, final=True)  # Keep the last observation of the wait before the failure.
+                    raise
             finally:
                 served = [hit for hit in stand_in.hits()[mark:] if hit["status"] == 200]
                 record["served"] = {route: sum(1 for hit in served if hit["path"] == route) for route in routes}

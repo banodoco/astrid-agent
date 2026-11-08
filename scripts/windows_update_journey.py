@@ -33,6 +33,66 @@ SCHEDULER_EVENTS = "windows-update-scheduler-events.json"
 STOP_TASK_STATE = "windows-update-stop-task-state.json"
 
 
+_JOB_NAME = re.compile(r"astrid-update-[0-9a-f]{32}")
+WAIT_LOG_LIMIT = 256 * 1024
+
+
+def _scheduled_task_state(job_name):
+    """The update's scheduled task: state and last result. Diagnostics only."""
+    script = (f"$t = Get-ScheduledTask -TaskName '{job_name}' -ErrorAction SilentlyContinue; "
+              "if ($t) { $i = $t | Get-ScheduledTaskInfo; ConvertTo-Json -InputObject @{state=[string]$t.State; "
+              "last_result=$i.LastTaskResult; last_run=[string]$i.LastRunTime} -Compress } else { '{\"state\":\"absent\"}' }")
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=30, check=False)
+    return json.loads(completed.stdout) if completed.returncode == 0 and completed.stdout.strip() else {"state": "unavailable"}
+
+
+def make_wait_observer(evidence, root):
+    """Observe the Windows update each tick of the wait: status, process tree and scheduled task.
+
+    At the end of a failed wait the update job's own log is kept, since that is where the worker's error goes.
+    Every observation is best effort: diagnostics must never change the update result.
+    """
+    samples = Path(evidence) / "windows-update-wait.jsonl"
+    seen = {"job": None}
+
+    def tick(body, final=False):
+        entry = {"at": datetime.now(timezone.utc).isoformat(), "final": final,
+                 "status": None if body is None else {key: body.get(key) for key in (
+                     "state", "outcome", "reason", "launch_status", "result", "job_name", "target_release", "self_update")}}
+        try:
+            entry["tree"] = process_capture.tree_snapshot()
+        except Exception:
+            entry["tree"] = {"status": "unavailable"}
+        job = (body or {}).get("job_name") if isinstance(body, dict) else None
+        if isinstance(job, str) and _JOB_NAME.fullmatch(job):
+            seen["job"] = job
+        job = seen["job"]
+        if job is not None:
+            try:
+                entry["scheduled_task"] = _scheduled_task_state(job)
+            except Exception:
+                entry["scheduled_task"] = {"state": "unavailable"}
+            if final:
+                _keep_job_log(Path(evidence), Path(root), job)
+        with samples.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
+
+    return tick
+
+
+def _keep_job_log(evidence, root, job):
+    source = root / "logs" / f"{job}.log"
+    try:
+        if source.is_symlink() or not source.is_file():
+            return
+        with source.open("rb") as stream:
+            stream.seek(max(0, source.stat().st_size - WAIT_LOG_LIMIT))
+            (evidence / "windows-update-job.log").write_bytes(stream.read(WAIT_LOG_LIMIT))
+    except OSError:
+        pass  # Keep what can be kept; the failure stands either way.
+
+
 def capture_update_scheduler_events(evidence, started):
     """Keep only structured events for the owned task since update began.
 
@@ -239,7 +299,7 @@ def run_update(journey, args, app, manifest, root, data, evidence, sentinel, bir
         # release served from the intercepted astrid.haus. No bootstrap is run by the journey.
         hosted_record = hosted.run_hosted_update(
             python=old["python"], app=app, manifest=raw, door_base=journey.HEALTH_URL,
-            root=root, evidence=evidence)
+            root=root, evidence=evidence, tick=make_wait_observer(evidence, root))
     except Exception:
         try:
             if capture_before is not None:
