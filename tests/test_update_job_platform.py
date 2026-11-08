@@ -170,9 +170,11 @@ def test_worker_wrapper_keeps_the_whole_error_and_exits_with_the_worker_code(tmp
     call = script.index("& $exe @workerArgs")
     # Errors continue only around the worker call, so its first stderr line cannot end the wrapper.
     assert script.index("$ErrorActionPreference = 'Continue'") < call < script.index("$ErrorActionPreference = 'Stop'", call)
-    assert "*>> $log" in script
+    # One writer per file: the wrapper writes only its own wrapper log, never the job log.
+    assert platform.wrapper_log_path(tmp_path / "astrid-update-x.log") == tmp_path / "astrid-update-x.wrapper.log"
+    assert "*>> $wrapperLog" in script and "$log" not in script
     assert "exit $code" in script and "if ($null -eq $code) { $code = 1 }" in script
-    assert script.count("Add-Content -LiteralPath $log") == 1 and "exit 1 }" in script
+    assert script.count("Add-Content -LiteralPath $wrapperLog") == 1 and "exit 1 }" in script
 
 
 @pytest.mark.windows_native
@@ -185,9 +187,10 @@ def test_worker_wrapper_keeps_a_multiline_traceback_and_exits_one(tmp_path):
     completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                                 platform._worker_script(worker, log)], capture_output=True, text=True, timeout=120)
     assert completed.returncode == 1
-    text = log.read_text(encoding="utf-8", errors="replace")
+    text = log.with_name("job.wrapper.log").read_text(encoding="utf-8", errors="replace")
     assert "Traceback (most recent call last):" in text
     assert "the real cause" in text
+    assert not log.exists()  # the wrapper never writes the job log
 
 
 def test_mac_cleanup_retains_active_and_removes_inactive_plist_before_bootout(tmp_path, monkeypatch):
@@ -266,7 +269,7 @@ def test_windows_uses_current_sid_on_demand_and_safely_encoded_arguments(tmp_pat
     worker_script = base64.b64decode(worker_encoded).decode("utf-16le")
     assert "O''Brien" in worker_script
     assert "雪" in worker_script
-    assert "*>> $log" in worker_script
+    assert "*>> $wrapperLog" in worker_script and "$log" not in worker_script
     assert "-Trigger" not in task_script
     assert "-Repetition" not in task_script
     assert "Restart" not in task_script
@@ -394,9 +397,8 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
     assert "O''Brien with spaces 雪" not in wrapper
     assert str(program_root) not in wrapper
 
-    # The Windows wrapper owns the job log: it sends the worker's output into it, and the worker does not open it.
-    with log.open("w", encoding="utf-8") as stream:
-        subprocess.run(command, check=True, stdout=stream, stderr=subprocess.STDOUT, text=True)
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    assert result.stdout == ""
     output = json.loads(log.read_text(encoding="utf-8").strip())
     assert output == {"root": str(program_root), "operation": operation,
                       "env": "O'Brien with spaces 雪"}

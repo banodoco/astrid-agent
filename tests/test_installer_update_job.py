@@ -1004,33 +1004,54 @@ def _worker_source_for(monkeypatch, tmp_path, system):
     return update_job._worker_command_source(old, job)
 
 
-def test_the_windows_worker_preamble_never_reopens_the_job_log_and_posix_is_unchanged(tmp_path, monkeypatch):
+def test_the_worker_preamble_is_the_same_on_every_platform(tmp_path, monkeypatch):
     windows = _worker_source_for(monkeypatch, tmp_path, "win32")
-    assert "open(" not in windows and "sys.stdout" not in windows and "job.log" not in windows
     assert "from astrid.installer.update_job import run_job" in windows
+    assert "_log=open(" in windows and "sys.stdout=sys.stderr=_log" in windows
     for system in ("linux", "darwin"):
-        posix = _worker_source_for(monkeypatch, tmp_path, system)
-        assert "_log=open(" in posix and "sys.stdout=sys.stderr=_log" in posix
+        assert _worker_source_for(monkeypatch, tmp_path, system) == windows
 
 
-@pytest.mark.windows_native
-def test_the_wrapper_and_the_worker_share_one_job_log_without_a_permission_error(tmp_path, monkeypatch):
-    from astrid.installer import update_job_platform as job_platform
-
+def _windows_worker_file(monkeypatch, tmp_path, first_line=""):
     source = _worker_source_for(monkeypatch, tmp_path, "win32")
     stub = ("import sys,types\n"
             "m=types.ModuleType('astrid.installer.update_job')\n"
-            "m.run_job=lambda root, operation, epoch, nonce: {'ran': True, 'operation': operation}\n"
+            "m.run_job=lambda root, operation, epoch, nonce: print('run-job-output') or {'ran': True}\n"
             "for name in ('astrid', 'astrid.installer'):\n"
             "    sys.modules[name]=types.ModuleType(name)\n"
             "sys.modules['astrid.installer.update_job']=m\n")
     worker = tmp_path / "worker.py"
-    worker.write_text(stub + source + "\n", encoding="utf-8")
+    worker.write_text(first_line + stub + source + "\n", encoding="utf-8")
+    return worker
+
+
+@pytest.mark.windows_native
+def test_the_worker_owns_the_job_log_and_the_wrapper_never_writes_it(tmp_path, monkeypatch):
+    from astrid.installer import update_job_platform as job_platform
+
+    worker = _windows_worker_file(monkeypatch, tmp_path)
     log = tmp_path / "job.log"
     script = job_platform._worker_script([sys.executable, "-B", str(worker)], log)
     completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                                capture_output=True, text=True, timeout=120)
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    text = log.read_text(encoding="utf-8", errors="replace")
-    assert "PermissionError" not in text
-    assert '"ran": true' in text
+    job_text = log.read_text(encoding="utf-8", errors="replace")
+    assert "run-job-output" in job_text and '"ran": true' in job_text
+    assert "PermissionError" not in job_text
+    wrapper = log.with_name("job.wrapper.log")
+    assert "PermissionError" not in (wrapper.read_text(encoding="utf-8", errors="replace") if wrapper.exists() else "")
+
+
+@pytest.mark.windows_native
+def test_a_startup_traceback_lands_in_the_wrapper_log_and_the_wrapper_exits_one(tmp_path, monkeypatch):
+    from astrid.installer import update_job_platform as job_platform
+
+    worker = _windows_worker_file(monkeypatch, tmp_path, first_line="raise RuntimeError('startup boom')\n")
+    log = tmp_path / "job.log"
+    script = job_platform._worker_script([sys.executable, "-B", str(worker)], log)
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 1
+    wrapper = log.with_name("job.wrapper.log").read_text(encoding="utf-8", errors="replace")
+    assert "startup boom" in wrapper
+    assert not log.exists()
