@@ -77,7 +77,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
-    "update-transaction-status.json", "runtime-data-runtime.log", "macos-file-listing.txt",
+    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-real-home-runtime.log", "macos-file-listing.txt",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -767,6 +767,16 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                     (evidence / "runtime-data-runtime.log").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
             except Exception as exc:
                 print(f"Journey Runtime data log capture ({phase}) failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        # A launchd-run Runtime writes under the account's real home, which the harness HOME does not reach.
+        real = _account_home() / "Library" / "Logs" / "Astrid Runtime" / "runtime.log"
+        if _regular_file_info(real) is not None:
+            try:
+                with real.open("rb") as stream:
+                    stream.seek(max(0, real.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / "runtime-real-home-runtime.log").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except Exception as exc:
+                print(f"Journey real-home Runtime log capture ({phase}) failed: "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
