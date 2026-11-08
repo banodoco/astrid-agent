@@ -657,9 +657,14 @@ def verified_release9_source(app: Path, output: Path) -> tuple[Path, Path, dict]
 
 
 def bootstrap_release9(source: Path, manifest: Path, shell: str, evidence: Path,
-                       root: Path, data: Path) -> None:
-    """Install the exported Release 9 with the plain install command, no --update."""
-    journey.bootstrap(source, manifest, shell, "install", evidence, root, data)
+                       root: Path, data: Path, agent: Path | None = None) -> None:
+    """Install the exported Release 9 with the plain install command, no --update.
+
+    ``agent`` is the checkout whose history holds the pinned Release 9 Agent. Without it
+    the consent probe cannot read that Agent's CLI, so a fresh install that needs setup
+    consent would stop with no terminal (exit 2).
+    """
+    journey.bootstrap(source, manifest, shell, "install", evidence, root, data, agent=agent)
 
 
 def candidate_release(manifest: dict) -> int:
@@ -712,7 +717,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["sentinel"]["before_lifecycle"] = before_sentinel
         if not before_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
-        bootstrap_release9(source, release9_manifest, args.shell, evidence / "release9", root, data)
+        bootstrap_release9(source, release9_manifest, args.shell, evidence / "release9", root, data,
+                           agent=args.agent_checkout)
         start_direct_runtime(evidence / "release9")
         journey.wait_ready(selected_data_root(root, data))
         old_path, old_data, old = journey.installation(root, data)
