@@ -561,7 +561,12 @@ jobs:
           trap diagnose EXIT
 
           probe_isolated_unit() {
-            # Prove discovery from the exact future installation directory, not merely the bus.
+            # Prove discovery from the exact future installation directory, not merely the bus: the
+            # manager's own XDG_CONFIG_HOME/systemd/user must be the directory the installer writes to.
+            manager_config=$(timeout 10s systemctl --user show-environment | sed -n 's/^XDG_CONFIG_HOME=//p')
+            if [[ "$manager_config/systemd/user" != "$probe_dir" ]]; then
+              echo "::error::Manager XDG_CONFIG_HOME/systemd/user is '$manager_config/systemd/user', not the probe directory $probe_dir"; exit 1
+            fi
             mkdir -p "$probe_dir"
             probe_created=1
             printf '[Unit]\nDescription=Journey unit search path probe\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n' > "$probe_dir/$probe"
@@ -607,6 +612,21 @@ jobs:
           for attempt in {1..20}; do
             if timeout 3s systemctl --user show-environment >/dev/null; then break; fi
             sleep 1
+          done
+          # The drop-in sets the manager process's own environment, which decides where it looks for
+          # units. Units are started with the manager's activation environment, which is separate, so
+          # give it the install's XDG variables too and fail loudly unless it reports exactly them.
+          timeout 10s systemctl --user set-environment "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"
+          activation=$(timeout 10s systemctl --user show-environment)
+          for expected in "XDG_CONFIG_HOME=$config" "XDG_DATA_HOME=$data"; do
+            name=${expected%%=*}
+            actual=$(printf '%s\n' "$activation" | sed -n "s/^$name=//p")
+            if [[ -z "$actual" ]]; then
+              echo "::error::The user manager's environment has no $name (expected ${expected#*=})"; exit 1
+            fi
+            if [[ "$actual" != "${expected#*=}" ]]; then
+              echo "::error::The user manager's $name is $actual, not ${expected#*=}"; exit 1
+            fi
           done
           probe_isolated_unit
           printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
@@ -798,6 +818,12 @@ jobs:
             if ($refusalExit -ne 0) { exit $refusalExit }
           }
           if ($freshExit -ne 0) { exit $freshExit }
+      - name: Make sure the hosted-update intercept left no trace on the runner
+        # The update leg maps astrid.haus to a local HTTPS stand-in with a CA only this runner trusts.
+        # The driver removes both in a finally block; this repeats the removal if the driver was killed.
+        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh') }}
+        timeout-minutes: 5
+        run: python agent/scripts/journey_hosted_update.py revert
       - name: Run the Pinokio launcher row driver
         if: ${{ startsWith(matrix.job_id, 'pinokio-') }}
         shell: bash
@@ -852,6 +878,8 @@ jobs:
             'windows-update-SHA256SUMS', 'windows-update-scheduler-events.json', 'windows-update-process-capture.json', 'windows-update-stop-task-state.json', 'update-task-labels.log', 'update-task-state.log', 'update-service-labels.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
+            'update-job-journal.log', 'update-job-record.json', 'update-transaction.json',
+            'update-transaction-status.json', 'runtime-data-runtime.log', 'runtime-real-home-runtime.log', 'macos-file-listing.txt',
             'scheduled-task-before.xml', 'scheduled-task-after.xml',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
             'runtime-owner-workspace.json',
