@@ -150,7 +150,27 @@ def test_update_job_availability_action_preserves_get_reason(monkeypatch):
     update_job.main()
 
     assert json.loads(stdout.getvalue()) == {
-        "available": False, "reason": "unsupported-service-manager"}
+        "available": False, "reason": "unsupported-service-manager",
+        "actions": list(update_job.SUPPORTED_ACTIONS)}
+
+
+@pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
+def test_availability_action_lists_supported_actions_on_every_os(monkeypatch, system):
+    availability = update_job.update_job_availability
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: availability(system=system))
+    monkeypatch.setattr(update_job.subprocess, "run", Mock(side_effect=[
+        CompletedProcess([], 0, "systemd 255 (255.4)\n", ""),
+        CompletedProcess([], 0, "", ""),
+    ]))
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
+    stdout = io.StringIO()
+    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
+
+    update_job.main()
+
+    reply = json.loads(stdout.getvalue())
+    assert reply["available"] is True
+    assert {"availability", "prepare", "accept", "launch"} <= set(reply["actions"])
 
 
 @pytest.mark.parametrize("probe_results", [
@@ -947,3 +967,8 @@ def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkey
             probe()
     assert calls == [(payload, "instance")]
     assert path.read_bytes() == before
+
+
+def test_supported_actions_cover_every_action_runtime_sends():
+    # Runtime's request path: availability, reconcile, prepare (no action key), accept, launch.
+    assert {"availability", "reconcile", "prepare", "accept", "launch"} <= set(update_job.SUPPORTED_ACTIONS)

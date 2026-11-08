@@ -57,6 +57,12 @@ MINIMUM_SYSTEMD_VERSION = 254
 UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
 
 
+# Actions this helper answers. Runtime reads them from the availability reply to
+# decide whether in-app update exists at all; helpers that predate the list
+# cannot be asked and read as unsupported.
+SUPPORTED_ACTIONS = ("availability", "reconcile", "prepare", "accept", "fail", "launch")
+
+
 def update_job_availability(*, system: str | None = None) -> dict:
     """Return whether the selected OS can safely run an update job."""
     actual = sys.platform if system is None else system
@@ -2083,7 +2089,7 @@ def main():
     # Runtime's prepare request carries no action key; only its absence means prepare.
     action = value["action"] if "action" in value else "prepare"
     if action == "availability":
-        print(json.dumps(update_job_availability()))
+        print(json.dumps({**update_job_availability(), "actions": list(SUPPORTED_ACTIONS)}))
     elif action == "reconcile":
         try:
             print(json.dumps(reconcile(value)))
