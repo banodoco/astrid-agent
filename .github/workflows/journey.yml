@@ -798,6 +798,12 @@ jobs:
             if ($refusalExit -ne 0) { exit $refusalExit }
           }
           if ($freshExit -ne 0) { exit $freshExit }
+      - name: Make sure the hosted-update intercept left no trace on the runner
+        # The update leg maps astrid.haus to a local HTTPS stand-in with a CA only this runner trusts.
+        # The driver removes both in a finally block; this repeats the removal if the driver was killed.
+        if: ${{ always() && (matrix.job_id == 'direct-windows' || matrix.job_id == 'direct-linux-fresh' || matrix.job_id == 'direct-macos-fresh') }}
+        timeout-minutes: 5
+        run: python agent/scripts/journey_hosted_update.py revert
       - name: Run the Pinokio launcher row driver
         if: ${{ startsWith(matrix.job_id, 'pinokio-') }}
         shell: bash

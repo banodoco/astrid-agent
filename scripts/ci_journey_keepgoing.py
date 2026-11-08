@@ -235,8 +235,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         def fresh_admission():
             app = args.app_checkout.resolve(strict=True)
             path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
-            if gate.validate_tuple(journey.read_json(args.candidate), app, path) != manifest or manifest.get("release") != 1:
-                raise RuntimeError("fresh-install requires a frozen release-1 manifest")
+            if gate.validate_tuple(journey.read_json(args.candidate), app, path) != manifest:
+                raise RuntimeError("fresh-install requires the frozen candidate manifest")
+            release = manifest.get("release")
+            if type(release) is not int or release < 0:
+                raise RuntimeError("fresh-install requires a frozen manifest with an integer release")
             if (root / "current").exists():
                 raise RuntimeError("fresh-install requires an uninstalled machine")
             if not journey.sentinel_observation(sentinel, birth)["alive"]:
@@ -256,8 +259,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             state["started1"] = True
         def fresh_select():
             path, selected_data, version = journey.installation(root, data)
-            if selected_data != data or jumps.installed_release(version) != 1:
-                raise RuntimeError("Fresh install did not select release 1 and the requested data root")
+            if selected_data != data or jumps.installed_release(version) != state["manifest"]["release"]:
+                raise RuntimeError("Fresh install did not select the candidate release and the requested data root")
             journey.selected_tuple(state["manifest"], version)
             journey.assert_direct_service_ownership(root, data)
             state.update(version=version, version_path=path)
