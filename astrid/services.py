@@ -83,7 +83,7 @@ def prepare_pack_host_shutdown(*, support_root: Path, source_checkout: Path,
                     verify_exit()
                     # Keep registration custody until exit is positively
                     # observed, then let its existing owner remove markers.
-                    hosts._retire_host_locked(state)
+                    hosts._retire_host_locked(state, support_root)
 
     return stop
 
