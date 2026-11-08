@@ -81,7 +81,7 @@ def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatc
 
 def test_journey_packs_install_from_the_pinned_source_through_packs_add():
     assert journey.JOURNEY_PACKS == {"chiptune": (
-        "https://github.com/banodoco/poms_packs", "ebe8d7e073746c493e460ef4e9a781f5232e037e")}
+        "https://github.com/banodoco/poms_packs", "2379ab54aca522019ff4f869cfdf9375bdb56dfc")}
     calls = []
 
     def run_cli(argv, name):
@@ -92,7 +92,7 @@ def test_journey_packs_install_from_the_pinned_source_through_packs_add():
     assert calls == [
         ["packs", "list", "--json"],
         ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
-         "ebe8d7e073746c493e460ef4e9a781f5232e037e", "--pack-id", "chiptune",
+         "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
          "--subpath", "chiptune", "--yes"],
     ]
     calls.clear()

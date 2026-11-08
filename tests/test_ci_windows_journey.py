@@ -251,7 +251,7 @@ def stub_installed_profile_binding(monkeypatch):
 
 def test_journey_installs_chiptune_from_the_pinned_source_before_the_task(monkeypatch):
     assert shared_journey.JOURNEY_PACKS == {"chiptune": (
-        "https://github.com/banodoco/poms_packs", "ebe8d7e073746c493e460ef4e9a781f5232e037e")}
+        "https://github.com/banodoco/poms_packs", "2379ab54aca522019ff4f869cfdf9375bdb56dfc")}
     calls = []
 
     def cli(module, argv, name, **kwargs):
@@ -261,7 +261,7 @@ def test_journey_installs_chiptune_from_the_pinned_source_before_the_task(monkey
     monkeypatch.setattr(journey, "cli", cli)
     journey.install_journey_packs()
     assert calls[-1] == ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
-                         "ebe8d7e073746c493e460ef4e9a781f5232e037e", "--pack-id", "chiptune",
+                         "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
                          "--subpath", "chiptune", "--yes"]
 
 

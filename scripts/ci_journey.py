@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HEALTH_URL = windows.HEALTH_URL
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 # Packs the journeys need that no longer ship in the Agent: name -> (source, pinned commit).
-JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "ebe8d7e073746c493e460ef4e9a781f5232e037e")}
+JOURNEY_PACKS = {"chiptune": ("https://github.com/banodoco/poms_packs", "2379ab54aca522019ff4f869cfdf9375bdb56dfc")}
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
