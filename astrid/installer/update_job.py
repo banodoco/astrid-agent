@@ -1734,6 +1734,20 @@ def _worker_claimed(job: dict) -> bool:
             or attempt.get("phase") == "claimed" or attempt.get("claim") is not None)
 
 
+def _decode_worker_log(head: bytes, raw: bytes, odd_start: bool) -> str:
+    """Decode the job log tail: UTF-16LE when PowerShell wrote it, else UTF-8.
+
+    Windows PowerShell 5.1 ``*>>`` writes UTF-16LE with a byte-order mark;
+    the Python worker writes UTF-8. A NUL-dense tail without a mark is read
+    as UTF-16LE too.
+    """
+    if head.startswith(b"\xff\xfe") or (raw and raw.count(b"\x00") * 3 >= len(raw)):
+        if odd_start:
+            raw = raw[1:]
+        return raw[: len(raw) - len(raw) % 2].decode("utf-16-le", errors="replace").lstrip("\ufeff")
+    return raw.decode("utf-8", errors="replace")
+
+
 def _worker_log_tail(job: dict) -> str | None:
     """Return the last lines of the job's own private log, bounded, or None."""
     try:
@@ -1743,15 +1757,40 @@ def _worker_log_tail(job: dict) -> str | None:
                 or log.is_symlink() or not log.is_file()):
             return None
         with log.open("rb") as stream:
-            stream.seek(max(0, log.stat().st_size - 8192))
+            head = stream.read(2)
+            start = max(0, log.stat().st_size - 8192)
+            stream.seek(start)
             raw = stream.read(8192)
     except (OSError, ValueError, TypeError):
         return None
-    text = raw.decode("utf-8", errors="replace")
+    text = _decode_worker_log(head, raw, start % 2 == 1)
     lines = ["".join(" " if ord(char) < 32 or 127 <= ord(char) <= 159 else char for char in line).rstrip()
              for line in text.splitlines()]
     tail = "\n".join(line for line in lines if line.strip())[-MAX_WORKER_LOG_TAIL:]
     return tail or None
+
+
+_ERROR_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)\b")
+
+
+def _worker_error_line(tail: str | None) -> str:
+    """The tail's last exception line, unwrapped from a fixed console width, else its last line."""
+    lines = [line for line in (tail or "").splitlines() if line.strip()]
+    if not lines:
+        return "none"
+    width = max(len(line) for line in lines)
+    wrapped = width >= 60 and sum(len(line) == width for line in lines) >= 3
+    joined: list[str] = []
+    for line in lines:
+        if wrapped and joined and len(joined[-1][1]) == width:
+            joined[-1] = (joined[-1][0] + line, line)
+        else:
+            joined.append((line, line))
+    logical = [text.strip() for text, _last in joined]
+    for line in reversed(logical):
+        if _ERROR_LINE.match(line):
+            return line
+    return logical[-1]
 
 
 def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
@@ -1788,10 +1827,9 @@ def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
         return _write_job(root, job["operation_id"], state="failed",
                           message="Failed: the registered update job became inactive without a result.",
                           fields=recorded)
-    last_line = tail.splitlines()[-1].strip() if tail else "none"
     return _write_job(root, job["operation_id"], state="failed",
                       message=(f"Failed: the update worker exited with code {exit_code} before it started; "
-                               f"Astrid was not changed. Last log line: {last_line}"),
+                               f"Astrid is unchanged. {_worker_error_line(tail)}"),
                       fields=recorded)
 
 

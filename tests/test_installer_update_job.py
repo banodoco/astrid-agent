@@ -1257,3 +1257,35 @@ def test_sweep_of_an_inactive_claimed_job_is_recovery_needed(tmp_path, monkeypat
     adapter.finished = _finished(1)  # now inactive
     swept = update_job.sweep_owned_jobs(root)
     assert swept[0]["state"] == "recovery-needed"
+
+
+_CAPTURED_WORKER_LOG = (Path(__file__).parent / "fixtures" / "installer"
+                        / "windows-update-job-run-42498677457.log")
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-8"], ids=["as-powershell-wrote-it", "decoded"])
+def test_captured_windows_worker_death_is_failed_with_its_error(tmp_path, monkeypatch, encoding):
+    # Run 42498677457: the worker raised on its first line, before any claim, and the task ended with 1.
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    text = _CAPTURED_WORKER_LOG.read_text(encoding="utf-8")
+    Path(launched["log_path"]).write_bytes(text.encode(encoding))  # utf-16: little-endian with a mark
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed"
+    assert settled["worker_exit_code"] == 1
+    assert settled["message"].startswith(
+        "Failed: the update worker exited with code 1 before it started; Astrid is unchanged. "
+        "PermissionError: [Errno 13] Permission denied: ")
+    tail = settled["worker_log_tail"]
+    assert "\x00" not in tail and "PermissionError: [Errno 13] Permission denied" in tail
+    assert tail.splitlines()[-1] == "ogs\\\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'"
+    # The console-wrapped error is rejoined for the message.
+    assert update_job._worker_error_line(tail) == (
+        "PermissionError: [Errno 13] Permission denied: 'D:\\\\a\\\\_temp\\\\astrid-r1-direct-windows"
+        "\\\\program\\\\logs\\\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'")
+
+
+def test_utf16_tail_starting_at_an_odd_offset_decodes():
+    raw = ("x" * 10 + "ValueError: boom\r\n").encode("utf-16-le")
+    # The 8 KiB window can begin mid code unit; the stray byte is dropped.
+    assert update_job._decode_worker_log(b"\xff\xfe", raw[1:], True) == "x" * 9 + "ValueError: boom\r\n"
+    assert update_job._decode_worker_log(b"ab", b"plain utf-8 \xe2\x9c\x93", False) == "plain utf-8 \u2713"
