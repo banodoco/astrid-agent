@@ -81,6 +81,18 @@ def real_class(name: str, extra: dict | None = None) -> dict:
             "category": row.get("category", ""), "output_node": bool(row.get("output_node") or name in SAVE_KEYS)}
 
 
+def pin_object_info() -> dict:
+    """The h3 closure plus the CLIPLoader overlay captured at the pod's pinned ComfyUI (ee71d5c4).
+
+    The snapshot cache's CLIPLoader predates the pin, so its type enum lacks 'minimax' (music) and
+    'yue2'. The overlay fixture is the pin's own schema for that one class.
+    """
+    root = Path(__file__).resolve().parents[1] / "fixtures/h3_cpu"
+    closure = json.loads((root / "object_info_h3_runpod_graph_closure.json").read_text())
+    overlay = json.loads((root / "object_info_h3_runpod_overlay.json").read_text())
+    return {**closure, **overlay}
+
+
 def receipt_files(receipt: dict) -> list[str]:
     return [row["path"] for row in receipt["models"]]
 
