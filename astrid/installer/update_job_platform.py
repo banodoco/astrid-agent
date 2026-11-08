@@ -187,9 +187,19 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def windows_powershell_path() -> str:
+    """Absolute Windows PowerShell 5.1 path.
+
+    The Runtime service PATH ends at System32, and powershell.exe lives in
+    System32\\WindowsPowerShell\\v1.0, so the bare name cannot be started.
+    """
+    root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return str(root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
 def _encoded_ps(script: str) -> list[str]:
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    return [windows_powershell_path(), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
 
 
 def _write_private(path: Path, content: bytes) -> None:

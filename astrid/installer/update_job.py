@@ -383,7 +383,7 @@ def _validate_existing_windows_worker(old: Version, job: dict) -> None:
 def _bootstrap_command(bootstrap: Path, args: list[str], *, system: str | None = None) -> list[str]:
     system = system or sys.platform
     if system == "win32":
-        return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        return [_platform_api().windows_powershell_path(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", str(bootstrap), *args]
     return ["/bin/sh", str(bootstrap), *args]
 

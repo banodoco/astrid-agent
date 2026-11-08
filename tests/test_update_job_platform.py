@@ -219,6 +219,23 @@ def test_windows_uses_current_sid_on_demand_and_safely_encoded_arguments(tmp_pat
     assert "-EncodedCommand" in calls[1]
 
 
+def test_windows_powershell_is_absolute_without_stubbing_sid(tmp_path, monkeypatch):
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "winroot"))
+    expected = str(tmp_path / "winroot" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    assert Path(platform._encoded_ps("1")[0]).is_absolute()
+    assert platform._encoded_ps("1")[0] == expected
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return completed(args, stdout="S-1-5-21-12345\n")
+
+    # _windows_sid is deliberately real; only the process boundary is faked.
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert platform._windows_sid() == "S-1-5-21-12345"
+    assert calls[0][0] == expected and Path(calls[0][0]).is_absolute()
+
+
 def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp_path, monkeypatch):
     monkeypatch.setattr(update_job, "sys", SimpleNamespace(platform="win32"))
     operation = "abcdef0123456789abcdef0123456789"

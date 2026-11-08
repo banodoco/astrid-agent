@@ -288,11 +288,14 @@ def test_windows_handoff_copies_same_private_bytes_to_ps1_and_preserves_cli_sele
     script = update_job._windows_bootstrap_script(original, job["operation_id"])
     args = ["--manifest", original["manifest_path"], "--root", job["program_root"],
             "--data-root", job["data_root"], "--update-job", job["operation_id"]]
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "winroot"))
     command = update_job._bootstrap_command(script, args, system="win32")
     assert script.suffix == ".ps1"
     assert script.read_bytes() == selected_bytes
     assert platform.is_owner_only(script)
-    assert command == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    assert Path(command[0]).is_absolute()
+    assert command[0] == str(tmp_path / "winroot" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    assert command[1:] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                        "-File", str(script), *args]
     assert job["metadata"] == original
     script.unlink()
