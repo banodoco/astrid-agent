@@ -283,6 +283,19 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+
+def engine_process_env(base, root):
+    """The engine's one process env: bytecode goes under the engine's own prefix tree.
+
+    PYTHONPYCACHEPREFIX keeps Python from writing or rewriting __pycache__ beside the
+    pinned sources (a committed .pyc would otherwise show as modified and fail the
+    final revalidation). Every engine process inherits this base env.
+    """
+    env = dict(base)
+    env["PYTHONPYCACHEPREFIX"] = str(root).rstrip("/") + "/.astrid-engine/pycache"
+    return env
+
+
 class _Runner:
     def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
                  model_cache_device=None, model_cache_mount_id=None):
@@ -313,7 +326,7 @@ class _Runner:
             raise UnsafePathError("model cache requires both device and mount ID")
         self.models_lock = recipes.load_model_lock(self.recipe.models_lock)
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
-        self.env = dict(adapter.environment(self.recipe, plan.root))
+        self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
         self.step_id = None
         self.locks, self.commits, self.models, self.steps = {}, {}, [], []
         self.health = None

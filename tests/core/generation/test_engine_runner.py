@@ -2347,7 +2347,7 @@ def test_environment_command_env_applies_only_to_its_indexed_bootstrap_command(s
         return original(request)
     context.run = recording
     assert runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline).status == "installed"
-    base = adapter.environment(context.recipe, ROOT)
+    base = runner.engine_process_env(adapter.environment(context.recipe, ROOT), ROOT)
     assert seen == [("pip", {**base, "DEB_PYTHON_INSTALL_LAYOUT": "deb"}), ("venv", base)]
 
 
