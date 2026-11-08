@@ -1245,7 +1245,12 @@ def test_external_selection_fails_closed_for_update_and_rollback(
         roots = [external_a, external_b]
     else:
         if failure == "incompatible_api":
-            manifest_path.write_text(manifest("extdep").replace('pack_api: "1.0"', 'pack_api: "2.0"'),
+            # manifest() renders the current PACK_API_VERSION, so bump its major
+            # version to guarantee an incompatible API rather than matching a literal.
+            current_api = f'pack_api: "{PACK_API_VERSION[0]}.{PACK_API_VERSION[1]}"'
+            incompatible_api = f'pack_api: "{PACK_API_VERSION[0] + 1}.0"'
+            assert current_api in manifest("extdep")
+            manifest_path.write_text(manifest("extdep").replace(current_api, incompatible_api),
                                      encoding="utf-8")
         elif failure == "incompatible_requirement":
             manifest_path.write_text(manifest("extdep", python_requirements=("missing-r9-package>=99",)),
