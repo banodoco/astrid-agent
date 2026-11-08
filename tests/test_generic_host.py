@@ -5133,8 +5133,14 @@ def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monke
     assert refresh_pending(packs_root=personal)
 
 
-def test_frozen_profile_without_the_personal_root_still_discovers_it(tmp_path, monkeypatch):
-    """Cold start: the host resolves the personal root itself; a pre-install frozen profile cannot hide it."""
+@pytest.mark.parametrize("derived_grant", [True, False], ids=["with-derived-grant", "without-derived-grant"])
+def test_personal_pack_under_custody_is_admitted_only_with_a_derived_grant(tmp_path, monkeypatch, derived_grant):
+    """A frozen profile never hides the personal root, and personal packs run only under custody.
+
+    With the Runtime's derived installed-pack grant naming the personal root, the frozen host
+    discovers both packs. Without that grant, the personal pack is not a root of this host and
+    is not admitted, while the frozen profile's own pack still is.
+    """
     from astrid.core.execution import generic_host
 
     home = tmp_path / "home"
@@ -5142,10 +5148,12 @@ def test_frozen_profile_without_the_personal_root_still_discovers_it(tmp_path, m
     _write_manifest(personal / "echo", capability_id="personal.echo")
     frozen_root = tmp_path / "frozen"
     _write_manifest(frozen_root / "frozen_echo", capability_id="frozen.echo")
+    launch_roots = [str(frozen_root.resolve())] + ([str(personal.resolve())] if derived_grant else [])
 
     class FrozenCustody:
-        # The retained profile names only its own roots (never the personal collection).
-        _launch_roots = [str(frozen_root.resolve())]
+        # The retained profile names its own root; the Runtime adds the personal root
+        # only when its derived installed-pack grant names it.
+        _launch_roots = launch_roots
 
         def verify(self, **_kwargs):
             return None
@@ -5165,12 +5173,15 @@ def test_frozen_profile_without_the_personal_root_still_discovers_it(tmp_path, m
     monkeypatch.setattr(generic_host, "_runtime_external_sources", FrozenCustody())
 
     host = GenericPackHost(pack_roots=[frozen_root])
-    assert str(personal.resolve()) not in FrozenCustody._launch_roots
-    assert personal.resolve() in host.pack_roots
     host.discover()
 
-    assert {"frozen.echo", "personal.echo"} <= set(host.capabilities)
-
+    assert "frozen.echo" in host.capabilities
+    if derived_grant:
+        assert personal.resolve() in host.pack_roots
+        assert "personal.echo" in host.capabilities
+    else:
+        assert personal.resolve() not in host.pack_roots
+        assert "personal.echo" not in host.capabilities
 
 def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(tmp_path, monkeypatch):
     # The personal collection (~/Astrid/packs) joins a default host (no explicit roots).
