@@ -50,6 +50,10 @@ _action_client_connection: ContextVar[Any] = ContextVar('generation_action_clien
 
 
 @contextmanager
+def _local_template(entry: Any, mode: str) -> str:
+    return getattr(entry.modes[mode].backends.get("local"), "template", "")
+
+
 def _action_client_scope(factory):
     with ExitStack() as stack:
         owner = None
@@ -1084,7 +1088,7 @@ class GenerationFacade:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
         target_policy = _runpod_target_policy(controls, engine=None) if is_remote_target and not dry_run else None
-        runpod_engine = None
+        runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
@@ -1127,7 +1131,7 @@ class GenerationFacade:
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
                           if entry.id not in _EXPLICIT_ONLY_ENTRIES
-                          and mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
+                          and mode in entry.modes and _local_template(entry, mode)]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
@@ -1194,10 +1198,10 @@ class GenerationFacade:
             try:
                 assets = {}
                 if is_remote_target:
-                    template = (None if source == "workflow" else
-                                getattr(candidate.modes[mode].backends.get("local"), "template", None))
+                    template = (None if source == "workflow" else _local_template(candidate, mode))
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
+                    pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
                 if source == "catalog":
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
@@ -1247,7 +1251,8 @@ class GenerationFacade:
                             needs.extend(need for need in candidate.get('needs', [])
                                          if need.get('ambiguity') and need not in needs)
                             candidate = {**candidate, 'needs': needs}
-                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine)
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
+                                                                pending_target=pending_target)
                 from vibecomfy.workflow_bundle import load_bundle
                 if source == "workflow" and not candidate.get("registry_id"):
                     # Re-emit the edited canonical workflow before approval so
@@ -1317,7 +1322,7 @@ class GenerationFacade:
         if source == 'workflow' and candidate.get('license_notice'):
             description['license_notice'] = candidate['license_notice']
         readiness = readiness_envelope(entry=description, target=(
-            {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'} if is_remote_target else target_record),
+            pending_target if is_remote_target else target_record),
                                       issues=compare_versions(recorded, observed))
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})

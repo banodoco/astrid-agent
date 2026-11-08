@@ -753,8 +753,14 @@ def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
 
 
 # RunPod engines in their declared preference order: the lighter recipe first.
-RUNPOD_ENGINES = ("comfyui", "vibecomfy-h3")
 RUNPOD_PLATFORM = "linux-x86_64-cu130"
+
+
+@lru_cache(maxsize=1)
+def runpod_engines() -> tuple[str, ...]:
+    """RunPod engines in engine-index order: the index rows for the RunPod platform."""
+    from astrid.core.generation.engine_recipe import _index_rows
+    return tuple(row["engine"] for row in _index_rows() if row["platform"] == RUNPOD_PLATFORM)
 
 
 def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
@@ -765,9 +771,9 @@ def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     """
     import re
     if entry.get("action"):
-        import importlib
         import yaml
-        pack = Path(importlib.import_module("astrid.packs." + entry["action"].split(".")[0]).__file__).parent
+        from astrid.core.pack.loader import packs_root
+        pack = packs_root() / entry["action"].split(".")[0]
         workflows = [_load_entry_workflow({"bundle": str(pack / yaml.safe_load(
             (pack / ref).read_text(encoding="utf-8"))["workflow"])}) for ref in entry.get("requirements") or ()]
         from vibecomfy.model_assets import _referenced_model_values
@@ -811,17 +817,23 @@ def runpod_engine(entry: Mapping[str, Any] | None) -> str:
     """
     from astrid.core.contracts.errors import AstridError
     if entry is not None:
-        coverage = {engine: _lock_coverage(entry, engine) for engine in RUNPOD_ENGINES}
-        qualified = [engine for engine in RUNPOD_ENGINES if not coverage[engine][0]]
+        engines = runpod_engines()
+        coverage = {engine: _lock_coverage(entry, engine) for engine in engines}
+        qualified = [engine for engine in engines if not coverage[engine][0]]
         if qualified:
-            return max(qualified, key=lambda engine: (coverage[engine][1], -RUNPOD_ENGINES.index(engine)))
+            return max(qualified, key=lambda engine: (coverage[engine][1], -engines.index(engine)))
     identifier = (entry or {}).get("id")
     raise AstridError(f"No RunPod engine lock covers the models of {identifier!r}; nothing was created.",
                       code="runpod_engine_unavailable", field="target",
-                      state_snapshot={"entry": identifier, "engines": list(RUNPOD_ENGINES)})
+                      state_snapshot={"entry": identifier, "engines": list(runpod_engines())})
 
 
-def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None):
+def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {'id': entry.get('id'), 'engine': 'comfyui'}
+
+
+def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
+                  pending_target: Mapping[str, Any] | None = None):
     """Check the selected target's node and exact loader inventory."""
     for need in entry.get("needs", []):
         if need.get("ambiguity"):
@@ -832,8 +844,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
             # No live target: the chosen engine's pinned lock is the inventory.
             from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
             raise GenerationReadinessError(readiness_envelope(
-                entry={'id': entry.get('id'), 'engine': 'comfyui'},
-                target={'engine': engine, 'placement': 'runpod', 'state': 'pending_host_readiness'},
+                entry=_workflow_description(entry),
+                target=dict(pending_target) if pending_target is not None else {'engine': engine},
                 issues=[{'code': 'missing_model', 'severity': 'error',
                          'message': f'{engine} model lock is missing {value!r}',
                          'details': {'engine_code': 'comfyui.models_missing', 'model': value, 'bytes': None}}
@@ -872,7 +884,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
     if issues:
         from .asset_gaps import align_argv
         raise GenerationReadinessError(readiness_envelope(entry={
-            'id': entry.get('id'), 'engine': 'comfyui',
+            **_workflow_description(entry),
             'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
             target=getattr(client, 'generation_target', None), issues=issues,
             fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
