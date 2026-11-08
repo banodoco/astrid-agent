@@ -2004,3 +2004,14 @@ def test_selection_path_follows_the_installer_lock(tmp_path, monkeypatch, system
         assert journey.selection_path() == legacy
         journey.write_json(install_selection(tmp_path / "home", system), {"owner": "haus.astrid.runtime"})
         assert journey.selection_path() == local / "Astrid Installer" / "astrid-install.json"
+
+
+@pytest.mark.parametrize("mode,yes", [("install", True), ("update", False), ("repair", False)])
+def test_bootstrap_accepts_recommended_setup_only_for_a_fresh_install(tmp_path, monkeypatch, mode, yes):
+    flags = journey.bootstrap_flags(tmp_path / "m.json", mode, tmp_path / "p", tmp_path / "d")
+    assert ("--yes" in flags) is yes and ("--update" in flags) is (mode == "update")
+    seen = []
+    monkeypatch.setattr(ci_journey, "run", lambda argv, log, **kw: seen.append(argv))
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    journey.bootstrap(tmp_path, tmp_path / "m.json", "sh", mode, tmp_path, tmp_path / "p", tmp_path / "d")
+    assert ("--yes" in seen[0]) is yes

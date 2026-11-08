@@ -1897,12 +1897,22 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     return output
 
 
-def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
+def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path) -> list[str | Path]:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
         flags.append("--update")
+    elif mode == "install":
+        # A fresh install asks for setup consent and the journey has no terminal, so it
+        # accepts the recommended choices as a person would. Updates and repairs of an
+        # existing install ask nothing and are never given --yes.
+        flags.append("--yes")
+    return flags
+
+
+def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
+              evidence: Path, root: Path, data: Path) -> None:
+    flags = bootstrap_flags(manifest_path, mode, root, data)
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
