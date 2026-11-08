@@ -97,7 +97,8 @@ plan_v1.revised.md
 # Local workspace/tool state
 .DS_Store
 .tmp/
-.claude/
+.claude/*
+!.claude/settings.json
 .desloppify/
 .megaplan/
 .megaplan-agentic/
