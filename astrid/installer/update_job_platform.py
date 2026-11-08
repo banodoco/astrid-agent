@@ -205,22 +205,31 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
 def _worker_script(command: list[str], log: object) -> str:
     """The Scheduled Task's worker wrapper. Its own statements stop on error; the worker's output is kept whole.
 
-    Under a stopping preference, the worker's first stderr line (a traceback's opening line) ends the wrapper and the
-    rest is lost. So only the call runs with errors continuing, its stdout and stderr both go to the job log, and
-    the worker's own exit code is the wrapper's. A missing exit code is a failure.
+    One writer per file. The wrapper owns only its own wrapper log, next to the job log. The worker owns the job
+    log on every platform. Under a stopping preference, the worker's first stderr line ends the wrapper, so only the
+    call runs with errors continuing; its whole output (including a startup traceback, before the worker takes over
+    the job log) goes to the wrapper log, and the worker's own exit code is the wrapper's. A missing exit code is a
+    failure.
     """
+    wrapper_log = wrapper_log_path(log)
     return ("$ErrorActionPreference = 'Stop'\n"
             f"$exe = {_ps_quote(command[0])}\n"
             f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-            f"$log = {_ps_quote(str(log))}\n"
+            f"$wrapperLog = {_ps_quote(str(wrapper_log))}\n"
             "try {\n"
             "  $ErrorActionPreference = 'Continue'\n"
-            "  & $exe @workerArgs *>> $log\n"
+            "  & $exe @workerArgs *>> $wrapperLog\n"
             "  $code = $LASTEXITCODE\n"
             "  $ErrorActionPreference = 'Stop'\n"
             "  if ($null -eq $code) { $code = 1 }\n"
             "  exit $code\n"
-            "} catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+            "} catch { $_ | Out-String | Add-Content -LiteralPath $wrapperLog; exit 1 }\n")
+
+
+def wrapper_log_path(log: object) -> Path:
+    """The wrapper's own log, beside the job log: astrid-update-<op>.wrapper.log."""
+    job_log = Path(str(log))
+    return job_log.with_name(job_log.stem + ".wrapper.log")
 
 
 def _ps_quote(value: str) -> str:
