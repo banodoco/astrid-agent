@@ -394,8 +394,9 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
     assert "O''Brien with spaces 雪" not in wrapper
     assert str(program_root) not in wrapper
 
-    result = subprocess.run(command, check=True, capture_output=True, text=True)
-    assert result.stdout == ""
+    # The Windows wrapper owns the job log: it sends the worker's output into it, and the worker does not open it.
+    with log.open("w", encoding="utf-8") as stream:
+        subprocess.run(command, check=True, stdout=stream, stderr=subprocess.STDOUT, text=True)
     output = json.loads(log.read_text(encoding="utf-8").strip())
     assert output == {"root": str(program_root), "operation": operation,
                       "env": "O'Brien with spaces 雪"}
