@@ -205,10 +205,10 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - api.runpod.io:443
-        - rest.runpod.io:443
-        - graphql.runpod.io:443
-        - runpod.io:443
+        - https://api.runpod.io:443
+        - https://rest.runpod.io:443
+        - https://graphql.runpod.io:443
+        - https://runpod.io:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -358,10 +358,10 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - api.runpod.io:443
-        - rest.runpod.io:443
-        - graphql.runpod.io:443
-        - runpod.io:443
+        - https://api.runpod.io:443
+        - https://rest.runpod.io:443
+        - https://graphql.runpod.io:443
+        - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh
         dynamic_tcp_inputs:
         - pod_handle
@@ -486,10 +486,10 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - api.runpod.io:443
-        - rest.runpod.io:443
-        - graphql.runpod.io:443
-        - runpod.io:443
+        - https://api.runpod.io:443
+        - https://rest.runpod.io:443
+        - https://graphql.runpod.io:443
+        - https://runpod.io:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -591,10 +591,10 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - api.runpod.io:443
-        - rest.runpod.io:443
-        - graphql.runpod.io:443
-        - runpod.io:443
+        - https://api.runpod.io:443
+        - https://rest.runpod.io:443
+        - https://graphql.runpod.io:443
+        - https://runpod.io:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -825,10 +825,10 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - api.runpod.io:443
-        - rest.runpod.io:443
-        - graphql.runpod.io:443
-        - runpod.io:443
+        - https://api.runpod.io:443
+        - https://rest.runpod.io:443
+        - https://graphql.runpod.io:443
+        - https://runpod.io:443
         dynamic_route_resolver: runpod_pod_handle_ssh
         dynamic_tcp_inputs:
         - pod_handle

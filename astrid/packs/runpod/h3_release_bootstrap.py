@@ -24,6 +24,7 @@ _SOURCES = (
     "version.py",
     "core/__init__.py",
     "core/generation/__init__.py",
+    "core/generation/_engine_python_bootstrap.py",
     "core/generation/engine_contracts.py",
     "core/generation/model_downloader.py",
     "personal_packs_root.py",

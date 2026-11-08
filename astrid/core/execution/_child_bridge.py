@@ -641,6 +641,11 @@ class HostChildBridge:
             raise ChildBridgeError("child bridge requires a declared action")
         _, admission = self.host.admit("executor", record.id)
         _verify_admitted_source(admission)
+        # Fail closed: an admission without its observed source digest cannot be
+        # bound to the child spec, so the child is refused before any launch.
+        child_source_digest = admission.get("source_digest") if isinstance(admission, Mapping) else None
+        if not isinstance(child_source_digest, str) or not child_source_digest:
+            raise ChildBridgeError("child admission carries no source digest; refusing before launch")
         if child not in self.policy.get("capabilities", []):
             raise ChildBridgeError("child capability outside policy")
         _validate_required_inputs(record.id, record.definition.inputs, inputs,
@@ -873,7 +878,7 @@ class HostChildBridge:
             derived_inputs=refs, **({"stage": request["stage"], "input_refs": stage_refs, "generation_intent": intent,
                 "stage_execution_request": next(item for item in self.policy["stages"]
                     if item["name"] == request["stage"]).get("execution_request")} if staged else {}),
-            **admission_extras, **self.context, admitted_source_digest=(admission.get("source_digest") or None) if isinstance(admission, Mapping) else None,
+            **admission_extras, **self.context, admitted_source_digest=child_source_digest,
             **({"execution_request": execution_request} if execution_request is not None else {}))
         task = task_resource(admitted)
         self._assert_lineage(task)
