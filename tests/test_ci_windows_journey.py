@@ -311,6 +311,36 @@ def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkey
     assert manifest["tools"] == {"python": {"version": "3.11.13"}}
 
 
+def test_install_gives_the_unattended_installer_consent_to_the_recommended_plan(tmp_path, monkeypatch):
+    # A fresh noninteractive install stops for consent unless --yes is passed.
+    app = tmp_path / "journey-app"
+    (app / "public").mkdir(parents=True)
+    (app / "public" / "install-manifest.json").write_text(json.dumps({
+        "schema_version": 1, "agent": {"sha": "a" * 40},
+        "runtime": {"sha": "b" * 40, "schema_digest": "released-schema"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(journey, "ROOT", tmp_path)
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey, "source", lambda repo: {"sha": "c" * 40, "repo": str(repo)})
+
+    class Stop(Exception):
+        pass
+
+    seen = {}
+
+    def fake_run(argv, name, *, env=None, timeout=300, show=True):
+        seen["argv"] = [str(arg) for arg in argv]
+        seen["name"] = name
+        raise Stop
+
+    monkeypatch.setattr(journey, "run", fake_run)
+    with pytest.raises(Stop):
+        journey.install("pwsh.exe")
+    assert seen["name"] == "bootstrap.log"
+    assert seen["argv"][0] == "pwsh.exe"
+    assert seen["argv"][-1] == "--yes"
+
+
 def process(pid, ppid, created, exe="", command=""):
     return {"pid": pid, "ppid": ppid, "created": created, "exe": exe, "command": command}
 
