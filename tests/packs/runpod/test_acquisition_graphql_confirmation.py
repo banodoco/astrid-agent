@@ -151,3 +151,32 @@ def test_missing_graphql_machine_fails_acquisition_and_the_release_path_is_reach
     record = c.read()
     assert c.deletes == ["pod-1"], record.get("cleanup_failure_type")
     assert record["state"] == "cleanup_complete"
+
+
+def test_cancelled_readiness_poll_exits_within_seconds_not_the_full_timeout(provider, monkeypatch):
+    # Machine never reported; the poll interval is long and the readiness timeout is far away.
+    # A cancel (the owner's cancellation signal) must stop the poll within one interval, not wait out the timeout.
+    import threading
+    import time
+
+    monkeypatch.setattr(preparation, "_MACHINE_POLL_SECONDS", 60.0)
+    provider["pod"] = {"data": {"pod": {"machine": None}}}
+    cancel = threading.Event()
+    outcome = {}
+
+    def poll():
+        try:
+            preparation.confirm_acquired_machine("fake", _contract(), timeout_seconds=600, cancel=cancel)
+        except BaseException as exc:  # noqa: BLE001 - recorded and asserted below
+            outcome["exc"] = exc
+
+    worker = threading.Thread(target=poll, daemon=True)
+    worker.start()
+    time.sleep(0.2)  # let the first GraphQL poll complete and the loop reach its wait
+    started = time.monotonic()
+    cancel.set()
+    worker.join(timeout=5)
+    elapsed = time.monotonic() - started
+    assert not worker.is_alive(), "readiness poll ignored cancel for the full poll interval"
+    assert elapsed < 5
+    assert isinstance(outcome.get("exc"), TargetObservationError)
