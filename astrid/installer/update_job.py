@@ -1366,9 +1366,13 @@ def _worker_command_source(old: Version, job: dict) -> str:
             path = absolute(value)
             if path.is_dir():
                 source_paths.append(str(path))
+    # On Windows the wrapper already owns the job log and redirects this process's output into it. Reopening the
+    # log here fails with a sharing violation, so the Windows preamble must not touch the log or the streams.
+    redirect = "" if sys.platform == "win32" else (
+        f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; ")
     return (
         "import os,sys; "
-        f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "
+        f"{redirect}"
         f"sys.path[:0]={source_paths!r}; "
         f"os.environ.update({old.env!r}); "
         "from astrid.installer.update_job import run_job; "

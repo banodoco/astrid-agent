@@ -993,3 +993,44 @@ def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkey
 def test_supported_actions_cover_every_action_runtime_sends():
     # Runtime's request path: availability, reconcile, prepare (no action key), accept, launch.
     assert {"availability", "reconcile", "prepare", "accept", "launch"} <= set(update_job.SUPPORTED_ACTIONS)
+
+
+def _worker_source_for(monkeypatch, tmp_path, system):
+    monkeypatch.setattr(update_job, "read_json", lambda path: {})
+    monkeypatch.setattr(update_job, "_attempt_tuple", lambda job: (1, "a" * 32))
+    monkeypatch.setattr(update_job, "sys", SimpleNamespace(platform=system))
+    old = SimpleNamespace(profile=tmp_path / "profile.json", env={})
+    job = {"log_path": str(tmp_path / "job.log"), "program_root": str(tmp_path), "operation_id": "0" * 32}
+    return update_job._worker_command_source(old, job)
+
+
+def test_the_windows_worker_preamble_never_reopens_the_job_log_and_posix_is_unchanged(tmp_path, monkeypatch):
+    windows = _worker_source_for(monkeypatch, tmp_path, "win32")
+    assert "open(" not in windows and "sys.stdout" not in windows and "job.log" not in windows
+    assert "from astrid.installer.update_job import run_job" in windows
+    for system in ("linux", "darwin"):
+        posix = _worker_source_for(monkeypatch, tmp_path, system)
+        assert "_log=open(" in posix and "sys.stdout=sys.stderr=_log" in posix
+
+
+@pytest.mark.windows_native
+def test_the_wrapper_and_the_worker_share_one_job_log_without_a_permission_error(tmp_path, monkeypatch):
+    from astrid.installer import update_job_platform as job_platform
+
+    source = _worker_source_for(monkeypatch, tmp_path, "win32")
+    stub = ("import sys,types\n"
+            "m=types.ModuleType('astrid.installer.update_job')\n"
+            "m.run_job=lambda root, operation, epoch, nonce: {'ran': True, 'operation': operation}\n"
+            "for name in ('astrid', 'astrid.installer'):\n"
+            "    sys.modules[name]=types.ModuleType(name)\n"
+            "sys.modules['astrid.installer.update_job']=m\n")
+    worker = tmp_path / "worker.py"
+    worker.write_text(stub + source + "\n", encoding="utf-8")
+    log = tmp_path / "job.log"
+    script = job_platform._worker_script([sys.executable, "-B", str(worker)], log)
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    text = log.read_text(encoding="utf-8", errors="replace")
+    assert "PermissionError" not in text
+    assert '"ran": true' in text
