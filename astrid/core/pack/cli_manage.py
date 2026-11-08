@@ -421,11 +421,28 @@ def build_remove_parser(subparsers: Any) -> None:
     parser.add_argument("--packs-root", help="User pack collection root (defaults to ~/Astrid/packs).")
     parser.add_argument("--yes", action="store_true", help="Confirm the removal transaction.")
     parser.set_defaults(handler=_handle_remove_error)
+# The Runtime refuses an installed collection with this text (verified_host_launch
+# _no_alias, which walks the path and every parent). Keep the two strings identical:
+# tests/core/pack/test_cli_symlink_collection.py asserts both.
+SYMLINKED_COLLECTION_REFUSAL = "import materialization contains a symlink"
+
+
+def _refuse_symlinked_collection(candidate: Path) -> None:
+    # Mirror the Runtime's _no_alias walk: the un-resolved path and every parent.
+    # Nothing is written when any of them is a symlink.
+    for ancestor in (candidate, *candidate.parents):
+        if ancestor.is_symlink():
+            raise PackInstallError("unsafe_path", SYMLINKED_COLLECTION_REFUSAL)
+
+
 def _selected_root(override: str | None) -> Path:
     # ASTRID_PACKS_PATH extends discovery; it does not choose the collection
     # that management commands mutate. Only --packs-root may override the
     # default writable personal collection.
     default_root = Path.home() / "Astrid" / "packs"
+    candidate = Path(override).expanduser() if override is not None else default_root
+    if candidate.is_absolute():
+        _refuse_symlinked_collection(candidate)
     root = resolve_personal_packs_root(override if override is not None else default_root)
     if root is None:
         raise PackInstallError("unsafe_path", "Use an absolute writable collection with --packs-root.")
