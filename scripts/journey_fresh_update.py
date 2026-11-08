@@ -1,4 +1,4 @@
-"""R1 fresh-install public install-line update, within the journey-owned scope."""
+"""R1 fresh-install update through the hosted page's Update request, within the journey-owned scope."""
 from __future__ import annotations
 
 import hashlib
@@ -11,18 +11,27 @@ import sys
 
 if __package__:
     from . import ci_journey as journey
+    from . import journey_hosted_update as hosted
 else:
     import ci_journey as journey
+    import journey_hosted_update as hosted
 
 
 CHECKS = ("new_version", "old_version_retained", "same_service", "no_boundary_handoff",
           "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled")
 
 
+def candidate_release(candidate: dict) -> int:
+    """The release the fresh install lands on; the stand-in is always the next one."""
+    release = candidate.get("release")
+    if type(release) is not int or release < 0:
+        raise RuntimeError("Fresh update requires a candidate with an integer release")
+    return release
+
+
 def standin(candidate: dict, installed: dict, directory: Path) -> tuple[Path, dict]:
     """Temporary fixture implementation of piece A's canonical manifest contract."""
-    if type(candidate.get("release")) is not int or candidate["release"] != 1:
-        raise RuntimeError("Fresh update requires a release-1 candidate")
+    candidate_release(candidate)
     manifest = dict(candidate)
     # The installer adds the effective vibecomfy pin when older App manifests
     # omit it; use the pin actually selected by this installation.
@@ -110,8 +119,9 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
     update = result["update"] = {"status": "not-run", "checks": {key: "not-run" for key in CHECKS}}
     try:
         installed = journey.read_json(Path(version["root"]) / "manifest.json")
-        if version.get("identity") != {"release": 1, "managed_by": None}:
-            raise RuntimeError("Fresh update baseline is not direct release 1")
+        baseline = candidate_release(manifest)
+        if version.get("identity") != {"release": baseline, "managed_by": None}:
+            raise RuntimeError(f"Fresh update baseline is not direct release {baseline}")
         path, target = standin(manifest, installed, evidence / "fresh-update-standin")
         before = journey.verify("observe", version_path, data, evidence)
         versions_before = {p.name for p in (root / "versions").iterdir() if p.is_dir()}
@@ -122,11 +132,14 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
             raise RuntimeError("Fresh update baseline has R0 boundary handoff state")
         before_health = journey.healthy(data)
         before_runtime_instance_id = before_health["runtime_instance_id"]
-        # This is the same public bootstrap and --update invocation as the R0 journey.
-        journey.bootstrap(app, path, args.shell, "update", evidence, root, data)
+        # The hosted page's own request: POST through the Runtime door, with the stand-in
+        # release served from the intercepted astrid.haus. No bootstrap is run by the journey.
+        update["hosted"] = hosted.run_hosted_update(
+            python=version["python"], app=app, manifest=path.read_bytes(),
+            door_base=journey.HEALTH_URL, root=root, evidence=evidence)
         journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
         new_path, new_data, new_version = journey.installation(root, data)
-        if new_data != data or new_version.get("identity") != {"release": 2, "managed_by": None}:
+        if new_data != data or new_version.get("identity") != {"release": baseline + 1, "managed_by": None}:
             raise RuntimeError("Update selected the wrong data root or release")
         journey.selected_tuple(target, new_version)
         installed_bytes = (Path(new_version["root"]) / "manifest.json").read_bytes()
@@ -141,8 +154,8 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         health = journey.healthy(data)
         if health["runtime_instance_id"] == before_runtime_instance_id:
             raise RuntimeError("Update did not restart the Runtime")
-        if health["identity"]["release"] != 2:
-            raise RuntimeError("Post-update Runtime health is not release 2")
+        if health["identity"]["release"] != baseline + 1:
+            raise RuntimeError(f"Post-update Runtime health is not release {baseline + 1}")
         update["checks"]["health"] = "pass"
         journey.assert_content(new_version, evidence, project, marker, digest)
         update["checks"]["workspace_content"] = "pass"
@@ -157,7 +170,7 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Unrelated sentinel did not survive the post-update task")
         update["checks"]["task_settled"] = "pass"
-        update.update(status="pass", release_from=1, release_to=2,
+        update.update(status="pass", release_from=baseline, release_to=baseline + 1,
                       manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
     except Exception as exc:
         update.update(status="fail", error=f"{type(exc).__name__}: {exc}")

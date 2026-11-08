@@ -13,6 +13,13 @@ from scripts import windows_update_journey as update
 from scripts import ci_journey
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+
+
 def test_update_scheduler_capture_filters_scope_and_projects_fields(tmp_path, monkeypatch):
     seen = []
     row = {"id": 201, "time": "2026-11-05T03:10:01.1234567Z", "result": "2147942401",
@@ -65,7 +72,7 @@ def test_update_scheduler_capture_timeout_is_unavailable_and_staged(tmp_path, mo
 
 
 def receipt():
-    return {"outcome": "updated", "from_release": 1, "to_release": 2,
+    return {"outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
             "marker": update.MARKER, "manifest_sha256": "a" * 64,
             "old_version": "old", "current_version": "new", "exit_code": 0, "refusal": None, "task_id": "task-1",
             "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
@@ -137,39 +144,64 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
         path = evidence / f"verify-{mode}.json"
         path.write_text('{"passed": true}')
         return path
-    bootstraps = []
-    journey = SimpleNamespace(bootstrap=lambda *a: bootstraps.append(a), installation=lambda *a: (current[0], data, {"root": str(current[0].parent),
+    posts = []
+    journey = SimpleNamespace(HEALTH_URL="http://127.0.0.1:17340/api/runtime/v1/health",
+        bootstrap=lambda *a: pytest.fail("the journey must not run the bootstrap itself"),
+        installation=lambda *a: (current[0], data, {"root": str(current[0].parent), "python": "C:/installed/python.exe",
         "identity": {"release": 1 if current[0] == old else 2, "managed_by": None}}),
         healthy=lambda *a: (calls.append("healthy") or {"runtime_instance_id": "runtime-old" if current[0] == old else "runtime-new",
             "identity": {"release": 1 if current[0] == old else 2}}),
         assert_direct_service_ownership=lambda *a, **kw: calls.append("owner"),
         verify=verify, wait_ready=lambda *a, **kw: calls.append("ready"), assert_content=lambda *a: calls.append("content"),
         sentinel_observation=lambda *a: {"alive": True}, read_json=lambda p: json.loads(p.read_text()))
-    def bootstrap(app, path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data):
-        bootstraps.append((app, path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data))
+    def hosted_update(**kwargs):
+        posts.append(kwargs)
         new.parent.mkdir()
         new.write_text("{}")
-        (new.parent / "manifest.json").write_bytes(path.read_bytes())
+        (new.parent / "manifest.json").write_bytes(kwargs["manifest"])
         current[0] = new
-    journey.bootstrap = bootstrap
+        return HOSTED
+    monkeypatch.setattr(update.hosted, "run_hosted_update", hosted_update)
     args = SimpleNamespace(shell="powershell.exe")
     result = update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
     assert result["outcome"] == "updated" and not gate._windows_fresh_update_errors(result, "direct-windows")
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
-    assert len(bootstraps) == 1
+    assert result["hosted"] == HOSTED
+    assert len(posts) == 1
     assert "capture" not in calls and "capture-processes" not in calls
-    app, candidate_path, shell, mode, bootstrap_evidence, bootstrap_root, bootstrap_data = bootstraps[0]
-    assert app == tmp_path and candidate_path == evidence / "windows-update-manifest.json"
-    assert shell == "powershell.exe" and mode == "update"
-    assert (bootstrap_evidence, bootstrap_root, bootstrap_data) == (evidence, root, data)
-    assert candidate_path.read_bytes() == update.canonical_manifest_bytes(update.make_standin_release(candidate))
+    post = posts[0]
+    assert post["app"] == tmp_path and post["python"] == "C:/installed/python.exe"
+    assert post["door_base"] == journey.HEALTH_URL and (post["root"], post["evidence"]) == (root, evidence)
+    assert (evidence / "windows-update-manifest.json").read_bytes() == post["manifest"]
+    assert post["manifest"] == update.canonical_manifest_bytes(update.make_standin_release(candidate))
     current[0] = old
     calls.clear()
     for output in ("File is locked.", "Access denied."):
         calls.clear()
-        journey.bootstrap = lambda *a, _output=output: (_ for _ in ()).throw(RuntimeError(_output))
+        monkeypatch.setattr(update.hosted, "run_hosted_update",
+                            lambda *, _output=output, **kw: (_ for _ in ()).throw(RuntimeError(_output)))
         with pytest.raises(RuntimeError, match=output):
             update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
         assert "verify-update" not in calls and "task" not in calls
         assert calls.count("observe-processes") == 2
         assert calls.index("capture-processes") < calls.index("capture")
+
+
+def test_update_follows_the_candidate_release_and_waits_for_the_worker_task_to_go(monkeypatch):
+    with pytest.raises(RuntimeError, match="integer release"):
+        update.run_update(SimpleNamespace(), None, None, {"release": True}, None, None, None, None, None, None, None, None)
+    with pytest.raises(RuntimeError, match="not direct release 7"):
+        journey = SimpleNamespace(installation=lambda *a: (Path("/v/old/version.json"), None,
+                                                          {"identity": {"release": 1, "managed_by": None}}))
+        update.run_update(journey, None, None, {"release": 7}, None, None, None, None, None, None, None, None)
+    # The worker's transient task is listed until its own cleanup finishes.
+    seen = iter([[("\\", "Astrid Runtime"), ("\\", "astrid-update-1")], [("\\", "Astrid Runtime")]])
+    monkeypatch.setattr(update, "task_labels", lambda: next(seen))
+    monkeypatch.setattr(update, "service_names", lambda: [])
+    monkeypatch.setattr(update.time, "sleep", lambda *_: None)
+    update.wait_for_labels([("\\", "Astrid Runtime")], [])
+    clock = iter([0, 1, 1000])
+    monkeypatch.setattr(update.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(update, "task_labels", lambda: [("\\", "Astrid Runtime"), ("\\", "other")])
+    with pytest.raises(RuntimeError, match="changed Astrid task or service labels"):
+        update.wait_for_labels([("\\", "Astrid Runtime")], [])
