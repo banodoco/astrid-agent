@@ -1064,6 +1064,7 @@ def test_windows_task_admits_sdk_result_after_stderr_diagnostic(monkeypatch):
 
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
     monkeypatch.setattr(journey, "cli", fake_cli)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda: None)
     monkeypatch.setitem(journey.os.environ, "ASTRID_HOST_EXECUTION_PROFILE", "installed")
     with pytest.raises(_FollowReached):
         journey.task("windows-journey")
