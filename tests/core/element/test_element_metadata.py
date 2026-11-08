@@ -11,7 +11,6 @@ from pathlib import Path
 from astrid.core.element import ElementValidationError, load_element_definition
 from astrid.core.element.metadata import ROLE_VOCABULARY, check_element_metadata
 from astrid.core.element.schema import load_element_definition
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.timeline.clip_fields import reserved_names
 
 
@@ -137,22 +136,6 @@ class ElementLoaderHookTest(unittest.TestCase):
         definition = _base_definition()
         definition["schema"]["properties"]["volume"] = {"type": "number", "deprecated": True}
         self._load(definition)
-
-
-class ShippedElementsTest(unittest.TestCase):
-    def test_declared_effect_roles_are_in_vocabulary(self) -> None:
-        root = REPO_ROOT / "astrid/packs/astrid_motion/rendering/elements/effects"
-        for manifest in sorted(root.glob("*/element.yaml")):
-            element = load_element_definition(
-                manifest.parent,
-                kind="effects",
-                source="pack:astrid_motion",
-                editable=False,
-                priority=0,
-            )
-            role = element.metadata.get("role")
-            if role is not None:
-                self.assertTrue(role in ROLE_VOCABULARY or role.startswith("x-"), element.id)
 
 
 if __name__ == "__main__":

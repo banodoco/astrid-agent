@@ -177,35 +177,6 @@ def test_clear_then_set_batch_preserves_exact_absent_or_null_inverse(container):
     assert inverse(undone.bundle, undone.records).bundle == plan.bundle
 
 
-def test_registered_sprite_strip_binding_refuses_selected_registry_retarget():
-    from astrid.core.element import load_default_registry
-    from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
-
-    definition = load_default_registry().get('effect', 'am-sprite', pack_id='astrid_motion')
-    frames = {'frameWidth': 16, 'frameHeight': 16, 'count': 4, 'fps': 8}
-    Draft202012Validator(definition.schema).validate({'frames': frames})
-    original = bundle()
-    clip(original, REF)['clipType'] = definition.id
-    plan = execute(original, [capture_clip_set_params(original, REF, values={'frames': frames})])
-    head = copy.deepcopy(original)
-    registry_ref = 'occurrence:occ-1/registry'
-    State(head).entity(registry_ref)['assets']['old-picture']['media_id'] = 'sha256:' + 'f' * 64
-    # Main accepts this closure; this is not an unsupported registry shape.
-    compiled = compile_authoring_candidate(head).publication
-    assert any(row['payload']['registry']['assets']['old-picture']['media_id'] == 'sha256:' + 'f' * 64
-               for row in compiled['internal_timeline_revisions'])
-    # The same clip.asset now selects different strip bytes; frame rectangles
-    # authored for the original strip must not silently target that replacement.
-    with pytest.raises(CommandError):
-        replay(plan, head)
-    unrelated = copy.deepcopy(original)
-    State(unrelated).entity(registry_ref)['assets']['voice']['media_id'] = 'sha256:' + 'e' * 64
-    assert replay(plan, unrelated).commands == plan.commands
-    path = ['assets', 'old-picture', 'media_id']
-    assert replay(plan, original, intervening_records=[
-        later(registry_ref, path, None)]).records == plan.records
-
-
 def test_registry_and_label_after_move_preserves_move_inverse_redo():
     assert {'track.set', 'clip.set-params'} <= operations().keys()
     original = bundle()
@@ -382,9 +353,25 @@ def test_original_identity_and_value_guards_refuse_without_partial_writes(change
     assert head == snapshot
 
 
-def test_declared_param_validation_uses_raw_stored_units_and_literal_values():
+def test_declared_param_validation_uses_raw_stored_units_and_literal_values(monkeypatch):
+    from astrid.sdk import timeline_address
+
+    # A core-only probe element: its declared params are registered directly, so the
+    # test no longer depends on a moved pack being present.
+    monkeypatch.setitem(timeline_address._SCHEMAS, 'core-probe', {
+        'type': 'object',
+        'properties': {
+            'x': {'type': 'number'},
+            'y': {'type': 'number'},
+            'scale': {'type': 'number', 'minimum': 0, 'maximum': 10},
+            'flipX': {'type': 'boolean'},
+            'stepFrames': {'type': 'integer', 'maximum': 3},
+            'keyframes': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                'frame': {'type': 'integer', 'minimum': 0}}}},
+        },
+    })
     original = bundle()
-    clip(original, REF)['clipType'] = 'am-sprite'
+    clip(original, REF)['clipType'] = 'core-probe'
     plan = execute(original, [capture_clip_set_params(original, REF, values={'x': 17, 'scale': 6})])
     assert clip(plan.bundle, REF)['params'] == {'x': 17, 'scale': 6}
     for values in ({'scale': True}, {'scale': 25}, {'flipX': 0}, {'stepFrames': 4},
