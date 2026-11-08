@@ -1028,3 +1028,43 @@ def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, 
     with pytest.raises(RuntimeError, match="origin exit 1" if failure == "origin" else "Scheduled Task preflight failed"):
         shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
     assert calls == ["origin", "query"]
+
+
+class _FollowReached(Exception):
+    pass
+
+
+def test_windows_task_admits_sdk_result_after_stderr_diagnostic(monkeypatch):
+    """The installed SDK merges a stderr diagnostic into the captured output before its result."""
+    diagnostic = json.dumps({
+        "diagnostic": "astrid.pack_host_attach_rejected",
+        "keys": ["live.check_raised"],
+        "mismatches": [{"actual": "'ApiError'", "expected": "'completed'", "key": "live.check_raised"}],
+        "pid": 6620,
+        "process_birth_id": "windows-creation:134385483390147122",
+        "reason": "attach rejected: live.check_raised expected='completed' actual='ApiError'",
+        "runtime_service_launch_id": "33abad01b1474e78992f7a765c6fe6fd",
+    }, sort_keys=True)
+    result = json.dumps({
+        "ok": True,
+        "content": [{"type": "text", "text": "{\"ok\": true}"}],
+        "details": {"astridTaskRefs": [{"task_id": "0da1da62492847a9808c12cec3cf64ea"}]},
+    })
+    captured = {}
+
+    def fake_cli(module, argv, name, *, timeout=300):
+        captured[name] = module
+        if name == "project.json":
+            return json.dumps({"ok": True})
+        if name == "release1-task-sdk-invocation.json":
+            return f"{diagnostic}\n{result}\n"
+        if name == "task-follow.jsonl":
+            raise _FollowReached()
+        raise AssertionError(f"unexpected Windows CLI capture {name}")
+
+    monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
+    monkeypatch.setattr(journey, "cli", fake_cli)
+    monkeypatch.setitem(journey.os.environ, "ASTRID_HOST_EXECUTION_PROFILE", "installed")
+    with pytest.raises(_FollowReached):
+        journey.task("windows-journey")
+    assert captured["release1-task-sdk-invocation.json"] == "astrid.omp_invoke"

@@ -181,6 +181,29 @@ def run_bootstrap_process(argv, log_path, mode, *, env=None, timeout=3600):
     return output
 
 
+def sdk_result(text: str) -> dict:
+    """Parse the SDK's result from a combined stdout+stderr capture.
+
+    Runtime writes one-line `{"diagnostic": ...}` objects to stderr, and `run`
+    merges that stream into the capture. Only leading diagnostic lines are
+    tolerated before the result; anything else is still an error.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        lines = [line for line in text.splitlines() if line.strip()]
+        if not lines:
+            raise
+        for line in lines[:-1]:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}") from None
+            if not (isinstance(item, dict) and isinstance(item.get("diagnostic"), str)):
+                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}")
+        return json.loads(lines[-1])
+
+
 def run(argv, name, *, env=None, timeout=300, show=True):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     print(f"Running {name}", flush=True)
@@ -725,7 +748,7 @@ def task(project="windows-journey", *, create_project=True):
         "project": project,
         "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
     }
-    invocation = json.loads(cli("astrid.omp_invoke", [json.dumps(request)],
+    invocation = sdk_result(cli("astrid.omp_invoke", [json.dumps(request)],
                                 "release1-task-sdk-invocation.json"))
     task_refs = invocation.get("details", {}).get("astridTaskRefs", [])
     if invocation.get("content", [{}])[0].get("type") != "text" or len(task_refs) != 1:

@@ -1450,6 +1450,8 @@ def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     """Describe Windows login-install selection state without recording paths or values."""
     default = program_root()
     record_path = selection_path()
+    private = default.parent / "Astrid Installer" / "astrid-install.json"
+    legacy = default.parent / "astrid-install.json"
     present = record_path.exists()
     selection = None
     readable = None
@@ -1463,6 +1465,9 @@ def windows_login_selection_diagnostic(root: Path, data: Path) -> dict:
     return {
         "default_install_marker_present": (default / "install.json").exists(),
         "default_current_marker_present": (default / "current").exists(),
+        "private_selection_present": private.exists(),
+        "legacy_selection_present": legacy.exists(),
+        "selection_location": ("private" if record_path == private else "legacy") if present else None,
         "selection_present": present,
         "selection_readable": readable,
         "selection_is_object": is_object,
@@ -2188,26 +2193,7 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def _sdk_result(text: str) -> dict:
-    """Parse the SDK's result object; tolerate only leading `{"diagnostic": ...}` lines.
-
-    The captured stream combines stdout and stderr. Some installs (Pinokio) emit
-    one-line Runtime diagnostics before the result. Anything else is still an error.
-    """
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        lines = [line for line in text.splitlines() if line.strip()]
-        if not lines:
-            raise
-        for line in lines[:-1]:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}") from None
-            if not (isinstance(item, dict) and isinstance(item.get("diagnostic"), str)):
-                raise RuntimeError(f"Installed SDK printed a non-diagnostic line: {line[:300]!r}")
-        return json.loads(lines[-1])
+_sdk_result = windows.sdk_result
 
 
 def _pack_rows(value):
@@ -2694,6 +2680,13 @@ def execute(args: argparse.Namespace) -> dict:
                                     "schema_version": 1, "scenario": args.leg}
                                 recorded.update(status="fail", final_cleanup="fail",
                                                 cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
+                                if sys.platform == "win32":
+                                    try:
+                                        recorded["cleanup_windows_login_selection_diagnostic"] = (
+                                            windows_login_selection_diagnostic(root, data))
+                                    except Exception as diagnostic_error:
+                                        recorded["cleanup_windows_login_selection_diagnostic"] = {
+                                            "capture_error": type(diagnostic_error).__name__}
                                 write_json(result_path, recorded)
                             except Exception as receipt_error:
                                 print(f"Journey cleanup receipt failed: {type(receipt_error).__name__}: {receipt_error}",

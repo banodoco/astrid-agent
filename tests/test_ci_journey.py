@@ -523,6 +523,36 @@ def test_tst_b1_windows_refusal_accepts_only_its_prior_uninstalled_fresh_selecti
             )
 
 
+def test_windows_refusal_cleanup_reads_only_its_isolated_r0_receipt(tmp_path, monkeypatch):
+    """The refusal leg's cleanup runs under its own LOCALAPPDATA, not the fresh leg's.
+
+    Run 42406972807 left R0's live record at the private path (migrated by the
+    candidate before it refused), so R0's uninstall wrote no receipt and the
+    guard correctly reported a non-journey installation.
+    """
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    default = tmp_path / "localappdata" / "Astrid"
+    default.parent.mkdir()
+    monkeypatch.setattr(journey, "program_root", lambda: default)
+    monkeypatch.setattr(journey.windows, "scheduled_task_diagnostics", lambda **unused: {
+        "status": "absent", "tasks": [],
+    })
+    root, data = tmp_path / "program", tmp_path / "data"
+    record = {"owner": "haus.astrid.runtime", "program_root": str(root), "data_root": str(data)}
+    legacy = default.parent / "astrid-install.json"
+    private = default.parent / "Astrid Installer" / "astrid-install.json"
+
+    journey.write_json(legacy, {**record, "uninstalled": True})
+    journey.assert_host_available("cleanup", root, data, skip_process_check=True)
+
+    legacy.unlink()
+    journey.write_json(private, record)
+    with pytest.raises(RuntimeError, match="non-journey Astrid login installation"):
+        journey.assert_host_available("cleanup", root, data, skip_process_check=True)
+    assert journey.windows_login_selection_diagnostic(root, data)["selection_location"] == "private"
+    assert journey.windows_login_selection_diagnostic(root, data)["selection_uninstalled"] is False
+
+
 @pytest.mark.windows_native
 def test_same_path_matches_windows_spelling_variants(tmp_path):
     assert journey._same_path(r"C:\A\B", "c:/a/b/")
@@ -629,6 +659,9 @@ def test_windows_login_selection_diagnostic_is_classified_and_contains_no_instal
     assert diagnostic == {
         "default_install_marker_present": False,
         "default_current_marker_present": False,
+        "private_selection_present": False,
+        "legacy_selection_present": True,
+        "selection_location": "legacy",
         "selection_present": True,
         "selection_readable": True,
         "selection_is_object": True,
