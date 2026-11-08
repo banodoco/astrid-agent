@@ -408,17 +408,9 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     try:
         work = tmp_path / "work"
         work.mkdir()
-        url = f"http://127.0.0.1:{server.server_port}"
-        # The managed target's inventory is that install receipt, handed over as the host's one document;
-        # without it the child can only judge this controller's disk, which keeps no model files.
-        from types import SimpleNamespace
-        from astrid.core.generation.target_inventory import ENV, build_document, rows_from_receipt
-        receipt = pod.receipts["comfyui"]
-        rows = rows_from_receipt([SimpleNamespace(**{k: m[k] for k in ("path", "bytes", "sha256")})
-                                  for m in receipt["models"]], receipt["root"])
-        result = subprocess.run([sys.executable, "-c", VOICE_CHILD, url, str(work), "audio/qwen3_tts_custom_voice"],
-                                capture_output=True, text=True, timeout=300,
-                                env={**os.environ, "VIBECOMFY_HEADLESS": "1", ENV: build_document("inventory", url, rows)})
+        result = subprocess.run([sys.executable, "-c", VOICE_CHILD, f"http://127.0.0.1:{server.server_port}",
+                                 str(work), "audio/qwen3_tts_custom_voice"],
+                                capture_output=True, text=True, timeout=300, env={**os.environ, "VIBECOMFY_HEADLESS": "1"})
     finally:
         server.shutdown()
     assert result.returncode == 0, result.stdout + result.stderr
