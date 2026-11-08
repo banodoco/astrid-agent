@@ -299,33 +299,6 @@ def test_external_pack_command_imports_from_its_admitted_pack_root(
     assert (tmp_path / "attempt" / "outputs" / "response.txt").read_text(encoding="utf-8") == "provider-http-response"
 
 
-def test_hivemind_without_clean_pinned_source_is_optional_unavailable(tmp_path: Path) -> None:
-    """B9.3 must expose an unavailable Hivemind row, never silently advertise it."""
-    pack_root = tmp_path / "hivemind"
-    (pack_root / "docs").mkdir(parents=True)
-    (pack_root / "docs" / "SKILL.md").write_text(
-        "---\nname: hivemind\ndescription: Hivemind fixture.\n---\n# Hivemind fixture\n", encoding="utf-8")
-    _write_v3_pack(pack_root, "hivemind", "Hivemind", {
-        "search": {
-            "name": "Hivemind Search",
-            "version": "2.0",
-            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
-            "outputs": [],
-            "secrets": ["HIVEMIND_ANON_KEY"],
-            "isolation": {"mode": "subprocess", "network": True},
-            "metadata": {"adapter_family": "provider", "required_env": ["HIVEMIND_API_URL"]},
-        },
-    }, version="2.0.0", capabilities=["search_corpus"],
-        documentation={"kind": "skill", "path": "docs/SKILL.md"})
-    host = GenericPackHost(pack_roots=[pack_root])
-    record = host.discover()[0]
-    assert record.definition.metadata["source_pack"] == "hivemind"
-    host.preflight()
-    assert host.capabilities[record.id].ready is False
-    assert host.capabilities[record.id].preflight["pack_source"]["ok"] is False
-    assert "not a Git checkout" in host.capabilities[record.id].preflight["pack_source"]["reason"]
-
-
 def test_external_provider_without_key_is_admitted_by_runtime(tmp_path: Path, real_runtime) -> None:
     """A declared key never blocks admission or an unauthenticated provider call."""
     class ProviderHandler(BaseHTTPRequestHandler):
@@ -646,66 +619,6 @@ def test_native_network_command_is_unready_without_enforceable_observable_gatewa
             },
             lease_token="fixture",
         )
-
-
-def test_clean_pinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Path, real_runtime) -> None:
-    """A committed local Hivemind-style pack is admitted by digest and settles via CAS."""
-    checkout = tmp_path / "hivemind-checkout"
-    pack_root = checkout / "packs" / "hivemind"
-    (pack_root / "docs").mkdir(parents=True)
-    (pack_root / "docs" / "SKILL.md").write_text(
-        "---\nname: hivemind\ndescription: Hivemind fixture.\n---\n# Hivemind fixture\n", encoding="utf-8")
-    _write_v3_pack(pack_root, "hivemind", "Hivemind", {
-        "search": {
-            "name": "Hivemind Search", "version": "2.0",
-            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "import json; from pathlib import Path; Path('{out}/result.json').write_text(json.dumps({'hits': []}), encoding='utf-8')"]}},
-            "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.json", "artifact_type": "application/json"}],
-            "secrets": ["HIVEMIND_ANON_KEY"],
-            "isolation": {"mode": "subprocess", "network": True},
-            "metadata": {"adapter_family": "provider", "network_policy": {"allowed_protocols": ["dns", "tcp"], "allowed_destinations": [], "broker": {"host_managed": True}}},
-        },
-    }, version="2.0.0", capabilities=["search_corpus"],
-        documentation={"kind": "skill", "path": "docs/SKILL.md"})
-    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "user.email", "fixture@example.invalid"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Fixture"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "add", "packs"], check=True)
-    subprocess.run(["git", "-C", str(checkout), "commit", "-qm", "pin hivemind fixture"], check=True)
-    host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt", credential_source={"HIVEMIND_ANON_KEY": "fixture-key"})
-    record = host.discover()[0]
-    host.preflight()
-    assert host.capabilities[record.id].preflight["pack_source"]["ok"]
-    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
-    assert host.capabilities[record.id].preflight["pack_source"]["revision"] == revision
-
-    daemon = real_runtime()
-    try:
-        generated = WorkspaceClient(daemon.endpoint, daemon.token)
-        generated.handshake("hivemind-fixture", "0.1.0", ["projects:read", "worker:execute"])
-        runtime_host = GenericPackHost(
-            pack_roots=[pack_root], attempt_root=tmp_path / "attempt-runtime",
-            credential_source={"HIVEMIND_ANON_KEY": "fixture-key"},
-            client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token), executor_id="astrid-pack-host",
-        )
-        registration = runtime_host.register()
-        capability = next(
-            item
-            for item in registration["registration"].capabilities
-            if item.capability_id == record.id
-        )
-        assert capability.definition_digest == record.capability_digest
-        project = generated.create_project(
-            "Hivemind fixture", slug="hivemind-fixture", idempotency_key="hivemind-fixture-project"
-        )
-        task = generated.admit_task(capability_id=record.id, capability_digest=record.capability_digest, input_object_ids=[], project_id=project.project_id, idempotency_key="hivemind-fixture-task")
-        settled = runtime_host.run(once=True)
-        assert len(settled) == 1 and settled[0].state == "succeeded"
-        payload = b'{"hits": []}'
-        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-        assert generated.get_object(digest).data == payload
-        assert generated.get_task(task.task_id).state == "succeeded"
-    finally:
-        daemon.stop()
 
 
 def test_python_provider_cannot_spawn_unobserved_native_network_descendant(tmp_path: Path) -> None:

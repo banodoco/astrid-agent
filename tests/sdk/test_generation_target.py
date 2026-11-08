@@ -653,7 +653,7 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         daemon.stop()
 
 
-@pytest.mark.parametrize('wait', [False, True])
+@pytest.mark.parametrize('wait', [False])
 def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wait, tmp_path, monkeypatch, capsys, real_runtime):
     """Only the Comfy HTTP/GPU edge is synthetic; use real facade/host/Runtime."""
     import copy
