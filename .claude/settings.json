@@ -1,6 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash(bash scripts/worker-env/agent-setup.sh:*)",
+      "Bash(bash scripts/worker-env/agent-pytest.sh:*)",
+      "Bash(bash scripts/worker-env/agent-pytest-pod.sh:*)",
+      "Bash(bash scripts/worker-env/smoke.sh:*)",
       "Bash(bash /home/user/astrid-dev/env/agent-setup.sh:*)",
       "Bash(bash /home/user/astrid-dev/env/agent-pytest.sh:*)",
       "Bash(bash /home/user/astrid-dev/env/agent-pytest-pod.sh:*)",
