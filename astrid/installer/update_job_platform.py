@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shlex
@@ -361,6 +362,112 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
     if state == "Running":
         return True
     raise RuntimeError(f"Unknown Scheduled Task update job state: {state}")
+
+
+# Task Scheduler informational codes that are not a worker's exit status:
+# ready, running, disabled, has not run, no more runs, not scheduled, queued.
+_WINDOWS_NOT_AN_EXIT = {0x41300, 0x41301, 0x41302, 0x41303, 0x41304, 0x41305, 0x41325}
+
+
+def parse_scheduled_task_result(observed: object) -> dict | None:
+    """Read Get-ScheduledTask/Get-ScheduledTaskInfo fields; None without a finished run.
+
+    ``LastRunTime`` is PowerShell's ``[string]`` form (invariant culture,
+    local time, MM/dd/yyyy HH:mm:ss), as captured on the live runner; it is
+    read in this machine's local time, the clock Task Scheduler used.
+    """
+    if not isinstance(observed, dict):
+        raise RuntimeError("The Scheduled Task result is unreadable.")
+    code, last_run = observed.get("LastTaskResult"), observed.get("LastRunTime")
+    if (observed.get("State") != "Ready" or type(code) is not int
+            or code in _WINDOWS_NOT_AN_EXIT or not isinstance(last_run, str) or not last_run):
+        return None
+    try:
+        from datetime import datetime
+        started = int(datetime.strptime(last_run, "%m/%d/%Y %H:%M:%S").timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
+    # LastTaskResult is a DWORD; report HRESULT-style values unsigned.
+    return {"exit_code": code & 0xFFFFFFFF, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "started_at": started, "bound": "start-time"}
+
+
+def parse_systemd_result(text: str) -> dict | None:
+    """Read ``systemctl show --timestamp=unix`` unit state; None without a finished run."""
+    fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    state, outcome = fields.get("ActiveState", ""), fields.get("Result", "")
+    status, started = fields.get("ExecMainStatus", ""), fields.get("ExecMainStartTimestamp", "")
+    if not status.isdecimal() or not started.startswith("@") or not started[1:].isdecimal():
+        return None
+    if state == "failed" or (state == "inactive" and outcome == "success"):
+        return {"exit_code": int(status), "evidence": f"systemd ActiveState={state} Result={outcome}",
+                "started_at": int(started[1:]), "bound": "start-time"}
+    return None
+
+
+def parse_launchd_result(text: str) -> dict | None:
+    """Read ``launchctl print`` state and last exit; None without a finished run.
+
+    launchd records no start time. A terminating signal without an exit code
+    is not read as an exit status.
+    """
+    state = re.search(r"(?m)^\s*state = (.+?)\s*$", text)
+    runs = re.search(r"(?m)^\s*runs = ([0-9]+)\s*$", text)
+    code = re.search(r"(?m)^\s*last exit code = (-?[0-9]+)\s*$", text)
+    if (not state or state.group(1) != "not running" or not runs or int(runs.group(1)) < 1
+            or not code or re.search(r"(?m)^\s*pid = [0-9]+\s*$", text)):
+        return None
+    return {"exit_code": int(code.group(1)), "evidence": "launchd state=not running last exit code",
+            "started_at": None, "bound": "command"}
+
+
+def finished_result(descriptor: dict, system: str | None = None) -> dict | None:
+    """Return the recorded object's exit status only when it has positively finished.
+
+    This is the same unit/task state ``is_active`` reads, plus the manager's
+    own record of how the run ended and of which run it was: its start time
+    (Task Scheduler, systemd) or, for launchd, which keeps no start time, the
+    exact loaded command (it carries the attempt's epoch and nonce). None
+    means no positive evidence: still running, never run, already absent
+    (nothing left to read), or a different loaded command. Query errors
+    raise; callers treat them as no evidence. The result is {"exit_code":
+    int, "evidence": str, "started_at": unix seconds or None, "bound":
+    "start-time" or "command"}.
+    """
+    actual, name = _validate(descriptor, system)
+    if actual == "linux":
+        result = _run(["systemctl", "--user", "show", name, "--timestamp=unix",
+                       "--property=ActiveState,Result,ExecMainStatus,ExecMainStartTimestamp"])
+        if result.returncode:
+            if result.returncode == 4:
+                return None
+            raise _failure("query", result)
+        return parse_systemd_result(result.stdout)
+    if actual == "darwin":
+        # Absent or foreign loaded command: no evidence (is_registered raises on a mismatch).
+        if is_registered(descriptor, descriptor.get("command"), system=actual) is not True:
+            return None
+        result = _run(["launchctl", "print", f"{descriptor['domain']}/{name}"])
+        if result.returncode:
+            raise _failure("query", result)
+        return parse_launchd_result(result.stdout)
+    script = ("$ErrorActionPreference = 'Stop'\n$all = @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -eq "
+              + _ps_quote(name) + " }); if ($all.Count -eq 0) { Write-Output 'ASTRID_NOT_FOUND'; exit 0 }; "
+              + "if ($all.Count -ne 1) { throw 'Ambiguous task identity' }; "
+              + "$i = Get-ScheduledTaskInfo -TaskName " + _ps_quote(name) + " -TaskPath '\\' -ErrorAction Stop; "
+              + "[ordered]@{ State=[string]$all[0].State; LastTaskResult=[int64]$i.LastTaskResult; "
+              + "LastRunTime=[string]$i.LastRunTime } | ConvertTo-Json -Compress\n")
+    result = _run(_encoded_ps(script))
+    if result.returncode:
+        raise _failure("query", result)
+    output = result.stdout.strip()
+    if output == "ASTRID_NOT_FOUND":
+        return None
+    try:
+        observed = json.loads(output.splitlines()[-1])
+    except (IndexError, ValueError) as failure:
+        raise RuntimeError("The Scheduled Task result is unreadable.") from failure
+    return parse_scheduled_task_result(observed)
 
 
 def is_registered(descriptor: dict, command: list[str], system: str | None = None) -> bool:

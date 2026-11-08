@@ -499,3 +499,146 @@ def test_descriptor_rejects_unowned_names_and_platform_mismatch(tmp_path):
     descriptor["name"] = descriptor["unit"]
     with pytest.raises(ValueError, match="another system"):
         platform.is_active(descriptor, system="darwin")
+
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "installer"
+
+
+def _captured_task_rows():
+    """Real Task Scheduler values from the Windows update wait of run 42495154518."""
+    rows = [json.loads(line) for line in
+            (FIXTURES / "windows-update-wait-run-42495154518.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows and all(row["scheduled_task"] for row in rows)
+    return rows
+
+
+def test_captured_task_scheduler_wait_parses_as_the_exit_1_it_was():
+    # 30 polls while the status route said "active": the task was Ready with LastTaskResult 1 throughout.
+    from datetime import datetime
+    started = int(datetime(2026, 11, 8, 15, 35, 35).timestamp())  # [string] LastRunTime is local time.
+    for row in _captured_task_rows():
+        task = row["scheduled_task"]
+        observed = {"State": task["state"], "LastTaskResult": task["last_result"],
+                    "LastRunTime": task["last_run"]}
+        assert platform.parse_scheduled_task_result(observed) == {
+            "exit_code": 1, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "started_at": started, "bound": "start-time"}
+        if row["status"] is not None:
+            assert row["status"]["state"] == "active" and row["status"]["launch_status"] == "acknowledged"
+
+
+@pytest.mark.parametrize("change", [
+    {"State": "Running", "LastTaskResult": 0x41301},
+    {"LastTaskResult": 0x41303, "LastRunTime": "11/30/1999 00:00:00"},
+    {"State": "Queued"},
+    {"State": "Disabled"},
+    {"LastRunTime": ""},
+    {"LastRunTime": "not a time"},
+    {"LastTaskResult": "1"},
+], ids=["running", "never-run", "queued", "disabled", "no-run-time", "unparsable-time", "non-integer"])
+def test_captured_task_values_without_positive_evidence_are_none(change):
+    task = _captured_task_rows()[0]["scheduled_task"]
+    observed = {"State": task["state"], "LastTaskResult": task["last_result"], "LastRunTime": task["last_run"]}
+    observed.update(change)
+    assert platform.parse_scheduled_task_result(observed) is None
+
+
+def test_task_result_reports_hresult_unsigned():
+    observed = {"State": "Ready", "LastTaskResult": -2147024894, "LastRunTime": "11/08/2026 15:35:35"}
+    assert platform.parse_scheduled_task_result(observed)["exit_code"] == 0x80070002
+
+
+def _windows_result(tmp_path, monkeypatch, output, returncode=0):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    calls = []
+
+    def run(args):
+        script = base64.b64decode(args[-1]).decode("utf-16le") if "-EncodedCommand" in args else ""
+        if "WindowsIdentity" in script:
+            return completed(args, stdout="S-1-5-21-2")
+        calls.append(script)
+        return completed(args, returncode=returncode, stdout=output, stderr="denied" if returncode else "")
+
+    monkeypatch.setattr(platform, "_run", run)
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="win32")
+    return descriptor, calls
+
+
+def test_windows_finished_result_queries_only_the_recorded_task(tmp_path, monkeypatch):
+    task = _captured_task_rows()[0]["scheduled_task"]
+    output = json.dumps({"State": task["state"], "LastTaskResult": task["last_result"],
+                         "LastRunTime": task["last_run"]})
+    descriptor, calls = _windows_result(tmp_path, monkeypatch, output)
+    assert platform.finished_result(descriptor)["exit_code"] == 1
+    assert "Get-ScheduledTaskInfo -TaskName 'astrid-update-" in calls[-1]
+    assert "-TaskPath '\\'" in calls[-1]
+    assert "LastRunTime=[string]$i.LastRunTime" in calls[-1]
+
+
+def test_windows_finished_result_absent_task_and_query_failure(tmp_path, monkeypatch):
+    descriptor, _ = _windows_result(tmp_path / "absent", monkeypatch, "ASTRID_NOT_FOUND")
+    assert platform.finished_result(descriptor) is None
+    descriptor, _ = _windows_result(tmp_path / "denied", monkeypatch, "", returncode=1)
+    with pytest.raises(RuntimeError, match="Could not query"):
+        platform.finished_result(descriptor)
+    descriptor, _ = _windows_result(tmp_path / "garbled", monkeypatch, "not json")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        platform.finished_result(descriptor)
+
+
+@pytest.mark.parametrize("stdout,returncode,expected", [
+    ("ActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainStartTimestamp=@1794152135\n", 0, (1, 1794152135)),
+    ("ActiveState=inactive\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, (0, 1794152135)),
+    ("ActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainStartTimestamp=\n", 0, None),
+    ("ActiveState=active\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, None),
+    ("ActiveState=activating\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, None),
+    ("", 4, None),
+], ids=["failed", "succeeded", "never-started", "active", "activating", "collected"])
+def test_linux_finished_result_mirrors_unit_state(tmp_path, monkeypatch, stdout, returncode, expected):
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, returncode, stdout))
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="linux")
+    result = platform.finished_result(descriptor)
+    assert (None if result is None else (result["exit_code"], result["started_at"])) == expected
+    assert calls[-1][:5] == ["systemctl", "--user", "show", descriptor["name"], "--timestamp=unix"]
+
+
+def _launchd_capture(name):
+    return (FIXTURES / f"launchctl-print-{name}-run-42491171373.txt").read_text(encoding="utf-8")
+
+
+def test_captured_launchd_print_parses_state_and_last_exit():
+    # Real launchctl print output (Runtime LaunchAgent, macOS fresh run 42491171373).
+    assert platform.parse_launchd_result(_launchd_capture("running")) is None  # pid, (never exited)
+    finished = platform.parse_launchd_result(_launchd_capture("not-running-exit-0"))
+    assert finished == {"exit_code": 0, "evidence": "launchd state=not running last exit code",
+                        "started_at": None, "bound": "command"}
+    # The same output after a non-zero exit (launchd prints the decimal status).
+    failed = _launchd_capture("not-running-exit-0").replace("last exit code = 0", "last exit code = 1")
+    assert platform.parse_launchd_result(failed)["exit_code"] == 1
+    never_ran = _launchd_capture("not-running-exit-0").replace("runs = 1", "runs = 0").replace(
+        "last exit code = 0", "last exit code = (never exited)")
+    assert platform.parse_launchd_result(never_ran) is None
+    signalled = _launchd_capture("not-running-exit-0").replace(
+        "last exit code = 0", "last terminating signal = Killed: 9")
+    assert platform.parse_launchd_result(signalled) is None
+
+
+def test_mac_finished_result_requires_the_exact_loaded_command(tmp_path, monkeypatch):
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="darwin")
+    printed = _launchd_capture("not-running-exit-0").replace("last exit code = 0", "last exit code = 1")
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, stdout=printed))
+    monkeypatch.setattr(platform, "is_registered", lambda d, command, system=None: command == ["worker"])
+    assert platform.finished_result(descriptor)["exit_code"] == 1
+    assert calls[-1] == ["launchctl", "print", f"{descriptor['domain']}/{descriptor['name']}"]
+
+    def foreign(*_args, **_kwargs):
+        raise RuntimeError("The launchd update service command does not match its accepted operation.")
+
+    monkeypatch.setattr(platform, "is_registered", foreign)
+    with pytest.raises(RuntimeError, match="does not match"):
+        platform.finished_result(descriptor)
+    monkeypatch.setattr(platform, "is_registered", lambda *_args, **_kwargs: False)
+    assert platform.finished_result(descriptor) is None
