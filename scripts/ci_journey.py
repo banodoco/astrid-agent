@@ -1401,6 +1401,10 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
     if not hosted_windows_runner():
         changes.update({"HOME": str(home), "USERPROFILE": str(home),
                         "LOCALAPPDATA": str(local), "APPDATA": str(run_root / "appdata")})
+    if sys.platform.startswith("linux") and "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+        # `playwright install` caches Chromium under the runner's real HOME. Point the
+        # run-owned HOME at that cache so the browser that clicks Update now is found.
+        changes["PLAYWRIGHT_BROWSERS_PATH"] = str(Path.home() / ".cache" / "ms-playwright")
     if sys.platform == "win32":
         native_local = str(_windows_local_application_data()) if hosted_windows_runner() else os.environ.get("LOCALAPPDATA")
         changes[windows.NATIVE_RUNTIME_LOG_DIR_ENV] = (

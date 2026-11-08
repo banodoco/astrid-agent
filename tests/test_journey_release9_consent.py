@@ -4,6 +4,7 @@ Release 9's plain install stops for setup consent with no terminal unless --yes 
 passed. bootstrap_release9 must hand its Agent checkout to the bootstrap helper, so
 the pinned Agent's CLI is read and --yes is added.
 """
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,3 +57,17 @@ def test_fresh_install_with_consent_gate_adds_yes(tmp_path):
 
 def test_no_agent_checkout_means_no_consent_gate(tmp_path):
     assert journey.installer_has_consent_gate(None, tmp_path / "manifest.json") is False
+
+
+def test_linux_run_home_keeps_playwright_browsers_on_the_runner_cache(tmp_path, monkeypatch):
+    from scripts import ci_journey
+
+    runner_home = tmp_path / "runner"
+    monkeypatch.setenv("HOME", str(runner_home))
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setattr(ci_journey.sys, "platform", "linux")
+    monkeypatch.setattr(ci_journey, "hosted_windows_runner", lambda: False)
+    run_root = tmp_path / "run"
+    with ci_journey.isolated_environment(run_root, tmp_path / "root", tmp_path / "data"):
+        assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(runner_home / ".cache" / "ms-playwright")
+        assert os.environ["HOME"] == str(run_root / "home")
