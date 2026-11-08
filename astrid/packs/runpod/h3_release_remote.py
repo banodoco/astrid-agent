@@ -52,10 +52,11 @@ def atomic_json(path, value):
 def download_model(row, destination, repository, deadline, *, opener=None, chunk_bytes=64 << 20):
     """Adapt the old H3 row/signature onto the shared verified downloader."""
     destination = Path(destination)
-    row_parts = Path(row["path"]).parts
-    if len(destination.parts) >= len(row_parts) and destination.parts[-len(row_parts):] == row_parts:
-        models_root = destination.parents[len(row_parts) - 1]
-        relative_destination = "/".join(row_parts)
+    # ``path`` is the repository file (the resolve URL); ``destination`` is the local install.
+    local_parts = Path(row.get("destination", row["path"])).parts
+    if len(destination.parts) >= len(local_parts) and destination.parts[-len(local_parts):] == local_parts:
+        models_root = destination.parents[len(local_parts) - 1]
+        relative_destination = "/".join(local_parts)
     else:
         models_root = destination.parent
         relative_destination = destination.name
@@ -93,7 +94,9 @@ def manifest_for(request, facts):
         "volume": request["volume"], "candidate_namespace": request["root"],
         "platform": {"python": recipe["python"], "os": "linux", "cuda": "13.0",
                      "image": recipe["image"]},
-        "runtime": runtime, "models": request["lock"]["models"],
+        # The model-root inventory is the local layout: each row's local destination.
+        "runtime": runtime,
+        "models": [{**row, "path": row.get("destination", row["path"])} for row in request["lock"]["models"]],
         "model_root": request["root"] + "/models",
         "recipe_sha256": request["recipe_sha256"],
     }
@@ -266,7 +269,7 @@ exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-mod
                   "for p in Path(root).rglob('*.py') if '.git' not in p.parts]",
                   self.comfy, self.vibe / "vibecomfy"])
         for row in self.request["lock"]["models"]:
-            download_model(row, self.root / "models" / row["path"],
+            download_model(row, self.root / "models" / row.get("destination", row["path"]),
                            self.request["lock"]["repository"], self.request["deadline"])
         facts = json.loads((self.runtime / "environment-receipt.json").read_text())
         manifest = manifest_for(self.request, facts)
