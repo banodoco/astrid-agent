@@ -1920,6 +1920,27 @@ def test_occupied_source_is_not_initialized_or_overwritten(setup):
     assert not context.sources
 
 
+def test_dirty_source_failure_records_reason_and_bounded_porcelain(setup):
+    context = setup[1]
+    original = context.run
+    dirty = "\n".join(f"?? comfyui-qwentts/file{i}.py" for i in range(25))
+    def run(request):
+        if "status" in request.argv:
+            return context.result(dirty)
+        return original(request)
+    context.run = run
+    with pytest.raises(IntegrityError) as caught:
+        install(setup)
+    assert caught.value.code == "integrity_failed" and caught.value.step_id == "source:comfyui"
+    assert caught.value.diagnostics["reason"] == "source contains uncommitted content"
+    assert caught.value.diagnostics["porcelain"].splitlines() == [f"?? comfyui-qwentts/file{i}.py" for i in range(20)]
+    receipt = context.files[ROOT + "/" + runner._RECEIPT]
+    step = next(s for s in receipt["steps"] if s["id"] == "source:comfyui")
+    assert step["facts"]["reason"] == "source contains uncommitted content"
+    assert step["facts"]["porcelain"].count("\n") == 19
+    assert "file24" not in step["facts"]["porcelain"]
+
+
 def test_custody_receipt_refuses_reexecution_until_exact_recovery(setup):
     context = setup[1]
     error = CustodyUnresolved("reconcile job", recovery_handle="/private/recovery/exact-incarnation")
@@ -2347,7 +2368,7 @@ def test_environment_command_env_applies_only_to_its_indexed_bootstrap_command(s
         return original(request)
     context.run = recording
     assert runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline).status == "installed"
-    base = adapter.environment(context.recipe, ROOT)
+    base = runner.engine_process_env(adapter.environment(context.recipe, ROOT), ROOT)
     assert seen == [("pip", {**base, "DEB_PYTHON_INSTALL_LAYOUT": "deb"}), ("venv", base)]
 
 

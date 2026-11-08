@@ -40,7 +40,6 @@ def tuple_sources(tmp_path_factory, request):
         return
     root = tmp_path_factory.mktemp("retained-bootstrap")
     selected = {
-        "runpod-python": Path(os.environ["ASTRID_TEST_RUNPOD_CHECKOUT"]),
         "astrid-runtime": Path(os.environ["ASTRID_RUNTIME_CHECKOUT"]),
         "runpod-lifecycle": Path(os.environ["ASTRID_TEST_LIFECYCLE_CHECKOUT"]),
         "astrid-agent": Path(__file__).resolve().parents[2],

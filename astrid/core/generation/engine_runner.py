@@ -6,6 +6,7 @@ No provider, transport, subprocess or target filesystem implementation lives her
 The latter must never acknowledge a detached/unowned process as an owned server.
 """
 from __future__ import annotations
+from ._engine_python_bootstrap import engine_process_env
 
 import hashlib
 import json
@@ -283,6 +284,7 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+
 class _Runner:
     def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
                  model_cache_device=None, model_cache_mount_id=None):
@@ -313,7 +315,7 @@ class _Runner:
             raise UnsafePathError("model cache requires both device and mount ID")
         self.models_lock = recipes.load_model_lock(self.recipe.models_lock)
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
-        self.env = dict(adapter.environment(self.recipe, plan.root))
+        self.env = engine_process_env(adapter.environment(self.recipe, plan.root), plan.root)
         self.step_id = None
         self.locks, self.commits, self.models, self.steps = {}, {}, [], []
         self.health = None
@@ -498,7 +500,10 @@ class _Runner:
             raise IntegrityError("source origin differs from canonical pin", step_id=self.step_id)
         dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
         if dirty.stdout.strip() or dirty.stdout_truncated:
-            raise IntegrityError("source contains uncommitted content", step_id=self.step_id)
+            error = IntegrityError("source contains uncommitted content", step_id=self.step_id)
+            # Porcelain lines carry only status codes and paths: no contents, no command output.
+            error.porcelain = [line[:200] for line in dirty.stdout.splitlines()[:20]]
+            raise error
         head = self.run(("git", "-C", path, "rev-parse", "HEAD"), check=False)
         if origin.stdout_truncated or head.stdout_truncated:
             raise IntegrityError("source validation output was truncated", step_id=self.step_id)
@@ -845,8 +850,9 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
             if exc.step_id is None:
                 exc.step_id = runner.step_id
             step = next((s for s in plan.steps if s.id == runner.step_id), None)  # None: the sanity hook
+            exc.diagnostics = _failure_diagnostics(exc)
             if step is not None:
-                facts = {"error_code": exc.code}
+                facts = {"error_code": exc.code, **exc.diagnostics}
                 if exc.recovery_handle is not None:
                     facts["recovery_handle"] = exc.recovery_handle
                 failed = StepReceipt(step.id, step.kind, "executed", "failed", facts)
@@ -862,6 +868,21 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
             except (EngineError, OSError):
                 pass
             raise
+
+
+def _failure_diagnostics(exc):
+    """Bounded, secret-free detail for a failed step: fixed reason text and porcelain paths/status only.
+
+    Only IntegrityError is described: its messages are module literals, whereas transport
+    errors may carry command output, so they never reach the receipt or the caller.
+    """
+    if not isinstance(exc, IntegrityError):
+        return {}
+    diagnostics = {"reason": exc.message[:200]}
+    porcelain = getattr(exc, "porcelain", None)
+    if porcelain:
+        diagnostics["porcelain"] = "\n".join(porcelain)
+    return diagnostics
 
 
 def _parse_receipt(raw, plan):

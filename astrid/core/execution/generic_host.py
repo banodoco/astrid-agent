@@ -5533,7 +5533,8 @@ class RuntimeProtocolClient:
                     generation_intent: Mapping[str, Any] | None = None,
                     stage_execution_request: Mapping[str, Any] | None = None,
                     storage_estimate: Mapping[str, int] | None = None,
-                    execution_request: Mapping[str, Any] | None = None):
+                    execution_request: Mapping[str, Any] | None = None,
+                    admitted_source_digest: str | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
         Stages and managed input refs are explicit trusted-host arguments. The
@@ -5563,6 +5564,8 @@ class RuntimeProtocolClient:
             staged_task = _staged_child_task(
                 child=child, inputs=inputs, ordered_inputs=ordered_inputs,
                 stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
+            if admitted_source_digest is not None:
+                staged_task["spec"]["admitted_source_digest"] = admitted_source_digest
         if generation_intent is not None:
             if not isinstance(generation_intent, Mapping):
                 raise ChildBridgeError("generation_intent must be an object")
@@ -5624,6 +5627,9 @@ class RuntimeProtocolClient:
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
                     "spec": {"capability_id": child["capability_id"], "kind": "action",
                              "params" if openai_request else "inputs": child_inputs}}
+            if admitted_source_digest is not None:
+                # The child host refuses to launch source other than this digest.
+                task["spec"]["admitted_source_digest"] = admitted_source_digest
             if openai_request:
                 task["storage_estimate"] = dict(storage_estimate)
             if request is not None and request.get("inputs"):
@@ -9804,6 +9810,13 @@ class GenericPackHost:
                 pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), pack_root)
             except ValueError as exc:
                 raise HostError(str(exc)) from exc
+            # A selected pack command launches through the isolated (-I) worker
+            # with a replaced import path, so the PYTHONPATH sitecustomize hook
+            # can never load there. Its network policy is installed only by the
+            # host's strict network startup, which requires a leaf child that
+            # carries no Runtime connection.
+            if network_broker is not None or _network_policy(record) is not None:
+                allow_runtime_connection = False
         attempt_output_root = (attempt / "outputs").resolve()
         if admission is not None:
             _verify_admitted_source(admission)
@@ -10005,13 +10018,24 @@ class GenericPackHost:
             from astrid.core.pack.imports import selected_pack_environment
 
             env.update(selected_pack_environment(control["map"]))
-            argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
-                    "--pack-command", json.dumps(control)]
+            # pack_command_args accepts a leading -u; only the interpreter can
+            # apply it (the worker re-applies -B itself), so carry it over.
+            leading = list(selected_arguments)
+            unbuffered = False
+            while leading and (leading[0] in {"-u", "-B"} or leading[:2] == ["-X", "utf8"]):
+                unbuffered = unbuffered or leading[0] == "-u"
+                del leading[:2 if leading[0] == "-X" else 1]
+            argv = [sys.executable, "-X", "utf8", *(["-u"] if unbuffered else []), "-m",
+                    "astrid.core.execution.generic_host_worker", "--pack-command", json.dumps(control)]
             if child_bridge is not None:
                 argv.extend(("--child-bridge", str(child_bridge.inherited_fd())))
             if source_channel is not None:
-                argv[5:5] = ["--external-source-fd", str(source_channel.fileno())]
-            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+            # Keep the host-created network hook visible to strict startup, as
+            # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
+            network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
+            env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
@@ -11597,6 +11621,14 @@ class GenericPackHost:
             selected_generation = _selected_pack_generation(record)
             with self._pack_capture(selected_generation):
                 run_source_digest = _run_source_digest(record)
+                # A delegated child carries the digest its parent bridge admitted.
+                # Admission observes live source, so an edit after that must
+                # not reach execution under the admitted identity.
+                raw_spec = task_data.get("spec")
+                admitted_source = (_admitted_spec_envelope(raw_spec).get("admitted_source_digest")
+                                   if isinstance(raw_spec, Mapping) else None)
+                if admitted_source is not None and admitted_source != run_source_digest:
+                    raise HostError("admitted capability source digest changed")
                 # Capture the selected identity, PIN and observed tree together
                 # before execution. Publish only after the fence validates.
                 provenance = _run_pack_provenance(

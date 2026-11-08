@@ -190,6 +190,12 @@ def main(argv=None, *, backend_factory=None):
         }
         public = {'code': exc.code, 'step': step, 'retryable': exc.retryable,
                   'recovery_handle': handle, 'message': messages.get(exc.code, 'Engine operation failed.')}
+        # Bounded failure detail from the engine runner: fixed reason text and dirty porcelain paths/status.
+        diagnostics = getattr(exc, 'diagnostics', None) or {}
+        if isinstance(diagnostics.get('reason'), str):
+            public['reason'] = diagnostics['reason'][:200]
+        if isinstance(diagnostics.get('porcelain'), str):
+            public['porcelain'] = diagnostics['porcelain'][:4000]
         if isinstance(exc, EngineReinstallRequired):
             environment = next((e.name for e in recipe.environments
                                 if e.name == exc.environment), recipe.primary_environment)

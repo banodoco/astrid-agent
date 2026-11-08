@@ -222,6 +222,9 @@ class AttachedEngine:
     def _list_installed_models(cls, schema: dict, models) -> None:
         for locked in models:
             folder, _, filename = locked.destination.rpartition("/")
+            if folder not in cls._LOADERS:
+                # Foley and TTS rows have no loader in this H3 workflow; nothing lists them here.
+                continue
             class_type, field = cls._LOADERS[folder]
             choices = schema[class_type]["input"]["required"][field][0]
             if filename not in choices:

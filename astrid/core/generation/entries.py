@@ -704,11 +704,30 @@ def prepare(path: Path, *, target_client: Any, mode: str, binds: dict[str, Any] 
                                      defaults=defaults, param_map=param_map)
 
 
+def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> dict[str, str]:
+    """Bind a requested ``filename_prefix`` to the workflow's one declared output.
+
+    The output contract names its save node; that node's prefix is the
+    workflow's own binding for the control. Several prefixed outputs stay
+    unbound (ambiguous), and an explicit input or entry bind wins.
+    """
+    if 'filename_prefix' not in requested or 'filename_prefix' in {**workflow.inputs, **(binds or {})}:
+        return {}
+    sinks = {str(output.node_id) for output in getattr(workflow, 'outputs', ())
+             if getattr(output, 'filename_prefix', None)}
+    node = workflow.nodes.get(next(iter(sinks))) if len(sinks) == 1 else None
+    if (node is None or 'filename_prefix' not in {**node.inputs, **node.widgets}
+            or _linked(workflow, node.id, 'filename_prefix')):
+        return {}
+    return {'filename_prefix': _resolve_binding(workflow, 'filename_prefix', f'{node.id}.filename_prefix')}
+
+
 def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
                           binds=None, defaults=None, param_map=None):
     """One validated native binding path for catalog, entry and raw workflows."""
     kind = infer_kind(workflow)
-    mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs}, **(binds or {})}, mode, param_map)
+    binds = {**_output_prefix_binding(workflow, {**(defaults or {}), **values}, binds), **(binds or {})}
+    mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs}, **binds}, mode, param_map)
     mapping.update(_writable_node_bindings(workflow))
     fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode, workflow=workflow)
     values = _dimension_values({'inputs': fields}, values)

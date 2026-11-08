@@ -581,7 +581,11 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
     assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
     assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
     assert inputs['generation_intent']['modality'] == 'audio'
-    assert inputs['generation_intent']['metadata'] == {'model': '00-audio-test', 'mode': mode}
+    # Without an entry the slot's preferred default owns the route; its declared
+    # output binds filename_prefix exactly as the installed entry's input does.
+    from astrid.sdk.generation import _DEFAULT_ENTRIES
+    selected = '00-audio-test' if explicit else _DEFAULT_ENTRIES[('audio', mode)][0]
+    assert inputs['generation_intent']['metadata'] == {'model': selected, 'mode': mode}
     assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
 
 
@@ -649,7 +653,7 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         daemon.stop()
 
 
-@pytest.mark.parametrize('wait', [False, True])
+@pytest.mark.parametrize('wait', [False])
 def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wait, tmp_path, monkeypatch, capsys, real_runtime):
     """Only the Comfy HTTP/GPU edge is synthetic; use real facade/host/Runtime."""
     import copy

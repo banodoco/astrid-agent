@@ -769,10 +769,14 @@ models:
     modality: video
     modes:
       t2v:
+        # The pinned template (video/ltx2_3_t2v) is image-conditioned with conditioning
+        # bypassed (3159 bypass=True) and needs an image file until the text-only graph
+        # lands (ledger M02-40 follow-up). The catalog matches the template.
         supports:
           - prompt
           - negative_prompt
           - seed
+          - image_ref
           - resolution
           - frames
           - fps
@@ -783,6 +787,7 @@ models:
           - enable_safety_checker
         requires:
           - prompt
+          - image_ref
         backends:
           local:
             template: video/ltx2_3_t2v

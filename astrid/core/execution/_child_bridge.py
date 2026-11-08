@@ -873,7 +873,7 @@ class HostChildBridge:
             derived_inputs=refs, **({"stage": request["stage"], "input_refs": stage_refs, "generation_intent": intent,
                 "stage_execution_request": next(item for item in self.policy["stages"]
                     if item["name"] == request["stage"]).get("execution_request")} if staged else {}),
-            **admission_extras, **self.context,
+            **admission_extras, **self.context, admitted_source_digest=(admission.get("source_digest") or None) if isinstance(admission, Mapping) else None,
             **({"execution_request": execution_request} if execution_request is not None else {}))
         task = task_resource(admitted)
         self._assert_lineage(task)
