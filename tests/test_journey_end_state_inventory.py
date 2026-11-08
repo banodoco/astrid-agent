@@ -10,6 +10,13 @@ from scripts.journey_matrix import (END_STATE_INVENTORY, M4_5_SCENARIO_IDS, M4_6
                                     RELEASE1_MATRIX)
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+
+
 def candidate():
     return {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd", strict=True)}
 
@@ -59,7 +66,7 @@ def release1_row(contract, pinned):
         row["checks"]["workspace_content"] = "pass"
     if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
         row["update"] = {
-            "status": "pass", "release_from": 1, "release_to": 2,
+            "status": "pass", "release_from": 1, "release_to": 2, "hosted": HOSTED,
             "old_version": "old", "new_version": "new", "manifest_sha256": "d" * 64,
             "service": {"foreground_fallback": False, "service_path": "/run/astrid.service"},
             "service_names": ["astrid.service"],
@@ -70,7 +77,7 @@ def release1_row(contract, pinned):
         }
     if contract["job_id"] == "direct-windows":
         row["update"] = {
-            "outcome": "updated", "from_release": 1, "to_release": 2,
+            "outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
             "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
             "old_version": "old", "current_version": "new", "exit_code": 0, "refusal": None,
             "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],

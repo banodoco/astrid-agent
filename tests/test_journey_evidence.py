@@ -9,6 +9,13 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+
+
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
@@ -58,14 +65,14 @@ def release1_receipts(tmp_path):
             row["checks"]["workspace_content"] = "pass"
         if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
             name = "astrid.service" if contract["job_id"] == "direct-linux-fresh" else "haus.astrid.runtime.plist"
-            row["update"] = {"status": "pass", "release_from": 1, "release_to": 2,
+            row["update"] = {"status": "pass", "release_from": 1, "release_to": 2, "hosted": HOSTED,
                              "old_version": "old", "new_version": "new", "manifest_sha256": "c" * 64,
                              "service": {"service_path": "/service/" + name, "foreground_fallback": False},
                              "service_names": [name],
                              "checks": {name: "pass" for name in ("new_version", "old_version_retained", "same_service", "no_boundary_handoff", "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled")}}
         if contract["job_id"] == "direct-windows":
             row["update"] = {
-                "outcome": "updated", "from_release": 1, "to_release": 2,
+                "outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
                 "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
                 "old_version": "old", "current_version": "new", "exit_code": 0,
                 "refusal": None, "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],

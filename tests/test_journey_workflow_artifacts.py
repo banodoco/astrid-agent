@@ -95,3 +95,48 @@ def test_live_snapshot_failure_upload_uses_producer_schema_and_size_limit():
     # [long]); accept that alongside Int32 while still rejecting nonintegers.
     assert "($diagnostic.http_status -isnot [int] -and $diagnostic.http_status -isnot [long])" in guard
     assert "($frame.line -isnot [int] -and $frame.line -isnot [long])" in guard
+
+
+def _linux_manager_script():
+    import yaml
+    workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text())
+    step = next(s for s in workflow["jobs"]["journey"]["steps"] if s.get("name") == "Establish Linux user service manager")
+    return step["run"]
+
+
+def test_linux_manager_gets_the_installs_xdg_config_and_the_probe_checks_it():
+    import subprocess
+    script = _linux_manager_script()
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
+    assert script.index("set-environment \"XDG_CONFIG_HOME=$config\"") < script.index("\nprobe_isolated_unit\n")
+    assert 'if [[ "$manager_config/systemd/user" != "$probe_dir" ]]' in script
+    assert 'probe_dir="$config/systemd/user"' in script
+
+
+def _run_manager_assertion(tmp_path, environment):
+    """Run the loud-failure block against a fake `systemctl` that reports `environment`."""
+    import subprocess
+    script = _linux_manager_script()
+    start = script.index("activation=$(")
+    end = script.index("probe_isolated_unit\nprintf 'XDG_RUNTIME_DIR")
+    block = script[start:end]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "systemctl"
+    fake.write_text("#!/bin/bash\nif [[ \"$2\" == show-environment ]]; then cat \"$FAKE_ENV\"; fi\n")
+    fake.chmod(0o755)
+    env_file = tmp_path / "env"
+    env_file.write_text(environment)
+    program = f'config=/run/home/.config; data=/run/home/.local/share\n{block}\necho ok\n'
+    return subprocess.run(["bash", "-c", program], capture_output=True, text=True,
+                          env={"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_ENV": str(env_file)})
+
+
+def test_manager_environment_assertion_fails_loudly_when_xdg_is_missing_or_different(tmp_path):
+    good = "XDG_CONFIG_HOME=/run/home/.config\nXDG_DATA_HOME=/run/home/.local/share\nPATH=/usr/bin\n"
+    ok = _run_manager_assertion(tmp_path, good)
+    assert ok.returncode == 0 and ok.stdout.strip() == "ok"
+    missing = _run_manager_assertion(tmp_path, "XDG_DATA_HOME=/run/home/.local/share\n")
+    assert missing.returncode == 1 and "has no XDG_CONFIG_HOME" in missing.stdout
+    different = _run_manager_assertion(tmp_path, good.replace("/run/home/.config", "/home/runner/.config"))
+    assert different.returncode == 1 and "XDG_CONFIG_HOME is /home/runner/.config, not /run/home/.config" in different.stdout
