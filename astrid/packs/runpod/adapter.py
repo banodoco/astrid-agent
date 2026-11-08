@@ -165,6 +165,9 @@ class RunPodAdapter:
             preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
             idle_seconds=policy["idle_seconds"],
         )
+        # Refuse a changed offer first: before staging, managed sources, the
+        # account lock, any claim record or any provider create.
+        self.lease_owner.selection.consented_offer(consent, self.lease_owner.selection.clock())
         with staged_workflow_path(workflow=None, python=members[0], companion=members[1], source=members[2],
                                   scratch=scratch) as (workflow, _):
             companion = workflow.with_suffix(".vibe.json")

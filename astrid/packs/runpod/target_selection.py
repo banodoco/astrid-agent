@@ -335,6 +335,40 @@ class RunPodSelectionOwner:
         if "lease" in record and self.compatibility is None:
             raise AcquisitionUnresolvedError("retained lease requires its original owner")
 
+    def consented_offer(self, consent: PaidRunConsent, now: datetime) -> tuple[RunPodOffer, datetime]:
+        """Observe the current offer and validate consent against it, before any claim or create.
+
+        A quoted-digest mismatch refuses at zero cost and leaves one secret-free
+        refusal record beside (never in) the custody journal.
+        """
+        try:
+            offer = self.observe_offer()
+        except Exception:
+            raise PaidSelectionError("current RunPod offer could not be confirmed") from None
+        observed = offer.digest(self.preferences)
+        if consent.offer_digest != observed:
+            self._record_offer_refusal(offer, observed, consent.offer_digest, now)
+            raise PaidSelectionError(
+                "offer or rate changed; disclose it and obtain fresh paid consent "
+                f"(quoted {str(consent.offer_digest)[:80]}, observed {observed})")
+        return offer, consent.validate(offer, self.preferences, now)
+
+    def _record_offer_refusal(self, offer: RunPodOffer, observed: str, quoted: Any, now: datetime) -> None:
+        # Diagnostic only: a failure to write it never masks or changes the refusal.
+        record = {"schema": "astrid.runpod.offer-refusal.v1", "refused_at": now.isoformat(),
+                  "offer": asdict(offer), "run_offer_digest": observed,
+                  "quoted_offer_digest": quoted if isinstance(quoted, str) else repr(quoted)[:80]}
+        path = self.path.with_name("offer-refusal.json")
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if path.is_symlink() or path.parent.resolve() != path.parent:
+                return
+            temporary = path.with_name(f".offer-refusal.{uuid.uuid4().hex}.tmp")
+            temporary.write_text(json.dumps(record, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        except (OSError, ValueError):
+            pass
+
     async def select(self, consent: PaidRunConsent, *, dry_run: bool = False) -> Mapping[str, Any]:
         return await self._select(consent, dry_run=dry_run)
 
@@ -343,11 +377,7 @@ class RunPodSelectionOwner:
         p, now = self.preferences, self.clock()
         if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
             raise PaidSelectionError("this target requires admission through the retained lease owner")
-        try:
-            offer = self.observe_offer()
-        except Exception:
-            raise PaidSelectionError("current RunPod offer could not be confirmed") from None
-        expires = consent.validate(offer, p, now)
+        offer, expires = self.consented_offer(consent, now)
         preview = {"offer": asdict(offer), "max_usd": consent.max_usd, "deadline": consent.deadline,
                    "expires_at": expires.isoformat(), "claim_handle_path": str(self.path)}
         if dry_run:

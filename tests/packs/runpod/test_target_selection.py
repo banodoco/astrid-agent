@@ -426,3 +426,57 @@ def test_no_volume_legacy_worker_route_refuses_before_renting(case):
     with pytest.raises(PaidSelectionError, match="retained lease owner"):
         asyncio.run(case.owner.select(replace(case.grant, offer_digest=case.offer.digest(preferences))))
     assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+def test_mismatched_digest_refuses_before_any_claim_or_pod_create(case, monkeypatch):
+    def unreachable(*args, **kwargs):
+        raise AssertionError("claim or pod create reached before consent validation")
+
+    monkeypatch.setattr(selection, "create_target_record_exclusive", unreachable)
+    monkeypatch.setattr(selection, "target_owner", unreachable)
+    monkeypatch.setattr(selection.acquire_target, "__wrapped__", unreachable)
+    case.owner.config_factory = unreachable
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        asyncio.run(case.owner.select(replace(case.grant, offer_digest="sha256:" + "9" * 64)))
+    assert not case.owner.path.exists() and case.creates == case.configs == 0
+
+
+def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
+    case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
+    observed = case.offer.digest(case.prefs)
+    with pytest.raises(PaidSelectionError, match="offer or rate changed") as raised:
+        asyncio.run(case.owner.select(case.grant))
+    assert case.grant.offer_digest in str(raised.value) and observed in str(raised.value)
+    record = json.loads(case.owner.path.with_name("offer-refusal.json").read_text())
+    assert record["schema"] == "astrid.runpod.offer-refusal.v1"
+    assert record["offer"] == {"provider_account_ref": "account-a", "gpu_type": "preferred-gpu",
+                               "hourly_usd": 1.5, "offer_id": "offer-2", "datacenter_id": None,
+                               "gpu_type_id": None}
+    assert record["run_offer_digest"] == observed
+    assert record["quoted_offer_digest"] == case.grant.offer_digest
+    assert "fake-only" not in json.dumps(record)
+    assert not case.owner.path.exists() and case.creates == 0
+
+
+def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch):
+    from astrid.packs.runpod import adapter
+
+    monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
+    owner = SimpleNamespace(selection=case.owner)
+    facade = adapter.RunPodAdapter(lease_owner=owner, placement=None,
+                                   installation=SimpleNamespace(engine="comfyui"), validate=None)
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("preparation reached before consent validation")
+
+    facade.prepare = facade.bind_endpoint = unreachable
+    monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
+              "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
+              "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
+              "idle_seconds": 60}
+    inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        facade.bind_task(policy, inputs, invocation_id="invocation-1", scratch=None,
+                         begin_lease=unreachable, retain_bridge=unreachable, retire_bridge=unreachable)
+    assert not case.owner.path.exists() and case.creates == case.configs == 0
