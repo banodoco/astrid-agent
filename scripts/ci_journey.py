@@ -1897,12 +1897,25 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     return output
 
 
-def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path) -> list[str | Path]:
+def installer_has_consent_gate(script: Path) -> bool:
+    """Whether this installer itself offers --yes (read from its source, not from a release number).
+
+    The script is read, never run: an installer that predates --help or the consent gate
+    would treat a probe invocation as an install.
+    """
+    try:
+        return "--yes" in script.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+
+
+def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path,
+                    *, consent_gate: bool = False) -> list[str | Path]:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
         flags.append("--update")
-    elif mode == "install":
+    elif mode == "install" and consent_gate:
         # A fresh install asks for setup consent and the journey has no terminal, so it
         # accepts the recommended choices as a person would. Updates and repairs of an
         # existing install ask nothing and are never given --yes.
@@ -1912,7 +1925,8 @@ def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path) -> l
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
               evidence: Path, root: Path, data: Path) -> None:
-    flags = bootstrap_flags(manifest_path, mode, root, data)
+    installer = app / "public" / ("install.ps1" if sys.platform == "win32" else "install")
+    flags = bootstrap_flags(manifest_path, mode, root, data, consent_gate=installer_has_consent_gate(installer))
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
