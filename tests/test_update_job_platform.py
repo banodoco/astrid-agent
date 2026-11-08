@@ -528,13 +528,6 @@ def test_captured_task_scheduler_wait_parses_as_the_exit_1_it_was():
             assert row["status"]["state"] == "active" and row["status"]["launch_status"] == "acknowledged"
 
 
-def test_captured_task_values_prefer_the_unambiguous_unix_start():
-    task = _captured_task_rows()[0]["scheduled_task"]
-    observed = {"State": task["state"], "LastTaskResult": task["last_result"],
-                "LastRunTime": task["last_run"], "LastRunUnix": 1794152135}
-    assert platform.parse_scheduled_task_result(observed)["started_at"] == 1794152135
-
-
 @pytest.mark.parametrize("change", [
     {"State": "Running", "LastTaskResult": 0x41301},
     {"LastTaskResult": 0x41303, "LastRunTime": "11/30/1999 00:00:00"},
@@ -575,7 +568,7 @@ def _windows_result(tmp_path, monkeypatch, output, returncode=0):
 def test_windows_finished_result_queries_only_the_recorded_task(tmp_path, monkeypatch):
     task = _captured_task_rows()[0]["scheduled_task"]
     output = json.dumps({"State": task["state"], "LastTaskResult": task["last_result"],
-                         "LastRunTime": task["last_run"], "LastRunUnix": 1794152135})
+                         "LastRunTime": task["last_run"]})
     descriptor, calls = _windows_result(tmp_path, monkeypatch, output)
     assert platform.finished_result(descriptor)["exit_code"] == 1
     assert "Get-ScheduledTaskInfo -TaskName 'astrid-update-" in calls[-1]

@@ -372,9 +372,9 @@ _WINDOWS_NOT_AN_EXIT = {0x41300, 0x41301, 0x41302, 0x41303, 0x41304, 0x41305, 0x
 def parse_scheduled_task_result(observed: object) -> dict | None:
     """Read Get-ScheduledTask/Get-ScheduledTaskInfo fields; None without a finished run.
 
-    ``LastRunTime`` is PowerShell's ``[string]`` (invariant culture, local
-    time, MM/dd/yyyy HH:mm:ss) form; ``LastRunUnix``, when present, is the
-    same instant without local-time ambiguity and is preferred.
+    ``LastRunTime`` is PowerShell's ``[string]`` form (invariant culture,
+    local time, MM/dd/yyyy HH:mm:ss), as captured on the live runner; it is
+    read in this machine's local time, the clock Task Scheduler used.
     """
     if not isinstance(observed, dict):
         raise RuntimeError("The Scheduled Task result is unreadable.")
@@ -382,13 +382,11 @@ def parse_scheduled_task_result(observed: object) -> dict | None:
     if (observed.get("State") != "Ready" or type(code) is not int
             or code in _WINDOWS_NOT_AN_EXIT or not isinstance(last_run, str) or not last_run):
         return None
-    started = observed.get("LastRunUnix")
-    if type(started) is not int:
-        try:
-            from datetime import datetime
-            started = int(datetime.strptime(last_run, "%m/%d/%Y %H:%M:%S").timestamp())
-        except (ValueError, OverflowError, OSError):
-            return None
+    try:
+        from datetime import datetime
+        started = int(datetime.strptime(last_run, "%m/%d/%Y %H:%M:%S").timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
     # LastTaskResult is a DWORD; report HRESULT-style values unsigned.
     return {"exit_code": code & 0xFFFFFFFF, "evidence": "Scheduled Task State=Ready LastTaskResult",
             "started_at": started, "bound": "start-time"}
@@ -457,9 +455,8 @@ def finished_result(descriptor: dict, system: str | None = None) -> dict | None:
               + _ps_quote(name) + " }); if ($all.Count -eq 0) { Write-Output 'ASTRID_NOT_FOUND'; exit 0 }; "
               + "if ($all.Count -ne 1) { throw 'Ambiguous task identity' }; "
               + "$i = Get-ScheduledTaskInfo -TaskName " + _ps_quote(name) + " -TaskPath '\\' -ErrorAction Stop; "
-              + "$unix = $null; if ($i.LastRunTime) { $unix = [DateTimeOffset]::new($i.LastRunTime).ToUnixTimeSeconds() }; "
               + "[ordered]@{ State=[string]$all[0].State; LastTaskResult=[int64]$i.LastTaskResult; "
-              + "LastRunTime=[string]$i.LastRunTime; LastRunUnix=$unix } | ConvertTo-Json -Compress\n")
+              + "LastRunTime=[string]$i.LastRunTime } | ConvertTo-Json -Compress\n")
     result = _run(_encoded_ps(script))
     if result.returncode:
         raise _failure("query", result)
