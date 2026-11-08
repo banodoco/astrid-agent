@@ -283,6 +283,17 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 
+
+# Python bytecode written into a pinned source tree (by a build, an import on the pod, or
+# a compile) is not uncommitted source. These two named excludes are the only ones the
+# source revalidation applies; every other untracked or modified path still fails.
+_BYTECODE_EXCLUDES = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc")
+
+
+def _source_status_argv(path):
+    return ("git", "-C", path, "status", "--porcelain", "--untracked-files=all", "--", ".", *_BYTECODE_EXCLUDES)
+
+
 class _Runner:
     def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
                  model_cache_device=None, model_cache_mount_id=None):
@@ -496,7 +507,7 @@ class _Runner:
             changed = True
         elif origin.stdout.strip() != source.pin.repository:
             raise IntegrityError("source origin differs from canonical pin", step_id=self.step_id)
-        dirty = self.run(("git", "-C", path, "status", "--porcelain", "--untracked-files=all"))
+        dirty = self.run(_source_status_argv(path))
         if dirty.stdout.strip() or dirty.stdout_truncated:
             raise IntegrityError("source contains uncommitted content", step_id=self.step_id)
         head = self.run(("git", "-C", path, "rev-parse", "HEAD"), check=False)
