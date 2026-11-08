@@ -308,6 +308,9 @@ def _build_inputs(source: str, revision: str | None, packs: Mapping[str, str],
     return builds, (_toolchain(selected_toolchain) if builds else None)
 
 
+PACK_AVAILABLE_AFTER_HOST_START = "The pack is available after the host's next start."
+
+
 def _handle_add(args: argparse.Namespace) -> int:
     pack_id = args.pack_id
     subpath = args.subpath
@@ -349,7 +352,7 @@ def _handle_add(args: argparse.Namespace) -> int:
         raise
     print(f"Installed {pack_id} at {result.paths[pack_id]} (transaction {result.transaction_id}).")
     if result.refresh_pending:
-        print("Refresh acknowledgment is pending; retry the committed transaction refresh.", file=sys.stderr)
+        print(PACK_AVAILABLE_AFTER_HOST_START)
     return 0
 
 

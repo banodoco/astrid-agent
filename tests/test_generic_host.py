@@ -5131,3 +5131,42 @@ def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monke
     monkeypatch.setattr(host, "_renew_executor_registration", broken)
     assert host.acknowledge_pack_refresh() is False
     assert refresh_pending(packs_root=personal)
+
+
+def test_frozen_profile_without_the_personal_root_still_discovers_it(tmp_path, monkeypatch):
+    """Cold start: the host resolves the personal root itself; a pre-install frozen profile cannot hide it."""
+    from astrid.core.execution import generic_host
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    frozen_root = tmp_path / "frozen"
+    _write_manifest(frozen_root / "frozen_echo", capability_id="frozen.echo")
+
+    class FrozenCustody:
+        # The retained profile names only its own roots (never the personal collection).
+        _launch_roots = [str(frozen_root.resolve())]
+
+        def verify(self, **_kwargs):
+            return None
+
+        def orchestrator_definitions(self, _roots):
+            return iter(())
+
+        def source_for(self, _path):
+            return None
+
+        def select(self, _record, **_kwargs):
+            return None
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    monkeypatch.setattr(generic_host, "_runtime_external_sources", FrozenCustody())
+
+    host = GenericPackHost(pack_roots=[frozen_root])
+    assert str(personal.resolve()) not in FrozenCustody._launch_roots
+    assert personal.resolve() in host.pack_roots
+    host.discover()
+
+    assert {"frozen.echo", "personal.echo"} <= set(host.capabilities)

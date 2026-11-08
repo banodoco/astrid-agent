@@ -6439,15 +6439,13 @@ class GenericPackHost:
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
         # The personal collection (where `astrid packs add` installs) is always
-        # discovered; it is added after the custody check because it is a
-        # product location, not a caller-selected root. Under retained Runtime
-        # source custody it joins only when custody already names it.
+        # a host pack root, resolved here at start. A frozen profile's
+        # additional_pack_roots may predate the install, so the host never
+        # depends on that list to see the personal collection.
         from astrid.personal_packs_root import resolve_personal_packs_root
         personal_root = resolve_personal_packs_root()
         self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
-        if (personal_root is not None and personal_root.is_dir()
-                and (_runtime_external_sources is None
-                     or str(personal_root) in _runtime_external_sources._launch_roots)):
+        if personal_root is not None:
             configured_roots.append(personal_root)
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
         self.client = client
