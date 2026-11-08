@@ -73,9 +73,11 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "update-bootstrap-process.json", "update-bootstrap-stdout.log", "update-bootstrap-stderr.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "verify-observe.json", "verify-observe.log", "windows-update-manifest.json",
-    "windows-update-SHA256SUMS", "windows-update-scheduler-events.json", "windows-update-process-capture.json", "windows-update-stop-task-state.json", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
+    "windows-update-SHA256SUMS", "windows-update-scheduler-events.json", "windows-update-process-capture.json", "windows-update-wait.jsonl", "windows-update-job.log", "windows-update-stop-task-state.json", "update-task-labels.log", "update-task-state.log", "update-service-labels.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
+    "update-job-journal.log", "update-job-record.json", "update-transaction.json",
+    "update-transaction-status.json", "runtime-data-runtime.log", "runtime-real-home-runtime.log", "macos-file-listing.txt",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -640,8 +642,142 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
               file=sys.stderr, flush=True)
 
 
+def _regular_file_info(path: Path):
+    """lstat of a regular, non-link file, or None."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        return None
+    return info
+
+
+def capture_update_transaction_status(evidence: Path, run_root: Path, phase: str) -> None:
+    """Say whether the update journal exists (path and size) or is explicitly absent."""
+    path = run_root / "program" / "update-transaction.json"
+    record = {"schema_version": 1, "phase": phase, "path": str(path)}
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        record["status"] = "absent"
+    except OSError as exc:
+        record.update(status="error", error=type(exc).__name__)
+    else:
+        if _regular_file_info(path) is None:
+            record["status"] = "unsafe_type"
+        else:
+            record.update(status="present", bytes=info.st_size)
+    try:
+        write_json(evidence / "update-transaction-status.json", record)
+    except Exception as exc:
+        print(f"Journey update-transaction status ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+LISTING_LIMIT = 2000
+
+
+def _listing(root: Path) -> list[str]:
+    """Names and sizes only, links not followed, at most LISTING_LIMIT entries."""
+    limit, lines = LISTING_LIMIT, []
+    if not root.is_dir() or root.is_symlink():
+        return [f"{root}: " + ("link, not followed" if root.is_symlink() else "absent")]
+    for directory, names, files in os.walk(root, followlinks=False):
+        for name in sorted(names) + sorted(files):
+            path = Path(directory) / name
+            if len(lines) >= limit:
+                return lines + [f"... truncated at {limit} entries"]
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                lines.append(f"{path}\t{type(exc).__name__}")
+                continue
+            kind = ("link" if stat.S_ISLNK(info.st_mode) else "dir" if stat.S_ISDIR(info.st_mode)
+                    else "file" if stat.S_ISREG(info.st_mode) else "other")
+            lines.append(f"{path}\t{kind}\t{info.st_size if kind == 'file' else '-'}")
+        names.sort()
+    return lines
+
+
+def _account_home() -> Path:
+    """The account's real home directory, whatever HOME this process was given."""
+    if sys.platform == "darwin":
+        import pwd
+        try:
+            return Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except (KeyError, OSError):
+            pass  # evidence capture must not fail on an account without a passwd entry
+    return Path.home()
+
+
+def capture_macos_listing(evidence: Path, run_root: Path, phase: str, home: Path | None = None) -> None:
+    """Show where the Runtime's files really are on macOS, and say which expected logs were found."""
+    home = home if home is not None else _account_home()
+    data = run_root / "data"
+    log_dirs = sorted({*(run_root / "home" / "Library" / "Logs").glob("Astrid*"),
+                       *(home / "Library" / "Logs").glob("Astrid*"),
+                       *(home / "Library" / "Application Support").glob("Astrid*")})
+    # The harness sets HOME to its isolated home, so the account's real home is listed separately.
+    expected = [data / "runtime" / "runtime.log",
+                *(run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / name
+                  for name in ("runtime.log", "runtime-service.log", "service-pack-host.log", "install.log")),
+                *(home / "Library" / "Logs" / "Astrid Runtime" / name
+                  for name in ("runtime.log", "runtime-service.log"))]
+    out = [f"phase={phase}", "# expected logs"]
+    for path in expected:
+        info = _regular_file_info(path)
+        result = (f"found, {info.st_size} bytes" if info is not None
+                  else "missing" if not os.path.lexists(path) else "present but not a regular file")
+        out.append(f"{path}\t{result}")
+        print(f"Journey expected macOS log {path}: {result}", file=sys.stderr, flush=True)
+    for title, root, top_only in ((f"data root top level {data}", data, True),
+                                  (f"data root runtime {data / 'runtime'}", data / "runtime", False),
+                                  *((f"log directory {d}", d, False) for d in log_dirs)):
+        out.append(f"# {title}")
+        if top_only:
+            try:
+                out.extend(f"{c}\t{'dir' if c.is_dir() and not c.is_symlink() else 'link' if c.is_symlink() else 'file'}\t"
+                           f"{c.lstat().st_size if c.is_file() and not c.is_symlink() else '-'}"
+                           for c in sorted(root.iterdir())[:LISTING_LIMIT])
+            except OSError as exc:
+                out.append(f"{root}: {type(exc).__name__}")
+        else:
+            out.extend(_listing(root))
+    if not log_dirs:
+        out.append("# no Astrid* log directory under the profile or the real home")
+    try:
+        (evidence / "macos-file-listing.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"Journey macOS listing ({phase}) failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
+    capture_update_transaction_status(evidence, run_root, phase)
+    if sys.platform == "darwin":
+        capture_macos_listing(evidence, run_root, phase)
+        # The Runtime's own log lives in the data root on macOS, beside its state.
+        source = run_root / "data" / "runtime" / "runtime.log"
+        if _regular_file_info(source) is not None:
+            try:
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / "runtime-data-runtime.log").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except Exception as exc:
+                print(f"Journey Runtime data log capture ({phase}) failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        # A launchd-run Runtime writes under the account's real home, which the harness HOME does not reach.
+        real = _account_home() / "Library" / "Logs" / "Astrid Runtime" / "runtime.log"
+        if _regular_file_info(real) is not None:
+            try:
+                with real.open("rb") as stream:
+                    stream.seek(max(0, real.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / "runtime-real-home-runtime.log").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except Exception as exc:
+                print(f"Journey real-home Runtime log capture ({phase}) failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
     elif sys.platform == "win32":
@@ -1897,12 +2033,46 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     return output
 
 
-def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
+def installer_has_consent_gate(agent: Path | None, manifest_path: Path) -> bool:
+    """Whether the Agent this manifest pins declares --yes on its `install` command.
+
+    The App's scripts forward their arguments to that Agent, so the question is asked of the
+    Agent that will actually run the install: its CLI source at the pinned commit, read with
+    `git show` (nothing is executed, so an old installer can never take a probe for an install).
+    No checkout, an unknown pin or an unreadable manifest all mean no gate.
+    """
+    if agent is None:
+        return False
+    try:
+        pinned = (read_json(manifest_path).get("agent") or {}).get("sha")
+        if not isinstance(pinned, str) or not re.fullmatch(r"[0-9a-f]{40}", pinned):
+            return False
+        result = subprocess.run(["git", "-C", str(agent), "show", f"{pinned}:astrid/installer/cli.py"],
+                                capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and re.search(r"""add_argument\(\s*["']--yes["']""", result.stdout) is not None
+
+
+def bootstrap_flags(manifest_path: Path, mode: str, root: Path, data: Path,
+                    *, consent_gate: bool = False) -> list[str | Path]:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
         flags.append("--update")
+    elif mode == "install" and consent_gate:
+        # A fresh install asks for setup consent and the journey has no terminal, so it
+        # accepts the recommended choices as a person would. Updates and repairs of an
+        # existing install ask nothing and are never given --yes.
+        flags.append("--yes")
+    return flags
+
+
+def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
+              evidence: Path, root: Path, data: Path, agent: Path | None = None) -> None:
+    # Only a fresh install can be asked for consent, so only it probes the candidate Agent CLI.
+    flags = bootstrap_flags(manifest_path, mode, root, data,
+                            consent_gate=mode == "install" and installer_has_consent_gate(agent, manifest_path))
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
@@ -2379,7 +2549,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
                       f"{type(diagnostic_error).__name__}", file=sys.stderr, flush=True)
         try:
             bootstrap(app, manifest_path, args.shell, "update" if args.leg == "stale-update" else "install",
-                      evidence, root, data)
+                      evidence, root, data, agent=getattr(args, "candidate_agent_checkout", None))
         except Exception:
             if args.leg == "fresh-install" and getattr(args, "mode", "direct") == "direct":
                 capture_failed_windows_fresh_install(root, evidence)
