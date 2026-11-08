@@ -33,6 +33,7 @@ class PreparedRunPodLease:
 
     lease: RunPodLease
     installed: Mapping[str, Any]
+    models: tuple[Mapping[str, Any], ...] = ()
 
 
 def prepare_retained_generation(
@@ -119,7 +120,7 @@ def prepare_retained_generation(
             raise
         return PreparedRunPodLease(
             RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,
-                        invocation.invocation_id, saved), state.installed,
+                        invocation.invocation_id, saved), state.installed, state.models,
         )
 
 

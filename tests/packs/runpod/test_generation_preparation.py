@@ -206,6 +206,28 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     return c
 
 
+def test_inventory_is_the_parsed_receipt_rows_not_the_lock(retained):
+    """Cold and warm prepares carry the receipt's own model rows in memory, split under root/models."""
+    from astrid.core.generation import engine_runner
+    from astrid.core.generation.target_inventory import rows_from_receipt
+
+    c = retained
+    first = c.adapter.prepare(c.request, c.grant)
+    root = c.installation.root
+    receipt = engine_runner._parse_receipt(json.loads(c.pod.files[root + "/.astrid-engine/install.json"]),
+                                           c.installation.plan())
+    expected = rows_from_receipt(receipt.models, root)
+    assert first.models == expected and len(expected) == len(receipt.models) > 0
+    for row, model in zip(expected, receipt.models):
+        assert model.path == f"{root}/models/" + (row["subdir"] + "/" if row["subdir"] else "") + row["name"]
+        assert (row["size"], row["sha256"]) == (model.bytes, model.sha256.removeprefix("sha256:"))
+    assert "models" not in first.installed  # the strictly validated snapshot never carries rows
+    c.host.settle(first.lease)
+    second = c.adapter.prepare(c.request, replace(c.grant, invocation_id="invocation-2"))
+    assert second.models == expected  # reuse rebuilds the rows from the receipt again
+    c.host.settle(second.lease)
+
+
 @pytest.mark.parametrize("retained", [True, False, (True, False), (False, False)], indirect=True)
 def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install_and_a3_release(retained):
     c = retained
@@ -807,3 +829,20 @@ def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_
         assert observed == [DEFAULT_ALLOWED_CUDA_VERSIONS] and host_cuda in observed[0]
     finally:
         adapter.lease_owner.close()
+
+
+def test_host_refuses_bind_whose_receipt_differs_from_the_prepared_install():
+    from astrid.core.execution.generic_host import HostError, _target_inventory_document
+    from astrid.core.generation.target_inventory import parse_document
+
+    row = {"name": "a.bin", "subdir": "x", "size": 3, "sha256": "a" * 64}
+    installed = {"receipt_sha256": "sha256:" + "1" * 64}
+    evidence = {"installed_receipt_sha256": "sha256:" + "1" * 64, "loopback_url": "http://127.0.0.1:9"}
+    document = _target_inventory_document({"installed": installed, "models": (row,)}, evidence)
+    assert parse_document(document, evidence["loopback_url"]) == ("inventory", (row,))
+    for invocation, binding in (
+            ({"installed": installed, "models": (row,)}, {**evidence, "installed_receipt_sha256": "sha256:" + "2" * 64}),
+            ({"installed": {"receipt_sha256": "sha256:" + "2" * 64}, "models": (row,)}, evidence),
+            ({"models": (row,)}, evidence)):
+        with pytest.raises(HostError, match="receipt differs from the prepared installation"):
+            _target_inventory_document(invocation, binding)
