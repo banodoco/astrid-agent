@@ -1522,6 +1522,10 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
         "submit": "spent",
         "wrapper_sha256": hashlib.sha256((_worker_command_source(old, job) + "\n").encode("utf-8")).hexdigest(),
         "descriptor_sha256": _attempt_digest(descriptor),
+        # Binds an OS-recorded run to this attempt: a continuation keeps the
+        # task/unit name, so only a run that started after this submission is
+        # this attempt's.
+        "submitted_at": int(time.time()),
     })
     # Spend the launch authority before the one manager call.  The final
     # reread in _submit_native_attempt is the epoch fence for delayed callers.
@@ -1807,29 +1811,34 @@ def _acknowledged_unresolved(job: object) -> bool:
             and attempt.get("handoff") == {"epoch": attempt["epoch"], "nonce": attempt["nonce"]})
 
 
+START_TIME_TOLERANCE_SECONDS = 2
+
+
 def _dead_worker_exit(job: dict, api) -> int | None:
-    """Return a non-zero exit code only on positive evidence the worker finished."""
+    """Return a non-zero exit code only on positive evidence that this attempt's worker finished."""
     try:
+        attempt = _attempt(job)
         result = api.finished_result(job["platform"])
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return None
-    if not isinstance(result, dict):
+    submitted_at = attempt.get("submitted_at")
+    if (not isinstance(result, dict) or type(submitted_at) is not int
+            or attempt.get("descriptor_sha256") != _attempt_digest(job["platform"])):
         return None
     code = result.get("exit_code")
     if type(code) is not int or code == 0:
         return None
-    finished_at = result.get("finished_at")
-    if finished_at is not None:
-        # The task name is unique per operation; still, a run that ended before
-        # this acceptance is not this worker's result.
-        try:
-            from datetime import datetime
-            ended = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00")).timestamp()
-        except (TypeError, ValueError, OverflowError):
+    bound = result.get("bound")
+    if bound == "start-time":
+        # Same machine, same clock: only a run started at or after this
+        # attempt's submission belongs to it, not a retired attempt's.
+        started = result.get("started_at")
+        if type(started) is not int or started < submitted_at - START_TIME_TOLERANCE_SECONDS:
             return None
-        accepted = job.get("accepted_at")
-        if type(accepted) is not int or ended < accepted - 300:
-            return None
+    elif bound != "command":
+        # "command": the loaded object's exact argv carries this attempt's
+        # epoch and nonce (launchd keeps no start time).
+        return None
     return code
 
 
@@ -1860,12 +1869,13 @@ def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
         # worker is already observed, so a healthy update is never contended.
         if _dead_worker_exit(job, api) is None:
             return None
+        observed_attempt = _attempt_tuple(job)
         stream = _locked(root)
     except (OSError, ValueError, TypeError, KeyError):
         return None
     try:
         job = read_json(root / "install.json").get("update_job")
-        if not _acknowledged_unresolved(job):
+        if not _acknowledged_unresolved(job) or _attempt_tuple(job) != observed_attempt:
             return None
         exit_code = _dead_worker_exit(job, api)
         if exit_code is None:

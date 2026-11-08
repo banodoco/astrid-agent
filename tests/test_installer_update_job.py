@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -1101,9 +1102,11 @@ def _launched_job(tmp_path, monkeypatch, finished):
     return root, launched, adapter
 
 
-def _finished(code):
+def _finished(code, started_at=None, bound="start-time"):
+    # Task Scheduler/systemd report the run's start; a run of this attempt starts after its submission.
     return {"exit_code": code, "evidence": "Scheduled Task State=Ready LastTaskResult",
-            "finished_at": "2099-01-01T00:00:00.0000000Z"}
+            "started_at": int(time.time()) + 1 if started_at is None and bound == "start-time" else started_at,
+            "bound": bound}
 
 
 def test_dead_worker_that_never_claimed_is_failed_with_exit_code_and_log_tail(tmp_path, monkeypatch):
@@ -1159,9 +1162,58 @@ def test_lost_acknowledgement_is_left_for_reconcile(tmp_path, monkeypatch):
     assert "finished_result" not in adapter.calls
 
 
-def test_dead_worker_with_a_result_from_before_acceptance_is_left_unchanged(tmp_path, monkeypatch):
-    stale = dict(_finished(1), finished_at="2000-01-01T00:00:00Z")
-    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, stale)
+def test_a_run_that_started_before_this_attempt_was_submitted_is_left_unchanged(tmp_path, monkeypatch):
+    # A continuation keeps the task name; the previous attempt's exit must not end the new attempt.
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, None)
+    submitted = launched["attempt"]["submitted_at"]
+    _adapter.finished = _finished(1, started_at=submitted - 3)
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    # Within the clock-resolution tolerance it is this attempt's run.
+    _adapter.finished = _finished(1, started_at=submitted - 2)
+    assert update_job.settle_dead_worker(root)["state"] == "failed"
+
+
+def test_an_attempt_with_no_submission_time_is_left_unchanged(tmp_path, monkeypatch):
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    attempt = dict(launched["attempt"])
+    attempt.pop("submitted_at")
+    update_job._write_job(root, launched["operation_id"], state="launching", message="Update job launched.",
+                          fields={"attempt": attempt})
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_an_attempt_replaced_before_the_lock_is_left_unchanged(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    original = adapter.finished_result
+
+    def replaced_during_first_look(descriptor):
+        # A continuation lands between the lockless look and the locked re-read.
+        current = read_json(root / "install.json")["update_job"]
+        epoch = current["attempt"]["epoch"] + 1
+        attempt = dict(current["attempt"], epoch=epoch,
+                       handoff={"epoch": epoch, "nonce": current["attempt"]["nonce"]})
+        update_job._write_job(root, launched["operation_id"], state="launching",
+                              message="Update job launched.", fields={"attempt": attempt})
+        adapter.finished_result = original
+        return original(descriptor)
+
+    adapter.finished_result = replaced_during_first_look
+    before_state = read_json(root / "install.json")["update_job"]["state"]
+    assert update_job.settle_dead_worker(root) is None
+    assert read_json(root / "install.json")["update_job"]["state"] == before_state == "launching"
+
+
+def test_launchd_result_bound_by_its_loaded_command_is_settled(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1, bound="command"))
+    assert update_job.settle_dead_worker(root)["state"] == "failed"
+
+
+def test_a_result_with_an_unknown_binding_is_left_unchanged(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1, started_at=None, bound=None))
     before = (root / "install.json").read_bytes()
     assert update_job.settle_dead_worker(root) is None
     assert (root / "install.json").read_bytes() == before
