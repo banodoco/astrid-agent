@@ -165,15 +165,13 @@ def seed(client, project, generation, task_id=None, create_project=False):
         "metadata": {"seed": "release0-to-release1"}}, key="project-" + generation)["data"]["project_id"]
     timeline = "tst-c1-" + generation
     base = path("projects", project_id, "timelines", timeline)
-    client.request("POST", path("projects", project_id, "timelines"), {
-        "timeline_id": timeline, "name": "User edit " + generation}, key=timeline)
-    revision = "tst-c1-parent-" + generation
-    client.request("POST", base + "/composition-revisions", {
-        "project_id": project_id, "timeline_id": timeline, "expected_head": None,
-        "parent_revision_id": revision, "internal_timeline_revisions": [], "shot_revisions": [],
-        "parent_composition": {"config": {"tracks": [], "clips": [], "metadata": {"user_note": generation}},
-                               "registry": {"assets": {}}, "clips": [], "occurrences": []},
-    }, key="composition-" + generation)
+    # The smallest authentic route: create the timeline the way a Release 9 user does and
+    # keep the head it records. Content is not seeded through a legacy composition write.
+    created = client.request("POST", path("projects", project_id, "timelines"), {
+        "timeline_id": timeline, "name": "User edit " + generation}, key=timeline)["data"]
+    revision, revision_digest = created.get("revision_id"), created.get("content_digest")
+    if not isinstance(revision, str) or not revision or not isinstance(revision_digest, str):
+        raise ValueError("Created timeline records no bootstrap revision")
     preference_path = path("preferences", "project") + "?project_id=" + quote(project_id, safe="")
     preferences = client.request("GET", preference_path)
     if preferences["version"] != 0 or preferences["content"]:
@@ -184,6 +182,7 @@ def seed(client, project, generation, task_id=None, create_project=False):
     payload = ("C1 object " + generation + "\n").encode()
     client.request("POST", path("objects"), payload, key="object-" + generation, binary=True)
     return {"project": project_id, "timeline": timeline, "revision": revision,
+            "revision_digest": revision_digest,
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
@@ -192,19 +191,19 @@ def snapshot(client, keys):
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
     lookup_diagnostic = snapshot_lookup_diagnostic(timeline, keys)
+    generation = keys["generation"]
+    # The bootstrap revision a Release 9 create records is the timeline's identity-bearing
+    # revision. A head pointer is null until a commit, on Release 9 and on the candidate alike.
     try:
-        if timeline["head_revision_id"] != keys["revision"]:
-            raise ValueError("Seeded canonical composition is no longer the head")
+        if timeline["name"] != "User edit " + generation:
+            raise ValueError("Seeded timeline identity differs from the requested data")
+        revision = client.request("GET", base + "/revisions/" + quote(keys["revision"], safe=""))
+        if (revision["revision_id"] != keys["revision"]
+                or revision["content_digest"] != keys["revision_digest"]):
+            raise ValueError("Seeded timeline revision differs from the seeded revision")
     except (KeyError, TypeError) as exc:
         exc.safe_snapshot_lookup = lookup_diagnostic
         raise
-    revision = client.request("GET", base + "/composition-revisions/" + quote(keys["revision"], safe=""))
-    content = revision["payload"]
-    generation = keys["generation"]
-    if (timeline["name"] != "User edit " + generation
-            or content["config"] != {"tracks": [], "clips": [], "metadata": {"user_note": generation}}
-            or content["registry"] != {"assets": {}}):
-        raise ValueError("Seeded canonical timeline content differs from the requested data")
     preference_path = path("preferences", "project") + "?project_id=" + quote(keys["project"], safe="")
     preferences = client.request("GET", preference_path)
     if preferences["content"] != "Keep user changes " + generation:
@@ -224,8 +223,9 @@ def snapshot(client, keys):
             or health.get("schema_digest") != expected_schema_digest):
         raise ValueError("Runtime health does not match the selected schema")
     return {"project": {k: project[k] for k in ("project_id", "slug", "name", "metadata")},
-            "timeline": {"name": timeline["name"], "head": timeline["head_revision_id"],
-                         "revision": {k: revision[k] for k in ("revision_id", "content_digest", "payload")}},
+            "timeline": {"name": timeline["name"],
+                         "revision": {"revision_id": revision["revision_id"],
+                                      "content_digest": revision["content_digest"]}},
             "preferences": {k: preferences[k] for k in ("content", "version")},
             "task": {k: task[k] for k in ("task_id", "state", "spec", "result")},
             "cas_sha256": hashlib.sha256(payload).hexdigest(),
