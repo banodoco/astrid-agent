@@ -5177,7 +5177,10 @@ def test_personal_pack_under_custody_is_admitted_only_with_a_derived_grant(tmp_p
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
     monkeypatch.setattr(generic_host, "_runtime_external_sources", FrozenCustody())
 
-    host = GenericPackHost(pack_roots=[frozen_root])
+    # Under custody the Runtime passes the installed root in the host's roots only
+    # when its derived grant names the personal pack.
+    roots = [frozen_root, personal] if derived_grant else [frozen_root]
+    host = GenericPackHost(pack_roots=roots)
     host.discover()
 
     assert "frozen.echo" in host.capabilities
@@ -5203,5 +5206,5 @@ def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(
     assert personal not in scoped.pack_roots
     assert scoped.pack_roots == (scoped_root.resolve(),)
 
-    default = GenericPackHost(pack_roots=[])
+    default = GenericPackHost(pack_roots=[], personal_collection=True)
     assert personal in default.pack_roots

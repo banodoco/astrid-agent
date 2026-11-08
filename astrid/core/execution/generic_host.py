@@ -6431,6 +6431,7 @@ class GenericPackHost:
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
         pack_capture: Callable[[Any], Any] | None = None,
+        personal_collection: bool = False,
     ):
         self._pack_capture = _select_pack_capture() if pack_capture is None else pack_capture
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
@@ -6441,20 +6442,15 @@ class GenericPackHost:
             if raw_root:
                 configured_roots.append(Path(raw_root).expanduser().resolve())
         self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
-        # The personal collection (where `astrid packs add` installs) is resolved
-        # here at start. Under retained Runtime custody it is admitted only when
-        # the Runtime's derived installed-pack grant already names it; otherwise
-        # it is not a root of this host. Without custody, only a host with no
-        # explicit selected roots gains it, so scoped and child hosts keep
-        # exactly the roots they were given.
-        from astrid.personal_packs_root import resolve_personal_packs_root
-        personal_root = resolve_personal_packs_root()
-        if personal_root is not None:
-            if _runtime_external_sources is not None:
-                _runtime_external_sources.verify()
-                if str(personal_root) in _runtime_external_sources._launch_roots:
-                    configured_roots.append(personal_root)
-            elif not self._explicit_pack_roots:
+        # Under retained Runtime custody the Runtime owns the installed collection:
+        # it passes the installed root in pack_roots and derives its grants, so the
+        # host uses exactly the roots it was given. Outside custody, only the default
+        # `run --register` host resolves the personal collection (where `astrid packs
+        # add` installs) itself; every other construction gets no implicit root.
+        if _runtime_external_sources is None and personal_collection:
+            from astrid.personal_packs_root import resolve_personal_packs_root
+            personal_root = resolve_personal_packs_root()
+            if personal_root is not None:
                 configured_roots.append(personal_root)
         if _runtime_external_sources is not None:
             _runtime_external_sources.verify()
@@ -17333,6 +17329,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     _install_host_vibecomfy_import_root()
     host = GenericPackHost(
         pack_roots=args.pack_root,
+        personal_collection=bool(args.register),
         client=client,
         executor_id=args.executor_id,
         max_concurrency=args.max_concurrency,
