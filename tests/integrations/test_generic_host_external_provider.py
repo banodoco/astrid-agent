@@ -20,12 +20,43 @@ from astrid.core.execution.generic_host import (
     GenericPackHost,
     HostError,
     RuntimeProtocolClient,
-    _hivemind_source_preflight,
 )
 from astrid.core.execution.network_broker import ObservableNetworkBroker
+from astrid.pack_api import VERSION as PACK_API_VERSION
 from astrid_runtime_client import WorkspaceClient
 
 pytestmark = pytest.mark.integration  # needs the Runtime from a second checkout (real_runtime fixture)
+
+
+def _write_v3_pack(
+    pack_root: Path, pack_id: str, name: str, actions: dict, *,
+    version: str = "1.0.0", **header,
+) -> None:
+    """Write a schema v3 fixture pack whose provider actions are declared in pack.yaml.
+
+    Each action is a v3 command action; ``kind: command`` projects to an
+    ``external`` executor, so ``metadata.adapter_family``/``network_policy``
+    and ``secrets`` keep the provider contract each test asserts.
+    """
+    pack_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 3, "id": pack_id, "name": name, "version": version,
+        "pack_api": "%d.%d" % PACK_API_VERSION,
+        "status": "experimental", "domain": "integration", "stability": "experimental",
+        "support": "community", "visibility": "visible",
+        "description": f"{name} test fixture pack.",
+        "permissions": [
+            {"id": "network", "reason": "Provider fixture actions reach a local or declared endpoint."},
+            {"id": "subprocess", "reason": "Provider fixture actions run as command subprocesses."},
+        ],
+        **header,
+        "actions": {
+            local_id: {"description": f"{action.get('name', local_id)} fixture action.", "inputs": [], **action}
+            for local_id, action in actions.items()
+        },
+    }
+    # JSON is a YAML subset: the loader parses this pack.yaml unchanged.
+    (pack_root / "pack.yaml").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 _UPLOAD_BINDING = dict(run_id="run-1", task_id="task-1", attempt_id="attempt-1", lease_id="lease-1", fence=1)
@@ -161,13 +192,7 @@ def test_external_pack_command_imports_from_its_admitted_pack_root(
     test fails if the host forgets to propagate the external pack import root.
     """
     pack_root = tmp_path / "fixture_provider"
-    executor_root = pack_root / "executors" / "echo"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: fixture_provider\nname: Fixture Provider\n"
-        "version: 1.0\ncapabilities: [echo]\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
+    pack_root.mkdir(parents=True)
     (pack_root / "__init__.py").write_text("\n", encoding="utf-8")
     (pack_root / "emit.py").write_text(
         "from pathlib import Path\n"
@@ -179,47 +204,41 @@ def test_external_pack_command_imports_from_its_admitted_pack_root(
         "Path(sys.argv[1]).write_text(body, encoding='utf-8')\n",
         encoding="utf-8",
     )
-    (executor_root / "executor.yaml").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "id": "fixture_provider.echo",
-                "name": "Fixture Provider Echo",
-                "kind": "external",
-                "version": "1.0",
-                "command": {
-                    "argv": [
-                        "{python_exec}",
-                        "-m",
-                        "fixture_provider.emit",
-                        "{out}/response.txt",
-                    ]
+    _write_v3_pack(pack_root, "fixture_provider", "Fixture Provider", {
+        "echo": {
+            "name": "Fixture Provider Echo",
+            "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": [
+                "{python_exec}",
+                "-m",
+                # v3 selected pack commands import the admitted pack root
+                # under its canonical astrid.packs.<pack_id> namespace.
+                "astrid.packs.fixture_provider.emit",
+                "{out}/response.txt",
+            ]}},
+            "outputs": [
+                {
+                    "name": "response",
+                    "type": "file",
+                    "path_template": "{out}/response.txt",
+                }
+            ],
+            "isolation": {
+                "mode": "subprocess",
+                "network": True,
+                "env_passthrough": ["FIXTURE_PROVIDER_URL"],
+            },
+            "metadata": {
+                "adapter_family": "provider",
+                "resource_keys": ["provider"],
+                "network_policy": {
+                    "allowed_protocols": ["dns", "tcp"],
+                    "allowed_destinations": ["127.0.0.1"],
+                    "broker": {"host_managed": True},
                 },
-                "outputs": [
-                    {
-                        "name": "response",
-                        "type": "file",
-                        "path_template": "{out}/response.txt",
-                    }
-                ],
-                "isolation": {
-                    "mode": "subprocess",
-                    "network": True,
-                    "env_passthrough": ["FIXTURE_PROVIDER_URL"],
-                },
-                "metadata": {
-                    "adapter_family": "provider",
-                    "resource_keys": ["provider"],
-                        "network_policy": {
-                            "allowed_protocols": ["dns", "tcp"],
-                            "allowed_destinations": ["127.0.0.1"],
-                            "broker": {"host_managed": True},
-                        },
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+            },
+        },
+    }, capabilities=["echo"])
 
     class ProviderHandler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - stdlib handler API
@@ -283,36 +302,21 @@ def test_external_pack_command_imports_from_its_admitted_pack_root(
 def test_hivemind_without_clean_pinned_source_is_optional_unavailable(tmp_path: Path) -> None:
     """B9.3 must expose an unavailable Hivemind row, never silently advertise it."""
     pack_root = tmp_path / "hivemind"
-    executor_root = pack_root / "executors" / "search"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 2\nid: hivemind\nname: Hivemind\nversion: 2.0\n"
-        "capabilities: [search_corpus]\ncontent:\n  executors: executors\n"
-        "documentation:\n  kind: skill\n  path: skill/SKILL.md\n",
-        encoding="utf-8",
-    )
-    (pack_root / "skill").mkdir()
-    (pack_root / "skill" / "SKILL.md").write_text("# Hivemind fixture\n", encoding="utf-8")
-    (executor_root / "executor.yaml").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "id": "hivemind.search",
-                "name": "Hivemind Search",
-                "kind": "external",
-                "version": "2.0",
-                "command": {"argv": ["{python_exec}", "-c", "pass"]},
-                "outputs": [],
-                "isolation": {
-                    "mode": "subprocess",
-                    "network": True,
-                    "secrets_required": ["HIVEMIND_ANON_KEY"],
-                },
-                "metadata": {"adapter_family": "provider", "required_env": ["HIVEMIND_API_URL"]},
-            }
-        ),
-        encoding="utf-8",
-    )
+    (pack_root / "docs").mkdir(parents=True)
+    (pack_root / "docs" / "SKILL.md").write_text(
+        "---\nname: hivemind\ndescription: Hivemind fixture.\n---\n# Hivemind fixture\n", encoding="utf-8")
+    _write_v3_pack(pack_root, "hivemind", "Hivemind", {
+        "search": {
+            "name": "Hivemind Search",
+            "version": "2.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
+            "outputs": [],
+            "secrets": ["HIVEMIND_ANON_KEY"],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "required_env": ["HIVEMIND_API_URL"]},
+        },
+    }, version="2.0.0", capabilities=["search_corpus"],
+        documentation={"kind": "skill", "path": "docs/SKILL.md"})
     host = GenericPackHost(pack_roots=[pack_root])
     record = host.discover()[0]
     assert record.definition.metadata["source_pack"] == "hivemind"
@@ -338,37 +342,25 @@ def test_external_provider_without_key_is_admitted_by_runtime(tmp_path: Path, re
     server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     pack_root = tmp_path / "provider"
-    executor_root = pack_root / "executors" / "fetch"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\n"
-        "id: provider\nname: Provider\nversion: 1.0\n"
-        "content:\n  executors: executors\n",
-        encoding="utf-8",
-    )
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1,
-        "id": "provider.fetch",
-        "name": "Provider Fetch",
-        "kind": "external",
-        "version": "1.0",
-        "command": {"argv": ["{python_exec}", "-c", f"from urllib.request import urlopen; urlopen('http://127.0.0.1:{server.server_port}/ready', timeout=2).read()"]},
-        "outputs": [],
-        "isolation": {
-            "mode": "subprocess",
-            "network": True,
-            "secrets_required": ["PROVIDER_KEY"],
-        },
-        "metadata": {
-            "adapter_family": "provider",
-            "required_env": ["PROVIDER_KEY"],
-            "network_policy": {
-                "allowed_protocols": ["dns", "tcp"],
-                "allowed_destinations": ["127.0.0.1"],
-                "broker": {"host_managed": True},
+    _write_v3_pack(pack_root, "provider", "Provider", {
+        "fetch": {
+            "name": "Provider Fetch",
+            "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", f"from urllib.request import urlopen; urlopen('http://127.0.0.1:{server.server_port}/ready', timeout=2).read()"]}},
+            "outputs": [],
+            "secrets": ["PROVIDER_KEY"],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {
+                "adapter_family": "provider",
+                "required_env": ["PROVIDER_KEY"],
+                "network_policy": {
+                    "allowed_protocols": ["dns", "tcp"],
+                    "allowed_destinations": ["127.0.0.1"],
+                    "broker": {"host_managed": True},
+                },
             },
         },
-    }), encoding="utf-8")
+    })
 
     daemon = real_runtime()
     try:
@@ -413,27 +405,23 @@ def test_external_provider_without_key_is_admitted_by_runtime(tmp_path: Path, re
 def test_provider_credentials_are_manifest_scoped_and_redacted(tmp_path: Path, provider_env: str) -> None:
     """FAL/GIPHY/OpenAI-shaped provider children see only declared secrets."""
     pack_root = tmp_path / "credential_provider"
-    executor_root = pack_root / "executors" / "echo"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: credential_provider\nname: Credential Provider\n"
-        "version: 1.0\ncontent:\n  executors: executors\n", encoding="utf-8"
-    )
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "credential_provider.echo", "name": "Credential Echo",
-        "kind": "external", "version": "1.0",
-        "command": {"argv": [
-            "{python_exec}", "-c",
-            "import os,sys; print(os.getenv('%s'), os.getenv('FAL_KEY'), os.getenv('OPENAI_API_KEY'), file=sys.stderr); raise SystemExit(2)" % provider_env,
-        ]},
-        "outputs": [],
-        "isolation": {"mode": "subprocess", "network": True, "secrets_required": [provider_env]},
-        "metadata": {"adapter_family": "provider", "network_policy": {
-            "allowed_protocols": ["dns", "tcp"], "allowed_destinations": [],
-            "allow_redirects": False, "proxy": None,
-            "broker": {"host_managed": True},
-        }},
-    }), encoding="utf-8")
+    _write_v3_pack(pack_root, "credential_provider", "Credential Provider", {
+        "echo": {
+            "name": "Credential Echo", "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": [
+                "{python_exec}", "-c",
+                "import os,sys; print(os.getenv('%s'), os.getenv('FAL_KEY'), os.getenv('OPENAI_API_KEY'), file=sys.stderr); raise SystemExit(2)" % provider_env,
+            ]}},
+            "outputs": [],
+            "secrets": [provider_env],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "network_policy": {
+                "allowed_protocols": ["dns", "tcp"], "allowed_destinations": [],
+                "allow_redirects": False, "proxy": None,
+                "broker": {"host_managed": True},
+            }},
+        },
+    })
     credential_source = {"FAL_KEY": "fal-ambient-secret", "GIPHY_API_KEY": "giphy-ambient-secret", "OPENAI_API_KEY": "openai-ambient-secret"}
     credential_source[provider_env] = "declared-fixture-secret"
     host = GenericPackHost(
@@ -470,29 +458,24 @@ def test_provider_network_policy_records_hermetic_dns_tcp_and_denies_redirect(
     thread.start()
     try:
         pack_root = tmp_path / "network_provider"
-        executor_root = pack_root / "executors" / "fetch"
-        executor_root.mkdir(parents=True)
-        (pack_root / "pack.yaml").write_text(
-            "schema_version: 1\nid: network_provider\nname: Network Provider\n"
-            "version: 1.0\ncontent:\n  executors: executors\n", encoding="utf-8"
-        )
         url = "http://127.0.0.1:%d/" % server.server_port
-        (executor_root / "executor.yaml").write_text(json.dumps({
-            "schema_version": 1, "id": "network_provider.fetch", "name": "Network Fetch",
-            "kind": "external", "version": "1.0",
-            "command": {"argv": [
-                "{python_exec}", "-c",
-                "from pathlib import Path; from urllib.request import urlopen; Path('{out}/body').write_bytes(urlopen('%s').read())" % url,
-            ]},
-            "outputs": [{"name": "body", "type": "file", "path_template": "{out}/body"}],
-            "isolation": {"mode": "subprocess", "network": True},
-            "metadata": {"adapter_family": "provider", "network_policy": {
-                "allowed_protocols": ["dns", "tcp"],
-                "allowed_destinations": ["127.0.0.1:%d" % server.server_port],
-                "allow_redirects": False,
-                "broker": {"host_managed": True},
-            }},
-        }), encoding="utf-8")
+        _write_v3_pack(pack_root, "network_provider", "Network Provider", {
+            "fetch": {
+                "name": "Network Fetch", "version": "1.0",
+                "invocation": {"kind": "command", "command": {"argv": [
+                    "{python_exec}", "-c",
+                    "from pathlib import Path; from urllib.request import urlopen; Path('{out}/body').write_bytes(urlopen('%s').read())" % url,
+                ]}},
+                "outputs": [{"name": "body", "type": "file", "path_template": "{out}/body"}],
+                "isolation": {"mode": "subprocess", "network": True},
+                "metadata": {"adapter_family": "provider", "network_policy": {
+                    "allowed_protocols": ["dns", "tcp"],
+                    "allowed_destinations": ["127.0.0.1:%d" % server.server_port],
+                    "allow_redirects": False,
+                    "broker": {"host_managed": True},
+                }},
+            },
+        })
         host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
         record = host.discover()[0]
         host.preflight()
@@ -525,22 +508,17 @@ def test_provider_network_policy_retires_unbrokered_quic_over_udp_fixture(tmp_pa
     thread.start()
     try:
         pack_root = tmp_path / "quic_provider"
-        executor_root = pack_root / "executors" / "quic"
-        executor_root.mkdir(parents=True)
-        (pack_root / "pack.yaml").write_text(
-            "schema_version: 1\nid: quic_provider\nname: QUIC Provider\nversion: 1.0\ncontent:\n  executors: executors\n",
-            encoding="utf-8",
-        )
         port = udp.getsockname()[1]
-        (executor_root / "executor.yaml").write_text(json.dumps({
-            "schema_version": 1, "id": "quic_provider.fetch", "name": "QUIC UDP Fixture",
-            "kind": "external", "version": "1.0",
-            "command": {"argv": ["{python_exec}", "-c", "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'quic-fixture', ('127.0.0.1', %d))" % port]},
-            "outputs": [], "isolation": {"mode": "subprocess", "network": True},
-            "metadata": {"adapter_family": "provider", "network_policy": {
-                "allowed_protocols": ["dns", "udp"], "allowed_destinations": ["127.0.0.1:%d" % port],
-            }},
-        }), encoding="utf-8")
+        _write_v3_pack(pack_root, "quic_provider", "QUIC Provider", {
+            "fetch": {
+                "name": "QUIC UDP Fixture", "version": "1.0",
+                "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'quic-fixture', ('127.0.0.1', %d))" % port]}},
+                "outputs": [], "isolation": {"mode": "subprocess", "network": True},
+                "metadata": {"adapter_family": "provider", "network_policy": {
+                    "allowed_protocols": ["dns", "udp"], "allowed_destinations": ["127.0.0.1:%d" % port],
+                }},
+            },
+        })
         host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
         record = host.discover()[0]
         host.preflight()
@@ -618,23 +596,18 @@ def test_provider_network_policy_retires_unbrokered_aioquic_handshake(tmp_path: 
         asyncio.run(main())
     """), encoding="utf-8")
     pack_root = tmp_path / "quic_pack"
-    executor_root = pack_root / "executors" / "handshake"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: quic_pack\nname: QUIC Pack\nversion: 1.0\n"
-        "content:\n  executors: executors\n", encoding="utf-8"
-    )
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "quic_pack.handshake", "name": "QUIC Handshake",
-        "kind": "external", "version": "1.0",
-            "command": {"argv": ["{python_exec}", "-m", "quic_provider.run", "{out}/proof.txt", str(tmp_path / "cert")], "env": {"PYTHONPATH": os.pathsep.join((sysconfig.get_paths()["purelib"], str(Path(__file__).resolve().parents[2])))}},
-        "outputs": [{"name": "proof", "type": "file", "path_template": "{out}/proof.txt"}],
-        "isolation": {"mode": "subprocess", "network": True},
-        "metadata": {"adapter_family": "provider", "network_policy": {
-            "allowed_protocols": ["dns", "udp"], "allowed_destinations": ["127.0.0.1"],
-            "allow_redirects": False, "proxy": None,
-        }},
-    }), encoding="utf-8")
+    _write_v3_pack(pack_root, "quic_pack", "QUIC Pack", {
+        "handshake": {
+            "name": "QUIC Handshake", "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-m", "quic_provider.run", "{out}/proof.txt", str(tmp_path / "cert")], "env": {"PYTHONPATH": os.pathsep.join((sysconfig.get_paths()["purelib"], str(Path(__file__).resolve().parents[2])))}}},
+            "outputs": [{"name": "proof", "type": "file", "path_template": "{out}/proof.txt"}],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "network_policy": {
+                "allowed_protocols": ["dns", "udp"], "allowed_destinations": ["127.0.0.1"],
+                "allow_redirects": False, "proxy": None,
+            }},
+        },
+    })
     host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
     record = host.discover()[0]
     host.preflight()
@@ -644,20 +617,16 @@ def test_provider_network_policy_retires_unbrokered_aioquic_handshake(tmp_path: 
 
 def test_native_network_command_is_unready_without_enforceable_observable_gateway(tmp_path: Path) -> None:
     pack_root = tmp_path / "native_provider"
-    executor_root = pack_root / "executors" / "native"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: native_provider\nname: Native Provider\nversion: 1.0\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "native_provider.fetch", "name": "Native Fetch",
-        "kind": "external", "version": "1.0",
-        "command": {"argv": ["curl", "https://example.invalid/"]}, "outputs": [],
-        "isolation": {"mode": "subprocess", "network": True},
-        "metadata": {"adapter_family": "provider", "native": True,
-                      "network_policy": {"allowed_protocols": ["tcp"], "allowed_destinations": ["example.invalid:443"]}},
-    }), encoding="utf-8")
+    _write_v3_pack(pack_root, "native_provider", "Native Provider", {
+        "fetch": {
+            "name": "Native Fetch", "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["curl", "https://example.invalid/"]}},
+            "outputs": [],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "native": True,
+                         "network_policy": {"allowed_protocols": ["tcp"], "allowed_destinations": ["example.invalid:443"]}},
+        },
+    })
     host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
     record = host.discover()[0]
     host.preflight()
@@ -682,25 +651,21 @@ def test_native_network_command_is_unready_without_enforceable_observable_gatewa
 def test_clean_pinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Path, real_runtime) -> None:
     """A committed local Hivemind-style pack is admitted by digest and settles via CAS."""
     checkout = tmp_path / "hivemind-checkout"
-    executor_root = checkout / "packs" / "hivemind" / "executors" / "search"
-    executor_root.mkdir(parents=True)
     pack_root = checkout / "packs" / "hivemind"
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 2\nid: hivemind\nname: Hivemind\nversion: 2.0\n"
-        "capabilities: [search_corpus]\ncontent:\n  executors: executors\n"
-        "documentation:\n  kind: skill\n  path: skill/SKILL.md\n",
-        encoding="utf-8",
-    )
-    (pack_root / "skill").mkdir()
-    (pack_root / "skill" / "SKILL.md").write_text("# Hivemind fixture\n", encoding="utf-8")
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "hivemind.search", "name": "Hivemind Search",
-        "kind": "external", "version": "2.0",
-        "command": {"argv": ["{python_exec}", "-c", "import json; from pathlib import Path; Path('{out}/result.json').write_text(json.dumps({'hits': []}), encoding='utf-8')"]},
-        "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.json", "artifact_type": "application/json"}],
-        "isolation": {"mode": "subprocess", "network": True, "secrets_required": ["HIVEMIND_ANON_KEY"]},
-        "metadata": {"adapter_family": "provider", "network_policy": {"allowed_protocols": ["dns", "tcp"], "allowed_destinations": [], "broker": {"host_managed": True}}},
-    }), encoding="utf-8")
+    (pack_root / "docs").mkdir(parents=True)
+    (pack_root / "docs" / "SKILL.md").write_text(
+        "---\nname: hivemind\ndescription: Hivemind fixture.\n---\n# Hivemind fixture\n", encoding="utf-8")
+    _write_v3_pack(pack_root, "hivemind", "Hivemind", {
+        "search": {
+            "name": "Hivemind Search", "version": "2.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "import json; from pathlib import Path; Path('{out}/result.json').write_text(json.dumps({'hits': []}), encoding='utf-8')"]}},
+            "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.json", "artifact_type": "application/json"}],
+            "secrets": ["HIVEMIND_ANON_KEY"],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "network_policy": {"allowed_protocols": ["dns", "tcp"], "allowed_destinations": [], "broker": {"host_managed": True}}},
+        },
+    }, version="2.0.0", capabilities=["search_corpus"],
+        documentation={"kind": "skill", "path": "docs/SKILL.md"})
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "user.email", "fixture@example.invalid"], check=True)
     subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Fixture"], check=True)
@@ -746,23 +711,18 @@ def test_clean_pinned_hivemind_pack_publishes_through_real_runtime(tmp_path: Pat
 def test_python_provider_cannot_spawn_unobserved_native_network_descendant(tmp_path: Path) -> None:
     """A curl/yt-dlp-shaped escape hatch fails closed inside the child."""
     pack_root = tmp_path / "native_escape_provider"
-    executor_root = pack_root / "executors" / "escape"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: native_escape_provider\nname: Native Escape Provider\n"
-        "version: 1.0\ncontent:\n  executors: executors\n", encoding="utf-8"
-    )
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "native_escape_provider.fetch", "name": "Native Escape",
-        "kind": "external", "version": "1.0",
-        "command": {"argv": ["{python_exec}", "-c", "import subprocess; subprocess.run(['curl', 'https://example.invalid'], check=False)"]},
-        "outputs": [], "isolation": {"mode": "subprocess", "network": True},
-        "metadata": {"adapter_family": "provider", "network_policy": {
-            "allowed_protocols": ["dns", "tcp"], "allowed_destinations": ["127.0.0.1:9"],
-            "allow_redirects": False, "proxy": None,
-            "broker": {"host_managed": True},
-        }},
-    }), encoding="utf-8")
+    _write_v3_pack(pack_root, "native_escape_provider", "Native Escape Provider", {
+        "fetch": {
+            "name": "Native Escape", "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "import subprocess; subprocess.run(['curl', 'https://example.invalid'], check=False)"]}},
+            "outputs": [], "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "network_policy": {
+                "allowed_protocols": ["dns", "tcp"], "allowed_destinations": ["127.0.0.1:9"],
+                "allow_redirects": False, "proxy": None,
+                "broker": {"host_managed": True},
+            }},
+        },
+    })
     host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
     record = host.discover()[0]
     host.preflight()
@@ -791,35 +751,35 @@ def test_live_observable_proxy_handshake_route_and_bypass_rejection(tmp_path: Pa
     try:
         port = upstream.server_port
         pack_root = tmp_path / "broker_provider"
-        executor_root = pack_root / "executors" / "fetch"
-        executor_root.mkdir(parents=True)
-        (pack_root / "pack.yaml").write_text(
-            "schema_version: 1\nid: broker_provider\nname: Broker Provider\n"
-            "version: 1.0\ncontent:\n  executors: executors\n", encoding="utf-8"
-        )
-        code = (
+        # v3 argv entries are single-line strings, so the multi-line child is a
+        # script inside the pack root; the host substitutes {out} as argv[1].
+        pack_root.mkdir(parents=True)
+        (pack_root / "fetch.py").write_text(
+            "import sys\n"
             "from pathlib import Path\n"
             "from urllib.request import urlopen, build_opener, ProxyHandler\n"
             f"body = urlopen('http://127.0.0.1:{port}/through-broker', timeout=2).read()\n"
-            "Path('{out}/body').write_bytes(body)\n"
+            "Path(sys.argv[1], 'body').write_bytes(body)\n"
             "try:\n"
-            "    build_opener(ProxyHandler({{}})).open('http://127.0.0.1:1/bypass', timeout=1)\n"
+            "    build_opener(ProxyHandler({})).open('http://127.0.0.1:1/bypass', timeout=1)\n"
             "except Exception:\n"
-            "    pass\n"
-        ).format(out="{out}")
-        (executor_root / "executor.yaml").write_text(json.dumps({
-            "schema_version": 1, "id": "broker_provider.fetch", "name": "Broker Fetch",
-            "kind": "external", "version": "1.0",
-            "command": {"argv": ["{python_exec}", "-c", code]},
-            "outputs": [{"name": "body", "type": "file", "path_template": "{out}/body"}],
-            "isolation": {"mode": "subprocess", "network": True},
-            "metadata": {"adapter_family": "provider", "network_policy": {
-                "allowed_protocols": ["dns", "tcp"],
-                "allowed_destinations": [f"127.0.0.1:{port}"],
-                "allow_redirects": False,
-                "broker": {"host_managed": True},
-            }},
-        }), encoding="utf-8")
+            "    pass\n",
+            encoding="utf-8",
+        )
+        _write_v3_pack(pack_root, "broker_provider", "Broker Provider", {
+            "fetch": {
+                "name": "Broker Fetch", "version": "1.0",
+                "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", str(pack_root / "fetch.py"), "{out}"]}},
+                "outputs": [{"name": "body", "type": "file", "path_template": "{out}/body"}],
+                "isolation": {"mode": "subprocess", "network": True},
+                "metadata": {"adapter_family": "provider", "network_policy": {
+                    "allowed_protocols": ["dns", "tcp"],
+                    "allowed_destinations": [f"127.0.0.1:{port}"],
+                    "allow_redirects": False,
+                    "broker": {"host_managed": True},
+                }},
+            },
+        })
         host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
         record = host.discover()[0]
         host.preflight()
@@ -837,39 +797,42 @@ def test_live_observable_proxy_handshake_route_and_bypass_rejection(tmp_path: Pa
 def test_host_rejects_child_forged_broker_evidence_without_upstream_route(tmp_path: Path) -> None:
     """A child cannot manufacture a successful broker route on its evidence path."""
     pack_root = tmp_path / "forging_provider"
-    executor_root = pack_root / "executors" / "forge"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: forging_provider\nname: Forging Provider\n"
-        "version: 1.0\ncontent:\n  executors: executors\n", encoding="utf-8"
-    )
-    code = (
+    # v3 argv entries are single-line strings, so the multi-line child is a
+    # script inside the pack root; the host substitutes {out} as argv[1].
+    pack_root.mkdir(parents=True)
+    (pack_root / "forge.py").write_text(
         "from pathlib import Path\n"
-        "import json, os\n"
-        "Path('<OUT>/proof').write_text('child completed', encoding='utf-8')\n"
-        "Path(os.environ['ASTRID_NETWORK_BROKER_EVIDENCE']).write_text(json.dumps({\n"
+        "import json, os, sys\n"
+        "Path(sys.argv[1], 'proof').write_text('child completed', encoding='utf-8')\n"
+        # A strict leaf is not told the evidence path, so forge the spool file
+        # the host reads ({out} is <attempt>/outputs) when the env is withheld.
+        "evidence = os.environ.get('ASTRID_NETWORK_BROKER_EVIDENCE') or Path(sys.argv[1]).parent / 'broker-evidence.json'\n"
+        "Path(evidence).write_text(json.dumps({\n"
         "  'schema_version': 1, 'admission': {}, 'events': [\n"
         "    {'kind': 'handshake', 'detail': 'forged|allowed=true'},\n"
         "    {'kind': 'route', 'detail': 'https://upstream.invalid:443/|allowed=true'}\n"
         "  ], 'signature_algorithm': 'hmac-sha256', 'signature': 'forged'\n"
-        "}), encoding='utf-8')\n"
-    ).replace("<OUT>", "{out}")
-    (executor_root / "executor.yaml").write_text(json.dumps({
-        "schema_version": 1, "id": "forging_provider.forge", "name": "Forging Provider",
-        "kind": "external", "version": "1.0",
-        "command": {"argv": ["{python_exec}", "-c", code]},
-        "outputs": [{"name": "proof", "type": "file", "path_template": "{out}/proof"}],
-        "isolation": {"mode": "subprocess", "network": True},
-        "metadata": {"adapter_family": "provider", "network_policy": {
-            "allowed_protocols": ["dns", "tcp"],
-            "allowed_destinations": ["upstream.invalid:443"],
-            "allow_redirects": False,
-            "broker": {"host_managed": True},
-        }},
-    }), encoding="utf-8")
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    _write_v3_pack(pack_root, "forging_provider", "Forging Provider", {
+        "forge": {
+            "name": "Forging Provider", "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", str(pack_root / "forge.py"), "{out}"]}},
+            "outputs": [{"name": "proof", "type": "file", "path_template": "{out}/proof"}],
+            "isolation": {"mode": "subprocess", "network": True},
+            "metadata": {"adapter_family": "provider", "network_policy": {
+                "allowed_protocols": ["dns", "tcp"],
+                "allowed_destinations": ["upstream.invalid:443"],
+                "allow_redirects": False,
+                "broker": {"host_managed": True},
+            }},
+        },
+    })
     host = GenericPackHost(pack_roots=[pack_root], attempt_root=tmp_path / "attempt")
     record = host.discover()[0]
     host.preflight()
     assert host.capabilities[record.id].ready
     with pytest.raises(HostError, match="incomplete broker route evidence"):
         _run_provider(host, {"task": {"id": "forge-task", "capability": record.id, "spec": {"inputs": {}}}})
+    assert (tmp_path / "attempt" / "outputs" / "proof").read_text(encoding="utf-8") == "child completed"

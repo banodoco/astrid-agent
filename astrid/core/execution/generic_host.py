@@ -9772,6 +9772,13 @@ class GenericPackHost:
                 pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), pack_root)
             except ValueError as exc:
                 raise HostError(str(exc)) from exc
+            # A selected pack command launches through the isolated (-I) worker
+            # with a replaced import path, so the PYTHONPATH sitecustomize hook
+            # can never load there. Its network policy is installed only by the
+            # host's strict network startup, which requires a leaf child that
+            # carries no Runtime connection.
+            if network_broker is not None or _network_policy(record) is not None:
+                allow_runtime_connection = False
         attempt_output_root = (attempt / "outputs").resolve()
         if admission is not None:
             _verify_admitted_source(admission)
@@ -9979,7 +9986,10 @@ class GenericPackHost:
                 argv.extend(("--child-bridge", str(child_bridge.inherited_fd())))
             if source_channel is not None:
                 argv[5:5] = ["--external-source-fd", str(source_channel.fileno())]
-            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+            # Keep the host-created network hook visible to strict startup, as
+            # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
+            network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
+            env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
