@@ -1588,9 +1588,13 @@ def launch_job(root: Path, operation_id: str) -> dict:
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
+            # Runtime reports a refused launch from launch_error; without it
+            # this policy refusal would read as an operating-system rejection.
             return _write_job(root, operation_id, state="failed",
                               message="Failed: saved autostart is off and the installer cannot preserve that choice.",
-                              fields={"launch_status": "refused", "cleanup_status": "not-needed"})
+                              fields={"launch_status": "refused",
+                                      "launch_error": "saved autostart is off and the installer cannot preserve that choice; no job was launched.",
+                                      "cleanup_status": "not-needed"})
         from .core import Version
         return _launch_current_attempt(root, job, Version.load(job["old_version"]), _platform_api())
     finally:
@@ -2074,7 +2078,10 @@ def main():
     if len(raw) > 65536:
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
-    action = value.get("action", "prepare")
+    if not isinstance(value, dict):
+        raise ValueError("The update helper request must be an object.")
+    # Runtime's prepare request carries no action key; only its absence means prepare.
+    action = value["action"] if "action" in value else "prepare"
     if action == "availability":
         print(json.dumps(update_job_availability()))
     elif action == "reconcile":
