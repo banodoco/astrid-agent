@@ -93,3 +93,65 @@ def test_local_folder_install_records_null_provenance(repo, packs_root):
     assert record["source"] == {"kind": "folder", "path": str((repo.work / "packs" / "alpha").resolve())}
     assert [row["capability_id"] for row in record["definitions"]] == ["alpha.echo"]
     assert read_group(packs_root).admissions["alpha"]["definitionsDigest"] == hashlib.sha256(raw).hexdigest()
+
+
+def _fake_browser_build(request):
+    """Materialize the frozen BuildResult format for a staged pack, as the real builder would."""
+    def digest(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def canonical(value) -> bytes:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+    root, source = Path(request["stage_root"]), request["source_digest"]
+    if request["entry"] is None and request["extension_manifest"] is None:  # not a browser pack
+        return {"version": 1, "ok": True, "pack_id": request["pack_id"], "source_digest": source,
+                "artifact_manifest": None}
+    chunk = b"export const colour = 'blue';\n"
+    chunk_disk = f".build/{source}/chunks/lazy.js"
+    (root / chunk_disk).parent.mkdir(parents=True, exist_ok=True)
+    (root / chunk_disk).write_bytes(chunk)
+    graph = [{"logical_path": "chunks/lazy.js", "sha256": digest(chunk), "size": len(chunk), "mime": "text/javascript"}]
+    graph_digest = digest(canonical(graph))
+    entry = f"/* astrid-graph-index-sha256:{graph_digest} */\nimport('./chunks/lazy.js');\nexport default {{}};\n".encode()
+    (root / f".build/{source}.js").write_bytes(entry)
+    files = [{"path": "chunks/lazy.js", "disk": chunk_disk, "sha256": digest(chunk), "size": len(chunk),
+              "mime": "text/javascript"},
+             {"path": "index.js", "disk": f".build/{source}.js", "sha256": digest(entry), "size": len(entry),
+              "mime": "text/javascript"}]
+    artifact = {"version": 1, "packId": request["pack_id"], "sourceDigest": source, "digest": digest(entry),
+                "graphIndexDigest": graph_digest, "toolchainDigest": request["toolchain"]["lock_sha256"],
+                "entry": "index.js", "extensionManifest": request["extension_manifest"],
+                "sharedModules": request["toolchain"]["shared_modules"], "files": files}
+    return {"version": 1, "ok": True, "pack_id": request["pack_id"], "source_digest": source,
+            "artifact_manifest": artifact}
+
+
+def test_browser_pack_is_admitted_with_definitions_json(repo, packs_root, monkeypatch):
+    """definitions.json sits beside the browser artifacts; it is neither a manifest file nor rejected as a stray."""
+    from astrid.core.pack import transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", _fake_browser_build)
+    _add_executor(repo)
+    extension = {"id": "alpha.extension", "version": "1.0.0", "label": "Alpha", "apiVersion": 1, "contributions": []}
+    (repo.work / "packs" / "alpha" / "entry.tsx").write_text("export default {};\n", encoding="utf-8")
+    repo.publish()
+    toolchain = {"lock_sha256": "b" * 64,
+                 "shared_modules": {"@astrid/editor-sdk": {"url": "/sdk.js", "sha256": "c" * 64, "version": "1.0.0"}}}
+
+    install(repo, packs_root, builds={"alpha": {"entry": "entry.tsx", "extension_manifest": extension}},
+            toolchain=toolchain)
+
+    snapshot = read_group(packs_root)
+    admission = snapshot.admissions["alpha"]
+    record, raw = _definitions(packs_root, "alpha")
+    # Admitted as a browser pack (manifest + admission.json) and bound to its definitions record.
+    assert "artifact_manifest" in admission and admission["definitionsDigest"] == hashlib.sha256(raw).hexdigest()
+    build = packs_root / "alpha" / ".build"
+    assert {"admission.json", "definitions.json"} <= {path.name for path in build.iterdir()}
+    assert json.loads((build / "admission.json").read_text())["artifactManifestDigest"] == admission["artifactManifestDigest"]
+    assert [row["capability_id"] for row in record["definitions"]] == ["alpha.echo"]
+    # A later unrelated update re-verifies the retained browser admission together with definitions.json.
+    new_commit = repo.next_revision()
+    install(repo, packs_root, revision=new_commit, packs={"shared": "packs/shared"})
+    assert read_group(packs_root).admissions["alpha"]["definitionsDigest"] == admission["definitionsDigest"]
