@@ -701,15 +701,30 @@ def _listing(root: Path) -> list[str]:
     return lines
 
 
+def _account_home() -> Path:
+    """The account's real home directory, whatever HOME this process was given."""
+    if sys.platform == "darwin":
+        import pwd
+        try:
+            return Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except (KeyError, OSError):
+            pass  # evidence capture must not fail on an account without a passwd entry
+    return Path.home()
+
+
 def capture_macos_listing(evidence: Path, run_root: Path, phase: str, home: Path | None = None) -> None:
     """Show where the Runtime's files really are on macOS, and say which expected logs were found."""
-    home = home if home is not None else Path.home()
+    home = home if home is not None else _account_home()
     data = run_root / "data"
     log_dirs = sorted({*(run_root / "home" / "Library" / "Logs").glob("Astrid*"),
-                       *(home / "Library" / "Logs").glob("Astrid*")})
+                       *(home / "Library" / "Logs").glob("Astrid*"),
+                       *(home / "Library" / "Application Support").glob("Astrid*")})
+    # The harness sets HOME to its isolated home, so the account's real home is listed separately.
     expected = [data / "runtime" / "runtime.log",
                 *(run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / name
-                  for name in ("runtime.log", "runtime-service.log", "service-pack-host.log", "install.log"))]
+                  for name in ("runtime.log", "runtime-service.log", "service-pack-host.log", "install.log")),
+                *(home / "Library" / "Logs" / "Astrid Runtime" / name
+                  for name in ("runtime.log", "runtime-service.log"))]
     out = [f"phase={phase}", "# expected logs"]
     for path in expected:
         info = _regular_file_info(path)
