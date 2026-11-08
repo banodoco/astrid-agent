@@ -9980,12 +9980,20 @@ class GenericPackHost:
             from astrid.core.pack.imports import selected_pack_environment
 
             env.update(selected_pack_environment(control["map"]))
-            argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
-                    "--pack-command", json.dumps(control)]
+            # pack_command_args accepts a leading -u; only the interpreter can
+            # apply it (the worker re-applies -B itself), so carry it over.
+            leading = list(selected_arguments)
+            unbuffered = False
+            while leading and (leading[0] in {"-u", "-B"} or leading[:2] == ["-X", "utf8"]):
+                unbuffered = unbuffered or leading[0] == "-u"
+                del leading[:2 if leading[0] == "-X" else 1]
+            argv = [sys.executable, "-X", "utf8", *(["-u"] if unbuffered else []), "-m",
+                    "astrid.core.execution.generic_host_worker", "--pack-command", json.dumps(control)]
             if child_bridge is not None:
                 argv.extend(("--child-bridge", str(child_bridge.inherited_fd())))
             if source_channel is not None:
-                argv[5:5] = ["--external-source-fd", str(source_channel.fileno())]
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
             # Keep the host-created network hook visible to strict startup, as
             # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
             network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()

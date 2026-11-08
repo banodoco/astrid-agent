@@ -32,6 +32,7 @@ from astrid.core.execution import generic_host as generic_host_module
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid_runtime_client import ApiError, WorkspaceClient
+from astrid.pack_api import VERSION as PACK_API_VERSION
 from tests.helpers.runtime import runtime_checkout
 
 # The Runtime realm these proofs run against is a second checkout (tests/lanes.py).
@@ -40,6 +41,20 @@ INTEGRATION_FIXTURES = ("world",)
 PARENT = "bridge.parent"
 CHILD = "bridge.child"
 SECRET = "worker-secret-must-not-cross-bridge"
+# Schema v3 fixture packs must declare the pack API they target, or discovery
+# quarantines them and their capabilities never register.
+V3_FIXTURE_HEADER = {"pack_api": "%d.%d" % PACK_API_VERSION}
+# Test harness, not pack behaviour: scope the parent's nested invoke() discovery
+# to the fixture roots exactly as before (core packs stay out, so core training's
+# editorial.* dependencies never resolve against the stand-in editorial fixture).
+# It must patch private core registries inside the parent action process, which
+# the static import policy for external pack files rightly forbids, so it runs
+# from a string, the same way the -c parent form already carries it in argv.
+SCOPE_PARENT_DISCOVERY = "exec(" + repr(
+    "from astrid.core.execution.executor import registry as er\n"
+    "from astrid.core.execution.orchestrator import registry as ore\n"
+    "from astrid.core.pack import discovery as pd\n"
+    "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n") + ")\n"
 
 
 def digest(data):
@@ -1085,11 +1100,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
     root = world.root
     (root / "actions").mkdir(exist_ok=True)
     inputs = input_ports if input_ports is not None else [{"name": "value", "type": "file" if derived else "string", "required": True}]
-    invoke = ("from astrid.core.execution.executor import registry as er\n"
-              "from astrid.core.execution.orchestrator import registry as ore\n"
-              "from astrid.core.pack import discovery as pd\n"
-              "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-              "from astrid import invoke\n"
+    invoke = (SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
               f"r = invoke('{CHILD}', kind='action', extra_pack_roots=({str(root)!r},), inputs={{'value': "
               + ("{'filename': 'generated.txt', 'output_port': 'source', 'media_type': 'text/plain'}" if derived else "'scalar'")
               + "}, child_key='logical-child', wait=True, timeout_seconds=2, poll_seconds=0.01)\n"
@@ -1110,7 +1121,8 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
             args = ["-c", "exec(__import__('base64').b64decode(" + repr(base64.b64encode(body.encode()).decode()) + "))"]
         else:
             (root / "command.py").write_text(body)
-            args = ["-m", "command"] if form == "-m" else [str(root / "command.py")]
+            # v3 external -m commands run inside the selected pack namespace.
+            args = ["-m", "astrid.packs.bridge.command"] if form == "-m" else [str(root / "command.py")]
         parent_invocation = {"kind": "command", "command": {"argv": argv_override or ["{python_exec}", *flags, *args]}}
         parent_invocation["command"].update(parent_command_fields or {})
     child_code = "def run(value):\n    import os\n    assert 'ASTRID_RUNTIME_CREDENTIAL' not in os.environ\n"
@@ -1118,7 +1130,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
         child_code += "    from pathlib import Path\n    Path('outputs').mkdir(exist_ok=True)\n    Path('outputs/answer.txt').write_text('managed-child-bytes')\n"
     child_code += "    return {'answer': " + ("__import__('pathlib').Path(value).read_text()" if derived else "value") + "}\n"
     (root / "actions/child.py").write_text(child_code_override if child_code_override is not None else child_code)
-    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "bridge", "name": "Bridge", "version": "1.0.0", "actions": {
+    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": "bridge", "name": "Bridge", "version": "1.0.0", "actions": {
         "parent": {"description": "Parent", "invocation": parent_invocation, "inputs": parent_inputs or [], "outputs": parent_outputs if parent_outputs is not None else {},
                    **({"isolation": {"mode": "subprocess", "network": True},
                        "metadata": {"network_policy": network_policy}} if network_policy else {})},
@@ -1259,11 +1271,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
                          original_name="workflow.json", idempotency_key="receipt-workflow")
     descriptor = {"object_id": workflow_id, "digest": workflow_id, "filename": "workflow.json"}
     parent_code = (
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
         "result = invoke('vibecomfy.validate', kind='action', "
         f"extra_pack_roots=({str(pack_root)!r},), inputs={{'workflow': {descriptor!r}}}, "
         "child_key='nested-validator', wait=True, timeout_seconds=4, poll_seconds=0.01)\n"
@@ -1272,6 +1280,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
     )
     pack = {
         "schema_version": 3,
+        **V3_FIXTURE_HEADER,
         "id": "vibecomfy",
         "name": "Nested validator receipt fixture",
         "version": "0.1.0",
@@ -1511,7 +1520,8 @@ def test_retained_interpreter_flags(world, flags):
     code = "import sys\n"
     if "-B" in flags:
         (world.root / "flag_probe.py").write_text("value = 42\n")
-        code += "assert sys.dont_write_bytecode\nimport flag_probe\nassert flag_probe.value == 42\n"
+        # Selected v3 pack source is importable only under its pack namespace.
+        code += "assert sys.dont_write_bytecode\nfrom astrid.packs.bridge import flag_probe\nassert flag_probe.value == 42\n"
         code += f"assert not __import__('pathlib').Path({str(world.root / '__pycache__')!r}).exists()\n"
     if "-u" in flags: code += "assert sys.stdout.write_through\n"
     code += "import __main__\nmain_value = 42\nassert __main__.main_value == 42\n"
@@ -2101,7 +2111,9 @@ def test_d18_bounded_network_context_and_contained_child(world, monkeypatch, for
     prelude = f'''import os, json, socket, time
 os.environ["ASTRID_SOURCE_STATE"] = {str(world.tmp / "absent.json")!r}
 from urllib.parse import urlsplit
-from astrid.core.execution import network_policy as np
+# The host's network startup installed this policy module; read that exact
+# instance (a static core import would quarantine the external fixture pack).
+np = __import__('sys').modules['astrid.core.execution.network_policy']
 assert 'ASTRID_NETWORK_ADMISSION' not in os.environ
 assert 'ASTRID_NETWORK_BROKER_EVIDENCE' not in os.environ
 assert 'ASTRID_RUNTIME_ENDPOINT' not in os.environ
@@ -2514,25 +2526,21 @@ def _snapshot_fixture(world, *, form="python", limits=None):
         "def run(state=None):\n"
         "    import json, os\n"
         "    from pathlib import Path\n"
-        "    from astrid.sdk import _child_bridge as bridge_sdk\n"
+        "    from astrid.sdk import inherited_child_bridge\n"
         "    assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n"
         "    data = Path(state).read_bytes() if state else b'{\"draft\":1}'\n"
         "    Path('outputs').mkdir(exist_ok=True)\n"
         "    Path('outputs/draft.json').write_bytes(data)\n"
-        "    receipt = bridge_sdk._bridge.publish_snapshot(filename='draft.json', output_port='state_result', revision=1)\n"
+        "    receipt = inherited_child_bridge().publish_snapshot(filename='draft.json', output_port='state_result', revision=1)\n"
         "    assert set(receipt) == {'association_id', 'receipt_id', 'revision', 'output_port', 'digest', 'size', 'durability'}\n"
         "    Path('outputs/answer.txt').write_bytes(b'final:' + data)\n"
         "    return {'state': json.loads(data), 'snapshot': receipt}\n")
-    (review / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "editorial", "name": "Host review fixture", "version": "1.0.0", "actions": {
+    (review / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": "editorial", "name": "Host review fixture", "version": "1.0.0", "actions": {
         "human_review": {"description": "Bounded host fixture", "invocation": {"kind": "python", "path": "actions/review.py", "function": "run"},
             "inputs": [{"name": "state", "type": "file", "required": False}],
             "outputs": [{"name": "answer", "type": "file", "mode": "create", "path_template": "{out}/answer.txt", "artifact_type": "text/plain"}]}}}))
     body = ("from pathlib import Path\nimport hashlib, os\n"
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        + SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
         "assert isinstance(resume_state, str) and Path(resume_state).is_file()\n"
         "oid = 'sha256:' + hashlib.sha256(Path(resume_state).read_bytes()).hexdigest()\n"
         "descriptor = {'object_id': oid, 'digest': oid, 'filename': 'review-state.json'}\n"
@@ -3339,11 +3347,7 @@ def test_materialization_public_sdk_same_leaf_outputs_consumed_together_without_
     code = (
         "from pathlib import Path\n"
         "import hashlib, json\n"
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        + SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
         "Path('outputs').mkdir(exist_ok=True)\n"
         "sources = []\n"
         "for index, text in enumerate(('left-bytes', 'right-bytes')):\n"
@@ -3773,12 +3777,19 @@ def _f05_runtime_review_pair(world, *, timeout=0, runtime_limit=None, before_chi
             *([{"name": name, "type": "file", "required": name == "data"}
                for name in ("data", "state", "assets_bundle", "state_schema_bundle")] if media_payloads is not None else [])]),
     ):
+        if pack_id == "training":
+            # External packs may not shadow a core pack id, and the host keys
+            # Training review accounting on training.dataset_build, so the
+            # parent is the core action (same required config/out path inputs).
+            # The parent is only admitted and claimed here, never executed.
+            continue
         root = world.root / pack_id
         root.mkdir()
-        (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": pack_id, "name": pack_id,
+        (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": pack_id, "name": pack_id,
             "version": "1.0.0", "actions": {action: {"description": "F05 lifetime fixture", "inputs": inputs,
                 "outputs": [], "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}}}}}))
-    host = GenericPackHost(pack_roots=[world.root / parent_pack, world.root / "editorial"],
+    parent_root = Path(__file__).resolve().parents[3] / "astrid/packs/training" if training else world.root / parent_pack
+    host = GenericPackHost(pack_roots=[parent_root, world.root / "editorial"],
                            client=world.client, executor_id="worker", max_concurrency=2)
     host.discover()
     for record in host.capabilities.values():
