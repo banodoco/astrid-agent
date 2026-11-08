@@ -106,6 +106,12 @@ class _AcknowledgementUnknown(_BusyRefusal):
     reason = "acknowledgement-unknown"
 
 
+class _LegacyUpdateRecord(_BusyRefusal):
+    """A job record without a usable home. Liveness still checks it; only the install selection read refuses."""
+
+    reason = "legacy-update-record"
+
+
 def _busy(message: str = "An update operation is already active or unresolved; try again after it finishes.") -> NoReturn:
     raise _BusyRefusal(message)
 
@@ -462,12 +468,16 @@ def _selection_path() -> Path:
     return install_selection(Path.home(), sys.platform)
 
 
+def _has_recorded_home(job: dict) -> bool:
+    recorded = job.get("home")
+    return isinstance(recorded, str) and Path(recorded).is_absolute()
+
+
 def _recorded_home(job: dict) -> Path:
     """The home the update was accepted under. A launched job's ambient HOME is its launcher's, so it is never used."""
-    recorded = job.get("home")
-    if not isinstance(recorded, str) or not Path(recorded).is_absolute():
-        raise ValueError("The accepted update records no installation home, so its install record cannot be found safely.")
-    return Path(recorded)
+    if not _has_recorded_home(job):
+        raise _LegacyUpdateRecord("The accepted update records no installation home, so its install selection cannot be read.")
+    return Path(job["home"])
 
 
 def _recorded_selection_path(job: dict) -> Path:
@@ -1064,6 +1074,25 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
                                ready_identity=ready_identity)
 
 
+def _legacy_liveness_gate(job: dict, api) -> None:
+    """Check a record without a home on its platform fields only, before any install selection is read.
+
+    A still-running object refuses as active and an uncertain query refuses unchanged. A positively
+    finished object passes; the selection read that follows then refuses as a legacy record.
+    """
+    descriptor = job.get("platform")
+    if not isinstance(descriptor, dict):
+        return
+    if not _owned_descriptor(descriptor, job.get("operation_id", "")):
+        _busy("The unresolved update native descriptor does not match its accepted command.")
+    try:
+        active = api.is_active(descriptor)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        raise _BusyRefusal("The unresolved update's native liveness is unknown.") from failure
+    if active is not False:
+        _busy("The unresolved update is still active.")
+
+
 def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict | None, bool]:
     """Resolve an existing operation, returning whether this request continued it."""
     job = marker.get("update_job")
@@ -1072,6 +1101,8 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         return None, False
     try:
         api = _platform_api()
+        if not _has_recorded_home(job):
+            _legacy_liveness_gate(job, api)
         data_root, _descriptor = _validate_reconcile_job(root, job, request, api)
         journal_path = root / "update-transaction.json"
         if journal_path.is_symlink():

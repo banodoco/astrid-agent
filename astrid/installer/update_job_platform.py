@@ -82,12 +82,14 @@ def _systemd_path(value: Path) -> str:
     return str(value).replace("%", "%%")
 
 
-def _accepted_home(job: dict) -> str:
-    """The home recorded when the update was accepted. A job without one is refused, never run under the ambient home."""
-    home = job.get("home")
+def _home_field(job: dict) -> dict:
+    """The home a new descriptor pins. A legacy record without one gets no field; liveness never reads it."""
+    if job.get("home") is None:
+        return {}
+    home = job["home"]
     if not isinstance(home, str) or not Path(home).is_absolute():
         raise ValueError("The accepted update records no installation home.")
-    return home
+    return {"home": home}
 
 
 def describe(job: dict, command: list[str], system: str | None = None) -> dict:
@@ -101,7 +103,7 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
         return {"format": "astrid-update-platform/v1", "system": system,
                 "kind": "systemd-user-transient", "name": unit, "unit": unit,
                 "user": str(uid), "operation_id": operation, "program_root": str(root),
-                "log_path": str(log_path), "command": command, "home": _accepted_home(job)}
+                "log_path": str(log_path), "command": command, **_home_field(job)}
     if system == "darwin":
         uid = os.getuid()
         label = f"astrid-update-{operation}"
@@ -110,15 +112,15 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
                 "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
                 "log_path": str(log_path), "program_root": str(root),
                 "plist_path": str(_private_path(job, f".{label}.plist")), "command": command,
-                # launchd gives a job the real home; the install record is found through HOME, so pin this one.
-                "home": _accepted_home(job)}
+                # launchd gives a job the real home; the install record is found through HOME, so pin a recorded one.
+                **_home_field(job)}
     user_sid = _windows_sid()
     task_name = f"astrid-update-{operation}"
     return {"format": "astrid-update-platform/v1", "system": system,
             "kind": "scheduled-task-on-demand", "name": task_name, "task_name": task_name,
             "user": user_sid, "operation_id": operation,
             "log_path": str(log_path), "program_root": str(root),
-            "command": command, "home": _accepted_home(job)}
+            "command": command, **_home_field(job)}
 
 
 def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
@@ -146,8 +148,6 @@ def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
         raise ValueError("The update platform log path is invalid.")
     if actual in {"linux", "darwin"} and descriptor.get("user") != str(os.getuid()):
         raise ValueError("The update platform object belongs to another user.")
-    if not Path(str(descriptor.get("home", ""))).is_absolute():
-        raise ValueError("The update platform descriptor records no installation home.")
     if actual == "darwin":
         if descriptor.get("domain") != f"gui/{os.getuid()}":
             raise ValueError("The launchd update object is outside the current GUI domain.")
@@ -270,6 +270,9 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
            system: str | None = None) -> None:
     """Register and start one transient job as the current user."""
     actual, name = _validate(descriptor, system)
+    if not isinstance(descriptor.get("home"), str):
+        # Only a launch pins the home a job runs under; a legacy record is never launched under the ambient one.
+        raise ValueError("A legacy-update-record has no installation home, so it is never launched under the ambient home.")
     command, log = _argv(command), Path(log_path)
     if not log.is_absolute():
         raise ValueError("The update job log path must be absolute.")

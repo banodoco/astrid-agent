@@ -156,13 +156,17 @@ def test_every_platform_descriptor_records_the_accepted_home(tmp_path, monkeypat
         assert descriptor["home"] == record["home"], system
 
 
-def test_a_job_without_a_recorded_home_is_refused_on_every_platform(tmp_path, monkeypatch):
+def test_a_legacy_job_without_a_recorded_home_stays_checkable_but_is_never_launched(tmp_path, monkeypatch):
     record = job(tmp_path)
     del record["home"]
     monkeypatch.setattr(platform, "_windows_sid", lambda: "S-1-5-21-12345")
+    monkeypatch.setattr(platform, "_run", lambda args: completed(args))
     for system in ("linux", "darwin", "win32"):
+        descriptor = platform.describe(record, ["worker"], system=system)
+        assert "home" not in descriptor, system
+        assert platform._validate(descriptor, system)[1] == descriptor["name"], system
         with pytest.raises(ValueError, match="installation home"):
-            platform.describe(record, ["worker"], system=system)
+            platform.launch(descriptor, ["worker"], record["log_path"], system=system)
 
 
 def test_worker_wrapper_keeps_the_whole_error_and_exits_with_the_worker_code(tmp_path):
