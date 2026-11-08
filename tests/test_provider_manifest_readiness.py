@@ -45,6 +45,12 @@ def _fixture_credentials(host: GenericPackHost) -> dict[str, str]:
 
 # The provider records this head declares (pack set after 5d841e305 moved nine packs to
 # poms_packs, and edaa8e7c1 added the hivemind pack). Explicit ids so drift names itself.
+EXPECTED_REQUIRED_PROVIDER_IDS = frozenset({
+    "generation.generate_audio", "generation.generate_image", "generation.generate_image_cloud_i2i",
+    "generation.generate_image_edit", "generation.generate_image_openai", "generation.generate_image_upscale",
+    "generation.generate_video", "training.search_loras", "training.training_run",
+})
+
 EXPECTED_PROVIDER_IDS = frozenset({
     "generation.generate_audio",
     "generation.generate_image",
@@ -192,7 +198,8 @@ def test_required_provider_routes_do_not_gate_readiness_on_credentials(monkeypat
         for record in host.capabilities.values()
         if record.adapter.family == "provider" and record.matrix.get("disposition") == "required"
     ]
-    assert len(required) == 18
+    # The explicit required set: the providers that moved to poms (5d841e305) are not here.
+    assert {record.id for record in required} == EXPECTED_REQUIRED_PROVIDER_IDS
     for record in required:
         if record.matrix.get("required_env"):
             # Missing keys are diagnostic, regardless of other readiness checks.
