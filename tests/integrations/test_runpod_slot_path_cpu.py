@@ -363,6 +363,8 @@ raise SystemExit(action.main(["run", str(workflow), "--comfy-url", url, "--out",
 '''
 
 
+# needs real model weights; VibeComfy verifies sha256; CPU harness keeps none; Plan 34
+@pytest.mark.gpu
 def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     """The managed local target (as in the installed Qwen child path) for the voice default's real template."""
     import http.server

@@ -589,6 +589,10 @@ class TargetProviderBindings:
             prepared, evidence = provider.bind_task(
                 policy, inputs, invocation_id=invocation_id, scratch=scratch,
                 begin_lease=begin, retain_bridge=retain, retire_bridge=retire)
+            if retained:
+                # The host checks this prepared install against the binding before it trusts the rows.
+                retained[0]["installed"] = dict(prepared.installed)
+                retained[0]["models"] = tuple(prepared.models)
         finally:
             with self.lock:
                 self.operations -= 1
