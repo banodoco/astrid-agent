@@ -9,6 +9,12 @@ or cloud (fal) backends.  A single executor dispatches through `BackendAdapter`
 (SD-004) — callers pick a model, a mode, and a backend; the executor does
 the rest.  **`--mode` is required** (SD-005).
 
+With no `--entry` and no `--model`, a video request carrying an H3 `request`
+and `asset_map` runs the `h3` entry on every placement; `ltx-2.3` is
+explicit-only (`--entry ltx-2.3`). Local H3 needs a source video or reference
+images. An `--image-ref` video with no `--entry` is refused with
+`video_entry_required` until Plan 32 T6b; use `--entry h3`.
+
 Three video modes are wired this sprint: `t2v` (text-to-video), `i2v`
 (image-to-video, first-frame conditioning), and `flf` (first-last-frame
 interpolation).  `v2v` and `video-edit` are not wired yet.

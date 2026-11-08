@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 WorkflowFile = str | Path | Mapping[str, Any]
 
 # Accepted for explicit use while its default-route qualification is pending.
-_EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
+_EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a", "ltx-2.3"})
 # Default slots: catalog priority per (modality, mode) for target routes.
 _DEFAULT_ENTRIES = {
     ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
@@ -1668,6 +1668,18 @@ class GenerationFacade:
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
                        (("request", request), ("asset_map", asset_map)) if value is not None})
+        if model is None and entry is None:
+            if inputs.get("request") is not None and inputs.get("asset_map") is not None:
+                # The default video route is the H3 action on every placement.
+                entry = "h3"
+            elif inputs.get("image_ref") is not None:
+                from astrid.core.generation.preflight import generation_error
+                raise generation_error(
+                    ValueError("An image-reference video needs an explicit entry; use --entry h3 "
+                               "with --inputs-json (request and asset_map) until the default video route is qualified."),
+                    code="video_entry_required", details={"field": "entry"}, fixes=[{
+                        "argv": ["astrid", "generate", "video", "--entry", "h3", "--help"],
+                        "scope": "read_only"}])
         if _prompt_only_video(model=model, entry=entry, inputs=inputs):
             raise GenerationInputError(
                 "Prompt-only video requires a reference or an H3 request. "

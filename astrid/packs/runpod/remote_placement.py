@@ -199,16 +199,6 @@ class Limits:
     storage_name: str = STORAGE_NAME
     datacenter_id: str = DATACENTER
 
-    @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Limits":
-        env = os.environ if env is None else env
-        limits = cls()
-        if env.get("ASTRID_RUNPOD_MAX_SPEND_EUR"):
-            limits.max_spend_eur = float(env["ASTRID_RUNPOD_MAX_SPEND_EUR"])
-        if env.get("ASTRID_RUNPOD_DEADLINE_SECONDS"):
-            limits.deadline_seconds = int(env["ASTRID_RUNPOD_DEADLINE_SECONDS"])
-        return limits
-
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -1158,38 +1148,3 @@ def _lookup_cost(handle: Mapping[str, Any]) -> float | None:
         return None
 
 
-# ----------------------------------------------------------------------------
-# Entry used by h3_av.transform
-# ----------------------------------------------------------------------------
-
-
-def run_remote_placement(
-    args: Any,
-    *,
-    provider: PodProvider | None = None,
-    env: Mapping[str, str] | None = None,
-    **overrides: Any,
-) -> dict[str, Any]:
-    """Run ``h3_av.transform`` args on a claimed RunPod pod and return the local result shape."""
-    env = os.environ if env is None else env
-    out = Path(args.out).expanduser().resolve()
-    from .managed_sources import ensure_managed_sources
-
-    source = ensure_managed_sources()
-    wrapper = RemotePlacement(
-        provider or LifecyclePodProvider(out / "runpod-claims"),
-        limits=Limits.from_env(env),
-        source_root=source,
-        leave_running=env.get("ASTRID_RUNPOD_LEAVE_RUNNING", "") in ("1", "true", "yes"),
-        pod_id=env.get("ASTRID_RUNPOD_POD_ID") or None,
-        **overrides,
-    )
-    return wrapper.run(
-        request=args.request,
-        asset_map=args.asset_map,
-        out=out,
-        project=getattr(args, "project", None),
-        editorial_approved=bool(getattr(args, "editorial_approved", False)),
-        execution_request=getattr(args, "execution_request", None),
-        cleanup_receipt=getattr(args, "cleanup_receipt", None),
-    )

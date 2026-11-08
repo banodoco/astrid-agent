@@ -669,6 +669,35 @@ def test_prompt_only_video_refuses_without_substitution(target, tmp_path):
     _assert_cwd_untouched(cli)
 
 
+@pytest.mark.parametrize("target", ["auto", "runpod"])
+def test_video_without_entry_resolves_to_h3(target, tmp_path):
+    """No --entry and no --model: an H3 request with an asset map is the h3 entry on every placement."""
+    cli = _cli(tmp_path)
+    files = _inputs(tmp_path)
+    flags = list(RUNPOD_FLAGS) if target == "runpod" else []
+    result = cli.run("video", "--inputs-json", files[H3_INPUTS], "--target", target, *flags,
+                     "--dry-run", "--json")
+    assert result.returncode == 0, _describe(result)
+    payload = _payload(result)
+    assert isinstance(payload.get("entry"), dict) and payload["entry"].get("id") == "h3", payload
+    _assert_nothing_banned_selected(payload, context=f"entry-less video {target}")
+    assert not _task_ids(payload), f"a dry run admitted a task: {_task_ids(payload)}"
+    _assert_cwd_untouched(cli)
+
+
+def test_image_ref_video_without_entry_refuses_with_h3_guidance(tmp_path):
+    """Until Plan 32 T6b an --image-ref video with no --entry is refused, naming --entry h3."""
+    cli = _cli(tmp_path)
+    files = _inputs(tmp_path)
+    result = cli.run("video", "A boat at dusk.", "--image-ref", files[IMAGE], "--dry-run", "--json")
+    assert result.returncode != 0, _describe(result)
+    text = result.stdout + result.stderr
+    assert "video_entry_required" in text and "--entry h3" in text, _describe(result)
+    payload = _payload(result)
+    assert not _task_ids(payload), f"the refusal admitted a task: {_task_ids(payload)}"
+    _assert_cwd_untouched(cli)
+
+
 def _require_no_discovered_comfy() -> None:
     """Unbound auto discovery probes 127.0.0.1:8188 (targets.py:9d3bb248:400). A ComfyUI
     already listening there would bind, so the no-engine case could not be shown."""

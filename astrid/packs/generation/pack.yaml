@@ -1602,7 +1602,7 @@ actions:
       required: true
       type: string
     - default: ''
-      description: Reference image path or URL for i2v/flf modes.
+      description: Reference image path or URL for i2v/flf modes. Local H3 needs a source video or reference images.
       name: image_ref
       required: false
       type: string

@@ -53,14 +53,6 @@ UNSUPPORTED_TARGET_MESSAGE = (
 LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
 
 
-def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
-    """``--placement runpod``: claim a pod, run the local command there, pull back, release."""
-
-    from astrid.packs.runpod.remote_placement import run_remote_placement
-
-    return run_remote_placement(args)
-
-
 def _resolve_local_engine() -> Any:
     """Resolve the installed local engine endpoint or fail fast with the next action."""
 
@@ -1971,13 +1963,10 @@ def _run_transform_unlocked(
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
     local_engine = None
-    # The remote placement command owns execution on its local run root.
     terminal["enabled"] = placement == "local" or legacy_prepared
     if placement == "local":
         if managed_client is None:
             local_engine = _resolve_local_engine()
-    elif not legacy_prepared:
-        return _run_remote_placement(args)
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
@@ -2933,7 +2922,8 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
     client = ManagedParentClient(plan, root)
     controls = plan.get("controls", {})
     admitted_request = controls.get("run_execution_request")
-    placement = "runpod" if (admitted_request or {}).get("target", {}).get("kind") == "runpod" else "local"
+    # The pod runs this command locally; placement is always local here.
+    placement = "local"
     args = argparse.Namespace(request=paths["request"], asset_map=None, out=root / "stages",
         project=plan["project"], execution_request=None, worker_qualification=None, prepared_worker=None,
         cleanup_receipt=None, require_worker_qualification=False, editorial_approved=editorial_approved,

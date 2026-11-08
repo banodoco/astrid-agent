@@ -578,43 +578,6 @@ def test_manifest_script_matches_what_the_wrapper_checks(tmp_path):
     assert rp.MANIFEST_NAME not in files
 
 
-def test_transform_runpod_calls_the_wrapper(tmp_path, monkeypatch):
-    from astrid.packs.h3_av.actions.transform import run as transform
-
-    request = tmp_path / "request.json"
-    request.write_text("{}")
-    asset_map = tmp_path / "assets.json"
-    asset_map.write_text("{}")
-    seen = {}
-
-    def fake(args):
-        seen["placement"] = args.placement
-        return {"placement": "runpod", "status": "candidate_verified"}
-
-    monkeypatch.setattr(transform, "_run_remote_placement", fake)
-    args = transform.build_parser().parse_args(
-        ["--request", str(request), "--asset-map", str(asset_map), "--out", str(tmp_path / "o"),
-         "--placement", "runpod"])
-    assert transform.run_transform(args)["placement"] == "runpod"
-    assert seen["placement"] == "runpod"
-    assert not hasattr(transform, "PlacementNotImplemented")
-
-
-def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs, monkeypatch):
-    provider = _provider(sources)
-    request, asset_map = inputs
-    args = SimpleNamespace(request=request, asset_map=asset_map, out=tmp_path / "o", project=None,
-                           editorial_approved=False, execution_request=None, cleanup_receipt=None)
-    env = {"ASTRID_RUNPOD_MAX_SPEND_EUR": "3.5", "ASTRID_RUNPOD_DEADLINE_SECONDS": "7200",
-           "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
-    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: sources)
-    result = rp.run_remote_placement(
-        args, provider=provider, env=env, verify_fn=lambda *_: None, ffprobe_fn=lambda *_: None,
-        sleep=lambda s: None)
-    assert (provider.spec.max_spend_eur, provider.spec.deadline_seconds) == (3.5, 7200)
-    assert result["pod"]["leave_running"] is True and provider.releases == 0
-
-
 def test_source_archive_carries_git_and_the_one_identity_manifest_the_verifier_reads(tmp_path, sources):
     import tarfile
     (sources / "src/astrid-runtime/.git").mkdir()

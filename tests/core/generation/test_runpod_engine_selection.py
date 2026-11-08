@@ -23,7 +23,7 @@ LIVE = dict(PAID, offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
             execution_seconds=60, idle_seconds=1800)
 # Explicit refusals a target route may answer with instead of resolving.
 REFUSALS = {'runpod_engine_unavailable', 'foley_runpod_unsupported', 'missing_dependency',
-            'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
+            'engine_not_found', 'COMFY_TARGET_NO_MODEL', 'video_entry_required'}
 TARGETS = ('auto', 'managed', 'runpod')
 
 
@@ -164,7 +164,7 @@ def test_uncovered_entry_refuses_before_any_task(image, preferences):
     """ltx-2.3 models are in no RunPod lock: refuse, admit nothing, create no pod."""
     client = NoPodClient()
     with pytest.raises(AstridError) as raised:
-        _call('video', 'i2v', image, target='runpod', client=client, project='demo', wait=False, **LIVE)
+        _call('video', 'i2v', image, entry='ltx-2.3', target='runpod', client=client, project='demo', wait=False, **LIVE)
     assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
     assert client.calls == []
 
