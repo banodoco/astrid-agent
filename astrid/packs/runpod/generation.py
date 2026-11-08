@@ -99,11 +99,16 @@ def prepare_retained_generation(
             # longer paid claim lifetime.
             remaining = min(consent.preparation_seconds, (
                 _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
+            # A saved network volume holds only the model cache; models stay on the local engine root.
+            preferences = lease_owner.selection.preferences
+            cache_root = None if preferences.volume_id is None else (
+                f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")
             state = placement.prepare_claimed(
                 claim, out=lease_owner.selection.path.parent / "preparation" / invocation.operation_id,
                 deadline_seconds=remaining, installation=installation,
                 checkpoint=lambda job: save(job=dict(job)),
                 reuse_snapshot=previous["installed"] if previous is not None else None,
+                model_cache_root=cache_root,
             )
             if (lease_owner.clock() >= claimed["lease"]["paid_expires_at"]
                     or source_digest(placement.source_root) != bootstrap_digest
