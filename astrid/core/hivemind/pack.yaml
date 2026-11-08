@@ -231,10 +231,21 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/search/run.py
@@ -302,10 +313,21 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/get_item/run.py
@@ -359,10 +381,21 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/refresh_media/run.py
@@ -655,10 +688,21 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/contribute/run.py
@@ -736,12 +780,23 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/ingest_article/run.py
@@ -827,12 +882,23 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
+        descendant_enforcement:
+          kind: broker
+          validated: true
+          observable: true
+          route: declared-http-routes
+          wrapper: astrid-generic-host
     resources:
     - kind: implementation
       path: actions/ingest_workflow/run.py
@@ -900,7 +966,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
@@ -912,6 +978,11 @@ actions:
           wrapper: astrid.core.hivemind.executors.ingest_youtube.run
         broker:
           host_managed: true
+          kind: broker
+          enforced: true
+          observable: true
+          route: dynamic-url
+          wrapper: astrid.core.hivemind.executors.ingest_youtube.run
     resources:
     - kind: implementation
       path: actions/ingest_youtube/run.py
