@@ -480,3 +480,21 @@ def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, mon
         facade.bind_task(policy, inputs, invocation_id="invocation-1", scratch=None,
                          begin_lease=unreachable, retain_bridge=unreachable, retire_bridge=unreachable)
     assert not case.owner.path.exists() and case.creates == case.configs == 0
+
+
+def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
+    """A reuse refused for lifetime must not start any create, launch or reconcile."""
+    from astrid.packs.runpod import target_selection as selection_module
+
+    asyncio.run(case.owner.select(case.grant))
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("refused reuse reached a pod create, launch or reconcile")
+
+    for name in ("acquire_target", "reconcile_target"):
+        target = getattr(selection_module, name)
+        monkeypatch.setattr(target, "__wrapped__", must_not_run, raising=False)
+        monkeypatch.setattr(selection_module, name, must_not_run)
+    case.now += timedelta(hours=2)
+    with pytest.raises(PaidSelectionError, match="cannot be extended by reuse"):
+        asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))
