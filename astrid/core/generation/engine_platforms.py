@@ -104,8 +104,9 @@ class LinuxPlatformAdapter:
                   "comfy_root": self.join(root, comfy.relative_path), "models_root": self.join(root, "models"),
                   "models_config": self.join(root, "runtime/extra_model_paths.yaml"),
                   "host": recipe.start.bind_host, "port": str(recipe.start.port)}
-        # The ComfyUI launch is an engine process: its env is the engine's one
-        # process env (pycache prefix included), then the recipe's own overrides.
+        # The ComfyUI launch is an engine process. The recipe's env is the base and
+        # engine_process_env sets PYTHONPYCACHEPREFIX last, so the engine's prefix
+        # wins over any recipe value; other recipe keys pass through unchanged.
         launch_env = {k: _expand(v, values) for k, v in recipe.start.env.items()}
         return CommandRequest(tuple(_expand(v, values) for v in recipe.start.argv),
                               _expand(recipe.start.cwd, values),

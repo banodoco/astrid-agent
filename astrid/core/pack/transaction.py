@@ -805,6 +805,8 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
     records = []
     for pack_id, admission in sorted(admissions.items()):
         try:
+            if not isinstance(admission, dict):
+                raise ValueError("retained admission is not an object")
             if not _ID.fullmatch(pack_id) or not (root / pack_id / "pack.yaml").is_file():
                 raise ValueError("invalid retained pack identity")
             _tree(root / pack_id / ".build")

@@ -2834,3 +2834,16 @@ def test_retained_definitions_only_admission_is_accepted(tmp_path: Path) -> None
     (pack / ".build" / "definitions.json").write_bytes(definitions)
     admission = {"definitionsDigest": hashlib.sha256(definitions).hexdigest()}
     assert _retained_build_records(tmp_path, {"alpha": admission}, 1) == []
+
+
+def test_retained_admission_that_is_not_an_object_is_refused_by_name(tmp_path: Path) -> None:
+    # A malformed group-state entry must refuse with the named code, not escape as AttributeError.
+    from astrid.core.pack.install import PackInstallError
+    from astrid.core.pack.transaction import _retained_build_records
+
+    pack = tmp_path / "alpha"
+    (pack / ".build").mkdir(parents=True)
+    (pack / "pack.yaml").write_text("id: alpha\n", encoding="utf-8")
+    with pytest.raises(PackInstallError) as refusal:
+        _retained_build_records(tmp_path, {"alpha": ["not", "an", "object"]}, 1)
+    assert refusal.value.code == "incomplete_artifacts"
