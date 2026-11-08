@@ -55,3 +55,13 @@ def test_unrelated_untracked_file_still_fails_after_the_prefix_import(tmp_path):
     _import(repo, env)
     (repo / "notes.txt").write_text("generated\n", encoding="utf-8")
     assert "notes.txt" in _git(repo, "status", "--porcelain", "--untracked-files=all")
+
+
+def test_engine_launch_env_carries_the_pycache_prefix(tmp_path):
+    """The ComfyUI launch is built by engine_child_env from the engine's process env."""
+    from astrid.core.generation._engine_python_bootstrap import engine_child_env
+
+    root = tmp_path / "engine"
+    venv = root / "runtime" / "venv"
+    launch = engine_child_env(str(venv), engine_runner.engine_process_env({"PATH": "/bin"}, str(root)))
+    assert launch["PYTHONPYCACHEPREFIX"] == f"{root}/.astrid-engine/pycache"
