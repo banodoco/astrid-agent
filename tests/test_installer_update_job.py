@@ -1289,3 +1289,39 @@ def test_utf16_tail_starting_at_an_odd_offset_decodes():
     # The 8 KiB window can begin mid code unit; the stray byte is dropped.
     assert update_job._decode_worker_log(b"\xff\xfe", raw[1:], True) == "x" * 9 + "ValueError: boom\r\n"
     assert update_job._decode_worker_log(b"ab", b"plain utf-8 \xe2\x9c\x93", False) == "plain utf-8 \u2713"
+
+
+@pytest.mark.parametrize("job_log", ["empty", "absent"])
+def test_startup_traceback_only_in_the_wrapper_log_is_the_failed_message(tmp_path, monkeypatch, job_log):
+    # One writer per file: a worker that dies before run_job leaves its traceback only in
+    # astrid-update-<op>.wrapper.log. The captured text of run 42498677457 is exactly what
+    # the wrapper's *>> wrote (PowerShell's NativeCommandError header, then the traceback).
+    from astrid.installer.update_job_platform import wrapper_log_path
+
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    log = Path(launched["log_path"])
+    if job_log == "empty":
+        log.write_bytes(b"")
+    else:
+        log.unlink()
+    wrapper = wrapper_log_path(log)
+    assert wrapper.name == log.stem + ".wrapper.log"
+    wrapper.write_bytes(_CAPTURED_WORKER_LOG.read_text(encoding="utf-8").encode("utf-16"))
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed" and settled["worker_exit_code"] == 1
+    assert settled["worker_log_tail"] is None
+    assert "PermissionError: [Errno 13] Permission denied" in settled["worker_wrapper_log_tail"]
+    assert settled["message"].startswith(
+        "Failed: the update worker exited with code 1 before it started; Astrid is unchanged. "
+        "PermissionError: [Errno 13] Permission denied: ")
+
+
+def test_the_job_log_is_preferred_and_the_wrapper_log_is_kept(tmp_path, monkeypatch):
+    from astrid.installer.update_job_platform import wrapper_log_path
+
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    wrapper_log_path(Path(launched["log_path"])).write_bytes(
+        "python.exe : RuntimeError: wrapper side\r\n".encode("utf-16"))
+    settled = update_job.settle_dead_worker(root)
+    assert settled["message"].endswith("ValueError: worker refused before claim")
+    assert "RuntimeError: wrapper side" in settled["worker_wrapper_log_tail"]

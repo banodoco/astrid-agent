@@ -1282,7 +1282,7 @@ def read_job(root: Path) -> dict:
         "metadata", "transaction_id", "accepted_at", "finished_at", "message",
         "platform", "launch_status", "launch_error", "cleanup_status", "cleanup_error",
         "residue", "autostart_snapshot", "route_disposition",
-        "worker_exit_code", "worker_log_tail",
+        "worker_exit_code", "worker_log_tail", "worker_wrapper_log_tail",
     ) if key in job}
 
 
@@ -1748,10 +1748,15 @@ def _decode_worker_log(head: bytes, raw: bytes, odd_start: bool) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _worker_log_tail(job: dict) -> str | None:
-    """Return the last lines of the job's own private log, bounded, or None."""
+def _worker_log_tail(job: dict, *, wrapper: bool = False) -> str | None:
+    """Return the last lines of the job's own private log (or its wrapper log), bounded, or None."""
     try:
         log = Path(job.get("log_path", ""))
+        if wrapper:
+            # The Windows wrapper writes only astrid-update-<op>.wrapper.log, so a
+            # worker that dies before run_job leaves its traceback there alone.
+            from .update_job_platform import wrapper_log_path
+            log = wrapper_log_path(log)
         root = Path(job.get("program_root", ""))
         if (not log.is_absolute() or not root.is_absolute() or not log.is_relative_to(root)
                 or log.is_symlink() or not log.is_file()):
@@ -1811,8 +1816,12 @@ def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
     recorded = dict(fields or {})
     tail = None
     if exit_code is not None:
-        tail = _worker_log_tail(job)
-        recorded.update({"worker_exit_code": exit_code, "worker_log_tail": tail})
+        job_tail, wrapper_tail = _worker_log_tail(job), _worker_log_tail(job, wrapper=True)
+        # The job log is the worker's; when it holds nothing, the startup
+        # failure is only in the wrapper's own log.
+        tail = job_tail or wrapper_tail
+        recorded.update({"worker_exit_code": exit_code, "worker_log_tail": job_tail,
+                         "worker_wrapper_log_tail": wrapper_tail})
     code = "" if exit_code is None else f" with code {exit_code}"
     if transaction_started or pending:
         return _write_job(root, job["operation_id"], state="recovery-needed",
