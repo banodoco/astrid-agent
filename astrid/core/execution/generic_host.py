@@ -6438,6 +6438,17 @@ class GenericPackHost:
             _runtime_external_sources.verify()
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
+        # The personal collection (where `astrid packs add` installs) is always
+        # discovered; it is added after the custody check because it is a
+        # product location, not a caller-selected root. Under retained Runtime
+        # source custody it joins only when custody already names it.
+        from astrid.personal_packs_root import resolve_personal_packs_root
+        personal_root = resolve_personal_packs_root()
+        self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
+        if (personal_root is not None and personal_root.is_dir()
+                and (_runtime_external_sources is None
+                     or str(personal_root) in _runtime_external_sources._launch_roots)):
+            configured_roots.append(personal_root)
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
         self.client = client
         self.executor_id = executor_id
@@ -7260,8 +7271,8 @@ class GenericPackHost:
         # that include the bundled core packs). A host given only explicit
         # selected roots admits exactly those roots (g2/g5 selected sources).
         bundled_core_root = (PACKAGE_ROOT / "packs").resolve()
-        core_selected = not self.pack_roots or any(
-            bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self.pack_roots
+        core_selected = not self._explicit_pack_roots or any(
+            bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self._explicit_pack_roots
         )
         local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:

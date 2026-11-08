@@ -5061,3 +5061,19 @@ def test_nested_claim_slots_share_the_coordinating_host(idle_remotion_host):
     finally:
         nested.shutdown()
         first.shutdown()
+
+
+def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path, monkeypatch):
+    """`astrid packs add` installs under ~/Astrid/packs; the host must discover it unaided."""
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    host = GenericPackHost(pack_roots=[])
+    assert host.pack_roots == (personal.resolve(),)
+    host.discover()
+
+    assert "personal.echo" in host.capabilities
