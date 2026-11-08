@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash /home/user/astrid-dev/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/agent-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/agent-pytest-pod.sh:*)",
+      "Bash(bash /home/user/astrid-dev/env/smoke.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/02-consistent-generation/env/agent-pytest.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/agent-setup.sh:*)",
+      "Bash(bash /home/user/astrid-dev/plans/*/env/agent-pytest.sh:*)",
+      "Bash(python -m pip install -e:*)",
+      "Bash(python -m pip install --no-deps -e:*)",
+      "Bash(python scripts/ci_install_runtime.py:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(npm ci:*)"
+    ]
+  }
+}
