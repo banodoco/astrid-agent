@@ -6419,6 +6419,25 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
 
+def _align_trust(task: Mapping[str, Any]) -> bool:
+    intent = _task_generation_intent(task)
+    metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
+    return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
+
+
+def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any], *, trust: bool = False) -> str:
+    """The one host-owned inventory document, built only after the bound install is checked."""
+    from astrid.core.generation.target_inventory import build_document
+
+    installed = invocation.get("installed") if isinstance(invocation, Mapping) else None
+    if (not isinstance(installed, Mapping) or not installed.get("receipt_sha256")
+            or installed["receipt_sha256"] != evidence.get("installed_receipt_sha256")):
+        raise HostError("bound endpoint receipt differs from the prepared installation")
+    if trust:
+        return build_document("trust", evidence["loopback_url"])
+    return build_document("inventory", evidence["loopback_url"], invocation.get("models", ()))
+
+
 class GenericPackHost:
     """Discover, register, preflight, and execute pack capabilities."""
 
@@ -9295,6 +9314,7 @@ class GenericPackHost:
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
         comfy_invocation: Mapping[str, Any] | None = None,
+        target_model_assets: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -9412,6 +9432,9 @@ class GenericPackHost:
         from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
         env.pop(EXECUTION_REQUEST_ENV, None)
         env.pop("ASTRID_COMFY_INVOCATION", None)
+        env.pop("ASTRID_TARGET_MODEL_ASSETS", None)  # only the host's own document reaches a child
+        if record.id == "vibecomfy.run" and target_model_assets is not None:
+            env["ASTRID_TARGET_MODEL_ASSETS"] = target_model_assets
         if record.id == "vibecomfy.run" and comfy_invocation is not None:
             env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
         if record.id == "vibecomfy.run" and workflow_execution_request is not None:
@@ -9789,6 +9812,7 @@ class GenericPackHost:
         command_admission = dict(admission or {})
         workflow_request = command_admission.pop("workflow_execution_request", None)
         comfy_invocation = command_admission.pop("comfy_invocation", None)
+        target_model_assets = command_admission.pop("target_model_assets", None)
         admission = command_admission if admission is not None else None
         workflow_policy = None
         if record.id == "vibecomfy.run":
@@ -9931,6 +9955,7 @@ class GenericPackHost:
             network_broker=network_broker,
             workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
             comfy_invocation=comfy_invocation,
+            target_model_assets=target_model_assets,
             network_policy=workflow_policy or (
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -12104,6 +12129,7 @@ class GenericPackHost:
         child_bridge = None
         session_hold = None
         target_context = target_provider = target_invocation = None
+        target_model_assets = None
         target_operation_result = None
         try:
             session_hold = self._hold_session_slot()
@@ -12198,6 +12224,8 @@ class GenericPackHost:
                         scratch=root, cancel=cancel_signal)
                     _terminal["target_binding"] = evidence
                     inputs["comfy_url"] = evidence["loopback_url"]
+                    target_model_assets = _target_inventory_document(
+                        target_invocation, evidence, trust=_align_trust(task_data))
                     readiness_profile = None
                     vibe_session = None
                 inputs.pop("target_policy", None)
@@ -12215,6 +12243,9 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
+                if target_model_assets is None and _align_trust(task_data):
+                    from astrid.core.generation.target_inventory import build_document
+                    target_model_assets = build_document("trust", inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
@@ -12595,6 +12626,7 @@ class GenericPackHost:
                             {"workflow_execution_request": execution_contract}
                             if capability_id == "vibecomfy.run" and execution_contract is not None else {}
                         ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
+                            **({"target_model_assets": target_model_assets} if target_model_assets is not None else {}),
                             **({"host_target_bound": True} if target_invocation is not None else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,

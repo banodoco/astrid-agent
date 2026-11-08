@@ -852,8 +852,12 @@ def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None,
-                  pending_target: Mapping[str, Any] | None = None):
-    """Check the selected target's node and exact loader inventory."""
+                  pending_target: Mapping[str, Any] | None = None, align: str = 'check'):
+    """Check the selected target's node and exact loader inventory.
+
+    ``align='trust'`` feeds the workflow's own declared model rows as target custody,
+    so approval skips the model presence check; nothing about the target is verified.
+    """
     for need in entry.get("needs", []):
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
@@ -917,5 +921,8 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
         workflow.metadata["models_root"] = str(binding.path)
         custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
+    if align == 'trust':
+        from .target_inventory import declared_rows
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": list(declared_rows(workflow))}
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
         model_availability="target", refresh_object_info=client.object_info, **custody)

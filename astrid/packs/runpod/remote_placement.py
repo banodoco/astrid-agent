@@ -359,6 +359,8 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
+    # Parsed receipt model rows ({name, subdir, size, sha256}); in memory only, never in the snapshot.
+    models: tuple[Mapping[str, Any], ...] = ()
     model_cache_root: str | None = None
 
     @property
@@ -762,6 +764,9 @@ class RemotePlacement:
             "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
             "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
         }
+        from astrid.core.generation.target_inventory import rows_from_receipt
+        # The receipt parse above verified every row's sha256, bytes and path.
+        state.models = rows_from_receipt(saved.models, installation.root)
         return True
 
     # -- step 4 ------------------------------------------------------------

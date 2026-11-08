@@ -249,6 +249,15 @@ def _prompt_only_video(*, model, entry, inputs):
     return model is None and entry is None and set(inputs) == {"prompt"}
 
 
+_ALIGN_MODES = ('check', 'trust')
+
+
+def _align_mode(align):
+    if align not in _ALIGN_MODES:
+        raise GenerationInputError(f"align must be one of {', '.join(_ALIGN_MODES)}")
+    return align
+
+
 def _generation_controls(*, engine, consent, max_usd, deadline):
     from astrid.core.generation.targets import canonical_engine
     if engine is not None:
@@ -917,6 +926,7 @@ class GenerationFacade:
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                             execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+            controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
                 raise GenerationInputError('target workflow requires one local workflow path')
             if inputs is not None and not isinstance(inputs, Mapping):
@@ -1052,6 +1062,7 @@ class GenerationFacade:
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
+        align = _align_mode(controls.pop('align', 'check'))
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
@@ -1212,7 +1223,7 @@ class GenerationFacade:
                                          if need.get('ambiguity') and need not in needs)
                             candidate = {**candidate, 'needs': needs}
                         schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
-                                                                pending_target=pending_target)
+                                                                pending_target=pending_target, align=align)
                 from vibecomfy.workflow_bundle import load_bundle
                 if source == "workflow" and not candidate.get("registry_id"):
                     # Re-emit the edited canonical workflow before approval so
@@ -1235,6 +1246,11 @@ class GenerationFacade:
                         raise generation_error(exc) from exc
                     if isinstance(exc, CapabilityValidationError):
                         raise
+                    if align == 'check' and 'not present locally' in str(exc):
+                        exc = ValueError(
+                            f"{exc}. Fix: pass --align trust to accept the workflow's declared models as present "
+                            f"on the target (unverified), or run: astrid generate align --apply --consent user_env"
+                            f" --entry {identifier}")
                     raise generation_error(exc, entry={'id': identifier, 'engine': 'comfyui', 'mode': mode},
                         target=getattr(target_client, 'generation_target', None),
                         code='missing_dependency' if 'missing' in str(exc).lower() else 'input_rejected') from exc
@@ -1294,6 +1310,8 @@ class GenerationFacade:
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             readiness['entry'].update(preview)
+            if align == 'trust':
+                readiness['alignment'] = {'mode': 'trust', 'verified': False}
             return readiness
 
         from vibecomfy.workflow_bundle import emit_bundle
@@ -1333,7 +1351,7 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": "trust"} if align == "trust" else {})},
                 },
                 **asset_arguments, **controls,
             )
@@ -1419,12 +1437,14 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
+        align: str = 'check',
         **inputs: Any,
     ) -> Any:
         inputs = _public_input_values(inputs)
         controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
         controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                         execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+        controls['align'] = _align_mode(align)
         _reject_retired_generation_inputs(inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
@@ -1619,12 +1639,14 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
+        align: str = 'check',
         **inputs: Any,
     ) -> Any:
         inputs = _public_input_values(inputs)
         controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
         controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                         execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+        controls['align'] = _align_mode(align)
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
                        (("request", request), ("asset_map", asset_map)) if value is not None})
@@ -1824,6 +1846,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
+        align: str = 'check',
         **inputs: Any,
     ) -> Any:
         """Generate audio through the typed action or a selected workflow target."""
@@ -1832,6 +1855,7 @@ class GenerationFacade:
         controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
         controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                         execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+        controls['align'] = _align_mode(align)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
