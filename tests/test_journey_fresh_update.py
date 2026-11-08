@@ -7,6 +7,13 @@ from scripts import journey_fresh_update as update
 from scripts import check_journey_evidence as gate
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+
+
 def test_standin_preserves_pins_and_canonical_bytes(tmp_path):
     candidate = {"release": 1, "agent": {"sha": "a"}, "runtime": {"sha": "b"},
                  "tools": {"uv": {"version": "1"}}}
@@ -53,7 +60,7 @@ def test_transition_requires_new_current_old_retained_same_label_and_no_boundary
 
 def test_gate_requires_update_and_every_assertion():
     checks = {name: "pass" for name in update.CHECKS}
-    receipt = {"status": "pass", "release_from": 1, "release_to": 2, "old_version": "old",
+    receipt = {"status": "pass", "release_from": 1, "release_to": 2, "hosted": HOSTED, "old_version": "old",
                "new_version": "new", "manifest_sha256": "a" * 64, "checks": checks,
                "service": {"service_path": "/service/astrid.service", "foreground_fallback": False},
                "service_names": ["astrid.service"]}
@@ -147,3 +154,23 @@ def test_execute_rejects_a_baseline_that_is_not_the_candidate_release(monkeypatc
         update.execute(SimpleNamespace(shell="sh"), root, tmp_path / "data", evidence, tmp_path, {"release": 7},
                        old_path, old, "project", tmp_path / "marker", "digest", object(), "birth", result)
     assert result["update"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("published", [0, 1, 7])
+def test_gate_reads_the_published_release_from_the_row_and_expects_exactly_one_more(published):
+    hosted = {**HOSTED, "final": {**HOSTED["final"], "target_release": published + 1}}
+    checks = {name: "pass" for name in update.CHECKS}
+    receipt = {"status": "pass", "release_from": published, "release_to": published + 1, "hosted": hosted,
+               "old_version": "old", "new_version": "new", "manifest_sha256": "a" * 64, "checks": checks,
+               "service": {"service_path": "/service/astrid.service", "foreground_fallback": False},
+               "service_names": ["astrid.service"]}
+    assert not gate.fresh_update_errors("direct-linux-fresh", receipt)
+    for bad in (published, published + 2, True):
+        assert gate.fresh_update_errors("direct-linux-fresh", {**receipt, "release_to": bad})
+    # The Runtime's own status must agree, the request must be the credential-free POST, and the intercept reverted.
+    for change in ({"final": {**hosted["final"], "target_release": published + 2}},
+                   {"request": {**hosted["request"], "authorization": True}},
+                   {"served": {**hosted["served"], "/install-manifest.json": 0}},
+                   {"intercept_reverted": False}):
+        assert gate.fresh_update_errors("direct-linux-fresh", {**receipt, "hosted": {**hosted, **change}})
+    assert gate.fresh_update_errors("direct-linux-fresh", {k: v for k, v in receipt.items() if k != "hosted"})

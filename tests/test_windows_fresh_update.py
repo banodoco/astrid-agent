@@ -13,6 +13,13 @@ from scripts import windows_update_journey as update
 from scripts import ci_journey
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+
+
 def test_update_scheduler_capture_filters_scope_and_projects_fields(tmp_path, monkeypatch):
     seen = []
     row = {"id": 201, "time": "2026-11-05T03:10:01.1234567Z", "result": "2147942401",
@@ -65,7 +72,7 @@ def test_update_scheduler_capture_timeout_is_unavailable_and_staged(tmp_path, mo
 
 
 def receipt():
-    return {"outcome": "updated", "from_release": 1, "to_release": 2,
+    return {"outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
             "marker": update.MARKER, "manifest_sha256": "a" * 64,
             "old_version": "old", "current_version": "new", "exit_code": 0, "refusal": None, "task_id": "task-1",
             "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
@@ -153,13 +160,13 @@ def test_update_success_and_failure_exercise_assertions(tmp_path, monkeypatch):
         new.write_text("{}")
         (new.parent / "manifest.json").write_bytes(kwargs["manifest"])
         current[0] = new
-        return {"route": "hosted-button"}
+        return HOSTED
     monkeypatch.setattr(update.hosted, "run_hosted_update", hosted_update)
     args = SimpleNamespace(shell="powershell.exe")
     result = update.run_update(journey, args, tmp_path, candidate, root, data, evidence, None, "birth", "project", marker, "digest")
     assert result["outcome"] == "updated" and not gate._windows_fresh_update_errors(result, "direct-windows")
     assert {"verify-observe", "verify-update", "task", "content", "ready"} <= set(calls)
-    assert result["hosted"] == {"route": "hosted-button"}
+    assert result["hosted"] == HOSTED
     assert len(posts) == 1
     assert "capture" not in calls and "capture-processes" not in calls
     post = posts[0]
