@@ -13,6 +13,7 @@ from pathlib import Path
 if __package__:
     from .journey_matrix import (
         GPU_MATRIX,
+        HOSTED_BUTTON_JOB_IDS,
         END_STATE_INVENTORY,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
@@ -33,6 +34,7 @@ else:
     try:
         from journey_matrix import (
             GPU_MATRIX,
+            HOSTED_BUTTON_JOB_IDS,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
@@ -52,6 +54,7 @@ else:
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
             GPU_MATRIX,
+            HOSTED_BUTTON_JOB_IDS,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
@@ -252,6 +255,26 @@ def _hosted_update_errors(job_id, update, release_to):
         errors.append(f"{job_id}: hosted Update did not end as updated at the stand-in release")
     if hosted.get("intercept_reverted") is not True:
         errors.append(f"{job_id}: hosted Update intercept was not reverted")
+    if job_id in HOSTED_BUTTON_JOB_IDS:
+        errors.extend(_hosted_button_errors(job_id, hosted))
+    return errors
+
+
+def _hosted_button_errors(job_id, hosted):
+    """The request came from a browser clicking the hosted App build's own Update now."""
+    page = hosted.get("page") if isinstance(hosted.get("page"), dict) else {}
+    request = hosted.get("request") if isinstance(hosted.get("request"), dict) else {}
+    headers = request.get("headers")
+    errors = []
+    if hosted.get("driver") != "app-button" or page.get("offered") is not True or page.get("clicked") is not True:
+        errors.append(f"{job_id}: hosted Update was not the page's Update now clicked in a browser")
+    if type(page.get("served_manifest")) is not int or page["served_manifest"] < 1:
+        errors.append(f"{job_id}: the page did not read the stand-in release it offered")
+    if not DIGEST.fullmatch(str(page.get("build_sha256", ""))):
+        errors.append(f"{job_id}: the hosted App build identity is absent")
+    if (not isinstance(headers, list) or "origin" not in headers
+            or {"authorization", "cookie"} & set(headers)):
+        errors.append(f"{job_id}: the page's Update request headers are absent or carry a credential")
     return errors
 
 

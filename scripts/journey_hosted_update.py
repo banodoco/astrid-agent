@@ -17,6 +17,12 @@ that host on the runner itself:
 * a local HTTPS server on 127.0.0.1:443 serves the stand-in manifest and the
   App checkout's own bootstrap scripts.
 
+On the button row (``journey_matrix.HOSTED_BUTTON_JOB_IDS``) the same intercept also serves the
+candidate's ``npm run build:hosted`` output at ``https://astrid.haus``, and ``journey_update_button.mjs``
+opens it in Chromium (the leaf pinned by its public key), waits for Settings to offer Update now for the
+installed Astrid, and clicks it. The receipt's request is then what the browser saw itself send, and the
+page's own reads of the stand-in are kept apart from Runtime's.
+
 Nothing in the product changes and no verification is bypassed: the installed
 interpreter verifies the certificate chain exactly as it would for the real host.
 This module holds no secret. Privileged steps run through ``sudo -n`` on Linux
@@ -61,6 +67,20 @@ ROOT = Path(__file__).resolve().parents[1]
 CRYPTO_LOCK = ROOT / "requirements" / "proof.lock"
 CRYPTO_PACKAGES = ("cryptography", "cffi", "pycparser")
 SENT_HEADERS = ("Host", "Origin", "Content-Length")
+# The button row's browser appends this to its user agent, so the page's own fetches of the stand-in
+# are told apart from Runtime's: only Runtime's count as the release Runtime fetched.
+PAGE_AGENT_MARK = "astrid-journey-update-button"
+# The workspace route a visitor opens; "/" is the public landing page. Settings opens on its Updates tab.
+PAGE_ENTRY_ROUTE = "/tools/video-editor"
+PAGE_ENTRY = PAGE_ENTRY_ROUTE + "?settings=updates"
+BUTTON_SCRIPT = ROOT / "scripts" / "journey_update_button.mjs"
+PROXY_VARIABLES = frozenset({"http_proxy", "https_proxy", "all_proxy", "no_proxy"})
+MIME_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+              ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json",
+              ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".webp": "image/webp", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
+              ".mp4": "video/mp4", ".webm": "video/webm", ".wasm": "application/wasm", ".txt": "text/plain",
+              ".webmanifest": "application/manifest+json", ".map": "application/json"}
 ACCEPTED_KEYS = {"accepted", "state", "operation_id", "message"}
 
 
@@ -132,6 +152,17 @@ def make_certs(directory: Path) -> tuple[Path, Path, Path]:
     leaf_path.write_bytes(leaf.public_bytes(pem))
     key_path.write_bytes(key.private_bytes(pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     return ca_path, leaf_path, key_path
+
+
+def spki_pin(leaf: Path) -> str:
+    """Base64 SHA-256 of the leaf's public key, the form Chromium's SPKI allow list takes."""
+    import base64
+    import hashlib
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    public = x509.load_pem_x509_certificate(leaf.read_bytes()).public_key()
+    der = public.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return base64.b64encode(hashlib.sha256(der).digest()).decode("ascii")
 
 
 # -- privileged runner changes (run as root, or Administrator) --------------
@@ -234,8 +265,9 @@ def trust_remove() -> list[str]:
 
 
 def serve(args: argparse.Namespace) -> int:
-    """Serve the stand-in release over HTTPS until the stop file appears."""
-    routes = {path: Path(file).read_bytes() for path, file in json.loads(Path(args.routes).read_text()).items()}
+    """Serve the stand-in release (and, for the button row, the hosted page) over HTTPS until the stop file appears."""
+    routes = {path: Path(file) for path, file in json.loads(Path(args.routes).read_text()).items()}
+    types = json.loads(Path(args.types).read_text()) if args.types else {}
     log = Path(args.log)
     lock = threading.Lock()
 
@@ -243,12 +275,19 @@ def serve(args: argparse.Namespace) -> int:
         protocol_version = "HTTP/1.1"
 
         def _respond(self, head_only: bool) -> None:
-            body = routes.get(self.path)
+            path = urlsplit(self.path).path  # the page asks for its entry with a query string
+            file = routes.get(path)
+            body = file.read_bytes() if file is not None else None
             status = 200 if body is not None else 404
+            hit = {"method": self.command, "path": path, "status": status}
+            if PAGE_AGENT_MARK in (self.headers.get("User-Agent") or ""):
+                hit["page"] = True
             with lock, log.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps({"method": self.command, "path": self.path, "status": status}) + "\n")
+                stream.write(json.dumps(hit) + "\n")
             payload = body if body is not None else b""
             self.send_response(status)
+            if body is not None and path in types:
+                self.send_header("Content-Type", types[path])
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("Connection", "close")
             self.end_headers()
@@ -330,9 +369,12 @@ def revert() -> list[str]:
 class Intercept:
     """Map ``astrid.haus`` to a local HTTPS server that serves ``routes``, for the length of a ``with``."""
 
-    def __init__(self, routes: dict[str, bytes], *, python: str | os.PathLike | None = None, port: int = 443,
-                 max_seconds: int = 3600):
+    def __init__(self, routes: dict[str, bytes | Path], *, python: str | os.PathLike | None = None, port: int = 443,
+                 max_seconds: int = 3600, types: dict[str, str] | None = None):
+        """``routes`` maps a path to its bytes, or to a file served as it is (the hosted page's build)."""
         self.routes, self.python, self.port, self.max_seconds = dict(routes), python, port, max_seconds
+        self.types = dict(types or {})
+        self.leaf_spki: str | None = None
         self.directory: Path | None = None
         self.process: subprocess.Popen | None = None
         self.original_hosts: bytes | None = None
@@ -361,15 +403,21 @@ class Intercept:
         d = self.directory
         files = {}
         for index, (route, body) in enumerate(self.routes.items()):
+            if isinstance(body, Path):
+                files[route] = str(body.resolve())
+                continue
             (d / f"route-{index}").write_bytes(body)
             files[route] = str(d / f"route-{index}")
         (d / "routes.json").write_text(json.dumps(files), encoding="utf-8")
+        (d / "types.json").write_text(json.dumps(self.types), encoding="utf-8")
         (d / "hits.jsonl").write_text("", encoding="utf-8")
         ca, leaf, key = make_certs(d)
+        self.leaf_spki = spki_pin(leaf)
         self._must(_helper("trust", "add", "--ca", str(ca)), "trust the stand-in CA")
         self._must(_helper("hosts", "add"), "map astrid.haus to the stand-in")
         self.process = subprocess.Popen(
             _helper("serve", "--cert", str(leaf), "--key", str(key), "--routes", str(d / "routes.json"),
+                    "--types", str(d / "types.json"),
                     "--log", str(d / "hits.jsonl"), "--ready", str(d / "ready"), "--stop", str(d / "stop"),
                     "--port", str(self.port), "--max-seconds", str(self.max_seconds)),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -397,7 +445,8 @@ class Intercept:
         env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
         result = subprocess.run([str(python), "-I", "-c", script, f"https://{HOST}{MANIFEST_ROUTE}"],
                                 capture_output=True, text=True, timeout=120, env=env, check=False)
-        expected = hashlib.sha256(self.routes[MANIFEST_ROUTE]).hexdigest()
+        manifest = self.routes[MANIFEST_ROUTE]
+        expected = hashlib.sha256(manifest.read_bytes() if isinstance(manifest, Path) else manifest).hexdigest()
         if result.returncode or result.stdout.strip() != expected:
             raise RuntimeError("The installed interpreter does not reach the stand-in release over verified HTTPS: "
                                + (result.stderr.strip() or result.stdout.strip())[-300:])
@@ -557,6 +606,11 @@ def capture_update_evidence(root: Path, evidence: Path, *, failed: bool) -> None
             pass
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def release_routes(app: Path, manifest: bytes) -> dict[str, bytes]:
     """The stand-in manifest plus the App checkout's own bootstrap scripts, under the public paths."""
     routes = {MANIFEST_ROUTE: manifest}
@@ -570,37 +624,140 @@ def release_routes(app: Path, manifest: bytes) -> dict[str, bytes]:
     return routes
 
 
-def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, door_base: str, root: Path,
-                      evidence: Path, timeout: float | None = None, intercept=Intercept, tick=None) -> dict:
-    """POST the hosted page's Update request and wait for it to finish; returns the evidence record.
+def page_routes(dist: Path) -> tuple[dict[str, Path], dict[str, str]]:
+    """The candidate's hosted build under its public paths, plus the workspace entry; and their content types.
 
-    Raises when the door refuses, the stand-in is not what Runtime fetched, the update does not end as
-    ``updated``, or the runner cannot be restored.
+    The stand-in manifest and the bootstrap scripts are laid over these by the caller, so the page reads the
+    same ``/install-manifest.json`` Runtime fetches.
+    """
+    index = dist / "index.html"
+    build = dist / "build.json"
+    if not index.is_file() or not build.is_file():
+        raise RuntimeError(f"{dist} is not a hosted App build (index.html and build.json are required)")
+    routes, types = {}, {}
+    for file in sorted(dist.rglob("*")):
+        if not file.is_file() or file.is_symlink():
+            continue
+        route = "/" + file.relative_to(dist).as_posix()
+        routes[route] = file
+        if file.suffix.lower() in MIME_TYPES:
+            types[route] = MIME_TYPES[file.suffix.lower()]
+    for route in ("/", PAGE_ENTRY_ROUTE):
+        routes[route], types[route] = index, MIME_TYPES[".html"]
+    return routes, types
+
+
+def door_origin(door_base: str) -> str:
+    parts = urlsplit(door_base)
+    return f"{parts.scheme}://{parts.hostname}:{parts.port}"
+
+
+def click_update_now(*, app: Path, door_base: str, spki: str, evidence: Path, timeout: float = 300,
+                     node: str | None = None) -> dict:
+    """Open the hosted page at ``https://astrid.haus`` in Chromium and click its own Update now.
+
+    Returns what the browser saw: the POST it sent to the door and the door's answer.
+    """
+    with tempfile.TemporaryDirectory(prefix="astrid-journey-button-") as directory:
+        config_path, result_path = Path(directory) / "config.json", Path(directory) / "result.json"
+        config = {"app": str(app), "origin": ORIGIN, "entry": PAGE_ENTRY, "spki": spki,
+                  "door": door_origin(door_base), "updatePath": UPDATE_PATH, "agentMark": PAGE_AGENT_MARK,
+                  "timeoutMs": int(timeout * 1000), "result": str(result_path),
+                  "screenshot": str(evidence / "update-button.png")}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        node = node or os.environ.get("ASTRID_CI_NODE") or shutil.which("node") or "node"
+        # The browser must reach only the intercepted host and the loopback door, never a proxy.
+        env = {key: value for key, value in os.environ.items() if key.lower() not in PROXY_VARIABLES}
+        process = subprocess.run([node, str(BUTTON_SCRIPT), str(config_path)], capture_output=True, text=True,
+                                 timeout=timeout + 180, env=env, check=False)
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            result = {"error": "the browser wrote no result: " + (process.stdout + process.stderr).strip()[-600:]}
+    try:
+        (evidence / "update-button.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
+                                                     encoding="utf-8")
+    except OSError:
+        pass
+    if process.returncode or result.get("error"):
+        raise RuntimeError(f"The page's Update now was not clicked through (stage {result.get('stage')!r}): "
+                           f"{result.get('error') or process.returncode}")
+    return result
+
+
+def accepted_click(result: dict) -> dict:
+    """The receipt's request from the browser's own observation; raises unless the door accepted exactly one POST."""
+    request = result.get("request") if isinstance(result.get("request"), dict) else {}
+    body = (result.get("response") or {}).get("body")
+    body = body if isinstance(body, dict) else {}
+    excerpt = json.dumps(result.get("response"))[:400]
+    if (request.get("method") != "POST" or request.get("path") != UPDATE_PATH or request.get("status") != 202
+            or body.get("accepted") is not True or body.get("state") != "accepted"):
+        raise RuntimeError(f"The door did not accept the page's Update request: {excerpt}")
+    operation = body.get("operation_id")
+    if not isinstance(operation, str) or not re.fullmatch(r"[0-9a-f]{32}", operation):
+        raise RuntimeError(f"The page's accepted Update has no operation id: {excerpt}")
+    if result.get("posts") != 1:
+        raise RuntimeError(f"The page sent {result.get('posts')!r} Update requests, not one")
+    return {"method": "POST", "path": UPDATE_PATH, "origin": request.get("origin"),
+            "content_length": request.get("content_length"), "headers": list(request.get("headers") or []),
+            "authorization": request.get("authorization"), "cookie": request.get("cookie"),
+            "status": request["status"], "operation_id": operation}
+
+
+def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, door_base: str, root: Path,
+                      evidence: Path, timeout: float | None = None, intercept=Intercept, tick=None,
+                      dist: Path | None = None, click=click_update_now) -> dict:
+    """Send the hosted page's Update request and wait for it to finish; returns the evidence record.
+
+    With ``dist`` (the candidate's ``npm run build:hosted`` output) the intercept also serves the page at
+    ``https://astrid.haus`` and a browser clicks its own Update now; without it the journey sends the
+    page's request itself. Raises when the door refuses, the stand-in is not what Runtime fetched, the
+    update does not end as ``updated``, or the runner cannot be restored.
     """
     timeout = float(os.environ.get("ASTRID_CI_HOSTED_UPDATE_TIMEOUT", "1800")) if timeout is None else timeout
-    routes = release_routes(app, manifest)
+    routes, types = ({}, {}) if dist is None else page_routes(dist)
+    routes.update(release_routes(app, manifest))
     bootstrap = "/install.ps1" if sys.platform == "win32" else "/install"
-    record: dict = {"route": "hosted-button", "host": HOST,
-                    "request": {"method": "POST", "path": UPDATE_PATH, "origin": ORIGIN, "content_length": 0,
-                                "headers": list(SENT_HEADERS), "authorization": False, "cookie": False}}
-    stand_in = intercept(routes, python=python)
+    if dist is None:
+        record: dict = {"route": "hosted-button", "host": HOST, "driver": "door-request",
+                        "request": {"method": "POST", "path": UPDATE_PATH, "origin": ORIGIN, "content_length": 0,
+                                    "headers": list(SENT_HEADERS), "authorization": False, "cookie": False}}
+        stand_in = intercept(routes, python=python)
+    else:
+        record = {"route": "hosted-button", "host": HOST, "driver": "app-button", "request": {}}
+        stand_in = intercept(routes, python=python, types=types)
     failed = True
     try:
         with stand_in:
             mark = len(stand_in.hits())
             try:
-                accepted = post_update(door_base)
-                record["request"].update(status=accepted["status"], operation_id=accepted["operation_id"])
+                if dist is None:
+                    accepted = post_update(door_base)
+                    record["request"].update(status=accepted["status"], operation_id=accepted["operation_id"])
+                else:
+                    seen = click(app=app, door_base=door_base, spki=stand_in.leaf_spki, evidence=evidence)
+                    record["request"] = accepted_click(seen)
+                    record["page"] = {"entry": PAGE_ENTRY, "offered": True, "clicked": True,
+                                      "progress_shown": seen.get("page_progress") is True,
+                                      "build_sha256": _sha256(dist / "build.json")}
                 observed = {} if tick is None else {"tick": tick}
                 try:
-                    record["final"] = wait_terminal(door_base, accepted["operation_id"], timeout=timeout, **observed)
+                    record["final"] = wait_terminal(door_base, record["request"]["operation_id"], timeout=timeout,
+                                                    **observed)
                 except RuntimeError:
                     if tick is not None:
                         tick(None, final=True)  # Keep the last observation of the wait before the failure.
                     raise
             finally:
-                served = [hit for hit in stand_in.hits()[mark:] if hit["status"] == 200]
-                record["served"] = {route: sum(1 for hit in served if hit["path"] == route) for route in routes}
+                hits = [hit for hit in stand_in.hits()[mark:] if hit["status"] == 200]
+                served = [hit for hit in hits if not hit.get("page")]
+                watched = (MANIFEST_ROUTE, *BOOTSTRAP_ROUTES)
+                record["served"] = {route: sum(1 for hit in served if hit["path"] == route)
+                                    for route in routes if route in watched}
+                if dist is not None:
+                    record.setdefault("page", {})["served_manifest"] = sum(
+                        1 for hit in hits if hit.get("page") and hit["path"] == MANIFEST_ROUTE)
             if not record["served"][MANIFEST_ROUTE] or not record["served"][bootstrap]:
                 raise RuntimeError("Runtime did not fetch the stand-in release from the intercepted host: "
                                    + json.dumps(record["served"]))
@@ -622,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
     server = sub.add_parser("serve")
     for flag in ("cert", "key", "routes", "log", "ready", "stop"):
         server.add_argument("--" + flag, required=True)
+    server.add_argument("--types")
     server.add_argument("--port", type=int, default=443)
     server.add_argument("--max-seconds", type=int, default=3600)
     sub.add_parser("revert", help="remove the hosts mapping and CA trust if a run left them behind")

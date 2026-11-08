@@ -755,10 +755,34 @@ jobs:
           name: journey-manager-${{ matrix.job_id }}${{ inputs.diagnostic_keep_going && format('-{0}', matrix.leg) || '' }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
+      # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
+      # the driver serves this build at https://astrid.haus through the update leg's intercept.
+      - name: Set up Node for the hosted App build
+        if: matrix.job_id == 'direct-linux-fresh'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+      - name: Build the candidate's hosted App and the browser that clicks it
+        if: matrix.job_id == 'direct-linux-fresh'
+        shell: bash
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm ci --legacy-peer-deps
+          # The door port the build compiles in is the installed Runtime's default; nothing may override it.
+          unset ASTRID_APP_DIRECT_DOOR_PORT
+          npm run build:hosted
+          test -f dist/index.html && test -f dist/build.json
+          npx playwright install --with-deps chromium
+          git status --porcelain --untracked-files=no | (! grep .)
       - name: Run the matrix-owned lifecycle driver
         if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_CI_HOSTED_APP_DIST: ${{ matrix.job_id == 'direct-linux-fresh' && format('{0}/app/dist', github.workspace) || '' }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
@@ -889,6 +913,7 @@ jobs:
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt', 'refusal-update-bootstrap.log',
             'update-job-journal.log', 'update-job-record.json', 'update-transaction.json',
+            'update-button.json', 'update-button.png',
             'update-transaction-status.json', 'runtime-data-runtime.log', 'runtime-real-home-runtime.log', 'macos-file-listing.txt',
             'scheduled-task-before.xml', 'scheduled-task-after.xml',
             'runtime-owner-processes.json', 'runtime-owner-selection.json',
