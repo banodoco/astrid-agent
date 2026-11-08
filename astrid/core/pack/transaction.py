@@ -1225,7 +1225,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 # group state binds the file by digest (definitionsDigest).
                 definitions_bytes = _json(definitions_record(
                     pack_definitions(candidate, root, pack_id),
-                    provenance.get(pack_id) or {"subpath": packs[pack_id]}))
+                    provenance.get(pack_id) or {
+                        "subpath": packs[pack_id], "local_path": str((Path(source) / packs[pack_id]).resolve())}))
                 build_dir = candidate / pack_id / ".build"
                 build_dir.mkdir(exist_ok=True)
                 with (build_dir / "definitions.json").open("xb") as stream:

@@ -43,6 +43,8 @@ def test_every_installed_pack_gets_definitions_bound_in_the_group_state(repo, pa
         assert re.fullmatch(r"[0-9a-f]{40}", record["revision"]) and record["revision"] == repo.commit
         assert record["tree"] == git(repo.work, "rev-parse", f"{repo.commit}:{subpath}")
         assert record["subpath"] == subpath
+        assert record["source"] == {"kind": "git", "repository": record["repository"],
+                                    "revision": record["revision"], "tree": record["tree"]}
         # Bound by digest in the group state, browser build or not.
         assert snapshot.admissions[pack_id]["definitionsDigest"] == hashlib.sha256(raw).hexdigest()
     assert [(row["capability_kind"], row["capability_id"], row["path"])
@@ -88,5 +90,6 @@ def test_local_folder_install_records_null_provenance(repo, packs_root):
     record, raw = _definitions(packs_root, "alpha")
     assert (record["repository"], record["revision"], record["tree"]) == (None, None, None)
     assert record["subpath"] == "packs/alpha"
+    assert record["source"] == {"kind": "folder", "path": str((repo.work / "packs" / "alpha").resolve())}
     assert [row["capability_id"] for row in record["definitions"]] == ["alpha.echo"]
     assert read_group(packs_root).admissions["alpha"]["definitionsDigest"] == hashlib.sha256(raw).hexdigest()

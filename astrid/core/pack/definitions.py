@@ -61,6 +61,17 @@ def pack_definitions(staged_collection: Path, final_collection: Path, pack_id: s
 
 
 def definitions_record(rows: list[dict[str, str]], provenance: Mapping[str, Any]) -> dict[str, Any]:
-    """The version-1 ``definitions.json`` body; local installs carry null provenance."""
+    """The version-1 ``definitions.json`` body.
+
+    Git installs carry ``source: {kind: "git", repository, revision, tree}``;
+    local-folder installs keep repository/revision/tree null and carry
+    ``source: {kind: "folder", path}`` naming the source folder.
+    """
+    if provenance.get("revision") is None:
+        source: dict[str, Any] = {"kind": "folder", "path": provenance.get("local_path")}
+    else:
+        source = {"kind": "git", "repository": provenance.get("repository"),
+                  "revision": provenance.get("revision"), "tree": provenance.get("tree")}
     return {"version": 1, "repository": provenance.get("repository"), "revision": provenance.get("revision"),
-            "tree": provenance.get("tree"), "subpath": provenance.get("subpath"), "definitions": rows}
+            "tree": provenance.get("tree"), "subpath": provenance.get("subpath"), "source": source,
+            "definitions": rows}
