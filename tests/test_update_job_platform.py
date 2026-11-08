@@ -28,7 +28,8 @@ def job(tmp_path):
     root = tmp_path / "Astrid user's 安装"
     root.mkdir()
     return {"job_name": "astrid-update-" + OPERATION, "operation_id": OPERATION,
-            "program_root": str(root), "log_path": str(root / "logs" / "update.log")}
+            "program_root": str(root), "log_path": str(root / "logs" / "update.log"),
+            "home": str(tmp_path / "install-home")}
 
 
 def completed(args, returncode=0, stdout="", stderr=""):
@@ -127,6 +128,41 @@ def test_mac_launch_writes_private_one_shot_plist_with_literal_argv(tmp_path, mo
     assert "KeepAlive" not in decoded
     assert "StartCalendarInterval" not in decoded
     assert calls == [["launchctl", "bootstrap", descriptor["domain"], str(plist)]]
+
+
+def test_mac_update_job_plist_pins_the_home_the_install_record_is_found_through(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    command = ["worker"]
+    install_home = tmp_path / "install-home"
+    monkeypatch.setattr(platform.Path, "home", classmethod(lambda cls: install_home))
+    descriptor = platform.describe(record, command, system="darwin")
+    assert descriptor["home"] == str(install_home)
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args))
+
+    platform.launch(descriptor, command, record["log_path"], system="darwin")
+
+    items = list(ET.parse(descriptor["plist_path"]).getroot().find("dict"))
+    decoded = {items[index].text: items[index + 1] for index in range(0, len(items), 2)}
+    assert [child.text for child in decoded["EnvironmentVariables"]] == ["HOME", str(install_home)]
+
+
+def test_every_platform_descriptor_records_the_accepted_home(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    monkeypatch.setattr(platform, "_windows_sid", lambda: "S-1-5-21-12345")
+    monkeypatch.setattr(platform, "_run", lambda args: completed(args))
+    for system in ("linux", "darwin", "win32"):
+        descriptor = platform.describe(record, ["worker"], system=system)
+        assert descriptor["home"] == record["home"], system
+
+
+def test_a_job_without_a_recorded_home_is_refused_on_every_platform(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    del record["home"]
+    monkeypatch.setattr(platform, "_windows_sid", lambda: "S-1-5-21-12345")
+    for system in ("linux", "darwin", "win32"):
+        with pytest.raises(ValueError, match="installation home"):
+            platform.describe(record, ["worker"], system=system)
 
 
 def test_mac_cleanup_retains_active_and_removes_inactive_plist_before_bootout(tmp_path, monkeypatch):
@@ -270,6 +306,7 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
         "operation_id": operation,
         "program_root": str(program_root),
         "log_path": str(log),
+        "home": str(tmp_path / "install-home"),
         "metadata": {
             "manifest_path": str(manifest), "bootstrap_path": str(bootstrap),
             "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
@@ -310,7 +347,8 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
 
     # Capture the actual Windows adapter wrapper generated around this argv.
     record = {"job_name": "astrid-update-" + operation, "operation_id": operation,
-              "program_root": str(program_root), "log_path": str(log)}
+              "program_root": str(program_root), "log_path": str(log),
+              "home": str(tmp_path / "install-home")}
     calls = []
 
     def capture(args):

@@ -171,7 +171,7 @@ def _confirmed_route_disposition(root: Path, job: dict, state: str, message: str
         _busy("The confirmed update result has no valid transaction binding.")
     try:
         journal_sha256 = hashlib.sha256((root / "update-transaction.json").read_bytes()).hexdigest()
-        selection_sha256 = hashlib.sha256(_selection_path().read_bytes()).hexdigest()
+        selection_sha256 = hashlib.sha256(_recorded_selection_path(job).read_bytes()).hexdigest()
     except OSError as failure:
         raise _BusyRefusal("The confirmed update evidence cannot be retained.") from failure
     confirmation = {
@@ -462,6 +462,19 @@ def _selection_path() -> Path:
     return install_selection(Path.home(), sys.platform)
 
 
+def _recorded_home(job: dict) -> Path:
+    """The home the update was accepted under. A launched job's ambient HOME is its launcher's, so it is never used."""
+    recorded = job.get("home")
+    if not isinstance(recorded, str) or not Path(recorded).is_absolute():
+        raise ValueError("The accepted update records no installation home, so its install record cannot be found safely.")
+    return Path(recorded)
+
+
+def _recorded_selection_path(job: dict) -> Path:
+    from .service import install_selection
+    return install_selection(_recorded_home(job), sys.platform)
+
+
 class _IdentityUnavailable(ValueError):
     """Discovery lacks the endpoint or instance id needed to probe Runtime identity."""
 
@@ -570,6 +583,7 @@ def _validate_request(request: dict, root: Path) -> dict:
         raise ValueError("The update log cannot be a link.")
     return {
         "format": JOB_FORMAT, "operation_id": operation_id, "state": "accepted",
+        "home": str(absolute(Path.home())),
         "job_name": job_name, "log_path": str(log_path), "program_root": str(root),
         "data_root": str(data_root), "old_instance_id": old_instance_id,
         "old_identity": dict(old_identity), "old_version": old.document(),
@@ -593,7 +607,7 @@ def _reconcile_request_binding(request: dict, root: Path, job: dict) -> Path:
     try:
         data_root = absolute(request.get("data_root", ""))
         selection_path = absolute(request.get("selection_path", ""))
-        if absolute(request.get("root", "")) != root or selection_path != _selection_path():
+        if absolute(request.get("root", "")) != root or selection_path != _recorded_selection_path(job):
             _busy("The update request does not match the selected installation.")
         marker = read_json(root / "install.json")
         selected = read_json(selection_path)
@@ -701,7 +715,7 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
             _busy("The update claim state does not match its durable bootstrap proof.")
         if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
             _busy("The accepted update worker command cannot be proved.")
-        selection = read_json(_selection_path())
+        selection = read_json(_recorded_selection_path(job))
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
@@ -1315,7 +1329,7 @@ def fail(root: Path, operation_id: str, reason: object) -> dict:
 def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     from .core import current
     marker = read_json(root / "install.json")
-    selected = read_json(_selection_path())
+    selected = read_json(_recorded_selection_path(job))
     if (marker.get("owner") != LABEL or marker.get("managed_by") is not None
             or absolute(marker.get("data_root", "")) != absolute(job["data_root"])
             or selected.get("owner") != LABEL or selected.get("managed_by") is not None
@@ -1590,7 +1604,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
             return job
         if job.get("state") != "accepted":
             raise ValueError("The update job is not accepted for launch.")
-        selection = read_json(_selection_path())
+        selection = read_json(_recorded_selection_path(job))
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):

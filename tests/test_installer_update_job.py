@@ -20,6 +20,24 @@ from astrid.installer.service import LABEL, Service, install_selection
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
 
 
+
+def test_the_job_reads_the_install_record_of_the_home_it_was_accepted_under(tmp_path, monkeypatch):
+    for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    install_home, launcher_home = tmp_path / "install-home", tmp_path / "launcher-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: launcher_home))
+    job = {"operation_id": "0" * 32, "home": str(install_home)}
+    assert update_job._recorded_selection_path(job) == install_selection(install_home, sys.platform)
+    assert update_job._recorded_selection_path(job) != install_selection(launcher_home, sys.platform)
+
+
+@pytest.mark.parametrize("job", [{"operation_id": "0" * 32}, {"home": "relative/home"}, {"home": None}])
+def test_a_job_with_no_recorded_home_never_falls_back_to_the_ambient_home(job, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "ambient"))
+    with pytest.raises(ValueError, match="installation home"):
+        update_job._recorded_selection_path(job)
+
+
 def _fixture(tmp_path, monkeypatch, *, available=True):
     # These job tests model an available manager; dedicated tests below probe it.
     if available:
