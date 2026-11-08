@@ -7938,6 +7938,29 @@ class GenericPackHost:
                 reason=reason,
             )
 
+    def acknowledge_pack_refresh(self) -> bool:
+        """Register a committed personal-collection change and acknowledge its outbox entry.
+
+        `astrid packs add` commits to the personal collection and leaves a
+        refresh entry pending. This host is the one registrar: it rediscovers,
+        re-registers through the normal renewal path, and only then
+        acknowledges. Returns True when an entry was acknowledged.
+        """
+        from astrid.core.pack.transaction import refresh_pending, retry_refresh
+        from astrid.personal_packs_root import resolve_personal_packs_root
+
+        root = resolve_personal_packs_root()
+        if root is None or not refresh_pending(packs_root=root):
+            return False
+
+        def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
+            self.discover()
+            self._renew_executor_registration(idle=True)
+            return {"version": 1, "accepted": True, "revision": committed_revision,
+                    "reason": "registered by the running generic host"}
+
+        return not retry_refresh(packs_root=root, refresh=renew)
+
     def refresh(self) -> tuple[CapabilityRecord, ...]:
         """Re-scan source and report digest changes; callers must register again."""
         old = self.capabilities
@@ -13646,6 +13669,7 @@ class GenericPackHost:
         retry_at: dict[int, float] = {}
         refresh_retry_at = 0.0
         refresh_failures = 0
+        pack_ack_at = 0.0
         slots: tuple[GenericPackHost, ...] = ()
         poll_delay = max(0.01, float(poll_seconds))
 
@@ -13691,6 +13715,12 @@ class GenericPackHost:
                         retry_at[index] = now if result is not None else now + poll_delay
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
+                if now >= pack_ack_at and not active:
+                    pack_ack_at = now + 2.0
+                    try:
+                        self.acknowledge_pack_refresh()
+                    except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                        report_failure(exc, 1)
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
                         self._renew_executor_registration(idle=not active)

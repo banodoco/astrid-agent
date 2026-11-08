@@ -870,6 +870,15 @@ def _refresh(root: Path, pending: Mapping[str, Any] | None, refresh: Refresh | N
         return False
 
 
+def refresh_pending(*, packs_root: str | Path) -> bool:
+    """True when a committed outbox entry still awaits a host acknowledgment."""
+    root = Path(packs_root).expanduser()
+    if not (root.parent / ("." + root.name + ".transaction.lock")).exists() and not (root / _STATE).exists():
+        return False
+    with group_read_lock(root):
+        return _state(root)["refresh"] is not None
+
+
 def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
     """Recover durability then retry the latest committed notification.
 
@@ -1509,6 +1518,6 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     return GroupResult(tx, new_state["revision"], changed_ids, committed_paths, pending, candidate)
 
 
-__all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",
+__all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "refresh_pending", "group_read_lock",
            "collection_write_custody",
            "GroupResult", "GroupSnapshot", "GroupCommitError"]

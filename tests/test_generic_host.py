@@ -5077,3 +5077,57 @@ def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path,
     host.discover()
 
     assert "personal.echo" in host.capabilities
+
+
+def _pending_personal_outbox(personal: Path, *, revision: int = 1) -> None:
+    """A committed `packs add` whose host acknowledgment never happened."""
+    personal.mkdir(parents=True)
+    (personal.parent / ".packs.transaction.lock").touch()  # created by every real transaction writer
+    transaction_id = "a" * 32
+    (personal / ".group.json").write_text(json.dumps({
+        "version": 1, "revision": revision, "transaction_id": transaction_id, "removals": [], "admissions": {},
+        "refresh": {"transaction_id": transaction_id, "revision": revision, "changed_ids": ["personal"]},
+    }), encoding="utf-8")
+
+
+def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_path, monkeypatch):
+    """Running host and cold start both register, then acknowledge, the committed outbox."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _pending_personal_outbox(personal)
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    host = GenericPackHost(pack_roots=[])
+    registrations: list[bool] = []
+    monkeypatch.setattr(host, "_renew_executor_registration",
+                        lambda *, idle=True: registrations.append("personal.echo" in host.capabilities))
+    assert refresh_pending(packs_root=personal)
+
+    assert host.acknowledge_pack_refresh() is True
+    assert registrations == [True]  # rediscovered before it registered, once
+    assert not refresh_pending(packs_root=personal)
+    assert host.acknowledge_pack_refresh() is False  # nothing left to acknowledge
+    assert registrations == [True]
+
+
+def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _pending_personal_outbox(personal)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    host = GenericPackHost(pack_roots=[])
+
+    def broken(*, idle=True):
+        raise HostError("runtime unavailable")
+
+    monkeypatch.setattr(host, "_renew_executor_registration", broken)
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
