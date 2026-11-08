@@ -306,7 +306,7 @@ def test_default_slot_through_the_runpod_bind(slot, tmp_path, monkeypatch, real_
             subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                             "color=c=blue:s=256x144:r=24:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
                            check=True, timeout=60)
-            inputs["video"] = str(video)
+            inputs["video_ref"] = str(video)
         method = facade.image if modality == "image" else facade.audio
         return method(mode=mode, **controls, **inputs)
     with _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, call=call) as (client, project_id, provider, result):
