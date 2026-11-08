@@ -6440,19 +6440,26 @@ class GenericPackHost:
         for raw_root in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep):
             if raw_root:
                 configured_roots.append(Path(raw_root).expanduser().resolve())
+        self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
+        # The personal collection (where `astrid packs add` installs) is resolved
+        # here at start. Under retained Runtime custody it is admitted only when
+        # the Runtime's derived installed-pack grant already names it; otherwise
+        # it is not a root of this host. Without custody, only a host with no
+        # explicit selected roots gains it, so scoped and child hosts keep
+        # exactly the roots they were given.
+        from astrid.personal_packs_root import resolve_personal_packs_root
+        personal_root = resolve_personal_packs_root()
+        if personal_root is not None:
+            if _runtime_external_sources is not None:
+                _runtime_external_sources.verify()
+                if str(personal_root) in _runtime_external_sources._launch_roots:
+                    configured_roots.append(personal_root)
+            elif not self._explicit_pack_roots:
+                configured_roots.append(personal_root)
         if _runtime_external_sources is not None:
             _runtime_external_sources.verify()
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
                 raise HostError("discovery root is outside retained Runtime source custody")
-        # The personal collection (where `astrid packs add` installs) is always
-        # a host pack root, resolved here at start. A frozen profile's
-        # additional_pack_roots may predate the install, so the host never
-        # depends on that list to see the personal collection.
-        from astrid.personal_packs_root import resolve_personal_packs_root
-        personal_root = resolve_personal_packs_root()
-        self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
-        if personal_root is not None:
-            configured_roots.append(personal_root)
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
         self.client = client
         self.executor_id = executor_id

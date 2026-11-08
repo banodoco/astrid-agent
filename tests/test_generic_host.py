@@ -5170,3 +5170,22 @@ def test_frozen_profile_without_the_personal_root_still_discovers_it(tmp_path, m
     host.discover()
 
     assert {"frozen.echo", "personal.echo"} <= set(host.capabilities)
+
+
+def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(tmp_path, monkeypatch):
+    # The personal collection (~/Astrid/packs) joins a default host (no explicit roots).
+    # A scoped host given explicit roots keeps exactly those roots.
+    home = tmp_path / "home"
+    (home / "Astrid" / "packs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    scoped_root = tmp_path / "scoped"
+    scoped_root.mkdir()
+    personal = (home / "Astrid" / "packs").resolve()
+
+    scoped = GenericPackHost(pack_roots=[scoped_root])
+    assert personal not in scoped.pack_roots
+    assert scoped.pack_roots == (scoped_root.resolve(),)
+
+    default = GenericPackHost(pack_roots=[])
+    assert personal in default.pack_roots

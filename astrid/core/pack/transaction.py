@@ -815,7 +815,10 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
                         or hashlib.sha256(definitions_path.read_bytes()).hexdigest() != recorded):
                     raise ValueError("retained definitions record differs from its admission")
             if "artifact_manifest" not in admission:
-                continue  # A pack with no browser build: only its definitions record is bound.
+                # A pack with no browser build is admitted only through its definitions record.
+                if recorded is None:
+                    raise ValueError("retained admission has neither a browser artifact nor a definitions record")
+                continue
             admission = {key: value for key, value in admission.items() if key != "definitionsDigest"}
             artifact = admission["artifact_manifest"]
             # The existing durable group summary binds the original admission

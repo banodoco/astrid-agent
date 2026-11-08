@@ -2805,3 +2805,32 @@ def test_consent_refuses_caller_custody_for_other_collection(
             run(consent=lambda _preview: called.append(True) or True)
         assert caught.value.code == "transaction_busy"
     assert called == []
+
+
+def test_retained_admission_without_browser_artifact_or_definitions_is_refused(tmp_path: Path) -> None:
+    # An admission that binds neither a browser artifact nor a definitions record is
+    # not a valid retained admission; it must refuse by name rather than pass silently.
+    from astrid.core.pack.install import PackInstallError
+    from astrid.core.pack.transaction import _retained_build_records
+
+    pack = tmp_path / "alpha"
+    (pack / ".build").mkdir(parents=True)
+    (pack / "pack.yaml").write_text("id: alpha\n", encoding="utf-8")
+    with pytest.raises(PackInstallError) as refusal:
+        _retained_build_records(tmp_path, {"alpha": {}}, 1)
+    assert refusal.value.code == "incomplete_artifacts"
+    assert "Retained browser admission for alpha is invalid" in str(refusal.value)
+
+
+def test_retained_definitions_only_admission_is_accepted(tmp_path: Path) -> None:
+    import hashlib
+
+    from astrid.core.pack.transaction import _retained_build_records
+
+    pack = tmp_path / "alpha"
+    (pack / ".build").mkdir(parents=True)
+    (pack / "pack.yaml").write_text("id: alpha\n", encoding="utf-8")
+    definitions = b'{"version": 1, "packs": []}\n'
+    (pack / ".build" / "definitions.json").write_bytes(definitions)
+    admission = {"definitionsDigest": hashlib.sha256(definitions).hexdigest()}
+    assert _retained_build_records(tmp_path, {"alpha": admission}, 1) == []
