@@ -2073,3 +2073,64 @@ def test_the_real_agent_cli_at_head_declares_the_gate():
     head = sp.run(["git", "-C", str(journey.ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     cli = (journey.ROOT / "astrid/installer/cli.py").read_text()
     assert 'add_argument("--yes"' in cli and re.fullmatch(r"[0-9a-f]{40}", head)
+
+
+def _capture(tmp_path, monkeypatch, platform):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    return run_root, evidence, run_root / "evidence-upload" / "before-cleanup"
+
+
+def test_darwin_keeps_a_bounded_tail_of_the_data_root_runtime_log(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log = run_root / "data" / "runtime" / "runtime.log"
+    log.parent.mkdir(parents=True)
+    contents = b"x" * (journey.EVIDENCE_LOG_LIMIT + 10) + b"tail"
+    log.write_bytes(contents)
+    _, evidence, staged = _capture(tmp_path, monkeypatch, "darwin")
+    assert (evidence / "runtime-data-runtime.log").read_bytes() == contents[-journey.EVIDENCE_LOG_LIMIT:]
+    assert (staged / "runtime-data-runtime.log").read_bytes() == contents[-journey.EVIDENCE_LOG_LIMIT:]
+
+
+def test_the_data_root_runtime_log_is_darwin_only_and_never_followed_through_a_link(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log = run_root / "data" / "runtime" / "runtime.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"data")
+    _, evidence, _ = _capture(tmp_path, monkeypatch, "linux")
+    assert not (evidence / "runtime-data-runtime.log").exists()
+    log.unlink()
+    secret = tmp_path / "secret"
+    secret.write_text("private")
+    log.symlink_to(secret)
+    (evidence / "update-transaction-status.json").unlink()
+    journey.sys.platform = "darwin"
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    assert not (evidence / "runtime-data-runtime.log").exists()
+
+
+def test_the_update_journal_is_recorded_as_present_with_its_size_or_explicitly_absent(tmp_path, monkeypatch):
+    run_root, evidence, staged = _capture(tmp_path, monkeypatch, "linux")
+    absent = json.loads((staged / "update-transaction-status.json").read_text())
+    assert absent["status"] == "absent" and absent["path"] == str(run_root / "program" / "update-transaction.json")
+    (run_root / "program").mkdir()
+    (run_root / "program" / "update-transaction.json").write_bytes(b'{"step": "switched"}')
+    journey.capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+    present = json.loads((evidence / "update-transaction-status.json").read_text())
+    assert (present["status"], present["bytes"], present["phase"]) == ("present", 20, "after-cleanup")
+    link = run_root / "program" / "update-transaction.json"
+    link.unlink()
+    link.symlink_to(tmp_path)
+    journey.capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+    assert json.loads((evidence / "update-transaction-status.json").read_text())["status"] == "unsafe_type"
+
+
+def test_the_new_log_names_are_in_both_allowlists():
+    names = {"update-transaction-status.json", "runtime-data-runtime.log"}
+    assert names <= journey.JOURNEY_EVIDENCE_NAMES
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+    assert all(f"'{name}'" in workflow for name in names)

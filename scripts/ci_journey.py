@@ -77,6 +77,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt", "refusal-update-bootstrap.log",
     "update-job-journal.log", "update-job-record.json", "update-transaction.json",
+    "update-transaction-status.json", "runtime-data-runtime.log",
     "scheduled-task-before.xml", "scheduled-task-after.xml",
     "runtime-owner-processes.json", "runtime-owner-selection.json", "runtime-owner-selection-context.json",
     "runtime-owner-workspace.json",
@@ -641,8 +642,54 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
               file=sys.stderr, flush=True)
 
 
+def _regular_file_info(path: Path):
+    """lstat of a regular, non-link file, or None."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        return None
+    return info
+
+
+def capture_update_transaction_status(evidence: Path, run_root: Path, phase: str) -> None:
+    """Say whether the update journal exists (path and size) or is explicitly absent."""
+    path = run_root / "program" / "update-transaction.json"
+    record = {"schema_version": 1, "phase": phase, "path": str(path)}
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        record["status"] = "absent"
+    except OSError as exc:
+        record.update(status="error", error=type(exc).__name__)
+    else:
+        if _regular_file_info(path) is None:
+            record["status"] = "unsafe_type"
+        else:
+            record.update(status="present", bytes=info.st_size)
+    try:
+        write_json(evidence / "update-transaction-status.json", record)
+    except Exception as exc:
+        print(f"Journey update-transaction status ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
     """Retain bounded tails of Runtime logs from the active journey profile."""
+    capture_update_transaction_status(evidence, run_root, phase)
+    if sys.platform == "darwin":
+        # The Runtime's own log lives in the data root on macOS, beside its state.
+        source = run_root / "data" / "runtime" / "runtime.log"
+        if _regular_file_info(source) is not None:
+            try:
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (evidence / "runtime-data-runtime.log").write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except Exception as exc:
+                print(f"Journey Runtime data log capture ({phase}) failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
     elif sys.platform == "win32":
