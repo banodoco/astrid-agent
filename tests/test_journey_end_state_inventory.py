@@ -15,6 +15,11 @@ HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/
           "status": 202, "operation_id": "a" * 32},
           "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
           "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+# The fresh Linux row's update is the hosted App build's own Update now, clicked in a browser.
+BUTTON = {**HOSTED, "driver": "app-button",
+          "request": {**HOSTED["request"], "headers": ["accept", "content-length", "host", "origin", "user-agent"]},
+          "page": {"entry": "/tools/video-editor?settings=updates", "offered": True, "clicked": True,
+                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
 
 
 def candidate():
@@ -66,7 +71,8 @@ def release1_row(contract, pinned):
         row["checks"]["workspace_content"] = "pass"
     if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
         row["update"] = {
-            "status": "pass", "release_from": 1, "release_to": 2, "hosted": HOSTED,
+            "status": "pass", "release_from": 1, "release_to": 2,
+            "hosted": BUTTON if contract["job_id"] == "direct-linux-fresh" else HOSTED,
             "old_version": "old", "new_version": "new", "manifest_sha256": "d" * 64,
             "service": {"foreground_fallback": False, "service_path": "/run/astrid.service"},
             "service_names": ["astrid.service"],

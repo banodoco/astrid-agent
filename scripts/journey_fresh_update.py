@@ -12,9 +12,24 @@ import sys
 if __package__:
     from . import ci_journey as journey
     from . import journey_hosted_update as hosted
+    from .journey_matrix import HOSTED_BUTTON_JOB_IDS
 else:
     import ci_journey as journey
     import journey_hosted_update as hosted
+    from journey_matrix import HOSTED_BUTTON_JOB_IDS
+
+
+DIST_ENV = "ASTRID_CI_HOSTED_APP_DIST"
+
+
+def hosted_dist(job_id) -> Path | None:
+    """The built hosted App for a button row (required there); None for a row that sends the request itself."""
+    if job_id not in HOSTED_BUTTON_JOB_IDS:
+        return None
+    value = os.environ.get(DIST_ENV, "").strip()
+    if not value or not (Path(value) / "index.html").is_file():
+        raise RuntimeError(f"{job_id} clicks the hosted App's Update now and needs its build in {DIST_ENV}")
+    return Path(value)
 
 
 CHECKS = ("new_version", "old_version_retained", "same_service", "no_boundary_handoff",
@@ -118,6 +133,7 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
             sentinel, birth: str, result: dict) -> None:
     update = result["update"] = {"status": "not-run", "checks": {key: "not-run" for key in CHECKS}}
     try:
+        dist = hosted_dist(getattr(args, "job_id", None))
         installed = journey.read_json(Path(version["root"]) / "manifest.json")
         baseline = candidate_release(manifest)
         if version.get("identity") != {"release": baseline, "managed_by": None}:
@@ -134,9 +150,10 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         before_runtime_instance_id = before_health["runtime_instance_id"]
         # The hosted page's own request: POST through the Runtime door, with the stand-in
         # release served from the intercepted astrid.haus. No bootstrap is run by the journey.
+        # On a button row the page itself is served there too, and a browser clicks its Update now.
         update["hosted"] = hosted.run_hosted_update(
             python=version["python"], app=app, manifest=path.read_bytes(),
-            door_base=journey.HEALTH_URL, root=root, evidence=evidence)
+            door_base=journey.HEALTH_URL, root=root, evidence=evidence, dist=dist)
         journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
         new_path, new_data, new_version = journey.installation(root, data)
         if new_data != data or new_version.get("identity") != {"release": baseline + 1, "managed_by": None}:
