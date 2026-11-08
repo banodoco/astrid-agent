@@ -2011,7 +2011,7 @@ def test_bootstrap_accepts_recommended_setup_only_for_a_fresh_install(tmp_path, 
     flags = journey.bootstrap_flags(tmp_path / "m.json", mode, tmp_path / "p", tmp_path / "d")
     assert ("--yes" in flags) is yes and ("--update" in flags) is (mode == "update")
     seen = []
-    monkeypatch.setattr(ci_journey, "run", lambda argv, log, **kw: seen.append(argv))
+    monkeypatch.setattr(journey, "run", lambda argv, log, **kw: seen.append(argv))
     monkeypatch.setattr(journey.sys, "platform", "linux")
     journey.bootstrap(tmp_path, tmp_path / "m.json", "sh", mode, tmp_path, tmp_path / "p", tmp_path / "d")
     assert ("--yes" in seen[0]) is yes
