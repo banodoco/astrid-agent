@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shlex
@@ -361,6 +362,68 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
     if state == "Running":
         return True
     raise RuntimeError(f"Unknown Scheduled Task update job state: {state}")
+
+
+# Task Scheduler informational codes that are not a worker's exit status:
+# ready, running, disabled, has not run, no more runs, not scheduled, queued.
+_WINDOWS_NOT_AN_EXIT = {0x41300, 0x41301, 0x41302, 0x41303, 0x41304, 0x41305, 0x41325}
+
+
+def finished_result(descriptor: dict, system: str | None = None) -> dict | None:
+    """Return the recorded object's exit status only when it has positively finished.
+
+    This is the same unit/task state ``is_active`` reads, plus the manager's
+    own record of how the run ended. None means no positive evidence: still
+    running, never run, already absent (nothing left to read), or a platform
+    that keeps no exit record. Query errors raise; callers treat them as no
+    evidence. The result is {"exit_code": int, "evidence": str,
+    "finished_at": ISO-8601 str or None}.
+    """
+    actual, name = _validate(descriptor, system)
+    if actual == "linux":
+        result = _run(["systemctl", "--user", "show", name,
+                       "--property=ActiveState,Result,ExecMainStatus"])
+        if result.returncode:
+            if result.returncode == 4:
+                return None
+            raise _failure("query", result)
+        fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        state, outcome = fields.get("ActiveState", ""), fields.get("Result", "")
+        status = fields.get("ExecMainStatus", "")
+        if not status.isdecimal():
+            return None
+        if state == "failed" or (state == "inactive" and outcome == "success"):
+            return {"exit_code": int(status), "evidence": f"systemd ActiveState={state} Result={outcome}",
+                    "finished_at": None}
+        return None
+    if actual == "darwin":
+        return None
+    script = ("$ErrorActionPreference = 'Stop'\n$all = @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -eq "
+              + _ps_quote(name) + " }); if ($all.Count -eq 0) { Write-Output 'ASTRID_NOT_FOUND'; exit 0 }; "
+              + "if ($all.Count -ne 1) { throw 'Ambiguous task identity' }; "
+              + "$i = Get-ScheduledTaskInfo -TaskName " + _ps_quote(name) + " -TaskPath '\\' -ErrorAction Stop; "
+              + "$last = $null; if ($i.LastRunTime) { $last = $i.LastRunTime.ToUniversalTime().ToString('o') }; "
+              + "[ordered]@{ State=[string]$all[0].State; LastTaskResult=[int64]$i.LastTaskResult; "
+              + "LastRunTime=$last } | ConvertTo-Json -Compress\n")
+    result = _run(_encoded_ps(script))
+    if result.returncode:
+        raise _failure("query", result)
+    output = result.stdout.strip()
+    if output == "ASTRID_NOT_FOUND":
+        return None
+    try:
+        observed = json.loads(output.splitlines()[-1])
+    except (IndexError, ValueError) as failure:
+        raise RuntimeError("The Scheduled Task result is unreadable.") from failure
+    if not isinstance(observed, dict):
+        raise RuntimeError("The Scheduled Task result is unreadable.")
+    code, last_run = observed.get("LastTaskResult"), observed.get("LastRunTime")
+    if (observed.get("State") != "Ready" or type(code) is not int
+            or code in _WINDOWS_NOT_AN_EXIT or not isinstance(last_run, str) or not last_run):
+        return None
+    # LastTaskResult is a DWORD; report HRESULT-style values unsigned.
+    return {"exit_code": code & 0xFFFFFFFF, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "finished_at": last_run}
 
 
 def is_registered(descriptor: dict, command: list[str], system: str | None = None) -> bool:

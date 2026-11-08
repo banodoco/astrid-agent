@@ -499,3 +499,83 @@ def test_descriptor_rejects_unowned_names_and_platform_mismatch(tmp_path):
     descriptor["name"] = descriptor["unit"]
     with pytest.raises(ValueError, match="another system"):
         platform.is_active(descriptor, system="darwin")
+
+
+def _windows_result(tmp_path, monkeypatch, output, returncode=0):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    calls = []
+
+    def run(args):
+        script = base64.b64decode(args[-1]).decode("utf-16le") if "-EncodedCommand" in args else ""
+        if "WindowsIdentity" in script:
+            return completed(args, stdout="S-1-5-21-2")
+        calls.append(script)
+        return completed(args, returncode=returncode, stdout=output, stderr="denied" if returncode else "")
+
+    monkeypatch.setattr(platform, "_run", run)
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="win32")
+    return descriptor, calls
+
+
+def test_windows_finished_result_reads_last_task_result_of_a_ready_task(tmp_path, monkeypatch):
+    # The live run: State=Ready, LastTaskResult=1 about ten seconds after acceptance.
+    output = json.dumps({"State": "Ready", "LastTaskResult": 1,
+                         "LastRunTime": "2026-11-08T15:35:35.0000000Z"})
+    descriptor, calls = _windows_result(tmp_path, monkeypatch, output)
+    assert platform.finished_result(descriptor) == {
+        "exit_code": 1, "evidence": "Scheduled Task State=Ready LastTaskResult",
+        "finished_at": "2026-11-08T15:35:35.0000000Z"}
+    assert "Get-ScheduledTaskInfo -TaskName 'astrid-update-" in calls[-1]
+    assert "-TaskPath '\\'" in calls[-1]
+
+
+@pytest.mark.parametrize("observed", [
+    {"State": "Running", "LastTaskResult": 0x41301, "LastRunTime": "2026-11-08T15:35:35Z"},
+    {"State": "Ready", "LastTaskResult": 0x41303, "LastRunTime": None},
+    {"State": "Ready", "LastTaskResult": 0x41303, "LastRunTime": "1999-11-30T00:00:00Z"},
+    {"State": "Queued", "LastTaskResult": 1, "LastRunTime": "2026-11-08T15:35:35Z"},
+    {"State": "Ready", "LastTaskResult": 1, "LastRunTime": None},
+], ids=["running", "never-run", "never-run-default-time", "queued", "no-run-time"])
+def test_windows_finished_result_is_none_without_positive_evidence(tmp_path, monkeypatch, observed):
+    descriptor, _ = _windows_result(tmp_path, monkeypatch, json.dumps(observed))
+    assert platform.finished_result(descriptor) is None
+
+
+def test_windows_finished_result_absent_task_and_query_failure(tmp_path, monkeypatch):
+    descriptor, _ = _windows_result(tmp_path / "absent", monkeypatch, "ASTRID_NOT_FOUND")
+    assert platform.finished_result(descriptor) is None
+    descriptor, _ = _windows_result(tmp_path / "denied", monkeypatch, "", returncode=1)
+    with pytest.raises(RuntimeError, match="Could not query"):
+        platform.finished_result(descriptor)
+    descriptor, _ = _windows_result(tmp_path / "garbled", monkeypatch, "not json")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        platform.finished_result(descriptor)
+
+
+def test_windows_finished_result_reports_hresult_unsigned(tmp_path, monkeypatch):
+    output = json.dumps({"State": "Ready", "LastTaskResult": -2147024894,
+                         "LastRunTime": "2026-11-08T15:35:35Z"})
+    descriptor, _ = _windows_result(tmp_path, monkeypatch, output)
+    assert platform.finished_result(descriptor)["exit_code"] == 0x80070002
+
+
+@pytest.mark.parametrize("stdout,returncode,expected", [
+    ("ActiveState=failed\nResult=exit-code\nExecMainStatus=1\n", 0, 1),
+    ("ActiveState=inactive\nResult=success\nExecMainStatus=0\n", 0, 0),
+    ("ActiveState=active\nResult=success\nExecMainStatus=0\n", 0, None),
+    ("ActiveState=activating\nResult=success\nExecMainStatus=0\n", 0, None),
+    ("", 4, None),
+], ids=["failed", "succeeded", "active", "activating", "collected"])
+def test_linux_finished_result_mirrors_unit_state(tmp_path, monkeypatch, stdout, returncode, expected):
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, returncode, stdout))
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="linux")
+    result = platform.finished_result(descriptor)
+    assert (None if result is None else result["exit_code"]) == expected
+    assert calls[-1][:4] == ["systemctl", "--user", "show", descriptor["name"]]
+
+
+def test_mac_finished_result_has_no_exit_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform, "_run", lambda args: pytest.fail("launchd is not queried"))
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="darwin")
+    assert platform.finished_result(descriptor) is None

@@ -1055,3 +1055,153 @@ def test_a_startup_traceback_lands_in_the_wrapper_log_and_the_wrapper_exits_one(
     wrapper = log.with_name("job.wrapper.log").read_text(encoding="utf-8", errors="replace")
     assert "startup boom" in wrapper
     assert not log.exists()
+
+
+class _DeadWorkerAdapter:
+    """A Windows Scheduled Task manager whose recorded task reports a fixed outcome."""
+
+    def __init__(self, finished):
+        self.finished = finished
+        self.calls = []
+
+    def describe(self, value, command):
+        name = value["job_name"]
+        return {"format": "astrid-update-platform/v1", "system": "win32",
+                "kind": "scheduled-task-on-demand", "name": name, "task_name": name,
+                "user": "S-1-5-21-2", "operation_id": value["operation_id"],
+                "program_root": value["program_root"], "log_path": value["log_path"],
+                "command": command, "home": value["home"]}
+
+    def launch(self, *_args, **_kwargs):
+        self.calls.append("launch")
+
+    def finished_result(self, descriptor):
+        self.calls.append("finished_result")
+        return self.finished
+
+    def is_active(self, descriptor):
+        return self.finished is None
+
+    def cleanup(self, descriptor, **_kwargs):
+        self.calls.append("cleanup")
+
+
+def _launched_job(tmp_path, monkeypatch, finished):
+    """An accepted, acknowledged job: the state the live Windows run stayed in."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    job = update_job.accept(request)
+    adapter = _DeadWorkerAdapter(finished)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    launched = update_job.launch_job(root, job["operation_id"])
+    assert launched["state"] == "launching" and launched["launch_status"] == "acknowledged"
+    assert launched["bootstrap_proof"]["claim_state"] == "unclaimed"
+    log = Path(launched["log_path"])
+    log.write_text("Traceback (most recent call last):\nValueError: worker refused before claim\n",
+                   encoding="utf-8")
+    return root, launched, adapter
+
+
+def _finished(code):
+    return {"exit_code": code, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "finished_at": "2099-01-01T00:00:00.0000000Z"}
+
+
+def test_dead_worker_that_never_claimed_is_failed_with_exit_code_and_log_tail(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before_current = (root / "current").read_text()
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed"
+    assert settled["worker_exit_code"] == 1
+    assert "ValueError: worker refused before claim" in settled["worker_log_tail"]
+    assert "code 1" in settled["message"] and "worker refused before claim" in settled["message"]
+    assert settled["message"].startswith("Failed:")
+    assert "transaction_id" not in settled
+    assert settled["cleanup_status"] == "clean"
+    assert "cleanup" in adapter.calls
+    # Nothing was installed: the old version stays selected.
+    assert (root / "current").read_text() == before_current
+    assert update_job.read_job(root)["worker_exit_code"] == 1
+
+
+def test_dead_worker_after_claim_is_recovery_needed_not_failed(tmp_path, monkeypatch):
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    attempt = dict(launched["attempt"], phase="claimed",
+                   claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active",
+                          message="Update is running.",
+                          fields={"bootstrap_proof": proof, "attempt": attempt})
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "recovery-needed"
+    assert settled["worker_exit_code"] == 1
+    assert "code 1" in settled["message"]
+
+
+@pytest.mark.parametrize("finished", [None, _finished(0)], ids=["still-running", "exit-zero"])
+def test_running_or_zero_exit_worker_is_left_unchanged(tmp_path, monkeypatch, finished):
+    root, _launched, adapter = _launched_job(tmp_path, monkeypatch, finished)
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    assert "cleanup" not in adapter.calls
+
+
+def test_lost_acknowledgement_is_left_for_reconcile(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    update_job._write_job(root, launched["operation_id"], state="launching",
+                          message="Update launch acknowledgement was lost; repair will inspect the owned job.",
+                          fields={"launch_status": "unknown",
+                                  "attempt": dict(launched["attempt"], submit="unknown", handoff=None)})
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    assert "finished_result" not in adapter.calls
+
+
+def test_dead_worker_with_a_result_from_before_acceptance_is_left_unchanged(tmp_path, monkeypatch):
+    stale = dict(_finished(1), finished_at="2000-01-01T00:00:00Z")
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, stale)
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_held_installer_lock_leaves_dead_worker_unchanged(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    stream = update_job._locked(root)
+    try:
+        assert update_job.settle_dead_worker(root) is None
+    finally:
+        update_job._unlock(stream)
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_status_availability_read_ends_a_dead_worker_and_keeps_its_reply(tmp_path, monkeypatch, capsys):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "availability"})))
+    update_job.main()
+    reply = json.loads(capsys.readouterr().out)
+    assert reply == {"available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
+    assert read_json(root / "install.json")["update_job"]["state"] == "failed"
+
+
+def test_status_availability_read_leaves_a_running_worker_alone(tmp_path, monkeypatch, capsys):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, None)
+    before = (root / "install.json").read_bytes()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "availability"})))
+    update_job.main()
+    assert json.loads(capsys.readouterr().out)["available"] is True
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_sweep_of_an_inactive_claimed_job_is_recovery_needed(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, None)
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active", message="Update is running.",
+                          fields={"bootstrap_proof": proof})
+    adapter.finished = _finished(1)  # now inactive
+    swept = update_job.sweep_owned_jobs(root)
+    assert swept[0]["state"] == "recovery-needed"

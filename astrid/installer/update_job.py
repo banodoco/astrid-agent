@@ -1282,6 +1282,7 @@ def read_job(root: Path) -> dict:
         "metadata", "transaction_id", "accepted_at", "finished_at", "message",
         "platform", "launch_status", "launch_error", "cleanup_status", "cleanup_error",
         "residue", "autostart_snapshot", "route_disposition",
+        "worker_exit_code", "worker_log_tail",
     ) if key in job}
 
 
@@ -1717,6 +1718,164 @@ def _cleanup_private_inputs(job: dict, cleanup_status: str) -> None:
             directory.rmdir()
 
 
+MAX_WORKER_LOG_TAIL = 2000
+
+
+def _worker_claimed(job: dict) -> bool:
+    """Any durable sign that the worker took this attempt (the install may have begun)."""
+    proof = job.get("bootstrap_proof") if isinstance(job.get("bootstrap_proof"), dict) else {}
+    attempt = job.get("attempt") if isinstance(job.get("attempt"), dict) else {}
+    return (proof.get("claim_state") != "unclaimed" or proof.get("state") != "never-entered"
+            or proof.get("native_claim") is not None
+            or attempt.get("phase") == "claimed" or attempt.get("claim") is not None)
+
+
+def _worker_log_tail(job: dict) -> str | None:
+    """Return the last lines of the job's own private log, bounded, or None."""
+    try:
+        log = Path(job.get("log_path", ""))
+        root = Path(job.get("program_root", ""))
+        if (not log.is_absolute() or not root.is_absolute() or not log.is_relative_to(root)
+                or log.is_symlink() or not log.is_file()):
+            return None
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size - 8192))
+            raw = stream.read(8192)
+    except (OSError, ValueError, TypeError):
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    lines = ["".join(" " if ord(char) < 32 or 127 <= ord(char) <= 159 else char for char in line).rstrip()
+             for line in text.splitlines()]
+    tail = "\n".join(line for line in lines if line.strip())[-MAX_WORKER_LOG_TAIL:]
+    return tail or None
+
+
+def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
+                        fields: dict | None = None) -> dict:
+    """Record the outcome of an unresolved job whose worker is positively not running.
+
+    Callers hold the installer lock and have just observed the native object
+    inactive. Any claim or transaction evidence means the install may be part
+    way through, so it is recovery-needed; otherwise nothing was changed and
+    the old Runtime still serves, so it is failed.
+    """
+    journal = read_json(root / "update-transaction.json")
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    transaction_started = (isinstance(binding, dict)
+                           and binding.get("operation_id") == job["operation_id"])
+    pending = bool(journal and journal.get("step") not in TERMINAL_STEPS)
+    claimed = _worker_claimed(job)
+    recorded = dict(fields or {})
+    tail = None
+    if exit_code is not None:
+        tail = _worker_log_tail(job)
+        recorded.update({"worker_exit_code": exit_code, "worker_log_tail": tail})
+    code = "" if exit_code is None else f" with code {exit_code}"
+    if transaction_started or pending:
+        return _write_job(root, job["operation_id"], state="recovery-needed",
+                          message=f"Recovery needed. The update worker exited{code} during the installer transaction; run the install line to recover.",
+                          transaction_id=journal.get("operation_id") if journal else None,
+                          fields=recorded)
+    if claimed:
+        return _write_job(root, job["operation_id"], state="recovery-needed",
+                          message=f"Recovery needed. The update worker exited{code} after it claimed the update; run the install line to recover.",
+                          fields=recorded)
+    if exit_code is None:
+        return _write_job(root, job["operation_id"], state="failed",
+                          message="Failed: the registered update job became inactive without a result.",
+                          fields=recorded)
+    last_line = tail.splitlines()[-1].strip() if tail else "none"
+    return _write_job(root, job["operation_id"], state="failed",
+                      message=(f"Failed: the update worker exited with code {exit_code} before it started; "
+                               f"Astrid was not changed. Last log line: {last_line}"),
+                      fields=recorded)
+
+
+def _acknowledged_unresolved(job: object) -> bool:
+    """An acknowledged attempt the status route reads as active (not a lost acknowledgement)."""
+    if (not isinstance(job, dict) or job.get("format") != JOB_FORMAT
+            or job.get("state") not in {"launching", "active"}
+            or job.get("launch_status") != "acknowledged"
+            or not isinstance(job.get("operation_id"), str)
+            or not _owned_descriptor(job.get("platform"), job["operation_id"])):
+        return False
+    try:
+        attempt = _attempt(job)
+    except ValueError:
+        return False
+    return (attempt.get("submit") == "acknowledged"
+            and attempt.get("handoff") == {"epoch": attempt["epoch"], "nonce": attempt["nonce"]})
+
+
+def _dead_worker_exit(job: dict, api) -> int | None:
+    """Return a non-zero exit code only on positive evidence the worker finished."""
+    try:
+        result = api.finished_result(job["platform"])
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    code = result.get("exit_code")
+    if type(code) is not int or code == 0:
+        return None
+    finished_at = result.get("finished_at")
+    if finished_at is not None:
+        # The task name is unique per operation; still, a run that ended before
+        # this acceptance is not this worker's result.
+        try:
+            from datetime import datetime
+            ended = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+        accepted = job.get("accepted_at")
+        if type(accepted) is not int or ended < accepted - 300:
+            return None
+    return code
+
+
+def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
+    """End an acknowledged job whose native worker positively finished non-zero.
+
+    Called from the status path. It changes nothing unless the recorded OS
+    object reports a finished run with a non-zero result; a running, absent,
+    never-run, unqueryable, or lost-acknowledgement job is left as it is, and
+    a held installer lock (a live worker or installer) is left alone too.
+    """
+    try:
+        if root is None:
+            selected = read_json(_selection_path())
+            if (selected.get("owner") != LABEL or selected.get("managed_by") is not None
+                    or selected.get("uninstalled") or not selected.get("program_root")):
+                return None
+            root = selected["program_root"]
+        root = absolute(root)
+        marker = read_json(root / "install.json")
+        if marker.get("owner") != LABEL or marker.get("managed_by") is not None:
+            return None
+        job = marker.get("update_job")
+        if not _acknowledged_unresolved(job):
+            return None
+        api = api or _platform_api()
+        # Lock-free first look: the installer lock is taken only when a dead
+        # worker is already observed, so a healthy update is never contended.
+        if _dead_worker_exit(job, api) is None:
+            return None
+        stream = _locked(root)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    try:
+        job = read_json(root / "install.json").get("update_job")
+        if not _acknowledged_unresolved(job):
+            return None
+        exit_code = _dead_worker_exit(job, api)
+        if exit_code is None:
+            return None
+        _record_dead_worker(root, job, exit_code=exit_code)
+        return _cleanup_terminal(root, job["operation_id"], locked=True)
+    finally:
+        _unlock(stream)
+
+
 def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
     """Reconcile only recorded owned leftovers while the installer lock is held."""
     root = absolute(root)
@@ -1754,20 +1913,7 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
                 if active:
                     results.append(job)
                 elif state in {"launching", "active"}:
-                    journal = read_json(root / "update-transaction.json")
-                    binding = journal.get("update_job") if isinstance(journal, dict) else None
-                    transaction_started = (isinstance(binding, dict)
-                                           and binding.get("operation_id") == job["operation_id"])
-                    pending = bool(journal and journal.get("step") not in TERMINAL_STEPS)
-                    if transaction_started or pending:
-                        job = _write_job(root, job["operation_id"], state="recovery-needed",
-                                         message="Recovery needed. The update worker exited during the installer transaction; run the install line to recover.",
-                                         transaction_id=journal.get("operation_id") if journal else None,
-                                         fields={"launch_status": "unknown"})
-                    else:
-                        job = _write_job(root, job["operation_id"], state="failed",
-                                         message="Failed: the registered update job became inactive without a result.",
-                                         fields={"launch_status": "unknown"})
+                    job = _record_dead_worker(root, job, fields={"launch_status": "unknown"})
                     results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
                 else:
                     results.append(job)
@@ -2104,7 +2250,13 @@ def main():
     # Runtime's prepare request carries no action key; only its absence means prepare.
     action = value["action"] if "action" in value else "prepare"
     if action == "availability":
-        print(json.dumps({**update_job_availability(), "actions": list(SUPPORTED_ACTIONS)}))
+        availability = update_job_availability()
+        # Runtime asks for availability on every status read. That is the one
+        # moment a caller is waiting on the job, so end a positively dead
+        # worker here; any doubt leaves the record unchanged.
+        with contextlib.suppress(Exception):
+            settle_dead_worker()
+        print(json.dumps({**availability, "actions": list(SUPPORTED_ACTIONS)}))
     elif action == "reconcile":
         try:
             print(json.dumps(reconcile(value)))
