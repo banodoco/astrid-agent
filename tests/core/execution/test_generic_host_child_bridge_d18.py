@@ -1255,25 +1255,20 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
         generic_host_module, "_terminate_process_group",
         lambda process, **_kwargs: process.wait(timeout=3),
     )
-    pack_root = tmp_path / "vibecomfy"
+    # vibecomfy is a core pack: the parent fixture delegates to the shipped
+    # core vibecomfy.validate action, never to an external stand-in.
+    core_vibecomfy = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"
+    pack_root = tmp_path / "nestedparent"
     pack_root.mkdir()
-    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/pack.yaml").read_text())
-    validate = copy.deepcopy(shipped["actions"]["validate"])
-    validate.pop("resources", None)
-    # This fixture dispatches the UI route only. Omitted optional canonical
-    # files must stay omitted instead of the SDK treating '' as an object ID.
-    for port in validate["inputs"]:
-        if port["name"] in {"python", "companion", "source"}:
-            port.pop("default", None)
     workflow_bytes = b'{"nodes":[],"links":[]}'
     workflow_id = digest(workflow_bytes)
     world.service.ingest(world.project, workflow_bytes, media_type="application/json",
                          original_name="workflow.json", idempotency_key="receipt-workflow")
     descriptor = {"object_id": workflow_id, "digest": workflow_id, "filename": "workflow.json"}
     parent_code = (
-        SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
+        "from astrid.sdk import invoke\n"
         "result = invoke('vibecomfy.validate', kind='action', "
-        f"extra_pack_roots=({str(pack_root)!r},), inputs={{'workflow': {descriptor!r}}}, "
+        f"inputs={{'workflow': {descriptor!r}}}, "
         "child_key='nested-validator', wait=True, timeout_seconds=4, poll_seconds=0.01)\n"
         "assert not result.ok, result.error\n"
         "assert result.kernel_task_id\n"
@@ -1281,7 +1276,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
     pack = {
         "schema_version": 3,
         **V3_FIXTURE_HEADER,
-        "id": "vibecomfy",
+        "id": "nestedparent",
         "name": "Nested validator receipt fixture",
         "version": "0.1.0",
         "actions": {
@@ -1292,21 +1287,20 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
                 "inputs": [],
                 "outputs": {},
             },
-            "validate": validate,
         },
     }
     (pack_root / "pack.yaml").write_text(yaml.safe_dump(pack, sort_keys=False), encoding="utf-8")
     attempt_root = tmp_path / "attempts"
     host = GenericPackHost(
-        pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+        pack_roots=[pack_root, core_vibecomfy], client=world.client, executor_id="worker", max_concurrency=2,
         attempt_root=attempt_root,
     )
     host.discover()
-    assert {"vibecomfy.parent", "vibecomfy.validate"} <= set(host.capabilities)
+    assert {"nestedparent.parent", "vibecomfy.validate"} <= set(host.capabilities)
     for record in host.capabilities.values():
         world.service.register_capability({"capability_id": record.id, "definition_digest": record.capability_digest})
     world.service.register_executor(
-        {"executor_id": "worker", "capabilities": ["vibecomfy.parent", "vibecomfy.validate"], "max_concurrency": 2},
+        {"executor_id": "worker", "capabilities": ["nestedparent.parent", "vibecomfy.validate"], "max_concurrency": 2},
         idempotency_key="nested-validator-register",
     )
     policy = {
@@ -1317,13 +1311,13 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
     }
     world.service.create_task({
         "project": world.project,
-        "capability_id": "vibecomfy.parent",
-        "capability_digest": host.capabilities["vibecomfy.parent"].capability_digest,
+        "capability_id": "nestedparent.parent",
+        "capability_digest": host.capabilities["nestedparent.parent"].capability_digest,
         "input_object_ids": [workflow_id], "spec": {"inputs": {}}, "child_delegation": policy,
         "idempotency_key": "nested-validator-parent",
     }, enforce_readiness=True)
     parent_claim = world.service.claim_next(
-        {"executor_id": "worker", "capability_ids": ["vibecomfy.parent"], "runtime_epoch": 1},
+        {"executor_id": "worker", "capability_ids": ["nestedparent.parent"], "runtime_epoch": 1},
         idempotency_key="claim-nested-validator-parent", identity=world.identity,
     )
     assert parent_claim
@@ -1342,7 +1336,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
 
     def serve_validator():
         worker = GenericPackHost(
-            pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+            pack_roots=[pack_root, core_vibecomfy], client=world.client, executor_id="worker", max_concurrency=2,
             attempt_root=attempt_root,
         )
         worker.evidence_status_path = support / "evidence-status.json"
@@ -1535,9 +1529,16 @@ def test_unsupported_flags_fail_before_command_work(world, flag):
     marker = world.tmp / "work-ran"
     setup(world, form="-c", code=f"__import__('pathlib').Path({str(marker)!r}).touch()", flags=(flag,))
     c = world.claim
-    with pytest.raises(HostError, match="unsupported delegating Python command flags"):
+    # A selected v3 pack command is refused by the host's route preflight
+    # before any launch; the refusal is a fenced, non-retryable failure.
+    with pytest.raises(HostError):
         world.host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"])
     assert not marker.exists()
+    failed = world.service.task(world.task["id"])["task"]
+    assert failed["status"] == "failed"
+    error = json.loads(failed["result_json"])["error"]
+    assert error["code"] == "executor_failed" and error["retryable"] is False
+    assert not world.service.store.delegated_children(world.task["id"], c["attempt_id"])
 
 
 def test_successful_managed_outputs_have_verified_public_projection(world):
@@ -1847,7 +1848,9 @@ def test_actual_runtime_idempotent_replay_uses_attempt_scoped_child_wire_id(worl
     wire_id = _child_wire_id(project_id=world.project, parent_task_id=world.claim["task_id"],
                              parent_attempt_id=world.claim["attempt_id"], logical_child_key="child")
     args = {"child": {"child_id": wire_id, "capability_id": CHILD, "capability_digest": world.host.capabilities[CHILD].capability_digest},
-            "inputs": {"value": "scalar"}, "ordered_inputs": [], "derived_inputs": [], **b.context}
+            "inputs": {"value": "scalar"}, "ordered_inputs": [], "derived_inputs": [], **b.context,
+            # An exact replay carries the same admitted source digest as the bridge did.
+            "admitted_source_digest": world.host.admit("executor", CHILD)[1]["source_digest"]}
     replay = world.client.admit_child(**args)
     assert replay["task"]["task_id"] == first["task_id"]
     assert replay["task"]["idempotency_key"] == wire_id
@@ -1994,13 +1997,22 @@ def test_lease_loss_revokes_channel_and_runtime_contains_descendants(world):
     assert world.service.task(child["task_id"])["task"]["status"] == "cancelled"
 
 
-def test_source_change_rejected_before_child_admission(world):
+def test_source_change_after_child_admission_rejected_before_launch(world):
+    """Admission observes live source; the child launches only that digest."""
     setup(world)
     b = bridge(world)
-    (world.root / "actions/child.py").write_text("def run(value):\n    return 'changed'\n")
+    child = b.dispatch({**request(world), "wait": False})
+    admitted = world.service.task(child["task_id"])["task"]
+    assert admitted["spec"]["spec"]["admitted_source_digest"] == world.host.admit("executor", CHILD)[1]["source_digest"]
+    marker = world.tmp / "edited-child-ran"
+    (world.root / "actions/child.py").write_text(
+        f"def run(value):\n    __import__('pathlib').Path({str(marker)!r}).touch()\n    return {{'answer': 'changed'}}\n")
     with pytest.raises(HostError, match="source digest changed"):
-        b.dispatch(request(world))
-    assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
+        serve_one(world)
+    assert not marker.exists()
+    refused = world.service.task(child["task_id"])["task"]
+    assert refused["status"] == "failed"
+    assert json.loads(refused["result_json"])["error"]["retryable"] is False
 
 
 def test_non_python_delegating_command_rejected_before_work(world):

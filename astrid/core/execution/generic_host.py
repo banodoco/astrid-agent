@@ -5533,7 +5533,8 @@ class RuntimeProtocolClient:
                     generation_intent: Mapping[str, Any] | None = None,
                     stage_execution_request: Mapping[str, Any] | None = None,
                     storage_estimate: Mapping[str, int] | None = None,
-                    execution_request: Mapping[str, Any] | None = None):
+                    execution_request: Mapping[str, Any] | None = None,
+                    admitted_source_digest: str | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
         Stages and managed input refs are explicit trusted-host arguments. The
@@ -5563,6 +5564,8 @@ class RuntimeProtocolClient:
             staged_task = _staged_child_task(
                 child=child, inputs=inputs, ordered_inputs=ordered_inputs,
                 stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
+            if admitted_source_digest is not None:
+                staged_task["spec"]["admitted_source_digest"] = admitted_source_digest
         if generation_intent is not None:
             if not isinstance(generation_intent, Mapping):
                 raise ChildBridgeError("generation_intent must be an object")
@@ -5624,6 +5627,9 @@ class RuntimeProtocolClient:
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
                     "spec": {"capability_id": child["capability_id"], "kind": "action",
                              "params" if openai_request else "inputs": child_inputs}}
+            if admitted_source_digest is not None:
+                # The child host refuses to launch source other than this digest.
+                task["spec"]["admitted_source_digest"] = admitted_source_digest
             if openai_request:
                 task["storage_estimate"] = dict(storage_estimate)
             if request is not None and request.get("inputs"):
@@ -11583,6 +11589,14 @@ class GenericPackHost:
             selected_generation = _selected_pack_generation(record)
             with self._pack_capture(selected_generation):
                 run_source_digest = _run_source_digest(record)
+                # A delegated child carries the digest its parent bridge admitted.
+                # Admission observes live source, so an edit after that must
+                # not reach execution under the admitted identity.
+                raw_spec = task_data.get("spec")
+                admitted_source = (_admitted_spec_envelope(raw_spec).get("admitted_source_digest")
+                                   if isinstance(raw_spec, Mapping) else None)
+                if admitted_source is not None and admitted_source != run_source_digest:
+                    raise HostError("admitted capability source digest changed")
                 # Capture the selected identity, PIN and observed tree together
                 # before execution. Publish only after the fence validates.
                 provenance = _run_pack_provenance(
