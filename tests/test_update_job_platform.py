@@ -129,6 +129,23 @@ def test_mac_launch_writes_private_one_shot_plist_with_literal_argv(tmp_path, mo
     assert calls == [["launchctl", "bootstrap", descriptor["domain"], str(plist)]]
 
 
+def test_mac_update_job_plist_pins_the_home_the_install_record_is_found_through(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    command = ["worker"]
+    install_home = tmp_path / "install-home"
+    monkeypatch.setattr(platform.Path, "home", classmethod(lambda cls: install_home))
+    descriptor = platform.describe(record, command, system="darwin")
+    assert descriptor["home"] == str(install_home)
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args))
+
+    platform.launch(descriptor, command, record["log_path"], system="darwin")
+
+    items = list(ET.parse(descriptor["plist_path"]).getroot().find("dict"))
+    decoded = {items[index].text: items[index + 1] for index in range(0, len(items), 2)}
+    assert [child.text for child in decoded["EnvironmentVariables"]] == ["HOME", str(install_home)]
+
+
 def test_mac_cleanup_retains_active_and_removes_inactive_plist_before_bootout(tmp_path, monkeypatch):
     record = job(tmp_path)
     descriptor = platform.describe(record, ["worker"], system="darwin")

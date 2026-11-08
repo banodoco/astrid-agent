@@ -101,7 +101,9 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
                 "kind": "launchd-gui-one-shot", "name": label, "label": label,
                 "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
                 "log_path": str(log_path), "program_root": str(root),
-                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command}
+                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command,
+                # launchd gives a job the real home; the install record is found through HOME, so pin this one.
+                "home": str(Path.home())}
     user_sid = _windows_sid()
     task_name = f"astrid-update-{operation}"
     return {"format": "astrid-update-platform/v1", "system": system,
@@ -137,6 +139,8 @@ def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
     if actual in {"linux", "darwin"} and descriptor.get("user") != str(os.getuid()):
         raise ValueError("The update platform object belongs to another user.")
     if actual == "darwin":
+        if not Path(descriptor.get("home", "")).is_absolute():
+            raise ValueError("The launchd update home is invalid.")
         if descriptor.get("domain") != f"gui/{os.getuid()}":
             raise ValueError("The launchd update object is outside the current GUI domain.")
         expected_path = log.parent / f".{name}.plist"
@@ -170,10 +174,17 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
     values = [("Label", descriptor["label"]), ("ProgramArguments", command),
               ("RunAtLoad", True),
               ("StandardOutPath", str(log_path)), ("StandardErrorPath", str(log_path))]
+    if descriptor.get("home"):
+        values.insert(2, ("EnvironmentVariables", {"HOME": descriptor["home"]}))
     for key, value in values:
         ET.SubElement(dictionary, "key").text = key
         if isinstance(value, bool):
             ET.SubElement(dictionary, "true" if value else "false")
+        elif isinstance(value, dict):
+            nested = ET.SubElement(dictionary, "dict")
+            for name, item in value.items():
+                ET.SubElement(nested, "key").text = name
+                ET.SubElement(nested, "string").text = item
         elif isinstance(value, list):
             array = ET.SubElement(dictionary, "array")
             for item in value:
