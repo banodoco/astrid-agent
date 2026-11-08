@@ -105,7 +105,7 @@ def test_preservation_checks_public_schema_digest():
 
 def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch):
     payload = b"C1 object release0\n"
-    keys = {"project": "p", "timeline": "t", "revision": "r", "revision_digest": "digest", "generation": "release0",
+    keys = {"project": "p", "timeline": "t", "head": None, "generation": "release0",
             "object_digest": hashlib.sha256(payload).hexdigest(), "task_id": "task",
             "expected_schema_digest": "sha256:" + "9" * 64}
     # The live R0 Runtime contract differs from the R1 checkout's generated contract.
@@ -117,8 +117,6 @@ def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch)
                 return {"project_id": "p", "slug": "p", "name": "project", "metadata": {}}
             if path == "/v1/projects/p/timelines/t":
                 return {"name": "User edit release0", "head_revision_id": None}
-            if path == "/v1/projects/p/timelines/t/revisions/r":
-                return {"revision_id": "r", "content_digest": "digest"}
             if path.startswith("/v1/preferences/project?"):
                 return {"content": "Keep user changes release0", "version": 1}
             if path.startswith("/v1/objects/"):
@@ -130,8 +128,7 @@ def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch)
             raise AssertionError(f"unexpected request: {path}")
 
     result = live.snapshot(Client(), keys)
-    assert result["timeline"] == {"name": "User edit release0",
-                                  "revision": {"revision_id": "r", "content_digest": "digest"}}
+    assert result["timeline"] == {"name": "User edit release0", "head": None}
     assert result["preferences"]["content"] == "Keep user changes release0"
     assert result["task"]["state"] == "succeeded"
     assert result["cas_sha256"] == keys["object_digest"]
@@ -139,7 +136,7 @@ def test_snapshot_checks_user_data_and_public_schema_without_doctor(monkeypatch)
 
 
 def test_snapshot_rejects_runtime_schema_digest_different_from_selected_install():
-    keys = {"project": "p", "timeline": "t", "revision": "r", "revision_digest": "digest", "generation": "release0",
+    keys = {"project": "p", "timeline": "t", "head": None, "generation": "release0",
             "object_digest": hashlib.sha256(b"C1 object release0\n").hexdigest(), "task_id": "task",
             "expected_schema_digest": "sha256:" + "9" * 64}
 
@@ -149,8 +146,6 @@ def test_snapshot_rejects_runtime_schema_digest_different_from_selected_install(
                 return {"project_id": "p", "slug": "p", "name": "project", "metadata": {}}
             if path == "/v1/projects/p/timelines/t":
                 return {"name": "User edit release0", "head_revision_id": None}
-            if path == "/v1/projects/p/timelines/t/revisions/r":
-                return {"revision_id": "r", "content_digest": "digest"}
             if path.startswith("/v1/preferences/project?"):
                 return {"content": "Keep user changes release0", "version": 1}
             if path.startswith("/v1/objects/"):
@@ -195,7 +190,7 @@ def test_snapshot_failure_diagnostic_retains_only_known_missing_field():
         "timeline_type": "object",
         "timeline_head_revision_id": {"present": False, "type": None},
         "keys_type": "object",
-        "keys_revision": {"present": False, "type": None}}
+        "keys_head": {"present": False, "type": None}}
     assert live.valid_failure_diagnostic(diagnostic)
 
     secret = "/private/runner/.credential/token"
@@ -210,10 +205,10 @@ def test_snapshot_failure_diagnostic_retains_only_known_missing_field():
     [
         ({"head_revision_id": "revision"}, {"project": "p", "timeline": "t", "generation": "release0"}, "name",
          {"timeline_type": "object", "timeline_head_revision_id": {"present": True, "type": "string"},
-          "keys_type": "object", "keys_revision": {"present": False, "type": None}}),
-        ("private timeline response", {"project": "p", "timeline": "t", "revision": "private key", "generation": "release0"}, None,
+          "keys_type": "object", "keys_head": {"present": False, "type": None}}),
+        ("private timeline response", {"project": "p", "timeline": "t", "head": "private key", "generation": "release0"}, None,
          {"timeline_type": "string", "timeline_head_revision_id": {"present": False, "type": None},
-          "keys_type": "object", "keys_revision": {"present": True, "type": "string"}}),
+          "keys_type": "object", "keys_head": {"present": True, "type": "string"}}),
     ],
 )
 def test_snapshot_failure_diagnostic_identifies_each_lookup_without_values(
@@ -236,7 +231,7 @@ def test_snapshot_failure_diagnostic_identifies_each_lookup_without_values(
     assert live.valid_failure_diagnostic(diagnostic)
 
     unsafe = {**diagnostic, "snapshot_lookup": {**expected_lookup,
-              "keys_revision": {"present": [True], "type": "string"}}}
+              "keys_head": {"present": [True], "type": "string"}}}
     assert not live.valid_failure_diagnostic(unsafe)
 
 
@@ -402,7 +397,9 @@ def test_existing_project_preferences_are_not_overwritten():
             if method == "POST" and path == "/v1/projects":
                 return {"data": {"project_id": "project"}}
             if method == "POST" and path.endswith("/timelines"):
-                return {"data": {"revision_id": "rev", "content_digest": "digest"}}
+                return {"data": {"timeline_id": "timeline"}}
+            if method == "GET" and "/timelines/" in path:
+                return {"name": "User edit generation", "head_revision_id": None}
             if method == "GET" and path.startswith("/v1/preferences/project?"):
                 return {"content": "existing user content", "version": 1}
             assert method != "PUT"
