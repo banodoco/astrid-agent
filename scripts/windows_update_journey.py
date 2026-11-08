@@ -82,15 +82,17 @@ def make_wait_observer(evidence, root):
 
 
 def _keep_job_log(evidence, root, job):
-    source = root / "logs" / f"{job}.log"
-    try:
-        if source.is_symlink() or not source.is_file():
-            return
-        with source.open("rb") as stream:
-            stream.seek(max(0, source.stat().st_size - WAIT_LOG_LIMIT))
-            (evidence / "windows-update-job.log").write_bytes(stream.read(WAIT_LOG_LIMIT))
-    except OSError:
-        pass  # Keep what can be kept; the failure stands either way.
+    """Keep the update job's own log and the wrapper's log: a failure before the worker starts lives in the wrapper log."""
+    for source, name in ((root / "logs" / f"{job}.log", "windows-update-job.log"),
+                         (root / "logs" / f"{job}.wrapper.log", "windows-update-wrapper.log")):
+        try:
+            if source.is_symlink() or not source.is_file():
+                continue
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - WAIT_LOG_LIMIT))
+                (evidence / name).write_bytes(stream.read(WAIT_LOG_LIMIT))
+        except OSError:
+            pass  # Keep what can be kept; the failure stands either way.
 
 
 def capture_update_scheduler_events(evidence, started):
