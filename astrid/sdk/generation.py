@@ -49,11 +49,11 @@ _DEFAULT_ENTRIES = {
 _action_client_connection: ContextVar[Any] = ContextVar('generation_action_client_connection', default=None)
 
 
-@contextmanager
 def _local_template(entry: Any, mode: str) -> str:
     return getattr(entry.modes[mode].backends.get("local"), "template", "")
 
 
+@contextmanager
 def _action_client_scope(factory):
     with ExitStack() as stack:
         owner = None
