@@ -289,7 +289,8 @@ class _RuntimeSourceCustody:
                     or set(value["scope"]) != {"operation_id", "channel_id", "owner_epoch", "custody_scope"}
                     or any(not isinstance(v, str) or not v for v in value["scope"].values())
                     or not re.fullmatch(r"[0-9a-f]{64}", value["selected_profile_digest"])
-                    or not isinstance(value["sources"], list) or not value["sources"]):
+                    or not isinstance(value["sources"], list)):
+                # An empty granted set is valid: the host then boots built-ins only.
                 raise ValueError("invalid external source inventory")
             grants = []
             for source in value["sources"]:
@@ -314,9 +315,13 @@ class _RuntimeSourceCustody:
         if ({key: preparation.get(key) for key in value["scope"]} != value["scope"]
                 or raw_digest(preparation.get("profile")) != value["selected_profile_digest"]):
             raise HostError("external source custody differs from retained preparation")
+        # The Runtime's granted set is the whole retained custody: every granted pack
+        # (selected or discovered) is a launch root. Each selected root must be one of
+        # the granted sources; a selected root outside the grant is refused by name.
+        granted = [{"path": source["root"], "files": source["files"]} for source in value["sources"]]
         extras = preparation["profile"].get("host_launch", {}).get("additional_pack_roots", [])
-        if extras != [{"path": source["root"], "files": source["files"]} for source in value["sources"]]:
-            raise HostError("external selected roots differ from retained preparation")
+        if any(extra not in granted for extra in extras):
+            raise HostError("selected pack root is not granted by retained Runtime custody")
         self._owner_support_root = Path(preparation["profile"]["support_root"])
         self._workspace_uuid = preparation["profile"]["workspace_uuid"]
         self._launch_roots = [preparation["profile"].get("host_launch", {}).get("pack_root"),
