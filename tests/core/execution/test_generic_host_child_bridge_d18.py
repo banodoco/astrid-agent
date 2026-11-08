@@ -2015,6 +2015,63 @@ def test_source_change_after_child_admission_rejected_before_launch(world):
     assert json.loads(refused["result_json"])["error"]["retryable"] is False
 
 
+def test_delegated_child_without_admitted_digest_refused_before_launch(world, monkeypatch):
+    """Fail closed: a child spec with no admitted_source_digest never reaches its code."""
+    marker = world.tmp / "digestless-child-ran"
+    setup(world, child_code_override=f"def run(value):\n    __import__('pathlib').Path({str(marker)!r}).touch()\n    return {{'answer': value}}\n")
+    b = bridge(world)
+    child = b.dispatch({**request(world), "wait": False})
+    real_claim_next = world.service.claim_next
+
+    def claim_without_digest(body, **kwargs):
+        claim = real_claim_next(body, **kwargs)
+        if claim:
+            claim = copy.deepcopy(claim)
+            envelope = claim["spec"].get("spec", claim["spec"])
+            envelope.pop("admitted_source_digest", None)
+        return claim
+
+    monkeypatch.setattr(world.service, "claim_next", claim_without_digest)
+    with pytest.raises(HostError, match="lacks admitted_source_digest"):
+        serve_one(world)
+    assert not marker.exists()
+    refused = world.service.task(child["task_id"])["task"]
+    assert refused["status"] == "failed"
+    assert json.loads(refused["result_json"])["error"]["retryable"] is False
+
+
+@pytest.mark.parametrize("form", ["-m", "script", "-c"])
+def test_selected_command_with_network_policy_gets_child_answer_through_bridge(world, form, monkeypatch):
+    """NOTE 6: a selected v3 command with a network policy (no runtime connection) still
+    calls back through the bridge and receives the child's answer."""
+    host = setup(world, form=form, targeted=True, network_policy={
+        "allowed_protocols": ["dns", "tcp"], "allowed_routes": [], "broker": {"host_managed": True}})
+    grant = host.request_provider_route_grant({"task": world.task})
+    original_environment = host._child_environment
+    runtime_flags = []
+
+    def spy(*args, **kwargs):
+        runtime_flags.append(kwargs.get("allow_runtime_connection", True))
+        return original_environment(*args, **kwargs)
+
+    monkeypatch.setattr(host, "_child_environment", spy)
+    from concurrent.futures import ThreadPoolExecutor
+    ready = threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(serve_one, world, ready=ready)
+        assert ready.wait(5), "independent child host did not finish discovery"
+        c = world.claim
+        try:
+            host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"],
+                          provider_route_grant=grant)
+        except Exception:
+            future.result(timeout=5)
+            raise
+        assert future.result(timeout=5)
+    assert world.service.task(c["task_id"])["task"]["status"] == "completed"
+    assert len([call for call in world.calls if call[1] == "/v1/delegated-tasks"]) == 1
+    # The selected command really ran with the forced no-runtime-connection launch.
+    assert False in runtime_flags, runtime_flags
 def test_non_python_delegating_command_rejected_before_work(world):
     marker = world.tmp / "command-ran"
     setup(world, form="-c", argv_override=["/bin/sh", "-c", f"printf done > {str(marker)!r}"])

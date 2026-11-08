@@ -1014,9 +1014,11 @@ class _ManagedWanChildAdapter:
             self._owner_lock = None
             raise HostError("Wan child ownership is occupied; reconcile the prior host") from exc
         self._diagnostic = (owner_dir / f"wan-{self.binding.process_birth_id}.stderr").open("xb")
+        from astrid.core.generation._engine_python_bootstrap import engine_process_env
+
         environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if key in os.environ}
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+        environment = engine_process_env(environment, str(owner_dir))
         self.process = popen_owned_group(
             [self.spec["python"], "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", "--wan-session"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._diagnostic,
@@ -11634,6 +11636,10 @@ class GenericPackHost:
                 raw_spec = task_data.get("spec")
                 admitted_source = (_admitted_spec_envelope(raw_spec).get("admitted_source_digest")
                                    if isinstance(raw_spec, Mapping) else None)
+                # Fail closed: a delegated child with no admitted digest has no
+                # proof of which source was admitted, so it never launches.
+                if isinstance(raw_spec, Mapping) and "delegated_parent" in raw_spec and not admitted_source:
+                    raise HostError("delegated child spec lacks admitted_source_digest; refusing before launch")
                 if admitted_source is not None and admitted_source != run_source_digest:
                     raise HostError("admitted capability source digest changed")
                 # Capture the selected identity, PIN and observed tree together

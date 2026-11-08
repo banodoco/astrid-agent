@@ -231,7 +231,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -313,7 +313,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -381,7 +381,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -688,7 +688,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         allow_redirects: false
         broker:
           host_managed: true
@@ -780,7 +780,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
@@ -882,7 +882,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
@@ -966,7 +966,7 @@ actions:
         - dns
         - tcp
         allowed_destinations:
-        - ujlwuvkrxlvoswwkerdf.supabase.co:443
+        - https://ujlwuvkrxlvoswwkerdf.supabase.co:443
         dynamic_url_inputs:
         - url
         allow_redirects: false
