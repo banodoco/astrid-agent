@@ -2,6 +2,7 @@
 import http.server
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -266,3 +267,60 @@ def test_run_reverts_the_intercept_when_the_door_refuses(tmp_path, monkeypatch):
         hosted.run_hosted_update(python="p", app=tmp_path, manifest=b"{}", door_base="http://127.0.0.1:1/x",
                                  root=tmp_path, evidence=tmp_path, timeout=5, intercept=FakeIntercept)
     assert FakeIntercept.instances[0].reverted["clean"] is True
+
+
+def _program(tmp_path, with_journal=True):
+    root = tmp_path / "program"
+    root.mkdir()
+    log = root / "update.log"
+    log.write_text("worker output\n")
+    record = {"operation_id": OPERATION, "log_path": str(log), "state": "failed"}
+    (root / "install.json").write_text(json.dumps({"update_job": record}))
+    if with_journal:
+        (root / "update-transaction.json").write_text('{"step": "switched"}')
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    return root, evidence
+
+
+def test_a_failed_update_keeps_the_log_record_journal_and_unit_journal(tmp_path, monkeypatch):
+    root, evidence = _program(tmp_path)
+    seen = []
+    monkeypatch.setattr(hosted.sys, "platform", "linux")
+    monkeypatch.setattr(hosted.subprocess, "run", lambda argv, **kw: seen.append(argv) or hosted.subprocess.CompletedProcess(
+        argv, 0, stdout="unit output\n", stderr=""))
+    hosted.capture_update_evidence(root, evidence, failed=True)
+    assert (evidence / "update-bootstrap.log").read_text() == "worker output\n"
+    assert json.loads((evidence / "update-job-record.json").read_text())["operation_id"] == OPERATION
+    assert (evidence / "update-transaction.json").read_text() == '{"step": "switched"}'
+    assert (evidence / "update-job-journal.log").read_text() == "unit output\n"
+    assert seen == [["journalctl", "--user", "-u", f"astrid-update-{OPERATION}.service", "--no-pager", "-o", "short-iso"]]
+
+
+def test_a_successful_update_keeps_only_the_log_and_missing_pieces_never_raise(tmp_path, monkeypatch):
+    root, evidence = _program(tmp_path, with_journal=False)
+    hosted.capture_update_evidence(root, evidence, failed=False)
+    assert [p.name for p in evidence.iterdir()] == ["update-bootstrap.log"]
+    monkeypatch.setattr(hosted.sys, "platform", "win32")
+    hosted.capture_update_evidence(root, evidence, failed=True)  # no journal file, no journalctl
+    assert not (evidence / "update-transaction.json").exists() or (evidence / "update-transaction.json").read_bytes() == b""
+    hosted.capture_update_evidence(tmp_path / "nothing", evidence, failed=True)
+
+
+def test_run_captures_the_failure_evidence_when_the_row_fails(tmp_path, monkeypatch):
+    make_app(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(hosted, "capture_update_evidence", lambda root, evidence, *, failed: calls.append(failed))
+    monkeypatch.setattr(hosted, "post_update", lambda base: (_ for _ in ()).throw(RuntimeError("HTTP 409")))
+    with pytest.raises(RuntimeError):
+        hosted.run_hosted_update(python="p", app=tmp_path, manifest=b"{}", door_base="http://127.0.0.1:1/x",
+                                 root=tmp_path, evidence=tmp_path, timeout=5, intercept=FakeIntercept)
+    assert calls == [True]
+
+
+def test_the_new_evidence_names_are_allowlisted_everywhere():
+    from scripts import ci_journey
+    names = {"update-job-journal.log", "update-job-record.json", "update-transaction.json"}
+    assert names <= ci_journey.JOURNEY_EVIDENCE_NAMES
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+    assert all(f"'{name}'" in workflow for name in names)

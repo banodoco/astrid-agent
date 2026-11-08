@@ -501,15 +501,52 @@ def wait_terminal(base_url: str, operation_id: str, *, timeout: float, interval:
     raise RuntimeError(f"The Update did not finish within {int(timeout)}s; last status: {json.dumps(last)[:500]}")
 
 
-def copy_worker_log(root: Path, evidence: Path) -> None:
-    """Keep the update worker's log tail under an existing allowlisted evidence name (best effort)."""
+def _tail(path: Path, limit: int = 1024 * 1024) -> bytes:
+    with path.open("rb") as stream:
+        stream.seek(max(0, path.stat().st_size - limit))
+        return stream.read(limit)
+
+
+def capture_update_evidence(root: Path, evidence: Path, *, failed: bool) -> None:
+    """Keep the update's own records under allowlisted evidence names (best effort, never raises).
+
+    The worker log is kept always; on failure also the job record, the C2 journal and, on Linux,
+    the transient unit's journal, so the artifact explains the failure even when the row fails.
+    """
+    record = None
     try:
-        log = Path(json.loads((root / "install.json").read_text(encoding="utf-8"))["update_job"]["log_path"])
-        with log.open("rb") as stream:
-            stream.seek(max(0, log.stat().st_size - 1024 * 1024))
-            (evidence / "update-bootstrap.log").write_bytes(stream.read())
-    except (OSError, ValueError, KeyError, TypeError):
+        install = json.loads((root / "install.json").read_text(encoding="utf-8"))
+        record = install.get("update_job") if isinstance(install, dict) else None
+        record = record if isinstance(record, dict) else None
+    except (OSError, ValueError):
         pass
+    try:
+        if record is not None:
+            (evidence / "update-bootstrap.log").write_bytes(_tail(Path(record["log_path"])))
+    except (OSError, KeyError, TypeError):
+        pass
+    if not failed:
+        return
+    try:
+        if record is not None:
+            (evidence / "update-job-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
+                                                             encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        (evidence / "update-transaction.json").write_bytes(_tail(root / "update-transaction.json"))
+    except OSError:
+        pass
+    operation = record.get("operation_id") if record else None
+    if sys.platform == "linux" and isinstance(operation, str) and re.fullmatch(r"[0-9a-f]{32}", operation):
+        try:
+            result = subprocess.run(["journalctl", "--user", "-u", f"astrid-update-{operation}.service",
+                                     "--no-pager", "-o", "short-iso"], capture_output=True, text=True,
+                                    timeout=60, check=False)
+            (evidence / "update-job-journal.log").write_text(
+                (result.stdout + result.stderr)[-1024 * 1024:], encoding="utf-8")
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def release_routes(app: Path, manifest: bytes) -> dict[str, bytes]:
@@ -539,6 +576,7 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
                     "request": {"method": "POST", "path": UPDATE_PATH, "origin": ORIGIN, "content_length": 0,
                                 "headers": list(SENT_HEADERS), "authorization": False, "cookie": False}}
     stand_in = intercept(routes, python=python)
+    failed = True
     try:
         with stand_in:
             mark = len(stand_in.hits())
@@ -552,9 +590,10 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
             if not record["served"][MANIFEST_ROUTE] or not record["served"][bootstrap]:
                 raise RuntimeError("Runtime did not fetch the stand-in release from the intercepted host: "
                                    + json.dumps(record["served"]))
+        failed = False
     finally:
         record["intercept_reverted"] = bool(stand_in.reverted.get("clean"))
-        copy_worker_log(root, evidence)
+        capture_update_evidence(root, evidence, failed=failed)
     return record
 
 

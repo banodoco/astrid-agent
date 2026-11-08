@@ -20,11 +20,12 @@ from tests.test_journey_evidence import release1_receipts
     (1, jumps.WINDOWS_REFUSAL, "task", False),
     (1, jumps.WINDOWS_REFUSAL, "selection", False),
 ])
-def test_narrow_refusal_requires_message_and_preserved_evidence(tmp_path, monkeypatch, exit_code, message, change, ok):
+@pytest.mark.parametrize("release", [1, 7])
+def test_narrow_refusal_requires_message_and_preserved_evidence(tmp_path, monkeypatch, exit_code, message, change, ok, release):
     root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
     args = SimpleNamespace(job_id="direct-windows", leg="windows-upgrade-refusal", mode="direct", shell="powershell.exe",
                            candidate_checkouts={}, service_manager_prerequisite={}, app_checkout=tmp_path, candidate=tmp_path / "candidate")
-    manifest = {"release": 1}
+    manifest = {"release": release}
     monkeypatch.setattr(jumps, "release0_admission", lambda args: (tmp_path, tmp_path / "r0", {}))
     monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *a, **kw: (tmp_path / "manifest", manifest))
     monkeypatch.setattr(jumps.journey, "read_json", lambda path: {})
@@ -180,3 +181,18 @@ def test_refusal_driver_avoids_process_checks_even_during_cleanup(tmp_path, monk
                                                            related_selection / "data"),
                      }),
                      ("cleanup", {"skip_process_check": True})]
+
+
+@pytest.mark.parametrize("bad", [True, "1", -1, None])
+def test_refusal_needs_an_integer_release_but_not_release_one(tmp_path, monkeypatch, bad):
+    args = SimpleNamespace(job_id="direct-windows", leg="windows-upgrade-refusal", mode="direct", shell="powershell.exe",
+                           candidate_checkouts={}, service_manager_prerequisite={}, app_checkout=tmp_path, candidate=tmp_path / "c")
+    manifest = {"release": bad}
+    monkeypatch.setattr(jumps, "release0_admission", lambda args: (tmp_path, tmp_path / "r0", {}))
+    monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *a, **kw: (tmp_path / "manifest", manifest))
+    monkeypatch.setattr(jumps.journey, "read_json", lambda path: {})
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *a: manifest)
+    monkeypatch.setattr(jumps.journey, "runner_identity", lambda: {})
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: pytest.fail("must not install"))
+    with pytest.raises(RuntimeError, match="integer release"):
+        jumps.execute_windows_refusal(args, tmp_path / "p", tmp_path / "d", tmp_path / "e", None, None)
