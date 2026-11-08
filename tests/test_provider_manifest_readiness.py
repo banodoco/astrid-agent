@@ -43,11 +43,39 @@ def _fixture_credentials(host: GenericPackHost) -> dict[str, str]:
     return {name: "provider-manifest-fixture-secret" for name in names}
 
 
+# The provider records this head declares (pack set after 5d841e305 moved nine packs to
+# poms_packs, and edaa8e7c1 added the hivemind pack). Explicit ids so drift names itself.
+EXPECTED_PROVIDER_IDS = frozenset({
+    "generation.generate_audio",
+    "generation.generate_image",
+    "generation.generate_image_cloud_i2i",
+    "generation.generate_image_codex",
+    "generation.generate_image_edit",
+    "generation.generate_image_openai",
+    "generation.generate_image_upscale",
+    "generation.generate_video",
+    "hivemind.contribute",
+    "hivemind.get_item",
+    "hivemind.ingest_article",
+    "hivemind.ingest_workflow",
+    "hivemind.ingest_youtube",
+    "hivemind.refresh_media",
+    "hivemind.search",
+    "runpod.exec",
+    "runpod.provision",
+    "runpod.pull",
+    "runpod.session",
+    "runpod.teardown",
+    "training.search_loras",
+    "training.training_run",
+})
+
+
 def test_every_tcp_provider_manifest_declares_an_enforceable_host_broker():
     host = _provider_host(credentials={})
     providers = [record for record in host.capabilities.values() if record.adapter.family == "provider"]
 
-    assert len(providers) == 33
+    assert {record.id for record in providers} == EXPECTED_PROVIDER_IDS
     for record in providers:
         policy = record.definition.metadata.get("network_policy")
         assert isinstance(policy, dict), (record.id, "network_policy is not declared")
@@ -125,7 +153,7 @@ def test_all_supported_provider_routes_are_ready_and_grantable_with_declared_inp
             tcp_providers.append(record)
             assert record.ready, (record.id, record.preflight)
 
-    assert len(tcp_providers) == 33
+    assert {record.id for record in tcp_providers} == EXPECTED_PROVIDER_IDS
     for record in tcp_providers:
         policy = record.definition.metadata["network_policy"]
         declared_inputs = {}
