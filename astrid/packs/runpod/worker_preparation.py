@@ -14,7 +14,6 @@ import os
 import re
 import stat
 import tempfile
-import threading
 import time
 from dataclasses import asdict, dataclass, replace as _dc_replace
 from contextlib import contextmanager
@@ -448,7 +447,6 @@ def confirm_acquired_machine(
     contract: RunPodTargetContract,
     *,
     timeout_seconds: float,
-    cancel: threading.Event | None = None,
 ) -> tuple[str, str | None]:
     """Confirm a freshly acquired pod's GPU and datacenter from GraphQL ``pod.machine``.
 
@@ -479,13 +477,7 @@ def confirm_acquired_machine(
                 f"pod {contract.pod_id!r} machine was not reported by GraphQL before the readiness timeout",
                 gate="machine",
             )
-        if cancel is None:
-            time.sleep(_MACHINE_POLL_SECONDS)
-        elif cancel.wait(_MACHINE_POLL_SECONDS):
-            raise TargetObservationError(
-                f"pod {contract.pod_id!r} machine poll was cancelled before the readiness timeout",
-                gate="machine",
-            )
+        time.sleep(_MACHINE_POLL_SECONDS)
 
     observed_gpu = machine["gpuDisplayName"]
     observed_dc = machine["dataCenterId"]
