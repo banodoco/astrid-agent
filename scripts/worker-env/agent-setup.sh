@@ -21,7 +21,9 @@ RT=$("$PY" -c 'import json, sys; print(json.load(open(sys.argv[1]))["source_comm
 fetch_at https://github.com/banodoco/astrid-runtime "$E/runtime" "$RT"
 # Runtime and its Python client, --no-deps, from the verified checkout (as scripts/ci_install_runtime.py, without the archive URL).
 "$PY" -m pip install -q --disable-pip-version-check --no-input --no-deps "$E/runtime" "$E/runtime/packages/python"
+LC=$("$PY" -c 'import json, sys; print(json.load(open(sys.argv[1]))["sources"]["lifecycle"]["revision"])' "$CO/astrid/packs/runpod/pins.json")
+fetch_at https://github.com/banodoco/runpod-lifecycle "$E/lifecycle" "$LC"
 VC=$(cd "$E" && "$PY" -c 'from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION as r; print(r)')
 fetch_at https://github.com/banodoco/VibeComfy "$E/vibecomfy" "$VC"
 dirname "$(command -v uv)" > "$E/uv-dir"
-printf 'python=%s\nruntime=%s\nvibecomfy=%s\n' "$("$PY" -c 'import sys; print(sys.version.split()[0])')" "$RT" "$VC" | tee "$E/setup.txt"
+printf 'python=%s\nruntime=%s\nvibecomfy=%s\nlifecycle=%s\n' "$("$PY" -c 'import sys; print(sys.version.split()[0])')" "$RT" "$VC" "$LC" | tee "$E/setup.txt"
