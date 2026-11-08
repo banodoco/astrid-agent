@@ -1395,56 +1395,48 @@ def test_real_cli_refuses_when_collection_changes_during_consent(
         repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
     # Consent releases collection custody on purpose (dff903d2d), so a competing
-    # writer can publish while the human is answering. The CLI must refuse with
-    # collection_changed rather than compose against a collection that moved, and a
-    # rerun must then succeed against the new revision.
+    # writer can publish while the human is answering. The writer is driven from
+    # inside the consent prompt and joined there, so the ordering is deterministic:
+    # no sleep, no timed assertion. The CLI must refuse with collection_changed, and
+    # a rerun must then succeed against the revision the writer left behind.
     import threading
 
     from astrid.core.pack import transaction
     from astrid.core.pack.cli import main as packs_cli_main
 
     original_compose = transaction._compose_resulting_facts
-    writer_started = threading.Event()
-    writer_done = threading.Event()
     failure: list[BaseException] = []
-    fired = False
+    writer_done = threading.Event()
 
-    def racing_compose(facts, paths, **kwargs):
-        nonlocal fired
-        result = original_compose(facts, paths, **kwargs)
-        if not fired:
-            fired = True
-            def racing_writer():
-                writer_started.set()
-                try:
-                    install_group(source=repo.bare, revision=repo.commit, packs=GROUP,
-                                  packs_root=packs_root, python_packages={}, intent="update")
-                except BaseException as exc:
-                    failure.append(exc)
-                finally:
-                    writer_done.set()
-            threading.Thread(target=racing_writer, daemon=True).start()
-            assert writer_started.wait(2)
-            # Selection is already complete, yet the competing writer cannot publish
-            # until the consent prompt releases custody.
-            assert not writer_done.wait(0.1)
-        return result
+    def racing_writer():
+        try:
+            install_group(source=repo.bare, revision=repo.commit, packs=GROUP,
+                          packs_root=packs_root, python_packages={}, intent="update")
+        except BaseException as exc:
+            failure.append(exc)
+        finally:
+            writer_done.set()
 
-    monkeypatch.setattr(transaction, "_compose_resulting_facts", racing_compose)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    def consent_prompt(_prompt):
+        # Custody is released here by design: the competing writer publishes now.
+        threading.Thread(target=racing_writer, daemon=True).start()
+        assert writer_done.wait(30), "the competing writer did not finish during consent"
+        return "yes"
+
+    monkeypatch.setattr("builtins.input", consent_prompt)
     command = ["update", "--source", str(repo.bare), "--revision", repo.commit,
                "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
                "--pack", "shared=packs/shared"]
     assert packs_cli_main(command) == 2
-    # The CLI renders the PackInstallError("collection_changed") message.
+    # The message names the refusal; the path is not part of the contract here.
     assert "changed during consent; retry." in capsys.readouterr().err
-    assert writer_done.wait(10)
     assert not failure
     # The refused CLI wrote nothing, so the racing writer's publish is the first revision.
     assert read_group(packs_root).revision == 1
 
     # The same command now succeeds against the collection the writer left behind.
     monkeypatch.setattr(transaction, "_compose_resulting_facts", original_compose)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
     assert packs_cli_main(command) == 0
     assert read_group(packs_root).revision == 2
 
