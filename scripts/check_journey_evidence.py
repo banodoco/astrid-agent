@@ -222,12 +222,46 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
+def _release_step_errors(job_id, label, release_from, release_to):
+    """The row lands on exactly published + 1; the published release is whatever the row installed."""
+    if (any(type(value) is not int or value < 0 for value in (release_from, release_to))
+            or release_to != release_from + 1):
+        return [f"{job_id}: {label} release transition is invalid"]
+    return []
+
+
+def _hosted_update_errors(job_id, update, release_to):
+    """The update was the hosted page's request, served from the intercepted stand-in release."""
+    hosted = update.get("hosted")
+    if not isinstance(hosted, dict):
+        return [f"{job_id}: hosted Update request receipt is absent"]
+    request = hosted.get("request") if isinstance(hosted.get("request"), dict) else {}
+    served = hosted.get("served") if isinstance(hosted.get("served"), dict) else {}
+    final = hosted.get("final") if isinstance(hosted.get("final"), dict) else {}
+    errors = []
+    if (hosted.get("route") != "hosted-button" or request.get("method") != "POST"
+            or request.get("path") != "/api/runtime/v1/update"
+            or request.get("origin") != "https://astrid.haus" or request.get("content_length") != 0
+            or request.get("authorization") is not False or request.get("cookie") is not False
+            or request.get("status") != 202):
+        errors.append(f"{job_id}: hosted Update request was not the page's credential-free POST")
+    if (served.get("/install-manifest.json", 0) < 1
+            or served.get("/install", 0) + served.get("/install.ps1", 0) < 1):
+        errors.append(f"{job_id}: hosted Update did not fetch the stand-in release")
+    if final.get("outcome") != "updated" or final.get("target_release") != release_to:
+        errors.append(f"{job_id}: hosted Update did not end as updated at the stand-in release")
+    if hosted.get("intercept_reverted") is not True:
+        errors.append(f"{job_id}: hosted Update intercept was not reverted")
+    return errors
+
+
 def _windows_fresh_update_errors(update, job_id):
     errors = []
     if not isinstance(update, dict):
         return [f"{job_id}: Windows fresh update receipt is absent"]
-    if (update.get("from_release") != 1 or update.get("to_release") != 2
-            or update.get("marker") != "M-RT UPDATE TEST STAND-IN"
+    errors.extend(_release_step_errors(job_id, "Windows update", update.get("from_release"), update.get("to_release")))
+    errors.extend(_hosted_update_errors(job_id, update, update.get("to_release")))
+    if (update.get("marker") != "M-RT UPDATE TEST STAND-IN"
             or not isinstance(update.get("manifest_sha256"), str)
             or not DIGEST.fullmatch(update["manifest_sha256"])):
         errors.append(f"{job_id}: Windows update stand-in identity is invalid")
@@ -397,8 +431,8 @@ def fresh_update_errors(job_id, update):
     errors = []
     if not isinstance(update, dict) or update.get("status") != "pass":
         return [f"{job_id}: fresh update receipt is absent or did not pass"]
-    if update.get("release_from") != 1 or update.get("release_to") != 2:
-        errors.append(f"{job_id}: fresh update release transition is invalid")
+    errors.extend(_release_step_errors(job_id, "fresh update", update.get("release_from"), update.get("release_to")))
+    errors.extend(_hosted_update_errors(job_id, update, update.get("release_to")))
     old, new = update.get("old_version"), update.get("new_version")
     if (not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
                 for value in (old, new)) or old == new):

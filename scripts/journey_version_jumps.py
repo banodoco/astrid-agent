@@ -820,8 +820,11 @@ def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentin
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
-        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
-            raise RuntimeError("Refusal requires the frozen release-1 candidate")
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError("Refusal requires the frozen candidate")
+        # The refusal is evidence about the earlier Windows version, whatever release the candidate is.
+        if type(manifest.get("release")) is not int or manifest["release"] < 0:
+            raise RuntimeError("Refusal requires a frozen candidate with an integer release")
         bootstrap_release0(fixture, r0_manifest, args.shell, evidence / "release0", root, data)
         old_path, old_data, old = journey.installation(root, data)
         if old_data != data or installed_release(old) != 0:

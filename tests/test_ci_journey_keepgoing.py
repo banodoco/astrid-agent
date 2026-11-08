@@ -32,8 +32,9 @@ def test_cleanup_checks_only_platform_supported_service_ownership(monkeypatch, t
     assert calls == [(tmp_path / "root", tmp_path / "data", expected)]
 
 
+@pytest.mark.parametrize("release", [1, 7])
 @pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatch, platform):
+def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatch, platform, release):
     monkeypatch.setattr(keepgoing.sys, "platform", platform)
     app = tmp_path / 'app'
     app.mkdir()
@@ -42,13 +43,13 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     args = SimpleNamespace(job_id='direct-linux', mode='direct', leg='fresh-install',
                            shell='sh', app_checkout=app, candidate=candidate)
     root, data = tmp_path / 'program', tmp_path / 'data'
-    manifest = {'release': 1}
+    manifest = {'release': release}
     calls = []
     task_calls = []
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
-    monkeypatch.setattr(journey, 'bootstrap', lambda *a: None)
+    monkeypatch.setattr(journey, 'bootstrap', lambda *a, **k: None)
     monkeypatch.setattr(jumps, 'start_direct_runtime', lambda *a: None)
     monkeypatch.setattr(journey, 'wait_ready', lambda *a, **k: None)
     monkeypatch.setattr(journey, 'installation', lambda *a: (root / 'version.json', data, manifest))
@@ -79,6 +80,24 @@ def test_fresh_release1_seeds_task_project_on_each_platform(tmp_path, monkeypatc
     else:
         assert task_calls == [("sdk", (manifest, evidence / "release1-working-task",
                                         "tst-m4-3b-release0"), {})]
+
+
+@pytest.mark.parametrize("bad", [True, "1", -1, None])
+def test_fresh_admission_needs_an_integer_release_but_not_release_one(tmp_path, monkeypatch, bad):
+    app = tmp_path / 'app'
+    app.mkdir()
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_text('{}')
+    args = SimpleNamespace(job_id='direct-linux', mode='direct', leg='fresh-install',
+                           shell='sh', app_checkout=app, candidate=candidate)
+    manifest = {'release': bad}
+    monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
+    monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
+    report = keepgoing.execute(args, tmp_path / 'root', tmp_path / 'data', tmp_path / 'evidence',
+                               SimpleNamespace(pid=1), 'birth')
+    admission = report['stages'][0]
+    assert admission['stage'] == 'admission' and admission['result'] == 'fail'
+    assert 'integer release' in admission['first_error']
 
 
 @pytest.mark.parametrize("wrong_selection,change_at", [
@@ -376,7 +395,7 @@ def test_failed_fresh_bootstrap_capture_preserves_stage_failure(tmp_path, monkey
     monkeypatch.setattr(journey, 'selected_manifest', lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, 'validate_tuple', lambda *a: manifest)
     monkeypatch.setattr(journey, 'sentinel_observation', lambda *a: {'alive': True})
-    def fail(*args):
+    def fail(*args, **kwargs):
         calls.append('bootstrap')
         raise ValueError('primary')
     def broken_capture(*args):
