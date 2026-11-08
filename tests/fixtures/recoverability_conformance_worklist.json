@@ -2413,7 +2413,7 @@
     },
     {
       "builder": "build_parser",
-      "enum_arg_count": 3,
+      "enum_arg_count": 4,
       "module": "astrid.packs.generation.actions.generate_image_openai.run",
       "path": "astrid/packs/generation/actions/generate_image_openai/run.py",
       "prog": "-c"
@@ -2462,7 +2462,7 @@
     },
     {
       "builder": "build_parser",
-      "enum_arg_count": 0,
+      "enum_arg_count": 1,
       "module": "astrid.packs.h3_av.actions.transform.run",
       "path": "astrid/packs/h3_av/actions/transform/run.py",
       "prog": "-c"
@@ -2602,7 +2602,7 @@
     },
     {
       "builder": "build_parser",
-      "enum_arg_count": 2,
+      "enum_arg_count": 1,
       "module": "astrid.packs.rendering.actions.sprite_sheet.run",
       "path": "astrid/packs/rendering/actions/sprite_sheet/run.py",
       "prog": "-c"

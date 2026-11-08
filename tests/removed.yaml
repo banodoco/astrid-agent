@@ -1286,3 +1286,45 @@
 - test: tests/editing_conformance/test_platform_safety_net.py::test_preview_matches_render_frame
   reason: "A skipped stub (preview = None, render = None) that could only assert preview == render once the F2 journey wired both. It has no method to reuse: the App preview exists only in a browser and the render only through the Runtime. Its home is F2 step 4 of the journey in the App repo (tests/e2e/local/three-products.spec.ts), which renders a pinned revision with rendering.ffmpeg on Linux (no Remotion) and compares the App preview frame with the rendered frame in Chrome at 1 s, 3 s and 5 s (16x9 cells of mean RGB, at most 12 levels per channel on average and 40 in the worst cell), with the preview of R+1 as the negative control; the differences are also written to the run summary."
   removed_by: "F2 step 4 journey case (astrid-app tests/e2e/local/three-products.spec.ts) and tests/integrations/test_media_only_render_without_remotion.py"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_sprite_pieces_preserve_animation_params_and_carry_the_source_clock
+  reason: "Tested am-sprite cuts through the astrid_motion element schema (astrid/packs/astrid_motion), which moved out of this tree."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_sprite_phase_advances_at_clip_speed
+  reason: "Tested am-sprite phase cuts; the am-sprite element moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_edited_later_sprite_piece_is_not_rejoined
+  reason: "Tested am-sprite piece rejoin; the am-sprite element moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_sprite_cut_phase_uses_the_renderer_source_clock
+  reason: "Tested am-sprite renderer source clock; the am-sprite element moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_am_snap_plate_animation_is_not_restarted_by_cutting
+  reason: "Tested the am-snap-plate element, which moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_sprite_pose_uses_sorted_sparse_keys_and_pending_keys_stay_admissible
+  reason: "Tested am-sprite pose keys; the am-sprite element moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/sdk/test_timeline_restructure_sprites.py::test_sprite_lengths_and_frame_zero_keys_round_trip_at_speed
+  reason: "Tested am-sprite length and key round-trip; the am-sprite element moved out of this tree with astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/editing_conformance/test_recipe_scalar_commands.py::test_registered_sprite_strip_binding_refuses_selected_registry_retarget
+  reason: "Loaded the am-sprite element from astrid_motion for a sprite-strip registry retarget; the pack moved out of this tree. The generic param-validation test in the same file was re-pointed to a core probe schema, not removed."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/core/element/test_element_metadata.py::ShippedElementsTest::test_declared_effect_roles_are_in_vocabulary
+  reason: "Vacuous: globbed astrid/packs/astrid_motion/rendering/elements/effects, which no longer exists, so it asserted nothing."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/packs/rendering/test_sprite_scene_capability.py
+  reason: "Scene and SSR tests of the am-sprite element through astrid_motion; the pack moved out of this tree."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/packs/rendering/test_am_snap_plate_scene_capability.py
+  reason: "Scene and SSR tests of the am-snap-plate element through astrid_motion; the pack moved out of this tree."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/packs/rendering/test_presenter_crop_equivalence.py
+  reason: "Imported the removed tests.packs.rendering.test_presenter_scene_capability helper and exercised the am-presenter element through astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/packs/rendering/test_presenter_selected_cut_aggregate.py
+  reason: "Imported the removed tests.packs.rendering.test_presenter_scene_capability helper and exercised the am-presenter element through astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"
+- test: tests/packs/rendering/test_presenter_series_inspection.py
+  reason: "Imported the removed tests.packs.rendering.test_presenter_scene_capability helper and exercised the am-presenter element through astrid_motion."
+  removed_by: "plan06-agent-20261107-12 (finding B fix-forward)"

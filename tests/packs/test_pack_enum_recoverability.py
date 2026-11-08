@@ -29,12 +29,15 @@ from astrid.core.cli_choices import AstridArgumentError, StaticChoices
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "recoverability_conformance_worklist.json"
 RECOVERY_STEP_BUDGET = 3
+# Surviving first-party packs only. Packs that moved out of this tree (for example
+# editorial, understanding and video_editing) are not sampled, and their scanner rows
+# are skipped below rather than imported.
 SAMPLED_PACK_ORDER = (
-    "editorial",
     "generation",
-    "runpod",
-    "understanding",
-    "video_editing",
+    "rendering",
+    "training",
+    "vibecomfy",
+    "h3_av",
 )
 
 
@@ -122,6 +125,9 @@ def _inventory() -> Inventory:
     for surface in payload["scanned_parser_surfaces"]:
         pack = _pack_name(surface["path"])
         if pack is None:
+            continue
+        if not (ROOT / "astrid" / "packs" / pack).is_dir():
+            # The pack moved out of this tree; its parser cannot be imported here.
             continue
         scanned_surface_counts[pack] += 1
         if surface["enum_arg_count"] == 0:
