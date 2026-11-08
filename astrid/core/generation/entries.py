@@ -752,12 +752,92 @@ def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
     return workflow, {"kind": kind, "bindings": applied, "unbound": sorted(unbound)}, assets
 
 
-def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
+# RunPod engines in their declared preference order: the lighter recipe first.
+RUNPOD_ENGINES = ("comfyui", "vibecomfy-h3")
+RUNPOD_PLATFORM = "linux-x86_64-cu130"
+
+
+def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
+    """Model destinations (or bare loader values) the entry needs, and those it pins itself.
+
+    An action entry provisions the revision-pinned model assets its own graphs
+    declare (H3 owns its Ref2V LoRA this way), so the engine lock need not.
+    """
+    import re
+    if entry.get("action"):
+        import importlib
+        import yaml
+        pack = Path(importlib.import_module("astrid.packs." + entry["action"].split(".")[0]).__file__).parent
+        workflows = [_load_entry_workflow({"bundle": str(pack / yaml.safe_load(
+            (pack / ref).read_text(encoding="utf-8"))["workflow"])}) for ref in entry.get("requirements") or ()]
+        from vibecomfy.model_assets import _referenced_model_values
+        sources = [(workflow.metadata.get("model_assets", []), _referenced_model_values(workflow))
+                   for workflow in workflows]
+    else:
+        sources = [(entry.get("model_assets", []), entry.get("needs", []))]
+    required: set[str] = set()
+    pinned: set[str] = set()
+    for assets, needs in sources:
+        names = {asset["name"] for asset in assets}
+        for asset in assets:
+            value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
+            required.add(value)
+            if entry.get("action") and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
+                pinned.add(value)
+        required.update(need["value"] for need in needs
+                        if need.get("value") and Path(need["value"]).name not in names)
+    return sorted(required), pinned
+
+
+def _lock_coverage(entry: Mapping[str, Any], engine: str) -> tuple[list[str], int]:
+    """(models the engine's own pinned lock must supply but lacks, models it supplies)."""
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+    destinations = [model.destination for model in load_recipe_model_lock(engine, RUNPOD_PLATFORM).models]
+    required, pinned = _model_requirements(entry)
+    covered = [value for value in required
+               if any(path == value or path.endswith("/" + value) for path in destinations)]
+    return [value for value in required if value not in covered and value not in pinned], len(covered)
+
+
+def _missing_locked_models(entry: Mapping[str, Any], engine: str) -> list[str]:
+    return _lock_coverage(entry, engine)[0]
+
+
+def runpod_engine(entry: Mapping[str, Any] | None) -> str:
+    """The one RunPod engine choice, from each engine's own pinned models lock.
+
+    Engines that leave nothing missing qualify; the one supplying the most of
+    the entry's models wins, and ties keep the declared preference order.
+    """
+    from astrid.core.contracts.errors import AstridError
+    if entry is not None:
+        coverage = {engine: _lock_coverage(entry, engine) for engine in RUNPOD_ENGINES}
+        qualified = [engine for engine in RUNPOD_ENGINES if not coverage[engine][0]]
+        if qualified:
+            return max(qualified, key=lambda engine: (coverage[engine][1], -RUNPOD_ENGINES.index(engine)))
+    identifier = (entry or {}).get("id")
+    raise AstridError(f"No RunPod engine lock covers the models of {identifier!r}; nothing was created.",
+                      code="runpod_engine_unavailable", field="target",
+                      state_snapshot={"entry": identifier, "engines": list(RUNPOD_ENGINES)})
+
+
+def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: str | None = None):
     """Check the selected target's node and exact loader inventory."""
     for need in entry.get("needs", []):
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
     if client is None:
+        missing = _missing_locked_models(entry, engine) if engine is not None else []
+        if missing:
+            # No live target: the chosen engine's pinned lock is the inventory.
+            from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
+            raise GenerationReadinessError(readiness_envelope(
+                entry={'id': entry.get('id'), 'engine': 'comfyui'},
+                target={'engine': engine, 'placement': 'runpod', 'state': 'pending_host_readiness'},
+                issues=[{'code': 'missing_model', 'severity': 'error',
+                         'message': f'{engine} model lock is missing {value!r}',
+                         'details': {'engine_code': 'comfyui.models_missing', 'model': value, 'bytes': None}}
+                        for value in missing]))
         return None
     from types import SimpleNamespace
     from astrid.core.generation.backends.comfy_target import _resolve_roles

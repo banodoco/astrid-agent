@@ -35,6 +35,14 @@ WorkflowFile = str | Path | Mapping[str, Any]
 
 # Accepted for explicit use while its default-route qualification is pending.
 _EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
+# Default slots: catalog priority per (modality, mode) for target routes.
+_DEFAULT_ENTRIES = {
+    ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
+    ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
+    ("audio", "tts"): ("audio/qwen3_tts_custom_voice",),
+    ("audio", "music"): ("audio/minimax_music_3",),
+    ("audio", "sfx"): ("audio/hunyuan_video_foley",),
+}
 
 # A CLI caller can retain the validated action's connection through delivery.
 # Acquisition stays inside the SDK, after the action's preconditions succeed.
@@ -280,7 +288,7 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _runpod_target_policy(controls, *, engine="comfyui"):
+def _runpod_target_policy(controls, *, engine):
     """Snapshot the user's disclosed offer and preferences into the task."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
@@ -1074,7 +1082,9 @@ class GenerationFacade:
         is_remote_target = target == 'runpod'
         if is_remote_target:
             _runpod_paid_controls(controls)
-        target_policy = _runpod_target_policy(controls) if is_remote_target and not dry_run else None
+        # Validate paid bounds now; the engine follows the selected entry below.
+        target_policy = _runpod_target_policy(controls, engine=None) if is_remote_target and not dry_run else None
+        runpod_engine = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
@@ -1098,13 +1108,7 @@ class GenerationFacade:
 
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
-        preferred = {
-            ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
-            ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
-            ("audio", "tts"): ("audio/qwen3_tts_custom_voice",),
-            ("audio", "music"): ("audio/minimax_music_3",),
-            ("audio", "sfx"): ("audio/hunyuan_video_foley",),
-        }.get((modality, mode), ())
+        preferred = _DEFAULT_ENTRIES.get((modality, mode), ())
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
@@ -1189,6 +1193,11 @@ class GenerationFacade:
             identifier = candidate.id if source == "catalog" else candidate["id"]
             try:
                 assets = {}
+                if is_remote_target:
+                    template = (None if source == "workflow" else
+                                getattr(candidate.modes[mode].backends.get("local"), "template", None))
+                    runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
+                        workflow_entries.find_entry(template) if template else None)
                 if source == "catalog":
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
@@ -1238,7 +1247,7 @@ class GenerationFacade:
                             needs.extend(need for need in candidate.get('needs', [])
                                          if need.get('ambiguity') and need not in needs)
                             candidate = {**candidate, 'needs': needs}
-                        schema = workflow_entries.target_schema(candidate, workflow, target_client)
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine)
                 from vibecomfy.workflow_bundle import load_bundle
                 if source == "workflow" and not candidate.get("registry_id"):
                     # Re-emit the edited canonical workflow before approval so
@@ -1276,6 +1285,8 @@ class GenerationFacade:
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
         entry_id, workflow, bundle, plan, schema, approval, assets = selected
+        if target_policy is not None:
+            target_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
         from astrid.core.generation.targets import TargetRecord
         if target_record is None:
@@ -1306,7 +1317,7 @@ class GenerationFacade:
         if source == 'workflow' and candidate.get('license_notice'):
             description['license_notice'] = candidate['license_notice']
         readiness = readiness_envelope(entry=description, target=(
-            {'engine': 'comfyui', 'placement': 'runpod', 'state': 'pending_host_readiness'} if is_remote_target else target_record),
+            {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'} if is_remote_target else target_record),
                                       issues=compare_versions(recorded, observed))
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
@@ -1694,7 +1705,8 @@ class GenerationFacade:
             if target == 'runpod':
                 _runpod_paid_controls(controls)
                 if not dry_run:
-                    inputs['target_policy'] = _runpod_target_policy(controls, engine='vibecomfy-h3')
+                    from astrid.core.generation.entries import runpod_engine
+                    inputs['target_policy'] = _runpod_target_policy(controls, engine=runpod_engine(action_entry))
             controls = dict(kind="action", inputs=inputs, project=project, out=out,
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
                 banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
