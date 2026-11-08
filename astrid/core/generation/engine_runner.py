@@ -6,6 +6,7 @@ No provider, transport, subprocess or target filesystem implementation lives her
 The latter must never acknowledge a detached/unowned process as an owned server.
 """
 from __future__ import annotations
+from ._engine_python_bootstrap import engine_process_env
 
 import hashlib
 import json
@@ -282,18 +283,6 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
     return dict(sorted(result.items()))
 
 
-
-
-def engine_process_env(base, root):
-    """The engine's one process env: bytecode goes under the engine's own prefix tree.
-
-    PYTHONPYCACHEPREFIX keeps Python from writing or rewriting __pycache__ beside the
-    pinned sources (a committed .pyc would otherwise show as modified and fail the
-    final revalidation). Every engine process inherits this base env.
-    """
-    env = dict(base)
-    env["PYTHONPYCACHEPREFIX"] = str(root).rstrip("/") + "/.astrid-engine/pycache"
-    return env
 
 
 class _Runner:

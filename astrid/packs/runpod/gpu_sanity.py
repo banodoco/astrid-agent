@@ -26,10 +26,11 @@ def _load_engine_child_env():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.engine_child_env
+    return module
 
 
-engine_child_env = _load_engine_child_env()
+_bootstrap = _load_engine_child_env()
+engine_child_env = _bootstrap.engine_child_env
 
 CHILD = r"""
 import sys
@@ -71,7 +72,9 @@ report()
 
 
 def run(venv: str, *, timeout: float = 600.0) -> int:
-    env = engine_child_env(venv, {})
+    # The venv is <engine root>/runtime/venv; the probe starts from the engine's process env.
+    root = str(Path(venv).resolve().parents[1])
+    env = engine_child_env(venv, _bootstrap.engine_process_env({}, root))
     python = venv + "/bin/python"
     print("gpu_sanity: python=%s LD_LIBRARY_PATH=%s" % (python, env["LD_LIBRARY_PATH"]), flush=True)
     try:

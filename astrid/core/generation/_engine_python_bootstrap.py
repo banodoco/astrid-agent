@@ -107,3 +107,15 @@ def engine_child_env(venv_prefix, env=None):
     venv_dirs = sorted(d for d in glob.glob(pattern) if not d.startswith("/usr/local/cuda"))
     out["LD_LIBRARY_PATH"] = ":".join((*venv_dirs, *SYSTEM_DRIVER_DIRS))
     return out
+
+
+def engine_process_env(base, root):
+    """The engine's one process env: bytecode goes under the engine's own prefix tree.
+
+    PYTHONPYCACHEPREFIX keeps Python from writing or rewriting __pycache__ beside the
+    pinned sources. Every engine process (install, sanity, probes, the ComfyUI launch)
+    starts from this env, via engine_child_env for the child.
+    """
+    env = dict(base)
+    env["PYTHONPYCACHEPREFIX"] = str(root).rstrip("/") + "/.astrid-engine/pycache"
+    return env
