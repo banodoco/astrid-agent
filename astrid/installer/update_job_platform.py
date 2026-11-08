@@ -202,6 +202,27 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _worker_script(command: list[str], log: object) -> str:
+    """The Scheduled Task's worker wrapper. Its own statements stop on error; the worker's output is kept whole.
+
+    Under a stopping preference, the worker's first stderr line (a traceback's opening line) ends the wrapper and the
+    rest is lost. So only the call runs with errors continuing, its stdout and stderr both go to the job log, and
+    the worker's own exit code is the wrapper's. A missing exit code is a failure.
+    """
+    return ("$ErrorActionPreference = 'Stop'\n"
+            f"$exe = {_ps_quote(command[0])}\n"
+            f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
+            f"$log = {_ps_quote(str(log))}\n"
+            "try {\n"
+            "  $ErrorActionPreference = 'Continue'\n"
+            "  & $exe @workerArgs *>> $log\n"
+            "  $code = $LASTEXITCODE\n"
+            "  $ErrorActionPreference = 'Stop'\n"
+            "  if ($null -eq $code) { $code = 1 }\n"
+            "  exit $code\n"
+            "} catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+
+
 def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -267,12 +288,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         sid = descriptor.get("user", "")
         if not isinstance(sid, str) or not sid.startswith("S-1-"):
             raise ValueError("The Scheduled Task update job has no current-user SID.")
-        worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                         f"$exe = {_ps_quote(command[0])}\n"
-                         f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                         f"$log = {_ps_quote(str(log))}\n"
-                         "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                         "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+        worker_script = _worker_script(command, log)
         worker_encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
         powershell_arguments = subprocess.list2cmdline(
             ["-NoProfile", "-NonInteractive", "-EncodedCommand", worker_encoded])
@@ -450,12 +466,7 @@ def is_registered(descriptor: dict, command: list[str], system: str | None = Non
         observed = __import__("json").loads(output)
     except (TypeError, ValueError) as failure:
         raise RuntimeError("The Scheduled Task update action is ambiguous.") from failure
-    worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                     f"$exe = {_ps_quote(command[0])}\n"
-                     f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                     f"$log = {_ps_quote(descriptor['log_path'])}\n"
-                     "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                     "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+    worker_script = _worker_script(command, descriptor["log_path"])
     encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
     args = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
     actions = observed.get("Actions") if isinstance(observed, dict) else None

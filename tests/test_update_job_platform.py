@@ -165,6 +165,31 @@ def test_a_job_without_a_recorded_home_is_refused_on_every_platform(tmp_path, mo
             platform.describe(record, ["worker"], system=system)
 
 
+def test_worker_wrapper_keeps_the_whole_error_and_exits_with_the_worker_code(tmp_path):
+    script = platform._worker_script(["C:\\py\\python.exe", "-c", "print(1)"], tmp_path / "job.log")
+    call = script.index("& $exe @workerArgs")
+    # Errors continue only around the worker call, so its first stderr line cannot end the wrapper.
+    assert script.index("$ErrorActionPreference = 'Continue'") < call < script.index("$ErrorActionPreference = 'Stop'", call)
+    assert "*>> $log" in script
+    assert "exit $code" in script and "if ($null -eq $code) { $code = 1 }" in script
+    assert script.count("Add-Content -LiteralPath $log") == 1 and "exit 1 }" in script
+
+
+@pytest.mark.windows_native
+def test_worker_wrapper_keeps_a_multiline_traceback_and_exits_one(tmp_path):
+    worker = [sys.executable, "-c", "import sys\n"
+              "sys.stderr.write('Traceback (most recent call last):\\n  File \\\"x.py\\\", line 3\\n'\n"
+              "                 'ValueError: the real cause\\n')\n"
+              "sys.exit(1)"]
+    log = tmp_path / "job.log"
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                platform._worker_script(worker, log)], capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 1
+    text = log.read_text(encoding="utf-8", errors="replace")
+    assert "Traceback (most recent call last):" in text
+    assert "the real cause" in text
+
+
 def test_mac_cleanup_retains_active_and_removes_inactive_plist_before_bootout(tmp_path, monkeypatch):
     record = job(tmp_path)
     descriptor = platform.describe(record, ["worker"], system="darwin")
