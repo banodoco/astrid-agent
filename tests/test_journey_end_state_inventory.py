@@ -35,23 +35,15 @@ def release1_row(contract, pinned):
     if contract["mode"] == "direct":
         row.update(
             service_manager={"manager": "native", "foreground_fallback": False},
-            release_transition={"from": 0, "to": 1, "harness_override": "frozen-release0-direct-to-release1"},
-            release0_fixture={
-                "fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64,
-                "provenance_sha256": "a" * 64, "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
-                "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                            "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"},
+            release_transition={"from": 9, "to": 10, "source": "pinned-release9-plain-install"},
+            release9_source={
+                "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
+                "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
+                                     "public/install.ps1": "3" * 64},
+                "identity": gate.RELEASE9_IDENTITY,
             },
             semantic_data={"identical": True, "before_sha256": "b" * 64, "after_sha256": "b" * 64},
         )
-        if contract["job_id"] in {"direct-linux", "direct-macos"}:
-            row["final_cleanup"] = "retained-after-upgrade-refusal"
-            row["upgrade_uninstall_refusal"] = {
-                "exit_code": 1,
-                "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
-                "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
-                "service_manager": {"manager": "native", "foreground_fallback": False},
-            }
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
@@ -80,7 +72,7 @@ def release1_row(contract, pinned):
         row["windows_upgrade_refusal"] = {
             "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
             "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
-            "release0_fixture": row["release0_fixture"], "data_marker": {"sha256": "b" * 64},
+            "release0_fixture": {"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64, "provenance_sha256": "a" * 64, "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256, "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649", "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"}}, "data_marker": {"sha256": "b" * 64},
             "scheduled_task": {"before_sha256": "c" * 64, "after_sha256": "c" * 64},
             "refusal": {"exit_code": 1, "message": "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."},
             "checks": {key: "pass" for key in ("refusal", "data_marker", "r0_selected", "scheduled_task")},

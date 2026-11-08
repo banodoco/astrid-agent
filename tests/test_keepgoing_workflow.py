@@ -103,7 +103,7 @@ def test_driver_routes_both_legs_and_never_reports_success(monkeypatch, tmp_path
             '--candidate-agent-checkout', '.', '--candidate-runtime-checkout', '.', '--pinokio-checkout', '.',
             '--diagnostic-keep-going']
     if leg == 'release0-to-release1':
-        args += ['--release0-fixture', '.', '--allow-release0-to-release1']
+        args += ['--release9-app-checkout', '.', '--allow-release0-to-release1']
     with patch.object(journey.sys, 'platform', 'linux'):
         assert journey.main(args) == 1
     assert seen == [(leg, True)]

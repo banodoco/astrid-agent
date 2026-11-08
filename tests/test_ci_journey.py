@@ -172,14 +172,15 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     (root / "current").write_text("release0\n", encoding="utf-8")
     version_path = version_root / "version.json"
     journey.write_json(version_path, {"root": str(version_root), "python": sys.executable, "env": {}})
-    release0_manifest = tmp_path / "release0-manifest.json"
-    release0_sources = {"agent": {"sha": "1" * 40}, "runtime": {"sha": "2" * 40}}
-    journey.write_json(release0_manifest, {"release": 0, **release0_sources, "tools": {}})
-    journey.write_json(version_root / "manifest.json", {"release": 0, **release0_sources, "tools": {}})
+    release0_manifest = tmp_path / "release9-manifest.json"
+    release9_sources = {"agent": {"sha": jumps.RELEASE9_IDENTITY["agent"]},
+                        "runtime": {"sha": jumps.RELEASE9_IDENTITY["runtime"]}}
+    journey.write_json(release0_manifest, {"release": 9, **release9_sources, "tools": {}})
+    journey.write_json(version_root / "manifest.json", {"release": 9, **release9_sources, "tools": {}})
     app = tmp_path / "app"
     app.mkdir()
     target_manifest = {
-        "release": 1, "agent": {"sha": "3" * 40},
+        "release": 10, "agent": {"sha": "3" * 40},
         "runtime": {"sha": "4" * 40, "schema_digest": "f" * 64},
         "tools": {"python": {"version": "3.11.13"}},
     }
@@ -193,7 +194,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
         run_root=run_root, root=root, data_root=data, leg="release0-to-release1", mode="direct",
         shell="sh", job_id=None, source_override=False, app_checkout=app, candidate=candidate_path,
         candidate_agent_checkout=tmp_path / "agent", candidate_runtime_checkout=tmp_path / "runtime",
-        pinokio_checkout=tmp_path / "pinokio", release0_fixture=tmp_path / "fixture",
+        pinokio_checkout=tmp_path / "pinokio", release9_app_checkout=tmp_path / "release9-app",
         allow_release0_to_release1=True, diagnostic_start_at="release0-api-seed",
         diagnostic_state=run_root / jumps.DIAGNOSTIC_STATE_NAME,
     )
@@ -201,8 +202,8 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     checkouts = {name: {"sha": sha, "repo": str(tmp_path / name)} for name, sha in {
         "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
     }.items()}
-    monkeypatch.setattr(jumps, "release0_admission", lambda unused: (
-        tmp_path / "fixture", release0_manifest, fixture_receipt))
+    monkeypatch.setattr(jumps, "release9_admission", lambda unused, output: (
+        tmp_path / "source", release0_manifest, fixture_receipt))
     monkeypatch.setattr(journey, "selected_manifest", lambda *unused, **kwargs: (
         tmp_path / "selected-manifest.json", target_manifest))
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *unused: target_manifest)
@@ -352,7 +353,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    assert workflow.count("repository: banodoco/astrid-app") == 4
+    # Five: the candidate App, the frozen App candidate checkouts, and the pinned Release 9 App.
+    assert workflow.count("repository: banodoco/astrid-app") == 5
     assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 
@@ -795,49 +797,6 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
             journey.assert_release1_upgrade_uninstall_refusal(version, root, data, evidence)
     assert (root / "current").read_text() == "v1\n"
     assert data.is_dir() and r1_data.is_dir()
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_upgrade_refusal_receipt_records_retained_service(tmp_path, monkeypatch, platform):
-    run_root = tmp_path / "journey"
-    root, data, r1_data = run_root / "program", run_root / "data", run_root / "data-r1"
-    version_root = root / "versions" / "v1"
-    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
-                              leg="release0-to-release1", shell="sh", retain_for_next_leg=False)
-    monkeypatch.setattr(journey.sys, "platform", platform)
-    monkeypatch.setattr(journey, "assert_host_available", lambda *a, **kw: None)
-    monkeypatch.setattr(journey, "capture_manager_state", lambda *a: None)
-    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
-    @contextmanager
-    def sentinel(*args):
-        yield None, None
-    monkeypatch.setattr(journey, "sentinel_process", sentinel)
-    service = {"manager": "launchd" if platform == "darwin" else "systemd-user",
-               "foreground_fallback": False, "service_path": "owned-r1"}
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a, **kw: service)
-    version = {"root": str(version_root), "python": "python", "env": {}}
-    monkeypatch.setattr(journey, "installation", lambda *a: (version_root / "version.json", data, version))
-    def lifecycle(*a):
-        version_root.mkdir(parents=True)
-        data.mkdir()
-        r1_data.mkdir()
-        (root / "current").write_text("v1")
-        journey.write_json(root / "install.json", {"r1_data_root": str(r1_data)})
-        journey.write_json(version_root / "manifest.json", {"release": 1})
-        journey.write_json(run_root / "evidence" / args.leg / "journey-result.json", {"status": "pass"})
-        return {"status": "pass"}
-    monkeypatch.setattr(journey, "_execute_owned", lifecycle)
-    def refuse(_version, _argv, evidence, name, **kwargs):
-        (evidence / name).write_text(journey.UPGRADE_UNINSTALL_REFUSAL + "\n")
-        raise RuntimeError(f"{name}: exit 1; see {evidence / name}")
-    monkeypatch.setattr(journey, "installed_cli", refuse)
-
-    result = journey.execute(args)
-    receipt = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
-    assert result["final_cleanup"] == receipt["final_cleanup"] == "retained-after-upgrade-refusal"
-    assert receipt["status"] == "pass"
-    assert receipt["upgrade_uninstall_refusal"]["service_manager"] == service
-    assert (root / "current").is_file() and data.is_dir() and r1_data.is_dir()
 
 
 @pytest.mark.parametrize("condition", ["absent", "r0-loaded", "r1-loaded", "r1-plist", "query-error"])
@@ -1648,14 +1607,14 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     app = tmp_path / "app"
     app.mkdir()
     manifest_path = tmp_path / "manifest.json"
-    journey.write_json(manifest_path, {"release": 0})
+    journey.write_json(manifest_path, {"release": 9})
     candidate_path = tmp_path / "candidate.json"
     candidate = {"manifest_sha256": "digest", "artifacts": {}}
     journey.write_json(candidate_path, candidate)
-    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    manifest = {"release": 10, "agent": {}, "runtime": {}}
     args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
                            app_checkout=app, candidate=candidate_path)
-    state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
+    state = {"running": True, "pid": 10, "release": 9, "local": False, "content": None}
     calls = []
 
     def ownership(_root, _data, **_kwargs):
@@ -1711,14 +1670,14 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
 
     def bootstrap(*_args):
         assert state["running"] and state["content"] is not None
-        state.update(release=1, pid=state["pid"] + 1)
+        state.update(release=10, pid=state["pid"] + 1)
 
-    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
+    monkeypatch.setattr(jumps, "release9_admission", lambda *_: (tmp_path, manifest_path, {}))
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
     monkeypatch.setattr(journey, "selected_manifest", lambda *_args, **_kw: (candidate_path, manifest))
     monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
     monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_: None)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_, **_kwargs: None)
     monkeypatch.setattr(journey, "wait_ready", lambda _: assert_running(data))
     monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,

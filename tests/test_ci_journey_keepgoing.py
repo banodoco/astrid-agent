@@ -97,23 +97,23 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
     args = SimpleNamespace(job_id="direct-linux", mode="direct", leg="release0-to-release1",
                            shell="sh", app_checkout=app, candidate=candidate)
     calls = []
-    state = {"release": 0, "pid": 1, "snapshot": False, "checks": 0}
-    manifest = {"release": 1}
-    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest0, {}))
+    state = {"release": 9, "pid": 1, "snapshot": False, "checks": 0}
+    manifest = {"release": 10}
+    monkeypatch.setattr(jumps, "release9_admission", lambda *_: (tmp_path, manifest0, {}))
     monkeypatch.setattr(journey, "selected_manifest", lambda *a, **k: (candidate, manifest))
     monkeypatch.setattr(keepgoing.gate, "validate_tuple", lambda *a: manifest)
     monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *a: calls.append("bootstrap0"))
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *a: calls.append("bootstrap0"))
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: calls.append("start"))
-    monkeypatch.setattr(jumps, "selected_data_root", lambda root, data: data.parent / ("data-r1" if state["release"] else "data"))
+    monkeypatch.setattr(jumps, "selected_data_root", lambda root, data: data)
     monkeypatch.setattr(journey, "wait_ready", lambda data: calls.append(("ready", data)))
     def installation(*_):
-        if state["snapshot"] and state["release"] == 0:
+        if state["snapshot"] and state["release"] == 9:
             state["checks"] += 1
-        wrong = wrong_selection if state["checks"] >= change_at and state["release"] == 0 else None
+        wrong = wrong_selection if state["checks"] >= change_at and state["release"] == 9 else None
         return (tmp_path / ("wrong" if wrong == "path" else "v" + str(state["release"])),
                 tmp_path / ("other-data" if wrong == "data" else "data"),
-                {"release": 1 if wrong == "release" else state["release"],
+                {"release": 10 if wrong == "release" else state["release"],
                  "identity": "wrong" if wrong == "version" else "selected"})
     monkeypatch.setattr(journey, "installation", installation)
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
@@ -141,7 +141,7 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
         return receipt
     monkeypatch.setattr(journey, "verify", verify)
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **k: None)
-    def live_workspace(root, data, evidence, action, request, *, release):
+    def live_workspace(root, data, evidence, action, request, *, release=0):
         calls.append(("live", data, release, action, dict(request)))
         if action == "seed":
             return {"project": "p", "timeline": "t", "revision": "r",
@@ -155,11 +155,11 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
                         {"pid": state["pid"], "runtime_instance_id": str(state["pid"])})
     def process_birth(pid):
         calls.append(("birth", pid))
-        return f"birth-{pid}" if state["release"] == 0 else None
+        return f"birth-{pid}" if state["release"] == 9 else None
     monkeypatch.setattr(journey, "process_birth", process_birth)
     def bootstrap(*args):
         calls.append("update")
-        state["release"] = 1
+        state["release"] = 10
         state["pid"] = 4
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
     monkeypatch.setattr(jumps, "selected_candidate", lambda *a: {})
@@ -182,7 +182,8 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
         return
     assert rows["release0-owner"]["result"] == "pass"
     assert rows["release1-selection"]["result"] == "pass"
-    r0, r1 = tmp_path / "data", tmp_path / "data-r1"
+    # The candidate upgrade is an in-place plain install, so both sides keep one data root.
+    r0 = r1 = tmp_path / "data"
     assert ("ready", r0) in calls and ("ready", r1) in calls
     assert ("health", r0) in calls and ("health", r1) in calls
     assert ("verify-root", "observe", r0) in calls
@@ -190,7 +191,7 @@ def test_release0_live_snapshots_keep_selected_owner_and_guard_selection(
     assert ("verify-root", "install", r1) in calls
     assert any(call[:4] == ("live", r0, 0, "seed") for call in calls)
     before_call = next(call for call in calls if call[:4] == ("live", r0, 0, "snapshot"))
-    after_call = next(call for call in calls if call[:4] == ("live", r1, 1, "snapshot"))
+    after_call = [call for call in calls if call[:4] == ("live", r1, 0, "snapshot")][-1]
     assert before_call[4]["revision"] == after_call[4]["revision"] == "r"
     assert before_call[4]["generation"] == after_call[4]["generation"] == "release0"
     assert ("birth", 1) in calls[calls.index("update") + 1:]
