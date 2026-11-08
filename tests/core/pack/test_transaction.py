@@ -2150,8 +2150,10 @@ def test_retained_browser_records_keep_their_admission_revision_and_replacement_
     browser_records(snapshot, admitted_revision=1)
     install(repo, packs_root, packs={"shared": "packs/shared"}, refresh=accepted_refresh)
     snapshot = read_group(packs_root)
-    assert snapshot.revision == 4 and snapshot.admissions == {}
-    assert not (packs_root / "shared/.build").exists()
+    # The browser admission is cleared: only the definitions record remains bound.
+    assert snapshot.revision == 4 and set(snapshot.admissions) == {"shared"}
+    assert "artifact_manifest" not in snapshot.admissions["shared"]
+    assert {p.name for p in (packs_root / "shared/.build").iterdir()} == {"definitions.json"}
 
 
 @pytest.mark.parametrize("fault", ["compile", "tool_hash", "unsafe_import"])
