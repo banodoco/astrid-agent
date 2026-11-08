@@ -1146,6 +1146,17 @@ def reconcile(request: dict) -> dict:
         unfinished = bool(isinstance(pending, dict) and pending.get("step") not in TERMINAL_STEPS)
         if unfinished and not unresolved:
             _busy("The installer must recover its pending update first.")
+        # Persist what the status read reported: a positively dead, attempt-bound
+        # worker ends its job here instead of being continued. Journal-bearing
+        # outcomes stay with the matching-transaction recovery below.
+        try:
+            settled = _settle_dead_worker_locked(root, _platform_api(), defer_transactions=True)
+        except (OSError, ValueError, TypeError, KeyError) as failure:
+            raise _BusyRefusal("The ended update job could not be recorded safely.") from failure
+        if settled is not None:
+            if settled.get("state") == "failed":
+                return {"disposition": "confirmed-prior", "job": settled}
+            _busy(_job_message(settled))
         reconciled, continued = _reconcile_existing(root, marker, request)
         if continued:
             if reconciled is None:
@@ -1798,14 +1809,15 @@ def _worker_error_line(tail: str | None) -> str:
     return logical[-1]
 
 
-def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
-                        fields: dict | None = None) -> dict:
-    """Record the outcome of an unresolved job whose worker is positively not running.
+def _dead_worker_outcome(root: Path, job: dict, *, exit_code: int | None = None,
+                         fields: dict | None = None) -> dict:
+    """Decide, without writing, how an unresolved job with a not-running worker ends.
 
-    Callers hold the installer lock and have just observed the native object
-    inactive. Any claim or transaction evidence means the install may be part
-    way through, so it is recovery-needed; otherwise nothing was changed and
-    the old Runtime still serves, so it is failed.
+    Any claim or transaction evidence means the install may be part way
+    through, so it is recovery-needed; otherwise nothing was changed and the
+    old Runtime still serves, so it is failed. Returns {"state", "message",
+    "transaction_id", "fields"}; the status read reports it and the locked
+    writers record it, so both always agree.
     """
     journal = read_json(root / "update-transaction.json")
     binding = journal.get("update_job") if isinstance(journal, dict) else None
@@ -1823,23 +1835,29 @@ def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
         recorded.update({"worker_exit_code": exit_code, "worker_log_tail": job_tail,
                          "worker_wrapper_log_tail": wrapper_tail})
     code = "" if exit_code is None else f" with code {exit_code}"
+    transaction_id = None
     if transaction_started or pending:
-        return _write_job(root, job["operation_id"], state="recovery-needed",
-                          message=f"Recovery needed. The update worker exited{code} during the installer transaction; run the install line to recover.",
-                          transaction_id=journal.get("operation_id") if journal else None,
-                          fields=recorded)
-    if claimed:
-        return _write_job(root, job["operation_id"], state="recovery-needed",
-                          message=f"Recovery needed. The update worker exited{code} after it claimed the update; run the install line to recover.",
-                          fields=recorded)
-    if exit_code is None:
-        return _write_job(root, job["operation_id"], state="failed",
-                          message="Failed: the registered update job became inactive without a result.",
-                          fields=recorded)
-    return _write_job(root, job["operation_id"], state="failed",
-                      message=(f"Failed: the update worker exited with code {exit_code} before it started; "
-                               f"Astrid is unchanged. {_worker_error_line(tail)}"),
-                      fields=recorded)
+        state = "recovery-needed"
+        message = f"Recovery needed. The update worker exited{code} during the installer transaction; run the install line to recover."
+        transaction_id = journal.get("operation_id") if journal else None
+    elif claimed:
+        state = "recovery-needed"
+        message = f"Recovery needed. The update worker exited{code} after it claimed the update; run the install line to recover."
+    elif exit_code is None:
+        state, message = "failed", "Failed: the registered update job became inactive without a result."
+    else:
+        state = "failed"
+        message = (f"Failed: the update worker exited with code {exit_code} before it started; "
+                   f"Astrid is unchanged. {_worker_error_line(tail)}")
+    return {"state": state, "message": message, "transaction_id": transaction_id, "fields": recorded}
+
+
+def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
+                        fields: dict | None = None) -> dict:
+    """Record ``_dead_worker_outcome``. Callers hold the installer lock and saw the worker inactive."""
+    outcome = _dead_worker_outcome(root, job, exit_code=exit_code, fields=fields)
+    return _write_job(root, job["operation_id"], state=outcome["state"], message=outcome["message"],
+                      transaction_id=outcome["transaction_id"], fields=outcome["fields"])
 
 
 def _acknowledged_unresolved(job: object) -> bool:
@@ -1889,31 +1907,94 @@ def _dead_worker_exit(job: dict, api) -> int | None:
     return code
 
 
-def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
-    """End an acknowledged job whose native worker positively finished non-zero.
+def _selected_job_root(root: Path | None) -> Path | None:
+    """The selected direct install's program root, or None when it is not this owner's."""
+    if root is None:
+        selected = read_json(_selection_path())
+        if (selected.get("owner") != LABEL or selected.get("managed_by") is not None
+                or selected.get("uninstalled") or not selected.get("program_root")):
+            return None
+        root = selected["program_root"]
+    root = absolute(root)
+    marker = read_json(root / "install.json")
+    if marker.get("owner") != LABEL or marker.get("managed_by") is not None:
+        return None
+    return root
 
-    Called from the status path. It changes nothing unless the recorded OS
-    object reports a finished run with a non-zero result; a running, absent,
-    never-run, unqueryable, or lost-acknowledgement job is left as it is, and
-    a held installer lock (a live worker or installer) is left alone too.
+
+def observe_dead_worker(root: Path | None = None, api=None) -> dict | None:
+    """Status reads only observe: the outcome a locked writer would record, or None.
+
+    Runs the same attempt-bound check as the writers, but takes no lock and
+    writes nothing. It reports a failed or recovery-needed projection of the
+    job only on positive evidence that this attempt's worker finished
+    non-zero; any doubt is None, and the record reads as it is.
     """
     try:
+        root = _selected_job_root(root)
         if root is None:
-            selected = read_json(_selection_path())
-            if (selected.get("owner") != LABEL or selected.get("managed_by") is not None
-                    or selected.get("uninstalled") or not selected.get("program_root")):
-                return None
-            root = selected["program_root"]
-        root = absolute(root)
-        marker = read_json(root / "install.json")
-        if marker.get("owner") != LABEL or marker.get("managed_by") is not None:
             return None
-        job = marker.get("update_job")
+        job = read_json(root / "install.json").get("update_job")
+        if not _acknowledged_unresolved(job):
+            return None
+        exit_code = _dead_worker_exit(job, api or _platform_api())
+        if exit_code is None:
+            return None
+        outcome = _dead_worker_outcome(root, job, exit_code=exit_code)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    observed = {"operation_id": job["operation_id"], "state": outcome["state"],
+                "message": outcome["message"], "persisted": False, **outcome["fields"]}
+    if outcome["transaction_id"] is not None:
+        observed["transaction_id"] = outcome["transaction_id"]
+    return observed
+
+
+def _settle_dead_worker_locked(root: Path, api, *, observed_attempt=None,
+                               defer_transactions: bool = False) -> dict | None:
+    """Record a positively dead, attempt-bound worker's outcome. The caller holds the installer lock.
+
+    The one writer behind the install-line sweep, the POST reconciler, and
+    ``settle_dead_worker``. It re-reads the record; ``observed_attempt``, when
+    given, must still be the attempt seen before the lock. With
+    ``defer_transactions`` a journal-bearing outcome is left to the caller's
+    own transaction recovery. Returns the job after terminal cleanup, or None.
+    """
+    job = read_json(root / "install.json").get("update_job")
+    if not _acknowledged_unresolved(job):
+        return None
+    if observed_attempt is not None and _attempt_tuple(job) != observed_attempt:
+        return None
+    exit_code = _dead_worker_exit(job, api)
+    if exit_code is None:
+        return None
+    if defer_transactions:
+        # A pending journal, or one bound to this operation, is the reconciler's
+        # own matching-transaction recovery to finish.
+        journal = read_json(root / "update-transaction.json")
+        binding = journal.get("update_job") if isinstance(journal, dict) else None
+        if journal and (journal.get("step") not in TERMINAL_STEPS
+                        or (isinstance(binding, dict) and binding.get("operation_id") == job["operation_id"])):
+            return None
+    _record_dead_worker(root, job, exit_code=exit_code)
+    return _cleanup_terminal(root, job["operation_id"], locked=True)
+
+
+def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
+    """The locked writer for a caller that does not already hold the installer lock.
+
+    A lock-free first look, then the installer lock without waiting (a held
+    lock means a live worker or installer, so nothing changes), then the
+    shared locked writer with the re-read.
+    """
+    try:
+        root = _selected_job_root(root)
+        if root is None:
+            return None
+        job = read_json(root / "install.json").get("update_job")
         if not _acknowledged_unresolved(job):
             return None
         api = api or _platform_api()
-        # Lock-free first look: the installer lock is taken only when a dead
-        # worker is already observed, so a healthy update is never contended.
         if _dead_worker_exit(job, api) is None:
             return None
         observed_attempt = _attempt_tuple(job)
@@ -1921,14 +2002,7 @@ def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
     except (OSError, ValueError, TypeError, KeyError):
         return None
     try:
-        job = read_json(root / "install.json").get("update_job")
-        if not _acknowledged_unresolved(job) or _attempt_tuple(job) != observed_attempt:
-            return None
-        exit_code = _dead_worker_exit(job, api)
-        if exit_code is None:
-            return None
-        _record_dead_worker(root, job, exit_code=exit_code)
-        return _cleanup_terminal(root, job["operation_id"], locked=True)
+        return _settle_dead_worker_locked(root, api, observed_attempt=observed_attempt)
     finally:
         _unlock(stream)
 
@@ -1970,8 +2044,12 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
                 if active:
                     results.append(job)
                 elif state in {"launching", "active"}:
-                    job = _record_dead_worker(root, job, fields={"launch_status": "unknown"})
-                    results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
+                    settled = _settle_dead_worker_locked(root, _platform_api())
+                    if settled is not None:
+                        results.append(settled)
+                    else:
+                        job = _record_dead_worker(root, job, fields={"launch_status": "unknown"})
+                        results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
                 else:
                     results.append(job)
             elif state == "accepted":
@@ -2308,12 +2386,17 @@ def main():
     action = value["action"] if "action" in value else "prepare"
     if action == "availability":
         availability = update_job_availability()
-        # Runtime asks for availability on every status read. That is the one
-        # moment a caller is waiting on the job, so end a positively dead
-        # worker here; any doubt leaves the record unchanged.
+        reply = {**availability, "actions": list(SUPPORTED_ACTIONS)}
+        # Status GETs only observe. Runtime asks for availability on every
+        # status read, so report a positively dead worker's derived outcome
+        # here; the next locked writer (POST reconcile or the install line)
+        # records exactly it. Any doubt reports nothing.
+        observed = None
         with contextlib.suppress(Exception):
-            settle_dead_worker()
-        print(json.dumps({**availability, "actions": list(SUPPORTED_ACTIONS)}))
+            observed = observe_dead_worker()
+        if observed is not None:
+            reply["observed_job"] = observed
+        print(json.dumps(reply))
     elif action == "reconcile":
         try:
             print(json.dumps(reconcile(value)))

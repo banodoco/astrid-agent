@@ -1092,6 +1092,7 @@ def _launched_job(tmp_path, monkeypatch, finished):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     job = update_job.accept(request)
     adapter = _DeadWorkerAdapter(finished)
+    adapter.request = request  # the reconcile request Runtime's POST sends for this install
     monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
     launched = update_job.launch_job(root, job["operation_id"])
     assert launched["state"] == "launching" and launched["launch_status"] == "acknowledged"
@@ -1230,21 +1231,129 @@ def test_held_installer_lock_leaves_dead_worker_unchanged(tmp_path, monkeypatch)
     assert (root / "install.json").read_bytes() == before
 
 
-def test_status_availability_read_ends_a_dead_worker_and_keeps_its_reply(tmp_path, monkeypatch, capsys):
-    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+def _status_get(monkeypatch, capsys):
+    """Runtime's status GET: the Agent helper's availability action, with the lock unavailable to it."""
+    taken, writes = [], []
+    locked, write_job = update_job._locked, update_job._write_job
+    # Recorded, not raised: main() suppresses every exception on this path.
+    monkeypatch.setattr(update_job, "_locked", lambda root: taken.append(root) or locked(root))
+    monkeypatch.setattr(update_job, "_write_job",
+                        lambda *args, **kwargs: writes.append(args) or write_job(*args, **kwargs))
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "availability"})))
     update_job.main()
-    reply = json.loads(capsys.readouterr().out)
-    assert reply == {"available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
-    assert read_json(root / "install.json")["update_job"]["state"] == "failed"
+    assert taken == [], "A status read must not take the installer lock."
+    assert writes == [], "A status read must not write the job record."
+    return json.loads(capsys.readouterr().out)
+
+
+def _claimed(root, launched):
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active", message="Update is running.",
+                          fields={"bootstrap_proof": proof})
+
+
+def test_status_get_reports_a_dead_unclaimed_worker_as_failed_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    with monkeypatch.context() as get:
+        reply = _status_get(get, capsys)
+    assert (root / "install.json").read_bytes() == before
+    assert not (root / "update-transaction.json").exists()
+    assert {key: reply[key] for key in ("available", "actions")} == {
+        "available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
+    observed = reply["observed_job"]
+    assert observed["operation_id"] == launched["operation_id"] and observed["persisted"] is False
+    assert observed["state"] == "failed" and observed["worker_exit_code"] == 1
+    assert "transaction_id" not in observed
+    assert "ValueError: worker refused before claim" in observed["worker_log_tail"]
+    assert observed["message"].endswith("ValueError: worker refused before claim")
+    assert "cleanup" not in adapter.calls  # GET leaves the task registered
+
+    # The next Update press reaches the locked reconciler, which records exactly that outcome.
+    reconciled = update_job.reconcile(adapter.request)
+    assert reconciled["disposition"] == "confirmed-prior"
+    job = read_json(root / "install.json")["update_job"]
+    for key in ("state", "message", "worker_exit_code", "worker_log_tail", "worker_wrapper_log_tail"):
+        assert job[key] == observed[key], key
+    assert reconciled["job"]["state"] == "failed" and "cleanup" in adapter.calls
+    assert "launch" not in adapter.calls[adapter.calls.index("finished_result"):]  # not continued
+
+
+def test_status_get_reports_a_dead_claimed_worker_as_recovery_needed_and_writes_nothing(
+        tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    _claimed(root, launched)
+    before = (root / "install.json").read_bytes()
+    with monkeypatch.context() as get:
+        observed = _status_get(get, capsys)["observed_job"]
+    assert (root / "install.json").read_bytes() == before
+    assert observed["state"] == "recovery-needed" and observed["worker_exit_code"] == 1
+    assert observed["message"].startswith("Recovery needed.")
+
+    with pytest.raises(update_job._BusyRefusal) as refusal:
+        update_job.reconcile(adapter.request)
+    assert str(refusal.value) == observed["message"]
+    job = read_json(root / "install.json")["update_job"]
+    for key in ("state", "message", "worker_exit_code", "worker_log_tail"):
+        assert job[key] == observed[key], key
+
+
+def test_status_get_on_a_held_lock_still_only_observes(tmp_path, monkeypatch, capsys):
+    # A live installer holds the lock; the GET still reports, and still writes nothing.
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    stream = update_job._locked(root)
+    try:
+        with monkeypatch.context() as get:
+            assert _status_get(get, capsys)["observed_job"]["state"] == "failed"
+    finally:
+        update_job._unlock(stream)
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_status_get_and_the_writer_change_nothing_without_attempt_bound_evidence(tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, None)
+    submitted = launched["attempt"]["submitted_at"]
+    for finished in (None, _finished(0), _finished(1, started_at=submitted - 3), _finished(1, bound=None)):
+        adapter.finished = finished
+        before = (root / "install.json").read_bytes()
+        with monkeypatch.context() as get:
+            assert "observed_job" not in _status_get(get, capsys)
+        assert update_job.settle_dead_worker(root) is None
+        assert (root / "install.json").read_bytes() == before
+
+
+def test_reconciler_leaves_a_journal_bearing_dead_worker_to_its_transaction_recovery(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    write_json(root / "update-transaction.json",
+               {"operation_id": "b" * 32, "step": "staged", "update_job": {"operation_id": launched["operation_id"]}})
+    before = (root / "install.json").read_bytes()
+    assert update_job._settle_dead_worker_locked(root, adapter, defer_transactions=True) is None
+    assert (root / "install.json").read_bytes() == before
+    # The install-line writer records it, with the transaction, as GET reported it.
+    observed = update_job.observe_dead_worker(root, adapter)
+    settled = update_job._settle_dead_worker_locked(root, adapter)
+    assert observed["state"] == settled["state"] == "recovery-needed"
+    assert observed["transaction_id"] == settled["transaction_id"] == "b" * 32
+
+
+def test_install_line_sweep_records_the_same_attempt_bound_outcome(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    observed = update_job.observe_dead_worker(root, adapter)
+    swept = update_job.sweep_owned_jobs(root)
+    job = read_json(root / "install.json")["update_job"]
+    assert swept[0]["state"] == job["state"] == observed["state"] == "failed"
+    assert job["message"] == observed["message"] and job["worker_exit_code"] == 1
+    assert job["launch_status"] == "acknowledged"
 
 
 def test_status_availability_read_leaves_a_running_worker_alone(tmp_path, monkeypatch, capsys):
     root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, None)
     before = (root / "install.json").read_bytes()
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "availability"})))
-    update_job.main()
-    assert json.loads(capsys.readouterr().out)["available"] is True
+    with monkeypatch.context() as get:
+        reply = _status_get(get, capsys)
+    assert reply == {"available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
     assert (root / "install.json").read_bytes() == before
 
 
