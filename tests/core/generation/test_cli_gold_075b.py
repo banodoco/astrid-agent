@@ -707,3 +707,30 @@ def test_no_engine_tts_fails_closed_and_names_edge_tts(tmp_path):
     _assert_nothing_banned_selected(payload, context="no-engine tts")
     assert not _task_ids(payload), f"the refusal admitted a task: {_task_ids(payload)}"
     _assert_cwd_untouched(cli)
+
+
+def _voice_slot() -> Slot:
+    return next(slot for slot in SLOTS if slot.name == "voice")
+
+
+def test_attached_voice_passes_with_align_trust(tmp_path, attached_auto):
+    cli, comfy = attached_auto
+    slot = _voice_slot()
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "trust")
+    assert result.returncode == 0, _describe(result)
+    payload = _payload(result)
+    assert payload["alignment"] == {"mode": "trust", "verified": False}, payload
+    _assert_entry_named(payload, slot)
+    assert not _task_ids(payload) and not comfy.writes()
+    _assert_cwd_untouched(cli)
+
+
+def test_attached_voice_fails_with_align_check_and_names_the_fixes(tmp_path, attached_auto):
+    cli, comfy = attached_auto
+    slot = _voice_slot()
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "check")
+    assert result.returncode != 0, _describe(result)
+    text = result.stdout + result.stderr
+    assert AUTO_ASSET_REFUSALS["voice"] in text, _describe(result)
+    assert "--align trust" in text and "generate align" in text, _describe(result)
+    assert not _task_ids(_payload(result)) and not comfy.writes()

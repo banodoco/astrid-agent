@@ -6419,7 +6419,13 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
 
-def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any]) -> str:
+def _align_trust(task: Mapping[str, Any]) -> bool:
+    intent = _task_generation_intent(task)
+    metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
+    return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
+
+
+def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any], *, trust: bool = False) -> str:
     """The one host-owned inventory document, built only after the bound install is checked."""
     from astrid.core.generation.target_inventory import build_document
 
@@ -6427,6 +6433,8 @@ def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any]) -> 
     if (not isinstance(installed, Mapping) or not installed.get("receipt_sha256")
             or installed["receipt_sha256"] != evidence.get("installed_receipt_sha256")):
         raise HostError("bound endpoint receipt differs from the prepared installation")
+    if trust:
+        return build_document("trust", evidence["loopback_url"])
     return build_document("inventory", evidence["loopback_url"], invocation.get("models", ()))
 
 
@@ -12216,7 +12224,8 @@ class GenericPackHost:
                         scratch=root, cancel=cancel_signal)
                     _terminal["target_binding"] = evidence
                     inputs["comfy_url"] = evidence["loopback_url"]
-                    target_model_assets = _target_inventory_document(target_invocation, evidence)
+                    target_model_assets = _target_inventory_document(
+                        target_invocation, evidence, trust=_align_trust(task_data))
                     readiness_profile = None
                     vibe_session = None
                 inputs.pop("target_policy", None)
@@ -12234,6 +12243,9 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
+                if target_model_assets is None and _align_trust(task_data):
+                    from astrid.core.generation.target_inventory import build_document
+                    target_model_assets = build_document("trust", inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
