@@ -1093,6 +1093,14 @@ resources:
   path: src/dimensional_vace.py
 extensions:
   astrid:
+    generation_availability:
+      actions:
+        vibecomfy.character_animation:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: vibecomfy.character_animation is unavailable because this generation
+              route has not been qualified
     output_result_exemptions:
       actions:
         edit:
