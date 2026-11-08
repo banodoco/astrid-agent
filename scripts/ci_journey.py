@@ -1787,12 +1787,12 @@ def assert_cleanup_service_ownership(root: Path, data: Path, *, release: int,
                                     fresh_install: bool = False) -> dict:
     """Check the service contract supported by this platform during cleanup.
 
-    Fresh installs select a Release-1 manifest, but use the default service
-    identity (astrid.service / haus.astrid.runtime). The release-qualified
-    identity is reserved for an R0-to-R1 update. Windows likewise has no
-    distinct Release-1 direct-service ownership contract.
+    Fresh installs and in-place plain-install upgrades of a newer manifest use
+    the default service identity (astrid.service / haus.astrid.runtime). The
+    release-qualified identity is reserved for an R0-to-R1 update. Windows
+    likewise has no distinct Release-1 direct-service ownership contract.
     """
-    checked_release = 0 if fresh_install or sys.platform == "win32" else release
+    checked_release = 0 if fresh_install or release not in {0, 1} or sys.platform == "win32" else release
     return assert_direct_service_ownership(root, data, release=checked_release)
 
 
@@ -2594,52 +2594,36 @@ def execute(args: argparse.Namespace) -> dict:
                     if not getattr(args, "retain_for_next_leg", False):
                         result_path = evidence / "journey-result.json"
                         try:
-                            expected_upgrade_refusal = False
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
-                                is_linux_macos_upgrade = (
-                                    args.leg == "release0-to-release1" and sys.platform in {"linux", "darwin"}
-                                )
-                                release = None
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                     assert_cleanup_service_ownership(
                                         root, data, release=release,
                                         fresh_install=args.leg == "fresh-install")
-                                elif is_linux_macos_upgrade:
-                                    release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
-                                if is_linux_macos_upgrade and release == 1:
-                                    refusal = assert_release1_upgrade_uninstall_refusal(installed, root, data, evidence)
-                                    expected_upgrade_refusal = True
-                                    if result_path.is_file():
-                                        recorded = read_json(result_path)
-                                        recorded["upgrade_uninstall_refusal"] = refusal
-                                        write_json(result_path, recorded)
-                                else:
-                                    installed_cli(installed, ["install", "--uninstall", "--root", str(root),
-                                                              "--data-root", str(data)], evidence,
-                                                  "final-uninstall.log", timeout=1800)
-                                    if root.joinpath("current").exists():
-                                        raise RuntimeError("Owned installation remained after final uninstall")
-                            if not expected_upgrade_refusal and not narrow_refusal and runtime_processes(data):
+                                # The Release-9 to candidate upgrade is an in-place plain install,
+                                # not the retired R0-to-R1 handoff, so its cleanup is an ordinary uninstall.
+                                installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                                          "--data-root", str(data)], evidence,
+                                              "final-uninstall.log", timeout=1800)
+                                if root.joinpath("current").exists():
+                                    raise RuntimeError("Owned installation remained after final uninstall")
+                            if not narrow_refusal and runtime_processes(data):
                                 raise RuntimeError("Owned Runtime processes remained after final uninstall")
-                            if not expected_upgrade_refusal and sys.platform == "darwin":
+                            if sys.platform == "darwin":
                                 assert_macos_services_removed(data)
                             cleanup_sentinel = None if narrow_refusal else sentinel_observation(sentinel, birth)
                             if result_path.is_file() and not narrow_refusal:
                                 recorded = read_json(result_path)
                                 recorded.setdefault("sentinel", {})["after_cleanup"] = cleanup_sentinel
                                 write_json(result_path, recorded)
-                            if expected_upgrade_refusal:
-                                assert_host_available("cleanup", root, data, release=1)
+                            if narrow_refusal:
+                                assert_host_available("cleanup", root, data, skip_process_check=True)
                             else:
-                                if narrow_refusal:
-                                    assert_host_available("cleanup", root, data, skip_process_check=True)
-                                else:
-                                    assert_host_available("cleanup", root, data)
+                                assert_host_available("cleanup", root, data)
                             if not narrow_refusal and not cleanup_sentinel["alive"]:
                                 raise RuntimeError("Unrelated sentinel did not survive final uninstall")
-                            cleanup_outcome = "retained-after-upgrade-refusal" if expected_upgrade_refusal else "pass"
+                            cleanup_outcome = "pass"
                             if result_path.is_file():
                                 recorded = read_json(result_path)
                                 recorded["final_cleanup"] = cleanup_outcome
@@ -2939,9 +2923,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pinokio-backend-config", type=Path,
                         help="explicit JSON inputs for the real M4-4a lifecycle executor")
     parser.add_argument("--release0-fixture", type=Path,
-                        help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
+                        help="the checked-in frozen release-0 fixture directory for the Windows upgrade refusal")
+    parser.add_argument("--release9-app-checkout", type=Path,
+                        help="a checkout containing the pinned Release-9 App commit for the direct 9-to-candidate leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
-                        help="admit only the exact frozen release-0 direct journey to release 1")
+                        help="admit only the exact pinned direct journey from its starting release to the candidate")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -3002,11 +2988,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.leg == "windows-upgrade-refusal" and (sys.platform != "win32" or args.job_id != "direct-windows" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
             parser.error("windows-upgrade-refusal requires the disposable direct-windows qualification job")
         if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
-            parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
-        if args.release0_fixture is None or not args.allow_release0_to_release1:
-            parser.error("release0-to-release1 requires --release0-fixture and --allow-release0-to-release1")
-    elif args.release0_fixture is not None or args.allow_release0_to_release1:
-        parser.error("release-0 fixture admission is only valid for release0-to-release1")
+            parser.error("release0-to-release1 requires a frozen direct candidate receipt")
+        if args.leg == "release0-to-release1":
+            if args.release9_app_checkout is None or args.release0_fixture is not None or not args.allow_release0_to_release1:
+                parser.error("release0-to-release1 requires --release9-app-checkout and --allow-release0-to-release1")
+        elif args.release0_fixture is None or not args.allow_release0_to_release1 or args.release9_app_checkout is not None:
+            parser.error("windows-upgrade-refusal requires --release0-fixture and --allow-release0-to-release1")
+    elif args.release0_fixture is not None or args.allow_release0_to_release1 or args.release9_app_checkout is not None:
+        parser.error("release-0 and release-9 admission is only valid for release0-to-release1")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
     if sys.platform == "win32" and args.shell != "powershell.exe":

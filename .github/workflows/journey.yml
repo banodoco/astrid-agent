@@ -498,6 +498,16 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
           path: pinokio
           persist-credentials: false
+      - name: Check out the pinned Release 9 App for the release-0 leg
+        if: matrix.leg == 'release0-to-release1'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          # The App commit that pins Release 9's manifest and bootstrap bytes.
+          ref: 546c91b7aaf90835445136eb6e93459385ffe21c
+          path: release9-app
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -743,7 +753,7 @@ jobs:
           }
           if ('${{ matrix.leg }}' -eq 'release0-to-release1') {
             $release0Args = @(
-              '--release0-fixture', "$pwd/agent/tests/fixtures/release0",
+              '--release9-app-checkout', "$pwd/release9-app",
               '--allow-release0-to-release1'
             )
           }
