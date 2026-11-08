@@ -1433,13 +1433,14 @@ def test_linux_manager_boundary_probes_the_isolated_unit_path(tmp_path):
     stub.write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$CALLS"
 if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
+if [[ "$*" == *show-environment* ]]; then printf 'XDG_CONFIG_HOME=%s\\n' "$MANAGER_CONFIG"; fi
 ''')
     stub.chmod(0o755)
     probe = "journey-manager-path-probe-test.service"
     config = run_root / "home/.config"
     probe_dir = config / "systemd/user"
     env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", CALLS=str(commands),
-               EXPECTED_FRAGMENT=str(probe_dir / probe), run_root=str(run_root), config=str(config),
+               EXPECTED_FRAGMENT=str(probe_dir / probe), MANAGER_CONFIG=str(config), run_root=str(run_root), config=str(config),
                probe_dir=str(probe_dir), probe=probe, probe_created="0")
     result = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -1452,6 +1453,10 @@ if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
     env["EXPECTED_FRAGMENT"] = str(tmp_path / "foreign.service")
     failure = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
     assert failure.returncode != 0
+    # Unit discovery working is not enough: the manager must be looking in the install's config dir.
+    env.update(EXPECTED_FRAGMENT=str(probe_dir / probe), MANAGER_CONFIG=str(tmp_path / "elsewhere"))
+    wrong_config = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert wrong_config.returncode != 0 and "not the probe directory" in wrong_config.stdout
 
 
 def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, monkeypatch):
