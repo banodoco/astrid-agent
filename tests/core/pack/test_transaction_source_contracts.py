@@ -59,7 +59,7 @@ def test_folder_update_refuses_different_folder_identity(tmp_path: Path, other_s
     install_group(source=source, revision=None, packs={"local_ext": "original"},
                   packs_root=root, python_packages={})
     before = read_group(root)
-    before_files = {p.name: p.read_bytes() for p in before.paths["local_ext"].iterdir()}
+    before_files = {p.name: p.read_bytes() for p in before.paths["local_ext"].iterdir() if p.is_file()}
     update_source = tmp_path / "other" if other_source == "root" else source
     subpath = "original" if other_source == "root" else "different"
     write_folder(update_source / subpath, "after\n")
@@ -70,7 +70,7 @@ def test_folder_update_refuses_different_folder_identity(tmp_path: Path, other_s
 
     assert failure.value.code == "pin_mismatch"
     assert read_group(root) == before
-    assert {p.name: p.read_bytes() for p in before.paths["local_ext"].iterdir()} == before_files
+    assert {p.name: p.read_bytes() for p in before.paths["local_ext"].iterdir() if p.is_file()} == before_files
 
 
 @pytest.mark.parametrize("revision", [None, "main", "a" * 40], ids=["missing-sha", "ref", "full-sha"])

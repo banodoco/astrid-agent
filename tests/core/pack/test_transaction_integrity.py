@@ -15,7 +15,9 @@ from tests.core.pack.test_transaction import (  # noqa: F401  (pytest fixtures)
 
 def _pack_bytes(root: Path) -> dict[str, dict[str, bytes]]:
     snapshot = read_group(root)
-    return {pack_id: {name: data for name, data in tree_bytes(path).items() if name != "PIN"}
+    # PIN and .build/definitions.json (which records the source commit) change with a pin-only exchange.
+    return {pack_id: {name: data for name, data in tree_bytes(path).items()
+                      if name not in {"PIN", ".build/definitions.json"}}
             for pack_id, path in snapshot.paths.items()}
 
 

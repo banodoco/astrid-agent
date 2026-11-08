@@ -249,7 +249,8 @@ def _git_source(source: str) -> str:
     return _directory(Path(source)).as_uri()
 
 
-def _fetch_tree(work: Path, source: str, revision: str, subpath: str, stage: Path) -> str:
+def _fetch_tree(work: Path, source: str, revision: str, subpath: str, stage: Path,
+                provenance: dict[str, str] | None = None) -> str:
     if not revision or revision.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_./-]+", revision):
         raise PackInstallError("invalid_revision", "Use a branch, tag, HEAD or full commit SHA.")
     _git(work, "init", "--bare", "--template=")
@@ -315,6 +316,9 @@ def _fetch_tree(work: Path, source: str, revision: str, subpath: str, stage: Pat
         with target.open("xb") as stream:
             stream.write(_git(work, "cat-file", "blob", oid.decode("ascii")))
         target.chmod(0o755 if mode == "100755" else 0o644)
+    if provenance is not None:
+        provenance["tree"] = _git(work, "rev-parse", "--verify", "--end-of-options",
+                                  commit + ("^{tree}" if subpath == "." else ":" + subpath)).decode("ascii").strip()
     return commit
 
 

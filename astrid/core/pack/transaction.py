@@ -25,6 +25,7 @@ from uuid import uuid4
 from astrid import pack_api, sdk
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
+from astrid.core.pack.definitions import definitions_record, pack_definitions
 from astrid.core.pack.install import (
     _ID,
     _SHA,
@@ -713,7 +714,10 @@ def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]
         if artifact is not None:
             refuse()
         build_root = Path(request["stage_root"]) / ".build"
-        if (build_root.exists() or build_root.is_symlink()) and _tree(build_root):
+        # Only the transaction's own definitions record may sit in a pack that
+        # declares no browser build.
+        if (build_root.exists() or build_root.is_symlink()) and any(
+                relative != "definitions.json" for relative, _ in _tree(build_root)):
             refuse()
         return None
     if not isinstance(artifact, dict) or set(artifact) != {
@@ -779,6 +783,8 @@ def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]
     physical = {relative for relative, _ in _tree(root / ".build")}
     expected = {item["disk"][len(".build/"):] for item in files}
     if committed_revision is not None:
+        if "definitions.json" in physical:
+            expected.add("definitions.json")  # bound separately by admissions[pack_id].definitionsDigest
         for name, encoded in _artifact_metadata(request, artifact, committed_revision).items():
             if (root / ".build" / name).read_bytes() != encoded:
                 raise PackInstallError("hash_mismatch", f"Staged browser metadata .build/{name} changed; retry the group build.")
@@ -802,6 +808,15 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
             if not _ID.fullmatch(pack_id) or not (root / pack_id / "pack.yaml").is_file():
                 raise ValueError("invalid retained pack identity")
             _tree(root / pack_id / ".build")
+            recorded = admission.get("definitionsDigest")
+            if recorded is not None:
+                definitions_path = root / pack_id / ".build" / "definitions.json"
+                if (not definitions_path.is_file() or definitions_path.is_symlink()
+                        or hashlib.sha256(definitions_path.read_bytes()).hexdigest() != recorded):
+                    raise ValueError("retained definitions record differs from its admission")
+            if "artifact_manifest" not in admission:
+                continue  # A pack with no browser build: only its definitions record is bound.
+            admission = {key: value for key, value in admission.items() if key != "definitionsDigest"}
             artifact = admission["artifact_manifest"]
             # The existing durable group summary binds the original admission
             # epoch; the per-pack record cannot choose a different history.
@@ -1075,6 +1090,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     manifest, item = _facts(path)
                     facts[pack_id] = item
             commit = revision
+            provenance: dict[str, dict[str, Any]] = {}
             source_text = _git_source(str(source)) if revision is not None and packs else None
             if intent == "update":
                 for pack_id, subpath in packs.items():
@@ -1103,7 +1119,10 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         raise PackInstallError("unsafe_path", "Source folder cannot contain the collection or staging directory.")
                     _copy_folder(folder, payload)
                 else:
-                    observed = _fetch_tree(prepared, source_text, commit, subpath, payload)
+                    tree_info: dict[str, str] = {}
+                    observed = _fetch_tree(prepared, source_text, commit, subpath, payload, tree_info)
+                    provenance[pack_id] = {"repository": source_text, "revision": observed,
+                                           "tree": tree_info.get("tree"), "subpath": subpath}
                     if index and observed != commit:
                         raise PackInstallError("pin_mismatch", "Dependency group must use one source commit.")
                     commit = observed
@@ -1201,6 +1220,20 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         with (candidate / pack_id / ".build" / name).open("xb") as stream:
                             stream.write(encoded)
                     admissions[pack_id] = {**admission, "committedRevision": committed_revision, "transactionId": tx}
+                # Capability definitions are recorded for every installed pack,
+                # browser or not, in this same transaction as admission.json. The
+                # group state binds the file by digest (definitionsDigest).
+                definitions_bytes = _json(definitions_record(
+                    pack_definitions(candidate, root, pack_id),
+                    provenance.get(pack_id) or {"subpath": packs[pack_id]}))
+                build_dir = candidate / pack_id / ".build"
+                build_dir.mkdir(exist_ok=True)
+                with (build_dir / "definitions.json").open("xb") as stream:
+                    stream.write(definitions_bytes)
+                admissions[pack_id] = {
+                    **(admissions.get(pack_id) or {"packId": pack_id, "sourceDigest": identities[pack_id][0],
+                                                   "committedRevision": committed_revision, "transactionId": tx}),
+                    "definitionsDigest": hashlib.sha256(definitions_bytes).hexdigest()}
                 mark("built:" + pack_id)
             mark("built")
             _tree(candidate)
@@ -1428,7 +1461,9 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                             admissions[pack_id] = {"packId": pack_id, "sourceDigest": rollback_request["source_digest"],
                                 "digest": artifact["digest"],
                                 "artifactManifestDigest": hashlib.sha256(manifest_bytes).hexdigest(),
-                                "artifact_manifest": artifact, "committedRevision": committed_revision, "transactionId": tx}
+                                "artifact_manifest": artifact, "committedRevision": committed_revision, "transactionId": tx,
+                                **({"definitionsDigest": prior_admission["definitionsDigest"]}
+                                   if "definitionsDigest" in prior_admission else {})}
                         else:
                             admissions[pack_id] = prior_admission
             facts = dict(host_selected)

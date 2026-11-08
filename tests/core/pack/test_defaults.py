@@ -94,7 +94,9 @@ def test_release_defaults_install_as_one_group_and_record_default_provenance(rep
         assert pin["commit"] == repo.commit
         assert pin["digest"] == repo.defaults_manifest()["packs"][pack_id]["digest"]
     durable_state = json.loads((packs_root / ".group.json").read_text(encoding="utf-8"))
-    assert set(durable_state["admissions"]) == set()
+    # No browser builds: each admission carries only its definitions-record binding.
+    assert all(set(entry) >= {"definitionsDigest"} and "artifact_manifest" not in entry
+               for entry in durable_state["admissions"].values())
     assert durable_state["removals"] == []
 
 
