@@ -22,7 +22,7 @@ def _descriptor(tmp_path):
     job = {
         "job_name": f"astrid-update-{operation_id}",
         "operation_id": operation_id,
-        "program_root": str(root),
+        "program_root": str(root), "home": str(tmp_path / "install-home"),
         "data_root": str(tmp_path / "Workspace"),
         "log_path": str(log),
     }
@@ -100,7 +100,7 @@ def _mac_descriptor(tmp_path):
     root = tmp_path / "Astrid Program"
     log = root / "logs" / "update.log"
     job = {"job_name": f"astrid-update-{operation_id}", "operation_id": operation_id,
-           "program_root": str(root), "log_path": str(log)}
+           "program_root": str(root), "home": str(tmp_path / "install-home"), "log_path": str(log)}
     command = ["/Applications/Astrid/python", "-c", "print('hello; 雪')"]
     return platform.describe(job, command, system="darwin"), command
 
@@ -175,7 +175,7 @@ def _windows_descriptor(tmp_path, monkeypatch):
     sid = "S-1-5-21-12345"
     monkeypatch.setattr(platform, "_windows_sid", lambda: sid)
     job = {"job_name": f"astrid-update-{operation_id}", "operation_id": operation_id,
-           "program_root": str(root), "log_path": str(log)}
+           "program_root": str(root), "home": str(tmp_path / "install-home"), "log_path": str(log)}
     command = [r"C:\Astrid\python.exe", "-B", "-c", "print('hello; snow 雪')"]
     return platform.describe(job, command, system="win32"), command, sid
 
