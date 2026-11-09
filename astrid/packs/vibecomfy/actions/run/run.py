@@ -875,7 +875,7 @@ def _run_and_settle(
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
                 _comfyui_engine().run(
-                    {"workflow": workflow_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"},
+                    {"workflow": workflow_path, "out": output_root, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"},
                     local)
                 production_result = local.result
             elif synthetic is None:
