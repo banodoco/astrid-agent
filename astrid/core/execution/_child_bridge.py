@@ -795,8 +795,6 @@ class HostChildBridge:
                 inputs[name] = {"object_id": ordered[-1]["object_id"],
                                 "digest": ordered[-1]["object_id"],
                                 "filename": ordered[-1]["filename"], "size_bytes": len(data)}
-        if staged and record.id == "h3_av.compose":
-            _validate_compose_evidence(inputs, stage_refs, self._verified_outputs)
         admission_extras = {}
         if openai_request:
             # Consume only retained authenticated bytes. Never re-open a
@@ -901,59 +899,7 @@ class HostChildBridge:
             if self._channel_closed or self._revoked.is_set():
                 raise ChildBridgeError("child bridge closed during admission")
             self._admitted_children[key] = snapshot
-        if staged:
-            self._dispatch_local_stage(bound, task)
         return _public_task(task)
-
-    def _dispatch_local_stage(self, bound: dict[str, Any], task: dict[str, Any]) -> None:
-        """Serve local H3 stages without blocking their admission/status socket.
-
-        Other staged callers retain their existing serving lifecycle. Remote
-        H3 stages still belong to the selected placement's existing worker.
-        """
-        if self.task.get("capability_id", self.task.get("capability")) != "h3_av.transform":
-            return
-        contract = normalize_execution_request(task.get("execution_request"))
-        if contract is None:
-            raise ChildBridgeError("staged child has no explicit target")
-        target = contract["target"]
-        lineage = task["spec"]["delegated_parent"]
-        placement = lineage.get("parent_placement")
-        actual = placement.get("actual") if isinstance(placement, Mapping) else None
-        if target != {"kind": "default"} and target != actual:
-            return
-        if not isinstance(actual, Mapping) or actual.get("kind") != "machine":
-            raise ChildBridgeError("local staged child requires verified parent machine")
-
-        def execute() -> None:
-            slot = None
-            try:
-                slot = self.host._new_claim_slot()
-                with self._admission_lock:
-                    if self._revoked.is_set():
-                        return
-                    bound["claim_slot"] = slot
-                slot.run_delegated_child(task, parent=self.context, authority_client=self.client,
-                                         target=target, live=self._live)
-            except Exception:
-                # Do not expose signed authority, bearer or transport exception
-                # text through the child socket. Runtime state remains readable.
-                with self._admission_lock:
-                    bound["claim_failed"] = True
-            finally:
-                if slot is not None:
-                    try:
-                        slot.shutdown()
-                    except Exception:
-                        with self._admission_lock:
-                            bound["claim_failed"] = True
-
-        thread = threading.Thread(target=execute, name="astrid-h3-delegated-child", daemon=True)
-        with self._admission_lock:
-            if self._revoked.is_set():
-                raise ChildBridgeError("parent authority ended before child dispatch")
-            bound["claim_thread"] = thread
-        thread.start()
 
     def _publish_snapshot(self, request: dict[str, Any]) -> dict[str, Any]:
         grant = self.snapshot_grant

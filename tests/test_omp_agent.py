@@ -449,7 +449,6 @@ def test_generate_managed_dry_run_without_comfyui_returns_target_not_ready(
     from astrid.core.generation import entries, preflight
 
     # Exercise the shipped catalog entry without discovering unrelated entries.
-    monkeypatch.setattr(entries, "action_entries", lambda: [])
     monkeypatch.setattr(entries, "ready_entries", lambda: [])
     # VibeComfy is available, but neither managed ComfyUI discovery route is.
     monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")

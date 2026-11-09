@@ -492,6 +492,12 @@ actions:
       name: workflow_inputs
       required: false
       type: string
+    - default: '{}'
+      description: JSON {entry, job_dir, inputs, files} of a vibecomfy.workflows entry whose after_outputs hook
+        runs on this machine after the outputs are written and before they are sealed into the result.
+      name: after_outputs_job
+      required: false
+      type: string
     - default: ''
       description: Target policy for the retained host; endpoint selection remains host owned.
       name: placement_policy
@@ -641,6 +647,8 @@ actions:
         - '{managed_assets}'
         - --workflow-inputs
         - '{workflow_inputs}'
+        - --after-outputs-job
+        - '{after_outputs_job}'
         - --comfy-url
         - '{comfy_url}'
         - --comfy-output-dir

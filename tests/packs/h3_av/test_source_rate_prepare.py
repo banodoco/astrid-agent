@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 
 from astrid.core.contracts.errors import coerce_astrid_error
-from astrid.packs.h3_av.actions.prepare import prepare as prepare_module
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared import prepare as prepare_module
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.errors import PreparationError
 from astrid.packs.h3_av.shared.request import normalize_request
 

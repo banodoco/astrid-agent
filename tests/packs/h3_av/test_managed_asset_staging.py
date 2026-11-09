@@ -7,9 +7,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
-from astrid.packs.h3_av.actions.compile.compile import _write_asset_bundle
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import compile_preparation
+from astrid.packs.h3_av.shared.compile import _write_asset_bundle
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.vibecomfy.actions.run import run
 from astrid.packs.vibecomfy.actions.run.run import _stage_managed_assets

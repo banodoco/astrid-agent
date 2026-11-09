@@ -25,41 +25,11 @@ def _yaml(path: Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _pack_action_entry_ids(pack: Path) -> set[str]:
-    """Ids a pack already serves as action entries (``metadata.generation_entry``)."""
-    manifest = pack / "pack.yaml"
-    try:
-        text = manifest.read_text(encoding="utf-8")
-    except OSError:
-        return set()
-    if "generation_entry" not in text:
-        return set()
-    found: set[str] = set()
-
-    def walk(value: Any) -> None:
-        if isinstance(value, Mapping):
-            declared = value.get("generation_entry")
-            if isinstance(declared, Mapping) and isinstance(declared.get("id"), str):
-                found.add(declared["id"])
-            for item in value.values():
-                walk(item)
-        elif isinstance(value, list):
-            for item in value:
-                walk(item)
-    try:
-        import yaml
-        walk(yaml.safe_load(text))
-    except Exception:
-        return set()
-    return found
-
-
 def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
     """Thin entries of every ``vibecomfy.workflows`` contribution, from each pack's manifests.
 
-    Reads YAML only (no registry, no import, no hook). An id that the same pack
-    serves as an action entry (h3_av's ``h3``) stays the action's. The registry
-    still validates a contribution wherever it is run.
+    Reads YAML only (no registry, no import, no hook). The registry still
+    validates a contribution wherever it is run.
     """
     try:
         from astrid.core.extensions.scopes import contribution_roots
@@ -79,7 +49,6 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
             folder = pack / "extensions" / "vibecomfy.workflows"
             if not folder.is_dir():
                 continue
-            actions = _pack_action_entry_ids(pack)
             for manifest in sorted(folder.glob("*.y*ml")):
                 try:
                     data = _yaml(manifest)
@@ -90,10 +59,12 @@ def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
                 if not ready.is_relative_to(pack.resolve()):
                     continue
                 for raw in listed:
-                    if not isinstance(raw, Mapping) or raw.get("id") in actions or raw.get("id") in seen:
+                    if not isinstance(raw, Mapping) or raw.get("id") in seen:
                         continue
                     bundle = Path(str(raw.get("bundle", "")))
+                    declared = [name for name in ("build", "after_outputs") if data.get(name)]
                     rows.append({"needs": [], "binds": {}, "defaults": {}, **raw,
+                                 **({"hooks_declared": declared} if declared else {}),
                                  "bundle": str(bundle if bundle.is_absolute() else (ready / bundle).resolve()),
                                  "contribution": f"{pack.name}.{manifest.stem}", "contribution_scope": root.scope,
                                  "pack_root": str(pack.resolve())})
@@ -487,6 +458,12 @@ def merge_input_values(*sources: Mapping[str, Any], assignments=()) -> dict[str,
     return result
 
 
+def _declared_inputs(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """An entry's declared ``inputs`` as ports: name, normalized type, required, description."""
+    return [{**port, 'type': _input_type(port.get('type')), 'required': bool(port.get('required', False))}
+            for port in entry['inputs']]
+
+
 def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None,
                    _native: bool = False) -> dict[str, Any]:
     """Project the shared entry contract using local declarations only.
@@ -508,9 +485,9 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     if actions:
         entry = actions[0]
         base = {key: entry[key] for key in ('id', 'kind', 'action', 'isolation_requirements') if key in entry}
-        base['requirements'] = requirements(entry, None) if entry['action'] == 'h3_av.transform' else None
+        base['requirements'] = None
         base['source'] = 'action'
-        base['engine'] = 'comfyui' if entry['action'] == 'h3_av.transform' else None
+        base['engine'] = None
         modes = entry['modes']
         schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
                    for name in modes}
@@ -523,9 +500,15 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
         base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
+                **({'default_mode': entry['default_mode']} if entry.get('default_mode') in modes else {}),
                 **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
-        workflow = _load_entry_workflow(entry)
-        schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
+        if entry.get('inputs') and entry.get('contribution'):
+            # The entry declares its own inputs (a contribution whose build picks the graph): the
+            # bundle's widgets are not its interface.
+            schemas = {name: _declared_inputs(entry) for name in modes}
+        else:
+            workflow = _load_entry_workflow(entry)
+            schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
     else:
         modes = list(catalog.modes)
         base = {'id': entry_id, 'kind': catalog.modality, 'source': 'catalog',
@@ -719,31 +702,13 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         else:
             candidates = {'image': ['t2i'], 'video': ['t2v'], 'audio': ['music']}[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
+        if selected is None and description.get('default_mode') in supported:
+            selected = description['default_mode']  # the entry's graph does not depend on the mode (h3's build picks it)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
     values = _dimension_values(description, inputs)
-    validation = description
-    ports = {port['name']: port for port in description['inputs']}
-    primary = ('request', 'asset_map')
-    if (description.get('action') == 'h3_av.transform'
-            and all(ports.get(name, {}).get('file_custody') == 'producer_local'
-                    for name in primary)):
-        # Older H3 callers supplied managed objects. Validate a complete managed
-        # pair at its original boundary, without reinterpreting either object as
-        # a producer-local path or admitting it through the new producer route.
-        from astrid.core.execution.managed_inputs import managed_file_digest
-        try:
-            for name in primary:
-                managed_file_digest(values.get(name), name)
-        except ValueError:
-            pass
-        else:
-            validation = {**description, 'inputs': [
-                {key: value for key, value in port.items() if key != 'file_custody'}
-                if port['name'] in primary else port for port in description['inputs']]}
-            description = {**description, 'runtime_parent_required': True}
-    return public_description(description), validate_inputs(validation, values)
+    return public_description(description), validate_inputs(description, values)
 
 
 def infer_kind(workflow: Any) -> str:
@@ -904,21 +869,22 @@ def requirements(entry: Mapping[str, Any], inputs: Any = None) -> dict[str, Any]
 def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     """Model destinations (or bare loader values) the entry needs, and those it pins itself.
 
-    The model rows come from the entry's requirements manifest. An action entry provisions
-    the revision-pinned model assets its own graphs declare (H3 owns its Ref2V LoRA this
-    way), so the engine lock need not.
+    The model rows come from the entry's requirements manifest. A contribution with a build hook
+    provisions the revision-pinned model assets its own graphs declare (H3 owns its Ref2V LoRA
+    this way), so the engine lock need not.
     """
     import re
     manifest = requirements(entry)
     assets = manifest["models"]
-    needs = [] if entry.get("action") else entry.get("needs", [])
+    built = bool(entry.get("hooks_declared") or entry.get("action"))
+    needs = [] if built else entry.get("needs", [])
     required: set[str] = set()
     pinned: set[str] = set()
     names = {asset["name"] for asset in assets}
     for asset in assets:
         value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
         required.add(value)
-        if entry.get("action") and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
+        if built and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
             pinned.add(value)
     required.update(need["value"] for need in needs
                     if need.get("value") and Path(need["value"]).name not in names)
@@ -1037,3 +1003,47 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(declared_rows(workflow))}
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
         model_availability="target", refresh_object_info=client.object_info, **custody)
+
+
+def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any]:
+    """The ``build`` / ``after_outputs`` callables of a contributed entry, or ``{}``.
+
+    Only entries whose YAML declares a hook (``hooks_declared``) touch the registry.
+    """
+    if not entry.get('hooks_declared'):
+        return {}
+    from astrid.core.extensions.registry import ExtensionRegistry
+    from astrid.core.generation import workflows
+    for row in workflows.workflow_entries(registry or ExtensionRegistry().load()):
+        if row['id'] == entry['id'] and row.get('contribution') == entry.get('contribution'):
+            return dict(row.get('hooks') or {})
+    return {}
+
+
+def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, hooks: Mapping[str, Any],
+              align: str = 'check') -> dict[str, Any]:
+    """The engine job for a hooked entry: its declared file inputs go in ``files``."""
+    file_names = {port['name'] for port in entry.get('inputs', []) if _input_type(port.get('type')) in {'file', 'file_map'}}
+    return {'hooks': dict(hooks), 'inputs': dict(inputs), 'files': {k: v for k, v in inputs.items() if k in file_names},
+            'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
+
+
+def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any]:
+    """The entry with what the engine's ``requirements`` and ``prepare`` read: hooks, files, inputs, job_dir.
+
+    ``registry`` is the ExtensionRegistry (the facade's model catalog is a different object).
+    """
+    hooks = entry_hooks(entry, registry)
+    if not hooks:
+        return dict(entry)
+    job = entry_job(entry, inputs, job_dir, hooks=hooks)
+    return {**entry, 'hooks': hooks, 'files': job['files'], 'job_dir': job_dir, 'job_inputs': job['inputs']}
+
+
+def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any] | None:
+    """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
+    attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
+    if 'build' not in (attached.get('hooks') or {}):
+        return None
+    return engine_table()[entry.get('engine') or 'comfyui'].prepare(
+        entry_job(entry, inputs, job_dir, hooks=attached['hooks']))

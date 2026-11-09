@@ -37,7 +37,6 @@ def authored(monkeypatch, tmp_path):
     entry = {'id': 'f04', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(tmp_path / 'workflow.py'),
              'binds': {'prompt': 'prompt', 'texture': 'texture'}, 'defaults': {'texture': 0.2}, 'needs': []}
     monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     monkeypatch.setattr(entries, '_load_entry_workflow', lambda row: workflow.copy())
     monkeypatch.setattr(ModelRegistry, 'load_default', lambda **kwargs: ModelRegistry([]))
     import astrid.sdk as sdk
@@ -356,7 +355,6 @@ def test_dry_run_is_the_readiness_envelope_without_source_or_config_writes(monke
     entry = {'id': 'f04-dry', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(source),
              'binds': {'color': 'color'}, 'defaults': {'color': 7}, 'needs': []}
     monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     description = entries.describe_entry('f04-dry', registry=ModelRegistry([]))
     client = SimpleNamespace(target=SimpleNamespace(url=url), http_origin=url,
         generation_target=targets.TargetRecord(endpoint=url), object_info=lambda: info)

@@ -16,11 +16,20 @@ MODES = ("align", "check", "trust")
 _WORKFLOWS: dict[Any, list[Any]] = {}
 
 
+def _call_hook(hook: Any, *args: Any) -> Any:
+    """Call a workflow hook; one that declares an ``engine`` parameter is given the engine's facts."""
+    import inspect
+    if "engine" in inspect.signature(hook).parameters:
+        from astrid.core.generation.engine_facts import comfyui_facts
+        return hook(*args, engine=comfyui_facts())
+    return hook(*args)
+
+
 def _workflows(entry: Any, inputs: Any = None) -> list[Any]:
     """The workflow(s) an entry runs: its built graph, its bundle, or an action entry's profile workflows."""
     build = (entry.get("hooks") or {}).get("build")
     if build is not None:  # requirements() reads the built graph's rows; build is deterministic, so not cached
-        return [build(inputs or {}, entry.get("files") or {}, entry.get("out"))["workflow"]]
+        return [_call_hook(build, inputs or {}, entry.get("files") or {}, _job_dir(entry))["workflow"]]
     key = (entry.get("action"), entry.get("bundle"), tuple(entry.get("requirements") or ()) if entry.get("action") else ())
     if key not in _WORKFLOWS:
         _WORKFLOWS[key] = _load_workflows(entry)
@@ -107,7 +116,7 @@ class VibeComfyCommands:
 
 
 def _job_dir(job: Any) -> Any:
-    """The one directory build and finalize share: the job's job_dir, else its out."""
+    """The one directory build and after_outputs share: the job's job_dir, else its out."""
     return job.get("job_dir") or job.get("out")
 
 
@@ -204,20 +213,20 @@ class ComfyUIEngine:
         build = (job.get("hooks") or {}).get("build")
         if build is None:
             return None
-        built = build(job.get("inputs", {}), job.get("files", {}), _job_dir(job))
+        built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job))
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
         return built
 
     def finish(self, job: Any, outputs: Any) -> Any:
-        """Run the entry's optional finalize on this machine, after execute and before copy-back.
+        """Run the entry's optional after_outputs on this machine, after execute and before copy-back.
 
         Not VibeComfy's template finalize. A raise fails the job; the caller never swallows it.
         """
-        finalize = (job.get("hooks") or {}).get("finalize")
-        if finalize is None:
+        after_outputs = (job.get("hooks") or {}).get("after_outputs")
+        if after_outputs is None:
             return outputs
-        return finalize(_job_dir(job), job.get("inputs", {}), job.get("files", {}), outputs)
+        return _call_hook(after_outputs, _job_dir(job), job.get("inputs", {}), job.get("files", {}), outputs)
 
     def dry_run(self, job: Any) -> Any:
         """Build only; nothing is aligned, started or submitted. The plan is what the caller prints."""

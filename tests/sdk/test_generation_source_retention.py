@@ -231,7 +231,6 @@ def test_saved_entry_keeps_exact_source_when_original_changes(monkeypatch, admis
         source.unlink()
     else:
         source.write_bytes(b'the external source has changed')
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     monkeypatch.setattr(entries, 'ready_entries', lambda: [])
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
     result = GenerationFacade().image(entry=saved['id'], placement='managed',
