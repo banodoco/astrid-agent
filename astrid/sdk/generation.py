@@ -325,6 +325,16 @@ def _runpod_status(*, client, include_quote):
     return dict(status)
 
 
+def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
+                       execution_seconds, idle_seconds, align) -> dict[str, Any]:
+    """The controls image, video and audio all build from their public keywords."""
+    controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
+    controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+                    execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+    controls['align'] = _align_mode(align)
+    return controls
+
+
 def _generation_boundary(method):
     """Project legacy SDK failures without changing their exception taxonomy."""
     @wraps(method)
@@ -1529,10 +1539,11 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
+        controls = _modality_controls(
+            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
+            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+        )
         _reject_retired_generation_inputs(inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
@@ -1717,10 +1728,11 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
+        controls = _modality_controls(
+            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
+            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+        )
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
                        (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
@@ -1888,10 +1900,11 @@ class GenerationFacade:
         """Generate audio through the typed action or a selected workflow target."""
         _reject_retired_generation_inputs(inputs)
         inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
+        controls = _modality_controls(
+            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
+            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+        )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
