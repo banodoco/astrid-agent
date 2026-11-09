@@ -235,9 +235,14 @@ def test_captured_orchestrator_uses_platform_descriptor_launch(tmp_path, monkeyp
         "schema_version": 1, "id": "demo.run", "name": "Demo", "kind": "external", "version": "1.0",
         "runtime": {"kind": "python", "module": "external_pkg.run", "function": "run"},
     })
+    # captured_pack_command binds the command to the digest of the live selected source root
+    # (and the worker later resolves it strictly), so the root must exist and match the capture.
+    source_root = tmp_path / "external_pkg"
+    source_root.mkdir()
+    (source_root / "run.py").write_text("captured")
     selected = {"definition": {"capability_kind": "orchestrator", "capability_id": definition.id,
                                "definition_digest": generic_host._capability_digest(definition.to_dict())},
-                "source": {"root": str(tmp_path / "external_pkg"), "contents": {"run.py": "captured"}}}
+                "source": {"root": str(source_root), "contents": {"run.py": "captured"}}}
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
     launches = []
 
