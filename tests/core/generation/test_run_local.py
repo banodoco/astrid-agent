@@ -129,7 +129,7 @@ def test_build_and_finalize_run_once_at_the_run_site(tmp_path):
     result = mod.ComfyUIEngine(FakeCommands()).run(job, local)
 
     assert [e[0] for e in events] == ["build", "submit", "finalize"]
-    assert events[0][1:] == ({"prompt": "x"}, {"ref": "/a/ref.png"}, tmp_path / "out")
+    assert events[0][1:] == ({"prompt": "x"}, {"ref": "/a/ref.png"}, tmp_path / "job")  # build and finalize share job_dir
     assert local.submitted == [("http://127.0.0.1:8188", {"graph": "built"})]
     assert result == {"prompt_id": "p1", "finalized": True}
 
@@ -170,3 +170,12 @@ def test_vibecomfy_argv_parses_with_the_real_cli():
     assert parsed["prepare"].deps == "sync" and parsed["prepare"].no_models and parsed["prepare"].no_packs
     assert parsed["fetch"].workflow == "wf.json" and not parsed["fetch"].force
     assert parsed["nodes_restore"].lockfile == "custom_nodes.lock"
+
+
+def test_build_and_finalize_share_one_job_dir(tmp_path):
+    seen = []
+    hooks = {"build": lambda inputs, files, directory: seen.append(("build", directory)) or {"workflow": {"g": 1}},
+             "finalize": lambda directory, inputs, files, outputs: seen.append(("finalize", directory)) or outputs}
+    job = {"hooks": hooks, "out": tmp_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"}
+    mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(True))
+    assert seen == [("build", tmp_path), ("finalize", tmp_path)]

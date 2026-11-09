@@ -106,6 +106,11 @@ class VibeComfyCommands:
         self._run("fetch")  # per workflow; VibeComfy skips the rows already present
 
 
+def _job_dir(job: Any) -> Any:
+    """The one directory build and finalize share: the job's job_dir, else its out."""
+    return job.get("job_dir") or job.get("out")
+
+
 class ComfyUIEngine:
     name = "comfyui"
 
@@ -182,7 +187,7 @@ class ComfyUIEngine:
         build = (job.get("hooks") or {}).get("build")
         if build is None:
             return None
-        built = build(job.get("inputs", {}), job.get("files", {}), job.get("out"))
+        built = build(job.get("inputs", {}), job.get("files", {}), _job_dir(job))
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
         return built
@@ -195,7 +200,7 @@ class ComfyUIEngine:
         finalize = (job.get("hooks") or {}).get("finalize")
         if finalize is None:
             return outputs
-        return finalize(job.get("job_dir"), job.get("inputs", {}), job.get("files", {}), outputs)
+        return finalize(_job_dir(job), job.get("inputs", {}), job.get("files", {}), outputs)
 
     def dry_run(self, job: Any) -> Any:
         """Build only; nothing is aligned, started or submitted. The plan is what the caller prints."""
