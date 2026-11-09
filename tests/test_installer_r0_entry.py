@@ -647,7 +647,8 @@ def test_public_cli_windows_r0_refuses_with_exact_line_before_any_change(tmp_pat
     monkeypatch.setattr(r0_stop, "stop_r0_and_wait", forbidden)
     monkeypatch.setattr(Installer, "run", forbidden)
     before = snapshot(root), snapshot(data), service.selection.read_bytes(), service.path.read_bytes()
-    assert cli.main([*mode, "--root", str(root), "--uv", sys.executable]) == 1
+    # Refused before any change: not updated, exit 3 (outcome.EXIT_CODES), as the receipt pins.
+    assert cli.main([*mode, "--root", str(root), "--uv", sys.executable]) == 3
     output = capsys.readouterr().out.splitlines()
     assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in output
     assert ("Upgrading from an earlier Windows version isn't supported yet. "
@@ -680,7 +681,8 @@ def test_public_cli_windows_r0_refusal_keeps_the_legacy_selection_r0_reads(tmp_p
 
     monkeypatch.setattr(cli, "Backend", windows_backend)
     monkeypatch.setattr(Installer, "run", lambda *a, **kw: pytest.fail("installer ran before refusal"))
-    assert cli.main(["--update", "--root", str(root), "--uv", sys.executable]) == 1
+    # Refused before any change (the legacy record is byte-identical below): not updated, exit 3.
+    assert cli.main(["--update", "--root", str(root), "--uv", sys.executable]) == 3
     assert boundary_handoff.WINDOWS_UPGRADE_REFUSAL in capsys.readouterr().out.splitlines()
     assert legacy.read_bytes() == before
     assert not os.path.lexists(install_selection(Path.home(), "win32"))

@@ -383,7 +383,8 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
     assert not backend.root.exists()
 
 
-@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback", "never-up"])
+@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback", "never-up",
+                                     "rollback-busy"])
 @pytest.mark.parametrize("schema_changed", [True, False])
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         tmp_path, monkeypatch, capsys, real_live_probe, outcome, schema_changed):
@@ -456,6 +457,9 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         calls["stop"].append(version.root)
         if outcome == "busy" and version.root == old_root:
             raise RuntimeOperationError("Runtime is busy", details={"safe": False})
+        if outcome == "rollback-busy" and version.root != old_root:
+            # The old Runtime already stopped; now the failed candidate refuses to stop.
+            raise RuntimeOperationError("Runtime is busy", details={"safe": False})
         live["version"] = None
 
     def start(version, *_args):
@@ -466,7 +470,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
 
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
-        if outcome == "rollback" and version.root != old_root:
+        if outcome in {"rollback", "rollback-busy"} and version.root != old_root:
             workspace_sentinel.write_bytes(b"project written after switched")
             raise VerificationError("candidate did not become ready")
 
@@ -567,7 +571,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert staged["identity"]["release"] == candidate_release
     assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
     assert (fresh_root / "profile.json").is_file()
-    if outcome != "rollback":
+    if outcome not in {"rollback", "rollback-busy"}:
         assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
 
     selected = (root / "current").read_text(encoding="utf-8").strip()
@@ -607,6 +611,16 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert calls["stop"] == [old_root]
         assert calls["backup"] == calls["upgrade"] == []
         assert calls["register"] == calls["start"] == calls["verify"] == []
+    elif outcome == "rollback-busy":
+        # R1: a refusal after the old Runtime stopped is never "not updated, nothing changed" (exit 3).
+        assert result == 1
+        assert transaction["step"] not in {"staged", "complete"}
+        # With a schema change the migration's own candidate stop refuses first, before verify.
+        assert calls["stop"] == ([old_root, fresh_root] if not schema_changed else [old_root, fresh_root, fresh_root])
+        assert calls["verify"] == ([fresh_root] if not schema_changed else [])
+        receipt = json.loads((tmp_path / "logs" / "last-run.json").read_text(encoding="utf-8"))
+        assert receipt["kind"] in {"failed", "rolled-back"}
+        assert receipt["exit_code"] == 1
     else:
         assert result == 1
         assert selected == old_root.name

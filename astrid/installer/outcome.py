@@ -302,10 +302,40 @@ def _safe_refusal(failure: BaseException) -> bool:
     return is_lifecycle_refusal(failure)
 
 
+def journal_before_stop(path: Path, started: dict | None) -> bool:
+    """Whether the update journal at ``path`` shows the run never reached the old Runtime's stop.
+
+    ``started`` is the journal this run found when it began. True only when there is no journal, a
+    ``staged`` one (the stop intent was never recorded), the run's own stop refusal (``complete`` with
+    ``stop_refused``), or a terminal journal this run left as it found it. Any other journal (a stop
+    intent, stopped or later, a recovery, or a rollback this run made) means the install may have changed.
+    An unreadable journal is never proof that nothing changed.
+    """
+    from .core import TERMINAL_STEPS, read_json
+
+    try:
+        journal = read_json(path)
+    except (OSError, ValueError):
+        return False
+    if not journal:
+        return True
+    step = journal.get("step")
+    if step == "staged" or (step == "complete" and journal.get("outcome") == "stop_refused"):
+        return True
+    started = started if isinstance(started, dict) else {}
+    return (step in TERMINAL_STEPS and started.get("step") == step
+            and started.get("operation_id") == journal.get("operation_id"))
+
+
 def settle(request: Request, before, resolver, *, failure: BaseException | None = None,
            rolled_back: bool = False, warnings: tuple[str, ...] = (),
-           details: str | None = None) -> Outcome:
-    """Observe the world after a run and classify it against the request."""
+           details: str | None = None, before_stop: bool = True) -> Outcome:
+    """Observe the world after a run and classify it against the request.
+
+    ``before_stop`` is False when the update journal shows the run went past the old Runtime's stop
+    (``journal_before_stop``): a Runtime refusal after that point is failed or rolled-back, never
+    "not updated, nothing changed".
+    """
     try:
         after = resolver()
     except Exception:  # noqa: BLE001 - an unreadable installation is an observation
@@ -325,9 +355,10 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         # Refused before any stop, journal or copy (a Windows upgrade, autostart-off, or a malformed
         # saved choice found at admission): nothing was changed, so a refusal that keeps its own reason.
         request, failure = replace(request, refused=True, reason=refusal), None
-    if failure is not None and request.mode == "update" and _safe_refusal(failure):
-        # Runtime refused the stop safely (nothing destroyed) while another live copy runs: a refusal that
-        # keeps its own reason (busy), never relabelled as other-runtime-running.
+    if failure is not None and request.mode == "update" and before_stop and _safe_refusal(failure):
+        # Runtime refused the stop safely before the old Runtime stopped (nothing destroyed): a refusal that
+        # keeps its own reason (busy), never relabelled as other-runtime-running. After the stop (a rollback's
+        # candidate stop, or a recovery of an interrupted update) the same refusal is failed or rolled-back.
         request, failure = replace(request, refused=True, reason=reason_of(failure)), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"

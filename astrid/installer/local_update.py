@@ -646,6 +646,7 @@ class _LocalRun:
         self.action: dict = {}
         self.before = None
         self.transaction_id = None
+        self.started_journal: dict | None = None  # the update journal when the run began
         self.target: int | None = None
         self.log: Path | None = None
         self.protected: list[Path] = []
@@ -675,6 +676,7 @@ class _LocalRun:
         except Exception:  # noqa: BLE001 - observation only; settle re-resolves
             self.before = None
         pending = read_json(root / "update-transaction.json")
+        self.started_journal = pending if isinstance(pending, dict) else None
         self.transaction_id = pending.get("operation_id") if isinstance(pending, dict) else None
         try:
             self.protected, self.log = self._log()
@@ -718,7 +720,7 @@ class _LocalRun:
         """Return ``(outcome, lines)``, or ``(None, [])`` when the run changed nothing."""
         from dataclasses import replace
 
-        from .outcome import RECORD, Request, settle, write_record
+        from .outcome import RECORD, Request, journal_before_stop, settle, write_record
 
         if self.root is None or self.action.get("action") not in {"recover", "update"}:
             return None, []
@@ -743,7 +745,13 @@ class _LocalRun:
             rolled_back = failure is not None and self._rolled_back()
         except (OSError, ValueError):
             rolled_back = False
-        outcome = settle(request, self.before, self._resolve, failure=failure, rolled_back=rolled_back)
+        # A recover action replays an interrupted update, so its refusal never leaves the install untouched;
+        # an update's refusal is a pre-change refusal only while the journal never reached the stop.
+        before_stop = failure is None or (
+            self.action.get("action") != "recover"
+            and journal_before_stop(self.root / "update-transaction.json", self.started_journal))
+        outcome = settle(request, self.before, self._resolve, failure=failure, rolled_back=rolled_back,
+                         before_stop=before_stop)
         app_value = self.action.get("app")
         app = app_value if isinstance(app_value, dict) else {}
         old_editor = app.get("oldAppRelease")

@@ -35,7 +35,7 @@ from .core import (
     write_json,
 )
 from .installation import Installation, State
-from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
+from .outcome import RECORD, Request, clear_record, journal_before_stop, receipt_warnings, settle, write_record
 from .service import (
     LABEL,
     default_program_root,
@@ -400,6 +400,8 @@ class _Run:
         self.choices: dict[str, bool] | None = None
         self.installer: Any | None = None
         self.transaction_id = None
+        self.journal: Path | None = None  # the update journal, and what it held when the run began
+        self.started_journal: dict | None = None
         self.operation_id: str | None = None
         self.started_at: int | None = None
         self.protected: list[Path] = []
@@ -415,7 +417,9 @@ class _Run:
         try:
             resolved = Installation.resolve(home, system=system, root=root)
             self.before = resolved
-            pending = read_json((root or resolved.program_root) / "update-transaction.json")
+            self.journal = (root or resolved.program_root) / "update-transaction.json"
+            pending = read_json(self.journal)
+            self.started_journal = pending
             self.transaction_id = pending.get("operation_id")
         except Exception:  # noqa: BLE001 - observation only; settle re-resolves
             self.before = None
@@ -445,13 +449,17 @@ class _Run:
         except (OSError, ValueError):
             rolled_back = False
         request_mode = "update" if self.mode in {"update", "app-update"} else self.mode
+        journal = self.journal if self.journal is not None else (
+            None if self.root is None else self.root / "update-transaction.json")
+        before_stop = (failure is None or journal is None
+                       or journal_before_stop(journal, self.started_journal))
         outcome = settle(Request(request_mode, self.target, self.reason, self.refused, self.target_source),
                          self.before,
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back,
                          warnings=receipt_warnings(getattr(self.installer, "outcomes", None)),
-                         details=None if self.log is None else str(self.log))
+                         details=None if self.log is None else str(self.log), before_stop=before_stop)
         from dataclasses import replace
 
         # Every non-zero outcome ends with Next and Details (outcome.next_steps).
