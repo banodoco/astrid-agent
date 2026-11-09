@@ -1966,6 +1966,11 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
         raise RuntimeError("Install marker cannot be a symlink")
     marker = read_json(marker_path)
     data = Path(marker["data_root"])
+    retained = marker.get("retained_r0_data_root")
+    if retained is not None and Path(retained) == expected_data and data == Path(str(expected_data) + "-r1"):
+        # A normalised storage move (UR-15): R1 is the data root and the
+        # journey's R0 root is kept as provenance; the journey names it by R0.
+        data = expected_data
     if data != expected_data:
         raise RuntimeError("Selected data root is outside this journey")
     current_path = root / "current"
@@ -2154,7 +2159,7 @@ def assert_release1_upgrade_uninstall_refusal(installed: dict, root: Path, data:
             or type(release) is not int or release < 1):
         raise RuntimeError("Release-1 uninstall refusal changed the selected installation")
     marker = read_json(root / "install.json")
-    r1_data = marker.get("r1_data_root")
+    r1_data = marker.get("r1_data_root") or (marker.get("data_root") if marker.get("retained_r0_data_root") else None)
     if not isinstance(r1_data, str) or not Path(r1_data).is_dir() or not data.is_dir():
         raise RuntimeError("Release-1 uninstall refusal did not retain both data folders")
     service = assert_direct_service_ownership(root, data, release=1)
@@ -2775,8 +2780,9 @@ def execute(args: argparse.Namespace) -> dict:
                             handed_off = False
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
-                                handed_off = (args.leg == "r0-handoff-then-update"
-                                              and bool(read_json(root / "install.json").get("r1_data_root")))
+                                marker = (read_json(root / "install.json")
+                                          if args.leg == "r0-handoff-then-update" else {})
+                                handed_off = bool(marker.get("r1_data_root") or marker.get("retained_r0_data_root"))
                                 if keep_going:
                                     release = read_json(Path(installed["root"]) / "manifest.json").get("release", 0)
                                     assert_cleanup_service_ownership(
