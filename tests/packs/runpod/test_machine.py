@@ -128,7 +128,8 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     # After the fetch, before settle: the reset removed the run and job folders.
     reset = c.pod.resets[-1]
     assert reset["ok"] and reset["active"] == {"run_id": reset["dirs"][0].rsplit("/", 1)[1], "task": "task",
-                                               "attempt": "attempt-1"}
+                                               "attempt": "attempt-1", "run_dir": reset["dirs"][0],
+                                               "job_dir": reset["dirs"][1]}
     assert reset["dirs"][0].startswith("/root/astrid/runs/") and reset["dirs"][1].startswith("/workspace/.astrid-jobs/")
     assert not [path for path in c.pod.files if path.startswith(reset["dirs"][0] + "/")]
     assert c.creates == 1 and c.deletes == []
@@ -183,13 +184,19 @@ def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
     job = c.job()
     run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
-    c.pod.active_job = {"run_id": "lost", "task": "task", "attempt": "attempt-0"}  # never reached its reset
+    # A job that never reached its reset: its run and agent folders are still on the pod.
+    lost_run, lost_job = "/root/astrid/runs/lost", "/workspace/.astrid-jobs/lost"
+    c.pod.files.update({lost_run + "/out/x": b"x", lost_job + "/stdout": b""})
+    c.pod.active_job = {"run_id": "lost", "task": "task", "attempt": "attempt-0", "run_dir": lost_run,
+                        "job_dir": lost_job}
     second = c.job(2)
     run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
     ready = c.read()["lease"]["preparation"]["pod_ready"]
     assert ready == {"entry": None, "ready": True, "found": "pending", "reset": "restored"}
     assert [r["active"] and r["active"]["run_id"] for r in c.pod.resets][2] == "lost"
+    assert c.pod.resets[2]["dirs"] == [lost_run, lost_job]
+    assert not [path for path in c.pod.files if path.startswith((lost_run + "/", lost_job + "/"))]
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
@@ -367,3 +374,23 @@ def test_the_selection_ships_active_sources_and_the_user_entry_folder(tmp_path):
     assert "ASTRID_PACKS_PATH=/root/astrid/runs/x/selection/packs" in env
     assert "VIBECOMFY_ENTRIES_DIR=/root/astrid/runs/x/selection/entries" in env
     assert "ASTRID_SOURCE_STATE=" in env and "ASTRID_USER_PACKS=" in env
+
+
+def test_the_job_records_its_run_and_agent_folders_in_active_job_json(tmp_path):
+    """T5f follow-up: the active-job line, run by bash as the agent runs command.sh, names both folders."""
+    import subprocess
+    import sys
+
+    command = rm.generation_command("cpu-image", "/root/astrid/runs/abc", mode="t2i",
+                                    active_job={"run_id": "abc", "task": "t", "attempt": "a"})
+    (line,) = [row for row in command.splitlines()
+               if row.startswith(f"{rm.POD_VENV}/bin/python -c ") and "active-job.json" in row]
+    active = tmp_path / "active-job.json"
+    line = line.replace(f"{rm.POD_VENV}/bin/python", sys.executable).replace("/root/astrid/active-job.json", str(active))
+    job_dir = tmp_path / "agent-job"
+    job_dir.mkdir()
+    script = job_dir / "command.sh"
+    script.write_text(line + "\n")
+    subprocess.run(["bash", str(script)], check=True)
+    assert json.loads(active.read_text()) == {"run_id": "abc", "task": "t", "attempt": "a",
+                                              "run_dir": "/root/astrid/runs/abc", "job_dir": str(job_dir)}

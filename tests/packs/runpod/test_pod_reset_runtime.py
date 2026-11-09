@@ -15,6 +15,8 @@ import statistics
 import time
 from pathlib import Path
 
+import pytest
+
 from astrid.packs.runpod import pod_reset
 
 #: The realm store's tables for tasks, runs, events and objects: a reset leaves each at zero.
@@ -62,7 +64,9 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     # task a real pack host claims and settles (its run, attempt and events).
     from tests.packs.test_vibecomfy_runtime_real_service_integration import _new_host
 
-    paths["active"].write_text(json.dumps({"run_id": "r1", "task": "t", "attempt": "a"}))
+    run_dir, job_dir = pod / "runs" / "r1", pod / "jobs" / "j1"
+    paths["active"].write_text(json.dumps({"run_id": "r1", "task": "t", "attempt": "a",
+                                           "run_dir": str(run_dir), "job_dir": str(job_dir)}))
     client = pod_reset.open_prepared(paths["prepared"])
     project = client.projects.create(name="Job", slug="job", idempotency_key="project")
     assert project.ok, project.error
@@ -87,7 +91,6 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     dirty = _counts(realm)
     assert _cas(realm), "the job wrote no CAS object"
     assert all(dirty[table] >= 1 for table in EMPTY_TABLES), dirty
-    run_dir, job_dir = pod / "runs" / "r1", pod / "jobs" / "j1"
     attempt = paths["data_root"] / "host-support" / "host-output" / "attempts" / "attempt-1"
     log = paths["data_root"] / "runtime" / "logs" / "host.log"
     log.parent.mkdir(parents=True)
@@ -95,10 +98,23 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
     for folder in (run_dir / "out", job_dir, attempt):
         folder.mkdir(parents=True)
         (folder / "f").write_text("x")
+    (job_dir / "command.sh").write_text("true\n")  # the pod agent's own job folder
     old_inode = realm.stat().st_ino
 
+    # A dirty realm never becomes the template: not while a job is active, nor once it wrote rows.
+    current = ensure()
+    token = Path(current["credential_file"]).read_text().strip()
+    with pytest.raises(pod_reset.ResetError, match="a job was active"):
+        pod_reset.take_template(current["endpoint"], token, pod / "dirty-template", realm_root=realm,
+                                active=paths["active"])
+    with pytest.raises(pod_reset.ResetError, match="the realm is not empty"):
+        pod_reset.take_template(current["endpoint"], token, pod / "dirty-template", realm_root=realm,
+                                active=pod / "no-active-job.json")
+    assert not (pod / "dirty-template").exists()
+
+    # The claim's redo (no folders passed): the reset reads them from active-job.json.
     started = time.perf_counter()
-    steps = pod_reset.reset(run_dir=run_dir, job_dir=job_dir, ensure=ensure, realm=realm, **paths)
+    steps = pod_reset.reset(ensure=ensure, realm=realm, runs_root=pod / "runs", **paths)
     elapsed = time.perf_counter() - started
     assert steps["replace"]["state"] == "complete" and "template" not in steps
 
@@ -135,8 +151,6 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
 
 def test_a_missing_prepared_connection_fails_closed_without_up(tmp_path, monkeypatch):
     """The warm job never falls back to the launcher: no prepared file means the pod must reset."""
-    import pytest
-
     from astrid.sdk.client import AstridClient
     from astrid.sdk.exceptions import ServiceUnavailableError
 
@@ -146,3 +160,19 @@ def test_a_missing_prepared_connection_fails_closed_without_up(tmp_path, monkeyp
     with pytest.raises(ServiceUnavailableError) as raised:
         AstridClient.open_from_launcher()
     assert raised.value.details["reason"] == "prepared_connection_unavailable"
+
+
+def test_pending_dirs_only_names_the_jobs_own_folders(tmp_path):
+    runs = tmp_path / "runs"
+    run, job, other = runs / "r1", tmp_path / "jobs" / "j1", tmp_path / "elsewhere"
+    for folder in (run, job, other):
+        folder.mkdir(parents=True)
+    (job / "command.sh").write_text("true\n")
+    active = tmp_path / "active-job.json"
+    active.write_text(json.dumps({"run_dir": str(run), "job_dir": str(job)}))
+    assert pod_reset.pending_dirs(active, runs_root=runs) == (run, job)
+    active.write_text(json.dumps({"run_dir": str(other), "job_dir": str(other)}))
+    assert pod_reset.pending_dirs(active, runs_root=runs) == (None, None)
+    active.write_text(json.dumps({"run_dir": str(runs / ".." / "elsewhere"), "job_dir": "relative"}))
+    assert pod_reset.pending_dirs(active, runs_root=runs) == (None, None)
+    assert pod_reset.pending_dirs(tmp_path / "absent.json", runs_root=runs) == (None, None)

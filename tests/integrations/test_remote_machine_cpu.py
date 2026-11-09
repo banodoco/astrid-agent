@@ -291,8 +291,9 @@ class MachineProviderHTTP:
         assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in detached
         assert "flock -s 9" in detached and "ASTRID_RUNTIME_DOOR_PORT=0" in detached
         assert self.pod_state == "ready" and self.active_job is None, "a job started on a pod with no ready reset"
-        active = next(row for row in detached.splitlines() if row.startswith("printf '%s' ") and "active-job" in row)
-        self.active_job = json.loads(shlex.split(active)[2])
+        active = next(row for row in detached.splitlines()
+                      if row.startswith("/opt/astrid/bin/python -c ") and "active-job.json" in row)
+        self.active_job = {**json.loads(shlex.split(active)[3]), "job_dir": directory}
         assert detached.index("generate list --json") < detached.index("--placement local")
         argv = shlex.split(next(line for line in detached.splitlines() if "--placement local" in line).split(" > ")[0])
         assert argv[1] == "generate" and argv[3:5] == ["--placement", "local"], argv

@@ -95,7 +95,7 @@ class FakePod:
         if "pod_reset reset" in command:
             stdout = self._reset(command, ok=rc == 0)
         elif " generate " in command and "--placement local" in command and rc == 0:
-            rc, stderr = self._enter(command)
+            rc, stderr = self._enter(command, directory)
         if rc == 0:
             if "pod_bootstrap.sh" in command:
                 self.files[self.marker] = b"ok"
@@ -119,6 +119,9 @@ class FakePod:
 
         argv = _shlex.split(command)
         dirs = [argv[argv.index(flag) + 1] for flag in ("--run-dir", "--job-dir") if flag in argv]
+        if not dirs and self.active_job is not None:
+            # A redo at the claim: pod_reset reads the folders the stuck job recorded.
+            dirs = [self.active_job[key] for key in ("run_dir", "job_dir") if self.active_job.get(key)]
         self.resets.append({"dirs": dirs, "ok": ok, "active": self.active_job})
         if not ok:
             self.pod_state = "absent"
@@ -130,7 +133,7 @@ class FakePod:
         self.template, self.pod_state, self.active_job = True, "ready", None
         return json.dumps({"reset": "ok", "removed": len(dirs), "template": "taken" if taken else "restored"}) + "\n"
 
-    def _enter(self, command: str) -> tuple[int, str]:
+    def _enter(self, command: str, directory: str) -> tuple[int, str]:
         """The generation command's own gate: ready, no pending reset, entry listed."""
         import shlex as _shlex
 
@@ -139,8 +142,11 @@ class FakePod:
         assert "flock -s 9" in command and "ASTRID_RUNTIME_DOOR_PORT=0" in command
         if self.pod_state != "ready" or self.active_job is not None:
             return 75, "the pod is not ready: a reset is pending"
-        active = next(row for row in command.splitlines() if row.startswith("printf '%s' ") and "active-job" in row)
-        self.active_job = json.loads(_shlex.split(active)[2])
+        active = next(row for row in command.splitlines()
+                      if row.startswith("/opt/astrid/bin/python -c ") and "active-job.json" in row)
+        argv = _shlex.split(active)
+        assert argv[4] == '$(dirname $0)', argv[4]  # the job's own agent folder (bash "$d/command.sh")
+        self.active_job = {**json.loads(argv[3]), "job_dir": directory}
         line = next(row for row in command.splitlines() if "--placement local" in row)
         entry = _shlex.split(line.split(" > ")[0])[2]
         if entry != "workflow" and entry not in self.listed:
