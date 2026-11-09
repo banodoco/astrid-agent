@@ -1,4 +1,4 @@
-"""Plan 32 T4c: the local production run site goes through ComfyUIEngine.run, not pip_embedded/checkout_server."""
+"""Plan 32 T4c: the local production run site goes through ComfyUIEngine.run, not an embedded or checkout profile."""
 from __future__ import annotations
 
 import importlib
@@ -37,6 +37,6 @@ def test_local_run_uses_the_engine_run(comfy, tmp_path, monkeypatch):  # noqa: F
     manifest = action._run_and_settle(comfy.workflow, out, task_identity="task-t4c", attempt_identity="attempt-t4c")
 
     assert len(engine_runs) == 1 and engine_runs[0]["workflow"] == comfy.workflow
-    assert profiles == ["local_server"]  # never pip_embedded or checkout_server
+    assert profiles == ["local_server"]  # the engine run is always local_server
     assert len(comfy.prompts) == 1
     assert (out / manifest["managed_generation_result_path"]).is_file()
