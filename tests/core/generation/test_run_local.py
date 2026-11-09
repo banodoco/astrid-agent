@@ -86,13 +86,38 @@ def test_run_aligns_then_submits_to_localhost(tmp_path, attached):
     assert local.started == (0 if attached else 1) and ("fetch", ["need.safetensors"]) in commands.calls
 
 
-# Files that may still download a model. model_downloader and the engine_runner model steps
-# stay until T5; align downloads only through VibeComfy fetch (asset_alignment is not listed).
+def _pod_job_align(root, rows):
+    """What the pod-side run does for one job: align the job's manifest against the pod disk."""
+    commands = FakeCommands()
+    manifest = {"models_root": str(root), "extra": {"nodes": []}, "models": rows}
+    mod.ComfyUIEngine(commands).align(manifest, "align")
+    return [c for c in commands.calls if isinstance(c, tuple)]
+
+
+def test_pod_claim_fetches_only_the_rows_the_job_manifest_needs(tmp_path):
+    rows = [{"name": "need.safetensors", "subdir": "vae", "size": 9}]  # the job's manifest, not the 32-row lock
+    assert _pod_job_align(tmp_path, rows) == [("fetch", ["need.safetensors"])]
+
+
+def test_warm_pod_job_fetches_nothing(tmp_path):
+    rows = [{"name": "need.safetensors", "subdir": "vae", "size": 9}]
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae/need.safetensors").write_bytes(b"x" * 9)  # left by the first job on the warm pod
+    assert _pod_job_align(tmp_path, rows) == []
+
+
+def test_local_job_align_fetches_only_its_missing_row(tmp_path):
+    commands = FakeCommands()  # _manifest: one row present, one missing
+    mod.ComfyUIEngine(commands).align(_manifest(tmp_path), "align")
+    assert [c for c in commands.calls if isinstance(c, tuple)] == [("fetch", ["need.safetensors"])]
+
+
+# Files that may still download a model. Engine install is model-free (T5h): engine_runner,
+# engine_execution and engine_contracts hold no download. align downloads only through VibeComfy
+# fetch (asset_alignment is not listed). model_downloader stays only as the H3 release pod's
+# verified downloader, which h3_release_remote imports.
 ALLOWED = {
     "astrid/core/generation/model_downloader.py",
-    "astrid/core/generation/engine_runner.py",
-    "astrid/core/generation/engine_execution.py",
-    "astrid/core/generation/engine_contracts.py",
     "astrid/packs/runpod/h3_release_remote.py",
     "astrid/packs/vibecomfy/production_engine.py",  # only a refused-key name, not a download
 }

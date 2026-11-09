@@ -314,27 +314,22 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert not any("/01-prepare/" in path for path in claim.ops.files)
 
 
-def test_prepare_claimed_install_uses_the_volume_model_cache_when_saved(tmp_path, sources):
-    provider = _provider(sources)
-    claim = provider.claim(rp.ClaimSpec())
-    cache = "/workspace/astrid/engines/comfyui/models"
-    state = _wrapper(provider, sources).prepare_claimed(
-        claim, out=tmp_path / "prepare", deadline_seconds=120, model_cache_root=cache,
-    )
-    install = next(c for c in claim.ops.job_log if "engines install" in c)
-    assert f"--model-cache-root {cache}" in install
-    assert "--model-cache-device" not in install and "--model-cache-mount-id" not in install
-    assert state.model_cache_root == cache
-    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
-
-
-def test_prepare_claimed_install_has_no_cache_without_a_volume(tmp_path, sources):
+def test_prepare_claimed_install_is_model_free(tmp_path, sources):
+    """Plan 32 T5h: a claim installs the engine only; no model flag, no model fetch on the pod."""
     provider = _provider(sources)
     claim = provider.claim(rp.ClaimSpec())
     state = _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
     install = next(c for c in claim.ops.job_log if "engines install" in c)
-    assert "--model-cache-root" not in install
-    assert state.model_cache_root is None
+    assert "--model-cache" not in install
+    assert not any("fetch" in c or "download" in c for c in claim.ops.job_log)
+    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+
+
+def test_volume_is_sized_by_the_job_manifest_rows_not_the_model_lock():
+    installation = rp.RunPodInstallation(compatibility={})
+    rows = ({"name": "a", "size": 100}, {"name": "b", "size": 23})
+    assert installation.model_bytes(rows) == 123
+    assert installation.model_bytes(()) == 1  # a warm job needs no model bytes
 
 
 def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):

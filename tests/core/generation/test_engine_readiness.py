@@ -36,7 +36,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation import engine_readiness as readiness
 from astrid.core.generation.engine_contracts import (
-    DownloadResult, HealthEvidence, InstallReceipt, ModelLock, ModelSpec, StartSpec, StepReceipt,
+    HealthEvidence, InstallReceipt, ModelLock, ModelSpec, StartSpec, StepReceipt,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
@@ -222,12 +222,11 @@ def installation(tmp_path_factory, request):
     server.write_text(_SERVER)
     mode.write_text("healthy")
     models = []
+    # Plan 32 T5h: a model-free install fetches no model bytes; the models root is empty.
+    (root / "models").mkdir(parents=True, exist_ok=True)
     for name, destination, data in (
             ("synthetic-test-diffusion", "diffusion_models/synthetic-test-a.safetensors", b"SYNTHETIC TEST MODEL A\n"),
             ("synthetic-test-lora", "loras/synthetic-test-b.safetensors", b"SYNTHETIC TEST MODEL B (lora)\n")):
-        path = root / "models" / destination
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
         models.append({"name": name, "repository": None, "revision": None, "path": None, "url": None,
                        "destination": destination, "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest()})
@@ -271,8 +270,7 @@ def installation(tmp_path_factory, request):
             "astrid.engine-install.v1", "synthetic-readiness-receipt", engine, PLATFORM, "local", str(root),
             "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
             {e.name: "a" * 64 for e in recipe.environments}, {s.name: s.pin.revision for s in recipe.sources},
-            tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped", m.bytes, m.sha256, True, 0)
-                  for m in lock.models),
+            (),  # Plan 32 T5h: a model-free install records no model rows; align fetches a job's rows later.
             tuple(StepReceipt(s.id, s.kind, "executed", "passed",
                               {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
                               if s.kind == "start" else {}) for s in plan.steps),
@@ -373,13 +371,11 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Each fact recomputed here from its independent source, not copied from the producer.
     marker = json.loads(before["launch.json"])
     receipt = installation["receipt"]
-    if recipe.engine == "comfyui":
-        assert dict(receipt.source_commits) == {
-            "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": VIBECOMFY_REVISION,
-        }
-    inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
-                         "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),
+    # The recipe is the source of truth for every pinned source, including the custom nodes.
+    assert dict(receipt.source_commits) == {s.name: s.pin.revision for s in recipe.sources}
+    # Model-free install: the receipt carries no model rows, so the binding inventory is empty.
+    inventory = sorted(({"name": Path(m.path).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
+                         "subdir": str(Path(m.path).parent.relative_to(root / "models"))} for m in receipt.models),
                        key=lambda e: (e["subdir"], e["name"]))
     custom = {s.name: s.pin.revision for s in recipe.sources if "/custom_nodes/" in s.relative_path}
     node_lock = recipe.environments[0].node_lock
@@ -424,10 +420,6 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Existing strict model-root binding re-hashes the declared files.
     binding = model_root_binding_from_profile(profile, verify_files=True)
     assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == root / "models"
-    # Existing checkout adapter: digest, registry, live ownership, source and version gates.
-    session = out["adapter_session"]
-    assert session["pid"] == marker["pid"] and session["comfy_pid"] == marker["comfy_pid"]
-    assert session["model_root"] == str(root / "models")
     _assert_engine_retained(installation, before)
 
 
@@ -448,9 +440,6 @@ _REFUSALS = {
     "receipt_vibecomfy": "installed session evidence could not be verified",
     "receipt_owner": "installed session evidence could not be verified",
     "registry_source": "installed session evidence could not be verified",
-    "model_missing": "model root does not match the canonical lock",
-    "model_extra": "model root does not match the canonical lock",
-    "model_bytes": "model root does not match the canonical lock",
     "source_drift": "installed session evidence could not be verified",
     "health": "installed engine evidence could not be verified",
     "status_object_info": "canonical installed status differs",
@@ -494,7 +483,8 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         original = target.read_bytes()
         forged = json.loads(original)
         if change == "receipt_engine":
-            forged["engine"] = "comfyui" if forged["engine"] == ENGINE else ENGINE
+            # Flip to an engine name that differs from the installed one (the old expression kept it unchanged).
+            forged["engine"] = "comfyui-a04" if forged["engine"] != "comfyui-a04" else ENGINE
         elif change == "receipt_owner":
             next(s for s in forged["steps"] if s["kind"] == "start")["facts"]["owner_id"] = "another-owner"
         else:
@@ -505,19 +495,6 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         target = installation["registry"] / "source_revision"
         original = target.read_bytes()
         target.write_text("0" * 40)
-        restore.append(lambda: target.write_bytes(original))
-    elif change == "model_missing":
-        target = root / "models/loras/synthetic-test-b.safetensors"
-        target.rename(root / "moved-model")
-        restore.append(lambda: (root / "moved-model").rename(target))
-    elif change == "model_extra":
-        target = root / "models/loras/unlisted.safetensors"
-        target.write_bytes(b"not in the lock")
-        restore.append(target.unlink)
-    elif change == "model_bytes":
-        target = root / "models/diffusion_models/synthetic-test-a.safetensors"
-        original = target.read_bytes()
-        target.write_bytes(original.replace(b"A", b"Z"))
         restore.append(lambda: target.write_bytes(original))
     elif change == "source_drift":
         target = root / "runtime/vibecomfy/README.md"
@@ -537,8 +514,7 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         for action in restore:
             action()
     assert out["ok"] is False and _REFUSALS[change] in out["reason"], out.get("reason")
-    if change in {"missing_driver", "two_gpus", "garbage_driver", "model_missing", "model_extra", "model_bytes",
-                  "status_object_info", "status_failed"}:
+    if change in {"missing_driver", "two_gpus", "garbage_driver", "status_object_info", "status_failed"}:
         # Refused after the real live session/health checks passed: nothing invented, nothing written.
         assert out["vibecomfy_origin"] == str(root / "runtime/vibecomfy/vibecomfy/__init__.py")
     assert not (state / "engine-readiness.json").exists()
