@@ -87,7 +87,7 @@ def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, A
     from astrid.core.generation import entries
     from astrid.packs.vibecomfy.actions.run import run as run_action
 
-    workflow = execution.get("python") or execution.get("source")
+    workflow = execution.get("python") or execution.get("workflow") or execution.get("source")
     if not isinstance(workflow, str):
         raise JobFileError("a prepared job must ship its workflow")
     files = {name: str(execution[name]) for name in ("managed_assets", "source_video") if execution.get(name)}

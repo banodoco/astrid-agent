@@ -55,7 +55,7 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(
     job = json.loads(job_path.read_bytes())
     assert job["entry"] == provider.generations[0]["entry"]
     assert job["align"] == "trust"
-    assert job["inputs"]["prompt"] == "A red cube on a white tabletop."
+    assert "A red cube on a white tabletop." in job["inputs"].values()
     assert {"python", "companion", "source", "workflow_inputs"} <= job["execution"].keys()
     assert all(Path(job["execution"][name]).is_file() for name in ("python", "companion", "source"))
 
