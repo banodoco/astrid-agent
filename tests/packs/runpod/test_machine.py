@@ -253,3 +253,36 @@ def test_the_host_observes_machines_on_its_polls_throttled(monkeypatch):
     assert calls == [1, 1]
     host._target_bindings = SimpleNamespace(observe=lambda: (_ for _ in ()).throw(RuntimeError("provider down")))
     GenericPackHost._observe_machines(host, 200.0)  # never raises into the claim loop
+
+
+def test_an_entry_from_a_pack_missing_from_the_shipped_selection_is_refused_before_the_claim(machine_case, tmp_path):
+    from types import SimpleNamespace
+
+    c = machine_case
+    installed = SimpleNamespace(id="studio.workflows", scope="installed", path=tmp_path / "studio" / "w.yaml",
+                                fields={"entries": [{"id": "studio-look"}]})
+    builtin = SimpleNamespace(id="vibecomfy.ready", scope="built-in",
+                              path=rm._agent_packs() / "vibecomfy" / "extensions" / "w.yaml",
+                              fields={"entries": [{"id": "z-image"}]})
+    registry = SimpleNamespace(contributions=lambda point: [installed, builtin])
+    reason = rm.unshipped_entry_reason("studio-look", registry=registry, action_rows=[])
+    assert "studio.workflows (installed pack" in reason and "not in the selection shipped" in reason
+    assert rm.unshipped_entry_reason("z-image", registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason(None, registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason("h3", registry=SimpleNamespace(contributions=lambda p: []),
+                                     action_rows=[{"id": "h3", "action": "h3_av.transform"}]) is None
+    assert "pack 'elsewhere'" in rm.unshipped_entry_reason(
+        "x", registry=SimpleNamespace(contributions=lambda p: []), action_rows=[{"id": "x", "action": "elsewhere.run"}])
+    # Through the machine: refused before any offer observation, lock or create.
+    import astrid.packs.runpod.machine as module
+    original = module.unshipped_entry_reason
+    module.unshipped_entry_reason = lambda entry: original(entry, registry=registry, action_rows=[])
+    try:
+        job = c.job()
+        job = type(job)(**{**job.__dict__, "entry": "studio-look"})
+        quotes = len(c.quotes)
+        with pytest.raises(rm.MachineError, match="not in the selection shipped"):
+            c.machine.claim(job)
+    finally:
+        module.unshipped_entry_reason = original
+    assert c.creates == 0 and len(c.quotes) == quotes and not c.owner.path.exists()

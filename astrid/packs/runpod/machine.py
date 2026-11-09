@@ -274,6 +274,10 @@ class RunPodMachine:
 
         adapter = self._require()
         policy, inputs = job.policy, job.inputs
+        reason = unshipped_entry_reason(job.entry)
+        if reason is not None:
+            # Before the claim: the pod only gets the pinned source tuple and this job directory.
+            raise MachineError(reason)
         prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
         owner = adapter.lease_owner
         if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
@@ -522,6 +526,59 @@ class RunPodMachine:
             owner._save(record, {**record["lease"], "job": dict(job)})
 
 
+def _agent_packs() -> Path:
+    import astrid
+
+    return (Path(astrid.__file__).resolve().parent / "packs")
+
+
+def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
+                           action_rows: Any = None) -> str | None:
+    """Why ``entry`` cannot run on a rented machine, or None when its code ships.
+
+    The pod receives only the pinned source tuple (``remote_placement.SOURCE_DIRS``:
+    the Agent with its built-in packs, the Runtime, runpod-lifecycle, VibeComfy
+    with its ready templates) plus the job directory (the workflow bundle and the
+    input files). An entry contributed by an installed, user or project pack, or
+    an action entry whose pack lives outside the Agent checkout, is not shipped.
+    """
+    if not entry:
+        return None  # a bundle-only job: the bundle ships in the job directory
+    packs = _agent_packs()
+    if registry is None:
+        try:
+            from astrid.core.extensions.registry import ExtensionRegistry
+            registry = ExtensionRegistry().load()
+        except Exception:
+            registry = None
+    if registry is not None:
+        from astrid.core.generation.workflows import POINT as WORKFLOWS
+        for contribution in registry.contributions(WORKFLOWS):
+            ids = {row.get("id") for row in (contribution.fields.get("entries") or []) if isinstance(row, Mapping)}
+            if entry not in ids:
+                continue
+            path = Path(contribution.path).resolve()
+            if contribution.scope != "built-in" or not path.is_relative_to(packs):
+                return (f"entry {entry!r} comes from {contribution.id} ({contribution.scope} pack at {path.parent}), "
+                        "which is not in the selection shipped to a rented machine; run it locally, or install "
+                        "the pack into the Agent release the machine boots")
+            return None
+    if action_rows is None:
+        try:
+            from astrid.core.generation.entries import action_entries
+            action_rows = action_entries()
+        except Exception:
+            action_rows = []
+    for row in action_rows:
+        if row.get("id") == entry and row.get("action"):
+            pack = str(row["action"]).split(".", 1)[0]
+            if not (packs / pack / "pack.yaml").is_file():
+                return (f"entry {entry!r} is an action of pack {pack!r}, which is not in the selection "
+                        "shipped to a rented machine; run it locally")
+            return None
+    return None
+
+
 def lease_rows(owner: Any) -> list[dict[str, Any]]:
     """This account's lease (live or most recently ended), as ``astrid machines`` lists it."""
     record = owner.selection._read() if hasattr(owner, "selection") else owner
@@ -571,6 +628,6 @@ def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]
 #: The registered ``generation.machine`` contribution (no host owner until ``for_host``).
 MACHINE = RunPodMachine()
 
-__all__ = ["MACHINE", "journal_leases", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
+__all__ = ["MACHINE", "journal_leases", "unshipped_entry_reason", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
            "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
            "runtime_check"]
