@@ -212,3 +212,14 @@ def test_autostart_off_refusal_of_an_update_settles_not_updated_exit_3_with_why_
     assert lines[-2] == ("Next: run the update command from a terminal. It updates Astrid and starts it, "
                          "and your choice stays off.")
     assert lines[-1] == "Details: /logs/install.log"
+
+
+def test_a_malformed_saved_choice_settles_with_the_repair_next_line():
+    before = _state("runtime", 11)
+    refusal = ValueError("The saved autostart choice is not valid; run the install command "
+                                      "without --update to repair this installation, then update again.")
+    out = settle(Request("install"), before, lambda: before, failure=refusal)
+    assert out.reason == "needs-repair"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
+                         "then update again.")
