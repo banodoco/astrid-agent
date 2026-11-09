@@ -1,6 +1,7 @@
 """The receipt's warnings: a success keeps its exit code and says what did not finish."""
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from astrid.installer.outcome import Outcome, Request, receipt_warnings, settle
@@ -240,3 +241,63 @@ def test_malformed_choice_at_admission_settles_not_updated_exit_3_with_needs_rep
     assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
                          "then update again.")
     assert lines[-1] == "Details: /logs/install.log"
+
+
+# --- A safe --update refusal keeps the Runtime's own reason (busy): it is never relabelled.
+
+BUSY_NEXT = ("Next: quit the other Astrid window (or let the other installer finish), "
+             "then run the same command again.")
+BUSY_REFUSAL = {"safe": False, "kind": "busy"}
+
+
+def test_update_safe_refusal_with_an_unselected_live_runtime_keeps_busy_and_names_no_second_copy():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "busy"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == BUSY_NEXT
+    assert lines[-1] == "Details: /logs/install.log"
+    assert "two copies" not in " ".join(lines)
+
+
+def test_update_safe_refusal_with_no_other_runtime_stays_busy_exit_3():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _state("runtime", 11)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "busy"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == BUSY_NEXT
+    assert lines[-1] == "Details: /logs/install.log"
+
+
+def test_plain_install_safe_refusal_is_unchanged_failed_busy_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("install"), before, lambda: after, failure=refusal)
+    assert out.kind == "failed" and out.exit_code == 1
+    assert out.reason == "busy"
+
+
+def test_unsafe_or_downstream_stop_failure_stays_failed_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    unsafe = RuntimeOperationError("the stop failed unsafely", details={"safe": None})
+    downstream = RuntimeOperationError("a later step failed", details={"cause_details": {"safe": False}})
+    for refusal in (unsafe, downstream):
+        out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11), lambda: after,
+                     failure=refusal)
+        assert out.kind == "failed" and out.exit_code == 1, refusal
+        assert out.reason == "error", refusal

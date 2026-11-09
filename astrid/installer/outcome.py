@@ -295,6 +295,12 @@ def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
     return ()
 
 
+def _safe_refusal(failure: BaseException) -> bool:
+    from .core import is_lifecycle_refusal
+
+    return is_lifecycle_refusal(failure)
+
+
 def settle(request: Request, before, resolver, *, failure: BaseException | None = None,
            rolled_back: bool = False, warnings: tuple[str, ...] = (),
            details: str | None = None) -> Outcome:
@@ -312,16 +318,20 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
+    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
     refusal = _refusal_reason(failure)
     if refusal is not None:
         # Refused before any stop, journal or copy (a Windows upgrade, autostart-off, or a malformed
         # saved choice found at admission): nothing was changed, so a refusal that keeps its own reason.
         request, failure = replace(request, refused=True, reason=refusal), None
+    if failure is not None and request.mode == "update" and _safe_refusal(failure):
+        # Runtime refused the stop safely (nothing destroyed) while another live copy runs: a refusal that
+        # keeps its own reason (busy), never relabelled as other-runtime-running.
+        request, failure = replace(request, refused=True, reason=reason_of(failure)), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
                        target_source=source)
-    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
     if request.refused:
         # Refused before any work: nothing was changed, whatever else is running.
         reason = request.reason or "other-runtime-running"
