@@ -356,10 +356,11 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
         run_job("named", write({"prompt": "x", "unknown_field": 1}), tmp_path / "out")
 
 
-def test_an_explicit_align_on_an_attached_run_reaches_the_engine_mode(comfy, tmp_path, monkeypatch):  # noqa: F811
-    """ASTRID_ALIGN=align on an attached run is not dropped: job["mode"] is the requested mode; default stays trust."""
+def test_an_explicit_align_on_an_attached_run_aligns_once_after_the_probe(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """ASTRID_ALIGN=align on an attached run reaches job["mode"] and align runs once, after the probe;
+    the attached default (no request) stays trust and never aligns."""
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    modes = []
+    events, modes = [], []
     engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
@@ -367,12 +368,21 @@ def test_an_explicit_align_on_an_attached_run_reaches_the_engine_mode(comfy, tmp
             modes.append(job["mode"])
             return super().run(job, local)
 
+        def probe(self, endpoint, timeout=5.0):
+            events.append("probe")
+            return super().probe(endpoint, timeout)
+
         def align(self, manifest, mode):
-            return {"mode": mode, "missing": [], "fetched": [], "verified": mode != "trust", "status": "ready"}
+            events.append(("align", mode))
+            return {"mode": mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
 
     monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
-    for requested, expected in ((None, "trust"), ("align", "align")):
+    for requested in (None, "align"):
+        events.clear()
         action._run_and_settle(comfy.workflow, tmp_path / str(requested) / "outputs", task_identity="t",
                                attempt_identity="a", comfy_url=comfy.url, comfy_output_dir=str(comfy.output),
                                align=requested)
-        assert modes[-1] == expected
+        if requested is None:
+            assert modes[-1] == "trust" and events == ["probe"]
+        else:
+            assert modes[-1] == "align" and events == ["probe", ("align", "align")]
