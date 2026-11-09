@@ -27,6 +27,7 @@ if __package__:
         M4_6_SLOT_IDS,
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
+        RELEASE1_AUTOMATIC_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         RELEASE1_1_PINOKIO_MATRIX,
     )
@@ -48,6 +49,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            RELEASE1_AUTOMATIC_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -68,6 +70,7 @@ else:
             M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
+            RELEASE1_AUTOMATIC_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
         )
@@ -341,6 +344,34 @@ RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 def release1_receipt_kind(contract):
     """The receipt kind a Release-1 matrix row must carry for its leg."""
     return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
+
+
+UPGRADE_LEGS = frozenset({"r0-handoff-then-update", RELEASE9_LEG, RELEASE11_LEG})
+
+
+def _upgrade_release_errors(job_id, contract, row, release):
+    """An upgrade row's installed release after the update must be the candidate's release.
+
+    The candidate release is read from the candidate manifest in main(), never from the row. Each
+    upgrade leg records the installed release as release_transition.to, which it asserts equals the
+    installed release before writing. The r0-handoff and release11 legs also record the live Runtime's
+    identity release in health_transition.candidate_live_release.
+    """
+    if contract.get("leg") not in UPGRADE_LEGS:
+        return []
+    if type(release) is not int or release < 1:
+        return [f"{job_id}: candidate release is absent from the candidate manifest"]
+    transition = row.get("release_transition") if isinstance(row.get("release_transition"), dict) else {}
+    installed = transition.get("to")
+    errors = []
+    if installed != release:
+        errors.append(f"{job_id}: installed release {installed} is not the candidate release {release}")
+    if contract.get("leg") != RELEASE9_LEG:
+        health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
+        live = health.get("candidate_live_release")
+        if live != release:
+            errors.append(f"{job_id}: live Runtime release {live} is not the candidate release {release}")
+    return errors
 
 
 def _release9_row_errors(job_id, row):
@@ -633,14 +664,17 @@ def fresh_update_errors(job_id, update):
     return errors
 
 
-def evaluate_release1_matrix(candidate, results):
+def evaluate_release1_matrix(candidate, results, scope="nine"):
     """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set.
 
     The nine rows are the Release-1 matrix: every one is required, and each is validated
     against its own leg, receipt kind and assertions. A missing row is named.
     """
+    if scope not in {"five", "nine"}:
+        raise ValueError("Release-1 scope must be five or nine")
+    contracts = RELEASE1_AUTOMATIC_MATRIX if scope == "five" else RELEASE1_MATRIX
     errors = []
-    expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    expected = {row["job_id"]: row for row in contracts}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         if path.parent.name == "before-cleanup":
@@ -663,6 +697,7 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{job_id}: missing receipt")
             continue
         errors.extend(_release1_row_errors(candidate, contract, row))
+        errors.extend(_upgrade_release_errors(job_id, contract, row, candidate.get("release")))
     return errors
 
 
@@ -1345,6 +1380,8 @@ def main():
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")
     parser.add_argument("--allow-source-override", action="store_true", help="Explicit test-mode evidence only")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--release1-scope", choices=("five", "nine"), default="nine",
+                        help="five for an automatic run of the previous five rows; nine for row=direct")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact five direct Release-1 job receipts under --results")
     parser.add_argument("--aggregate-release1-1-pinokio", action="store_true",
@@ -1397,6 +1434,7 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+            candidate = {**candidate, "release": manifest.get("release")}
         if args.aggregate_gpu:
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
@@ -1411,7 +1449,7 @@ def main():
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
-            errors.extend(evaluate_release1_matrix(candidate, args.results))
+            errors.extend(evaluate_release1_matrix(candidate, args.results, args.release1_scope))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_m4_4a:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-m4-4a")

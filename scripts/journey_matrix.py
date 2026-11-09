@@ -54,6 +54,9 @@ RELEASE11_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE11_UPDAT
 # r0-handoff-then-update rows, two release9-then-install rows and two release11-then-update rows.
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
                           *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX)
+# An automatic push or schedule (no row input) runs the five rows that existed before the
+# release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
+RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
 # The three rows the keep-going diagnostic re-legs (macOS and Linux R0, and Windows fresh).
 RELEASE1_LEGACY_JOB_IDS: Final = tuple(row["job_id"] for row in _RELEASE1_DIRECT_LEGACY)
 

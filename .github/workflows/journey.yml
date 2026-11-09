@@ -205,6 +205,7 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      release1_scope: ${{ steps.config.outputs.release1_scope }}
       wait_timeout: ${{ steps.config.outputs.wait_timeout }}
     steps:
       - name: Check out reviewed Agent matrix contracts
@@ -408,6 +409,9 @@ jobs:
               matrix = [dict(row) for row in journey_matrix.M4_4A_BACKEND_MATRIX]
           elif release11_only:
               matrix = [dict(row) for row in journey_matrix.RELEASE11_UPDATE_MATRIX]
+          elif journey_row == "":
+              # An automatic push or schedule runs the five rows that existed before the release9 and release11 legs.
+              matrix = [dict(row) for row in journey_matrix.RELEASE1_AUTOMATIC_MATRIX]
           else:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
@@ -436,6 +440,8 @@ jobs:
           if journey_row and not matrix:
               raise SystemExit("row selection produced no direct journey rows")
           wait_timeout = "180" if journey_row in journey_matrix.RELEASE1_JOB_IDS else "900"
+          # The Release-1 aggregate scope: an automatic run is the five rows; any other run is the nine.
+          release1_scope = "five" if journey_row == "" else "nine"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
@@ -454,7 +460,8 @@ jobs:
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
                                   ("matrix", {"include": matrix}),
-                                  ("wait_timeout", wait_timeout)):
+                                  ("wait_timeout", wait_timeout),
+                                  ("release1_scope", release1_scope)):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
@@ -1451,9 +1458,10 @@ jobs:
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
+          RELEASE1_SCOPE: ${{ needs.config.outputs.release1_scope }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
-          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1 --release1-scope "$RELEASE1_SCOPE"
       - name: Aggregate the exact M4-4a Pinokio backend receipts
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true' && needs.config.outputs.pinokio_only != 'true'
         shell: bash
