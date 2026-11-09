@@ -155,7 +155,7 @@ on:
         required: false
         type: string
       row:
-        description: Run one direct journey row, all five direct rows, one pinokio-* row, or all three R1.1 Pinokio rows
+        description: Run one direct journey row, all five direct rows, one pinokio-* row, all three R1.1 Pinokio rows, or one release11-then-update row
         required: false
         default: direct
         type: choice
@@ -166,6 +166,8 @@ on:
           - direct-linux-fresh
           - direct-macos-fresh
           - direct
+          - direct-linux-r11-update
+          - direct-macos-r11-update
           - pinokio-linux
           - pinokio-macos
           - pinokio-windows
@@ -337,11 +339,16 @@ jobs:
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
-          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio", *pinokio_job_ids}
+          # The release11-then-update rows are a separate direct matrix, selected by name only.
+          release11_job_ids = tuple(row["job_id"] for row in journey_matrix.RELEASE11_UPDATE_MATRIX)
+          release11_only = journey_row in release11_job_ids
+          valid_rows = {"", *journey_matrix.RELEASE1_JOB_IDS, "direct", "pinokio", *pinokio_job_ids, *release11_job_ids}
           if journey_row not in valid_rows:
               raise SystemExit("row must be one of " + ", ".join(sorted(valid_rows - {""})))
           if journey_row:
               direct_only = True
+          if release11_only and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
+              raise SystemExit("release11-then-update rows do not support non-proof keep-going diagnostics")
           diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
           if diagnostic_leg not in {"release9-then-install", "fresh-install", "both"}:
               raise SystemExit("invalid diagnostic_leg")
@@ -397,6 +404,8 @@ jobs:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_1_PINOKIO_MATRIX]
           elif backend_only:
               matrix = [dict(row) for row in journey_matrix.M4_4A_BACKEND_MATRIX]
+          elif release11_only:
+              matrix = [dict(row) for row in journey_matrix.RELEASE11_UPDATE_MATRIX]
           else:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
@@ -499,6 +508,16 @@ jobs:
           repository: banodoco/astrid-pinokio
           ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
           path: pinokio
+          persist-credentials: false
+      - name: Check out the pinned Release 11 App for the release11-then-update leg
+        if: matrix.leg == 'release11-then-update'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          # The App commit that pins Release 11's manifest and bootstrap bytes (served tuple 57e200b4).
+          ref: 57e200b45615a59181920192697a932400d985fc
+          path: release11-app
+          fetch-depth: 1
           persist-credentials: false
       - name: Check out the pinned Release 9 App for the Release 9 and R0 handoff legs
         if: matrix.leg == 'release9-then-install' || matrix.leg == 'r0-handoff-then-update'
@@ -795,6 +814,13 @@ jobs:
             $oldLauncherArgs = @(
               '--old-launcher-ref', '${{ needs.config.outputs.old_launcher_ref }}',
               '--stopped-path-agent-ref', '${{ needs.config.outputs.stopped_path_agent_ref }}'
+            )
+          }
+          if ('${{ matrix.leg }}' -eq 'release11-then-update') {
+            # The served Release 11 is installed from its pinned App commit, then updated by the candidate.
+            $release0Args = @(
+              '--release11-app-checkout', "$pwd/release11-app",
+              '--allow-release11-to-candidate'
             )
           }
           if ('${{ matrix.leg }}' -eq 'release9-then-install') {

@@ -40,6 +40,12 @@
       "reason": "Published Release 9 (Agent 709492fa, Runtime f4c7a462): the pinned App commit that carries its manifest and bootstrap."
     },
     {
+      "id": "release11",
+      "source": "app-commit",
+      "app_commit": "57e200b45615a59181920192697a932400d985fc",
+      "reason": "Served Release 11 (Agent a105de3a, Runtime 4f5477cb): the pinned App commit that carries its manifest and bootstrap; the starting install of the release11-then-update leg."
+    },
+    {
       "id": "pre-updater",
       "source": "app-commit",
       "app_commit": "b96c41fca2da7993b41324aedf61eb297dc34f10",
