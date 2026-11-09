@@ -73,7 +73,7 @@ def current_comfy_provenance():
 def engine_identity(engine: str, root: str) -> dict[str, str]:
     """Engine-neutral identity of an installed engine: its install receipt bytes.
 
-    Replaces the checkout-owned ``vibecomfy_session`` record. It names the
+    Replaces the checkout-owned session record. It names the
     engine, the attested receipt digest and the install root; nothing else.
     """
     from .engine_local_endpoint import RECEIPT_RELATIVE_PATH
