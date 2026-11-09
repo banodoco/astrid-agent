@@ -872,8 +872,8 @@ def _parse_receipt(raw, plan):
         # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
         models_root = plan.root + "/models/"
         models = []
-        for raw in value["models"]:
-            row = obj(raw, DownloadResult)
+        for model_raw in value["models"]:
+            row = obj(model_raw, DownloadResult)
             if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
                     or not row["path"].startswith(models_root) or row["verified"] is not True
                     or row["action"] not in {"downloaded", "resumed", "skipped"}
@@ -883,7 +883,15 @@ def _parse_receipt(raw, plan):
                 raise ValueError
             models.append(DownloadResult(**row))
         models = tuple(models)
-        steps = tuple(StepReceipt(**obj(v, StepReceipt)) for v in value["steps"])
+        # Legacy receipts also carry one kind == "model" step per model row. Their shape is checked
+        # here, then they are dropped: the plan's expected steps and the installed equality see none.
+        step_rows = [obj(v, StepReceipt) for v in value["steps"]]
+        for row in step_rows:
+            if row["kind"] == "model" and (not isinstance(row["id"], str) or not row["id"].startswith("model:")
+                    or row["action"] not in {"executed", "skipped"} or row["validation"] not in {"passed", "failed"}
+                    or not isinstance(row["facts"], Mapping)):
+                raise ValueError
+        steps = tuple(StepReceipt(**row) for row in step_rows if row["kind"] != "model")
         health = None if value["health"] is None else HealthEvidence(**obj(value["health"], HealthEvidence))
         if len({s.id for s in steps}) != len(steps):
             raise ValueError

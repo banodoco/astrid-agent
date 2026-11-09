@@ -2177,3 +2177,21 @@ def test_legacy_receipt_with_model_rows_parses_and_binds(setup):
     assert parsed.models == (row,)
     binding = endpoint.model_root_binding_from_receipt(parsed, ROOT, engine="comfyui")
     assert [(r["name"], r["subdir"]) for r in binding.inventory] == [("synthetic-test-b.safetensors", "loras")]
+
+
+def test_true_legacy_receipt_with_model_steps_and_rows_parses(setup):
+    """Plan 32 T5h: a receipt written the old way (model steps plus model rows) parses as installed.
+    The model steps are validated and dropped; the plan's expected steps and rows are kept."""
+    plan = runner.plan_install(setup[1].recipe, root=ROOT, placement="local")
+    lock = recipes.load_model_lock(setup[1].recipe.models_lock).models
+    rows = tuple(DownloadResult(m.name, ROOT + "/models/" + m.destination, "downloaded", m.bytes, m.sha256,
+                                True, 0) for m in lock)
+    model_steps = tuple(runner.StepReceipt("model:" + m.name, "model", "executed", "passed", {}) for m in lock)
+    base = install(setup)
+    plan_steps = tuple(base.steps)
+    legacy_steps = plan_steps[:-2] + model_steps + plan_steps[-2:]  # model steps sat before start/health
+    legacy = replace(base, models=rows, steps=legacy_steps)
+    parsed = runner._parse_receipt(json.loads(json.dumps(runner._plain(legacy))), plan)
+    assert parsed.status == "installed"
+    assert parsed.models == rows
+    assert tuple(s.id for s in parsed.steps) == tuple(s.id for s in plan.steps)
