@@ -163,7 +163,10 @@ def test_public_cli_recovers_crash_after_stop_intent_before_c1(
         _publish_owner(paths)
     result = cli.main(args)
 
-    assert result == 0, "public CLI failed to recover pre-admission stop intent after safe retry"
+    # A --update retry restores old and does not change the release: not-updated (exit 3).
+    # A plain install retry whose recovery ends healthy is repaired (exit 0).
+    expected = 3 if update_flag else 0
+    assert result == expected, "public CLI failed to recover pre-admission stop intent after safe retry"
     assert core.read_json(journal)["step"] in {"rolled_back", "complete"}
     assert core.current(root).root == old.root
     assert {path: path.read_bytes() for path in protected} == before

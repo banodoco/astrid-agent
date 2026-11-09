@@ -195,7 +195,7 @@ NEXT_STEPS = {
                         "or answer the prompts.",
     "declined": "Next: nothing to do. To install later, run the install command again "
                 "and accept the setup choices.",
-    "recovered-previous-version": "Next: run the same command again to update.",
+    "recovered-previous-version": "Next: Run the same command again to finish updating.",
     "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
     "refused": "Next: fix what the message above names, then run the same command again.",
     "error": NEXT_STEP,

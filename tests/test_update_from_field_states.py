@@ -166,6 +166,27 @@ def test_resolver_reports_the_field_state(case, monkeypatch):
     assert state.service_label == "astrid-r1.service"
 
 
+def test_recovery_only_not_updated_headline_is_clear_and_never_bare_did_not_finish():
+    """A --update that only recovers ends not-updated with a Next line, not a bare failure.
+
+    The Pinokio launcher maps every non-zero exit to "did not finish", so the
+    run's own receipt must say what happened and what to do next.
+    """
+    from astrid.installer.outcome import Outcome
+
+    outcome = Outcome("not-updated", 4, 4, 5, "recovered-previous-version", "update")
+    lines = outcome.headline()
+    assert lines[0] == "Astrid did NOT update. It is still Release 4; Release 5 is available."
+    assert lines[1].startswith("Why: an earlier update was interrupted")
+    # One Next line for this case (from next_steps), with Details as the last line.
+    assert "Next: Run the same command again to finish updating." in lines
+    assert lines[-2] == "Next: Run the same command again to finish updating."
+    assert lines[-1].startswith("Details: ")
+    assert sum(line.startswith("Next: ") for line in lines) == 1
+    assert all("did not finish" not in line for line in lines)
+    assert outcome.exit_code == 3
+
+
 def test_exit_code_contract_read_by_bootstraps_pinokio_and_journeys():
     """The codes every reader relies on (listed in PR #319): 0, 3, 2 for consent, 1."""
     from astrid.installer.outcome import Outcome
@@ -557,7 +578,7 @@ EXPECTED_NEXT = {
                         "or answer the prompts.",
     "declined": "Next: nothing to do. To install later, run the install command again "
                 "and accept the setup choices.",
-    "recovered-previous-version": "Next: run the same command again to update.",
+    "recovered-previous-version": "Next: Run the same command again to finish updating.",
     "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
     "refused": "Next: fix what the message above names, then run the same command again.",
     "error": SUPPORT,
