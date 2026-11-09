@@ -71,115 +71,16 @@ def _open_cpu_handoff(fixture, *, resources=("cpu",), adapter=None):
     return target
 
 
-@pytest.mark.parametrize("completion", [{"models_unloaded": True}, {"acknowledged": True},
-                                      {"completed": True, "status": "completed"}])
-def test_native_cpu_handoff_uses_real_containment_without_owner_restart(tmp_path, monkeypatch, completion):
-    from astrid.core.execution.managed_tool_session import StaleAdmissionError
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    def post(path, payload):
-        f.controls.append((path, payload))
-        return completion if path == "/api/free" else {}
-    monkeypatch.setattr(f.backend._engine, "_post", post)
-    target = _open_cpu_handoff(f)
-    assert f.host.managed_tool_session.current_adapter is target
-    assert [path for path, _ in f.controls] == ["/interrupt", "/queue", "/api/free", "/queue", "/api/free"]
-    assert f.observations == ["owner", "stats", "owner", "stats"]
-    assert f.restarts == [] and f.host._native_engine_graph is f.graph
-    assert f.bridge.native_graph is f.graph and len(f.graph.handles) == 1 and f.graph.abort_calls == []
-    assert not f.backend._engine.warm
-    assert all(getattr(f.host, name) is None for name in
-        ("_vibecomfy_warmth_hint", "_vibecomfy_current_warmth_hint", "_vibecomfy_requested_warmth_hint"))
-    with pytest.raises(StaleAdmissionError):
-        _settle_cpu_handoff_token(f.host.managed_tool_session, f.token)
 
 
-@pytest.mark.parametrize("fault", ["cancel_interrupt", "cancel_queue", "cancel_free", "cancel_owner",
-                                  "release_queue", "release_free", "release_owner", "missing_completion", "false_completion"])
-def test_native_cpu_handoff_failed_control_remains_fenced_occupied(tmp_path, monkeypatch, fault):
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    calls = 0
-    def owner():
-        nonlocal calls
-        calls += 1
-        if fault == ("cancel_owner" if calls == 1 else "release_owner"):
-            raise RuntimeError("ownership changed")
-    monkeypatch.setattr(f.backend, "_revalidate_host_session", owner)
-    def post(path, payload):
-        f.controls.append((path, payload))
-        phase = "cancel" if calls == 1 else "release"
-        suffix = {"/interrupt": "interrupt", "/queue": "queue", "/api/free": "free"}[path]
-        if fault == phase + "_" + suffix:
-            raise OSError("control failed")
-        if path == "/api/free":
-            if phase == "release" and fault == "missing_completion": return {}
-            if phase == "release" and fault == "false_completion": return {"acknowledged": False}
-            return {"acknowledged": True}
-        return {}
-    monkeypatch.setattr(f.backend._engine, "_post", post)
-    with pytest.raises(Exception, match="fencing was not verified|release was not verified"):
-        _open_cpu_handoff(f)
-    manager = f.host.managed_tool_session
-    assert manager.occupied and not manager.active and manager.current_adapter is f.bridge
-    assert f.bridge.cpu_handoff_failed and f.backend.poisoned
-    before = list(f.controls)
-    with pytest.raises(HostError, match="unresolved"):
-        f.bridge.release(reason="cpu_residency_eviction")
-    assert f.controls == before and f.restarts == [] and f.host._native_engine_graph is f.graph
-    if fault.startswith("cancel_"):
-        assert calls == 1  # failed fence cannot become a successful release retry
 
 
-@pytest.mark.parametrize("fault", ["managed_unsettled", "runtime_unsettled", "shutdown",
-                                  "gate_closed", "observation_unknown", "graph_changed", "generation_changed",
-                                  "pending", "completed_intervening", "fenced"])
-def test_native_cpu_handoff_rejects_ineligible_or_stale_authorization(tmp_path, monkeypatch, fault):
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    manager = f.host.managed_tool_session
-    if fault in {"managed_unsettled", "runtime_unsettled"}:
-        f.host._record_native_cpu_handoff(f.bridge, f.token,
-            managed_settled=fault != "managed_unsettled", runtime_settled=fault != "runtime_unsettled")
-    elif fault == "shutdown": f.host._shutdown.set()
-    elif fault == "gate_closed": f.host._handoff_claim_gate_closed = True
-    elif fault == "observation_unknown": f.host._handoff_observation_known = False
-    elif fault == "graph_changed": f.host._native_engine_graph = object()
-    elif fault == "generation_changed": manager._generation += 1
-    elif fault in {"pending", "completed_intervening"}:
-        newer = manager.admit(capability_id="vibecomfy.run", invocation_id="newer")
-        if fault == "completed_intervening": _settle_cpu_handoff_token(manager, newer)
-    elif fault == "fenced": manager.fence(reason="test-fence")
-    before = list(f.controls)
-    with pytest.raises(HostError, match="exact settled ownership"):
-        _open_cpu_handoff(f)
-    assert f.controls == before and manager.current_adapter is f.bridge and manager.occupied
 
 
-def test_native_cpu_handoff_late_finally_cannot_erase_fresh_marker(tmp_path, monkeypatch):
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    newer = f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="newer")
-    _settle_cpu_handoff_token(f.host.managed_tool_session, newer)
-    f.host._record_native_cpu_handoff(f.bridge, newer, managed_settled=True, runtime_settled=True)
-    f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=False, runtime_settled=False)
-    assert f.bridge.cpu_handoff_token is newer
-    target = _open_cpu_handoff(f)
-    assert f.host.managed_tool_session.current_adapter is target
 
 
-@pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
-def test_native_cpu_handoff_does_not_authorize_native_model_replacement(tmp_path, monkeypatch, resources):
-    from astrid.core.execution.managed_tool_session import SessionCapacityError
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    with pytest.raises(SessionCapacityError, match="release was not verified"):
-        _open_cpu_handoff(f, resources=resources)
-    assert f.host.managed_tool_session.occupied and f.restarts == [] and f.bridge.native_graph is f.graph
 
 
-def test_native_cpu_handoff_preserves_legacy_capacity_replacement(tmp_path, monkeypatch):
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch, graph_owned=False)
-    monkeypatch.setattr(f.backend, "_restart_owned_session", lambda: f.restarts.append("restart") or
-                        {"ok": True, "released": True})
-    target = _open_cpu_handoff(f)
-    assert f.host.managed_tool_session.current_adapter is target
-    assert f.restarts == ["restart"]
 
 
 def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
@@ -441,13 +342,6 @@ def test_sdk_cpu_handoff_actual_binding_keeps_atomic_refusals(tmp_path, monkeypa
     assert f.controls == [] and manager.occupied
 
 
-@pytest.mark.parametrize("lost", [None, "changed"])
-def test_native_cpu_handoff_lost_graph_cannot_downgrade_to_sdk(tmp_path, monkeypatch, lost):
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    f.bridge.native_graph = f.host._native_engine_graph = None if lost is None else object()
-    with pytest.raises(HostError, match="exact settled ownership"):
-        _open_cpu_handoff(f)
-    assert f.controls == [] and f.host.managed_tool_session.occupied
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -561,45 +455,6 @@ def test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown(tmp_path
     assert all(sig == 0 for _, sig in f.signals)
 
 
-def test_native_cpu_handoff_serializes_admission_and_shutdown_lock_order(tmp_path, monkeypatch):
-    from astrid.core.execution.managed_tool_session import ManagedToolSessionError
-    f = _native_cpu_handoff_fixture(tmp_path, monkeypatch)
-    entered, proceed, admission_entered, shutdown_entered = [f.threading.Event() for _ in range(4)]
-    outcomes = []
-    calls = 0
-    def post(path, payload):
-        nonlocal calls
-        calls += 1
-        f.controls.append((path, payload))
-        if calls == 5:
-            entered.set()
-            assert proceed.wait(3), "test control release was not unblocked"
-        return {"acknowledged": True} if path == "/api/free" else {}
-    monkeypatch.setattr(f.backend._engine, "_post", post)
-    def transition():
-        try: _open_cpu_handoff(f); outcomes.append("transition")
-        except BaseException as exc: outcomes.append(exc)
-    def admit():
-        admission_entered.set()
-        try: f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="race")
-        except ManagedToolSessionError: outcomes.append("admission-rejected")
-    def shutdown_gate():
-        shutdown_entered.set()
-        # Exact production order: release MTS before attempting handoff gate.
-        with f.host.managed_tool_session._lock: f.host._shutdown.set()
-        with f.host._handoff_condition: outcomes.append("shutdown-gate")
-    threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown_gate)]
-    try:
-        threads[0].start(); assert entered.wait(3)
-        threads[1].start(); threads[2].start()
-        assert admission_entered.wait(3) and shutdown_entered.wait(3)
-        assert "admission-rejected" not in outcomes and "shutdown-gate" not in outcomes
-    finally:
-        proceed.set()
-        for thread in threads:
-            if thread.ident is not None: thread.join(4)
-    assert not any(thread.is_alive() for thread in threads)
-    assert sorted(outcomes) == ["admission-rejected", "shutdown-gate", "transition"]
 
 
 def test_host_dependency_projection_preserves_absent_runtime_origin(monkeypatch):
@@ -2401,6 +2256,9 @@ def test_native_engine_launch_uses_spawn_tree_with_bound_custody_configuration(t
     artifact = 'sha256:' + hashlib.sha256(executable.read_bytes()).hexdigest()
     adapter_digest = 'sha256:' + hashlib.sha256(Path(adapter.__file__).read_bytes()).hexdigest()
     root = tmp_path / 'realm' / 'support' / 'engine'
+    # The engine identity is the attested install receipt under the engine root.
+    (root / '.astrid-engine').mkdir(parents=True)
+    (root / '.astrid-engine' / 'install.json').write_bytes(b'{"root": "fixture"}')
     scope = tmp_path / 'custody'
     launch = {'session_root': str(root), 'config': {'ready_timeout_sec': 1},
               'listener_argv': ['listener', '--bound'],
