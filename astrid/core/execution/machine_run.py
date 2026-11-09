@@ -20,6 +20,9 @@ from astrid.core.contracts.errors import AstridError
 POINT = "generation.machine"
 #: Built-in placements that are not machine contributions.
 BUILT_IN = frozenset({"local", "attached"})
+#: The id ``entries.describe_workflow`` gives a workflow-file job: not an entry. The job's
+#: ``entry`` is None and the pod runs the shipped bundle (``astrid generate workflow``).
+WORKFLOW_FILE_ENTRY = "workflow"
 #: Inputs that name local files; they ship inside the job directory.
 FILE_INPUTS = frozenset({"python", "companion", "source", "managed_assets", "source_video"})
 
@@ -94,5 +97,5 @@ def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
         machine.release(lease, success)
 
 
-__all__ = ["BUILT_IN", "FILE_INPUTS", "MachineJob", "MachineRunCancelled", "MachineRunError",
+__all__ = ["WORKFLOW_FILE_ENTRY", "BUILT_IN", "FILE_INPUTS", "MachineJob", "MachineRunCancelled", "MachineRunError",
            "resolve_machine", "run_on_machine"]

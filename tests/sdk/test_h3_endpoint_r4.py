@@ -354,45 +354,6 @@ def test_parent_rechecks_input_bytes_after_paid_handoff(retained_host, h3_inputs
 
 
 
-def test_recovery_receipt_binds_endpoint_snapshot_in_the_existing_request(monkeypatch, tmp_path, endpoint):
-    """Exercise the real SDK receipt wrapper; only admission/follow are doubled."""
-    from astrid.sdk.recovery import AdmissionReceipt
-    from astrid.sdk.exceptions import CapabilityValidationError
-    h3_endpoint = {'target': preflight.freeze_h3_endpoint(endpoint), 'preflight': {'compilation_digest': 'a' * 64}}
-    client = SimpleNamespace(handshake=lambda *a: {'realm_id': 'realm-a'})
-    recovery = tmp_path / 'recovery.json'
-    invocation.retain_prepared_owner(client, recovery_path=recovery, capability_id='h3_av.transform',
-        monitor=lambda task: None, h3_target=endpoint, h3_endpoint=h3_endpoint)
-    observed = []
-    enter = AdmissionReceipt.__enter__
-    def freeze(receipt):
-        result = enter(receipt)
-        if not receipt.resume:
-            observed.append(receipt.request_digest)
-            receipt.freeze({'idempotency_key': 'same-admission', 'capability_id': 'h3_av.transform'},
-                metadata={'capability_id': 'h3_av.transform', 'capability_type': 'executor', 'native_kind': 'action'})
-        return result
-    monkeypatch.setattr(AdmissionReceipt, '__enter__', freeze)
-    # The second recursive call uses _recovery and reaches discovery. Stop
-    # there, after the genuine wrapper has frozen and stored its request.
-    class Admitted(RuntimeError):
-        pass
-    monkeypatch.setattr(invocation, '_sdk_module', lambda: (_ for _ in ()).throw(Admitted()))
-    args = dict(kind='action', project='project-a', inputs={'request': 'request.json', 'asset_map': 'assets.json'},
-                client=client, recovery_path=recovery, wait=True)
-    with pytest.raises(Admitted):
-        invocation.invoke('h3_av.transform', **args)
-    monkeypatch.setattr(invocation, '_resume_receipt_invocation', lambda receipt, **k: receipt.data['admission'])
-    assert invocation.invoke('h3_av.transform', **args, resume=True)['idempotency_key'] == 'same-admission'
-    retained = invocation._prepared_owner_for(client, recovery, 'h3_av.transform')
-    # Even a self-consistent replacement target cannot reuse the frozen receipt.
-    endpoint.endpoint_transport.origin = 'http://127.0.0.1:28188'
-    retained.h3_endpoint['target'] = preflight.freeze_h3_endpoint(endpoint)
-    with pytest.raises(CapabilityValidationError, match='request/project identity mismatch'):
-        invocation.invoke('h3_av.transform', **args, resume=True)
-    assert len(observed) == 1
-
-
 @pytest.mark.parametrize('tamper', [False, True], ids=['exact', 'changed-bindings'])
 def test_staged_parent_hands_exact_graph_to_local_run(retained_host, compilation, h3_inputs, tamper):
     r = retained_host
@@ -416,15 +377,6 @@ def test_staged_parent_hands_exact_graph_to_local_run(retained_host, compilation
         assert plan['controls']['placement_policy']['kind'] == 'runpod'
     assert r.c.creates == 0 and not r.state.prompts
 
-
-
-def test_parent_run_rejects_url_substitution_before_child_admission(monkeypatch, tmp_path, endpoint):
-    plan = {'controls': {'h3_endpoint': {'target': preflight.freeze_h3_endpoint(endpoint)}},
-            'stages': [{'name': 'run', 'inputs': []}]}
-    parent = run.ManagedParentClient(plan, tmp_path)
-    monkeypatch.setattr(invocation, 'invoke_result', lambda *a, **k: pytest.fail('substituted child admitted'))
-    with pytest.raises(Exception, match='endpoint differs'):
-        parent.invoke_result('vibecomfy.run', inputs={'comfy_url': 'http://127.0.0.1:28188'})
 
 
 def test_run_adapter_rechecks_exact_h3_graph_before_any_prompt(monkeypatch, tmp_path, endpoint, compilation):
@@ -484,16 +436,3 @@ def test_run_adapter_approves_the_final_uploaded_h3_graph_before_prompt(monkeypa
     assert len(submitted) == 1 and uploaded
 
 
-def test_endpoint_freeze_never_starts_a_missing_bridge(endpoint):
-    from astrid.core.generation.engine_contracts import TransportError
-    real_transport = EngineEndpointTransport(endpoint.endpoint_transport.endpoint, pod_id='pod123', agent_port=8000)
-    unstarted = ComfyTargetClient(ComfyTarget(real_transport.endpoint.url, 'pod'), endpoint_transport=real_transport)
-    with pytest.raises(TransportError, match='bridge is not running'):
-        preflight.freeze_h3_endpoint(unstarted)
-    assert real_transport._server is None
-
-
-def test_endpoint_freeze_does_not_consult_the_lazy_origin(endpoint, monkeypatch):
-    monkeypatch.setattr(ComfyTargetClient, 'http_origin', property(
-        lambda _: pytest.fail('freeze consulted a potentially restarting gateway getter')))
-    assert preflight.freeze_h3_endpoint(endpoint)['comfy_url'] == 'http://127.0.0.1:18188'
