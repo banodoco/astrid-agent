@@ -2235,10 +2235,11 @@ def test_strict_app_update_receipt_names_release_and_skill_warning(
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
                      "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    # The receipt is the block of lines from its headline up to the setup summary.
+    # The receipt is the terminal's last block; the setup summary is in install.log (Plan 29 R11 card 2).
+    assert "Astrid setup summary:" not in lines
     start = lines.index("Astrid updated: Release 11 → Release 12." if not skills_fail else
                         "Astrid updated: Release 11 → Release 12, but its skills couldn't be refreshed.")
-    receipt = lines[start:lines.index("Astrid setup summary:")]
+    receipt = lines[start:]
     assert not any("did NOT update" in line for line in receipt)
     next_lines = [line for line in receipt if line.startswith("Next: to refresh Astrid's skills")]
     assert len(next_lines) == (1 if skills_fail else 0)
@@ -2288,8 +2289,9 @@ def _app_update_receipt(tmp_path, monkeypatch, capsys, *, manifest, skills_fail=
 
 
 def _receipt(lines, headline):
-    """The receipt block: from its headline up to the setup summary, without the summary's leading blank."""
-    block = lines[lines.index(headline):lines.index("Astrid setup summary:")]
+    """The receipt block: from its headline to the end of the terminal output (the setup summary is in install.log)."""
+    assert "Astrid setup summary:" not in lines  # R11 card 2: the summary is not printed after the receipt
+    block = lines[lines.index(headline):]
     while block and block[-1] == "":
         block.pop()
     return block
