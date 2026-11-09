@@ -101,7 +101,7 @@ def test_off_choice_stop_does_not_create_startup_registration(tmp_path, system):
                               lambda argv: calls.append(argv) or "",
                               home=tmp_path, system=system)
     write_json(manager.selection, {"owner": service.LABEL,
-                                  "preferences": {"autostart": False}})
+                                  "choices": {"autostart": False}})
     before = manager.selection.read_bytes()
 
     manager.disable()

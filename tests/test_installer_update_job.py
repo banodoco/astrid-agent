@@ -653,7 +653,7 @@ def test_explicit_saved_autostart_off_refuses_acceptance_without_mutating_prefer
     startup_path, startup_before = _startup_object_snapshot(root)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": False, "skills": {"on": True}}
+    selection["choices"] = {"autostart": False}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
     with pytest.raises(ValueError, match="autostart is off"):
@@ -668,7 +668,7 @@ def test_saved_autostart_on_is_snapshotted_and_launch_does_not_change_selection(
     startup_path, startup_before = _startup_object_snapshot(root)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": True, "skills": {"on": True}}
+    selection["choices"] = {"autostart": True}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
     job = update_job.accept(request)
@@ -812,7 +812,7 @@ def test_worker_terminal_handoff_cleans_once_and_preserves_preferences_and_job_n
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": True, "skills": {"on": True}}
+    selection["choices"] = {"autostart": True}
     write_json(selection_path, selection)
     before_selection = selection_path.read_bytes()
     job = update_job.accept(request)
@@ -857,7 +857,7 @@ def test_worker_launch_refuses_if_autostart_was_changed_to_off(tmp_path, monkeyp
     job = update_job.accept(request)
     selection_path = Path(request["selection_path"])
     selection = read_json(selection_path)
-    selection["preferences"] = {"autostart": "off", "skills": {"on": True}}
+    selection["choices"] = {"autostart": False}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
 
