@@ -122,11 +122,11 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
             if assets:
                 import zipfile
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-                manifest = build_asset_manifest(assets)
+                asset_manifest = build_asset_manifest(assets)
                 archive = job_dir / "assets.zip"
                 with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
-                    zipped.writestr("manifest.json", json.dumps(manifest))
-                    for record in manifest["assets"]:
+                    zipped.writestr("manifest.json", json.dumps(asset_manifest))
+                    for record in asset_manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 run_files["managed_assets"] = str(archive)
                 workflow_inputs = {k: v for k, v in workflow_inputs.items() if k not in assets}

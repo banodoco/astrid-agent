@@ -146,6 +146,12 @@ def test_job_runs_h3_build_and_after_outputs_once_each(ready, tmp_path, monkeypa
     assert _run_cli(tmp_path, "h3", {"request": str(REQUEST), "asset_map": asset_map}) == 0
     assert calls == ["build", "after_outputs"]
     assert len(runs) == 1 and Path(runs[0][0]).name == "workflow.py"
+    # The align manifest is the built graph's requirements, not the asset archive's manifest.
+    align_manifest = runs[0][1]["manifest"]
+    assert "models" in align_manifest and "engine" in align_manifest
+    built_folder = Path(runs[0][0]).parent
+    assert align_manifest == entries.requirements({"id": "h3", "kind": "video", "bundle": str(built_folder)},
+                                                  {"request": str(REQUEST), "asset_map": asset_map})
     first = json.loads((tmp_path / "out" / "managed-generation-result.json").read_text())["outputs"][0] \
         if (tmp_path / "out" / "managed-generation-result.json").is_file() else None
     delivered = next((tmp_path / "out" / "outputs").glob("*.mp4"))
