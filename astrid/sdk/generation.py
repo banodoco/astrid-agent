@@ -298,7 +298,12 @@ def _runpod_preferences(client):
     """The saved RunPod placement policy, read from the caller's Runtime connection when it has one."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
-    return (read_runpod_preferences(client=client) if client is not None else read_runpod_preferences()).as_mapping()
+    from astrid.core.generation import settings
+
+    # Only a connection that serves app-state can hold the settings document.
+    if hasattr(settings.transport_of(client), "get_user_app_state"):
+        return read_runpod_preferences(client=client).as_mapping()
+    return read_runpod_preferences().as_mapping()
 
 
 def _runpod_placement_policy(controls, *, engine, machine=None):
