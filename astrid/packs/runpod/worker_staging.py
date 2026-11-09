@@ -246,8 +246,7 @@ for name,row in contract["custom_node_roots"].items():
  digest,count=tree_digest(Path(row["path"]).resolve(strict=True))
  custom_node_tree_facts[name]={"tree_digest":digest,"file_count":count}
 engine=str(cfg.get("engine_mode") or "")
-if engine!="checkout_server": raise RuntimeError("unsupported Comfy engine mode")
-if engine=="checkout_server" and not (comfy_root/"main.py").is_file(): raise RuntimeError("selected Comfy checkout has no main.py")
+if engine!="local_server": raise RuntimeError("unsupported Comfy engine mode")
 workflow=Path(request["workflow_path"]).resolve(strict=True)
 workflow_bundle=request.get("workflow_bundle")
 if workflow_bundle is None:
@@ -968,8 +967,8 @@ def _build_plan(
     _secret_free(workflow_inputs, path="workflow_inputs")
     capability = _safe_token(capability_id, label="capability_id")
     python = _remote_absolute(python_executable, label="python_executable")
-    if engine_mode != "checkout_server":
-        raise WorkerPreparationError("engine_mode must be checkout_server")
+    if engine_mode != "local_server":
+        raise WorkerPreparationError("engine_mode must be local_server")
     profile = json.loads(json.dumps(resolved_compute_profile, sort_keys=True, ensure_ascii=False))
     readiness = json.loads(json.dumps(readiness_profile, sort_keys=True, ensure_ascii=False))
     source_paths = {
