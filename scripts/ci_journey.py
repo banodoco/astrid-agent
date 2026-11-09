@@ -1672,11 +1672,17 @@ def assert_host_available(leg: str, root: Path, data: Path, *, skip_process_chec
             marker = read_json(root / "install.json")
             _, selected_data, selected = installation(root, data)
             manifest = read_json(Path(selected["root"]) / "manifest.json")
-            r1_data = marker.get("r1_data_root")
+            # Before UR-15 the handoff's records name R0 as data_root and carry
+            # r1_data_root; after normalisation R1 is data_root and R0 is kept
+            # as retained_r0_data_root.
+            normalised = marker.get("retained_r0_data_root") == str(data)
+            r1_data = marker.get("r1_data_root") or (marker.get("data_root") if normalised else None)
             owned_r1_cleanup = (
                 selection.get("owner") == "haus.astrid.runtime"
                 and selection.get("program_root") == str(root)
-                and selection.get("data_root") == str(data)
+                and (selection.get("data_root") == str(data)
+                     or (normalised and selection.get("retained_r0_data_root") == str(data)
+                         and selection.get("data_root") == str(Path(str(data) + "-r1"))))
                 and selection.get("uninstalled") is not True
                 and not selection.get("foreground")
                 and isinstance(selection.get("identity"), dict)
