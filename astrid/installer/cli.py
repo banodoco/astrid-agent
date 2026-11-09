@@ -328,6 +328,7 @@ class _Run:
     def __init__(self, mode: str):
         self.mode = mode
         self.target: int | None = None
+        self.target_source: str | None = None
         self.reason: str | None = None
         self.refused = False  # the run stopped before doing anything; never reported as reached
         self.before = None
@@ -358,7 +359,14 @@ class _Run:
         from .core import install_release
 
         self.target = install_release(manifest)
+        # A manifest that names no release leaves the target to the activated release (see activated()).
+        self.target_source = "manifest" if "release" in manifest else "default"
         return manifest
+
+    def activated(self, release: int | None) -> None:
+        """The release this run activated; it is the target only when the manifest named none."""
+        if release is not None and self.target_source != "manifest":
+            self.target, self.target_source = release, "activated"
 
     def _rolled_back(self) -> bool:
         if self.root is None:
@@ -372,11 +380,13 @@ class _Run:
         except (OSError, ValueError):
             rolled_back = False
         request_mode = "update" if self.mode in {"update", "app-update"} else self.mode
-        outcome = settle(Request(request_mode, self.target, self.reason, self.refused), self.before,
+        outcome = settle(Request(request_mode, self.target, self.reason, self.refused, self.target_source),
+                         self.before,
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back,
-                         warnings=receipt_warnings(getattr(self.installer, "outcomes", None)))
+                         warnings=receipt_warnings(getattr(self.installer, "outcomes", None)),
+                         details=None if self.log is None else str(self.log))
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
@@ -555,8 +565,8 @@ def main(argv: list[str] | None = None) -> int:
                 outcomes = (update_app(root, backend, manifest) if args.update_app
                             else update_pinokio(root, backend, manifest, force=args.update))
                 run.installer = SimpleNamespace(outcomes=outcomes)
-                # The receipt compares the release this run activated with its own target.
-                run.target = outcomes.get("release", run.target)
+                # With no release named by the manifest, the receipt targets the release this run activated.
+                run.activated(outcomes.get("release"))
                 return run.finish()
         lock_path = installer_lock_path(Path.home(), sys.platform)
         _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))

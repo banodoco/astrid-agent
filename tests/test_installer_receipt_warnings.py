@@ -83,3 +83,90 @@ def test_update_target_must_be_the_release_that_was_activated():
     after = _state("runtime", 12)
     assert settle(Request("update", 0), before, lambda: after).kind == "not-updated"
     assert settle(Request("update", 12), before, lambda: after).kind == "updated"
+
+
+# --- Target rule: the manifest's release when it names one, else the activated release.
+
+def test_manifest_names_release_and_activates_it_is_updated_from_manifest():
+    out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11),
+                 lambda: _state("runtime", 12))
+    assert out.kind == "updated" and out.exit_code == 0
+    assert out.target_source == "manifest"
+    assert out.record()["target_source"] == "manifest"
+
+
+def test_manifest_names_none_activates_release_is_updated_with_activated_source():
+    out = settle(Request("update", 12, target_source="activated"), _state("runtime", 11),
+                 lambda: _state("runtime", 12))
+    assert out.kind == "updated" and out.exit_code == 0
+    assert out.target == 12 and out.target_source == "activated"
+    assert out.headline() == ["Astrid updated: Release 11 → Release 12."]
+
+
+def test_manifest_names_release_but_another_is_activated_is_not_updated():
+    out = settle(Request("update", 13, target_source="manifest"), _state("runtime", 11),
+                 lambda: _state("runtime", 12))
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.target == 13 and out.target_source == "manifest"
+
+
+# --- Second warning: another copy of Astrid is still running after a success.
+
+def _with_runtimes(state, *runtimes):
+    return SimpleNamespace(**{**vars(state), "live_runtimes": runtimes})
+
+
+OTHER_COPY = SimpleNamespace(alive=True, selected=False)
+SELECTED = SimpleNamespace(alive=True, selected=True)
+REPAIR_NEXT = "Next: run the repair command to stop it: curl -fsSL https://astrid.haus/install | sh"
+DETAILS = "Details: /logs/install.log"
+
+
+def test_other_copy_warning_is_updated_with_repair_next_line_and_details_last():
+    outcome = Outcome("updated", 12, 11, 12, warnings=("other-copy-running",), details="/logs/install.log")
+    assert outcome.headline() == [
+        "Astrid updated: Release 11 → Release 12, but another copy of Astrid is still running.",
+        REPAIR_NEXT,
+        DETAILS,
+    ]
+    assert outcome.exit_code == 0
+    assert json.loads(json.dumps(outcome.record()))["warnings"] == ["other-copy-running"]
+
+
+def test_repair_next_line_uses_the_windows_install_line_on_win32(monkeypatch):
+    from astrid.installer import outcome as outcome_module
+
+    monkeypatch.setattr(outcome_module.sys, "platform", "win32")
+    lines = Outcome("updated", 12, 11, 12, warnings=("other-copy-running",)).headline()
+    assert lines[1] == ("Next: run the repair command to stop it: "
+                        "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))")
+
+
+def test_settle_marks_a_successful_update_with_another_live_copy():
+    after = _with_runtimes(_state("runtime", 12), SELECTED, OTHER_COPY)
+    out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11), lambda: after)
+    assert out.kind == "updated" and out.exit_code == 0
+    assert out.warnings == ("other-copy-running",)
+
+
+def test_another_live_copy_without_a_reached_target_stays_not_updated():
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11), lambda: after)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "other-runtime-running"
+    assert out.warnings == ()
+
+
+def test_skill_and_other_copy_warnings_stand_together():
+    after = _with_runtimes(_state("runtime", 12), SELECTED, OTHER_COPY)
+    out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11),
+                 lambda: after, warnings=("skills-not-refreshed",), details="/logs/install.log")
+    assert out.warnings == ("skills-not-refreshed", "other-copy-running")
+    assert out.headline() == [
+        "Astrid updated: Release 11 → Release 12, but its skills couldn't be refreshed and "
+        "another copy of Astrid is still running.",
+        SKILLS_NEXT,
+        REPAIR_NEXT,
+        DETAILS,
+    ]
+    assert out.exit_code == 0
