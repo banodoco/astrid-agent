@@ -128,15 +128,16 @@ def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallb
         assert "--doctor" in body, number
 
 
+BARE_ASTRID = re.compile(
+    r"(?<![-/\w.])astrid\s+(?:doctor|backup|projects|documents|preferences|media|tasks|runs|timelines|-{1,2}[a-z])"
+)
+
+
 def _bare_astrid_hits(text: str) -> list:
-    # Old detection only: fenced lines that start with astrid, and backticked astrid commands.
-    hits = []
-    for block in FENCE.findall(text):
-        for line in block.splitlines():
-            if re.match(r"\s*(\$ )?astrid(\s|$)", line):
-                hits.append(line)
-    hits += re.findall(r"`astrid\s[^`]*`", text)
-    return hits
+    # astrid followed by a known subcommand or flag, anywhere: prose, code, or a && chain.
+    # The launcher path (run-astrid) and "the `astrid` terminal command" are not commands.
+    text = text.replace("the `astrid` terminal command", "")
+    return [match.group(0) for match in BARE_ASTRID.finditer(text)]
 
 
 def test_skill_never_names_a_bare_astrid_command():

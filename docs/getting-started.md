@@ -21,8 +21,8 @@ with them or change one, then run the App's command with the chosen values.
 Recommended choices are Start at sign-in on, the `astrid` terminal command
 on, Astrid skills on, and skill copies off. You can select each with
 `--autostart on|off`, `--command on|off`, `--skills on|off`, and
-`--skill-copies on|off`. After consent, run one installer command for your OS
-with those recommended values:
+`--skill-copies on|off`. For a fresh install, run one installer command for your OS
+after consent, with those recommended values:
 
 On macOS or Linux, run:
 
@@ -34,6 +34,17 @@ On Windows, open PowerShell and run:
 
 ```powershell
 & ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off
+```
+
+On an existing install, do not add choice flags. Run the plain install line for
+your OS instead, and your saved choices stay:
+
+```sh
+curl -fsSL https://astrid.haus/install | sh
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))
 ```
 
 Then open [astrid.haus](https://astrid.haus) and follow the on-screen steps.
