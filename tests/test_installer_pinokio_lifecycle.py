@@ -560,7 +560,8 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
             managed_by="pinokio", run="update", adapter=(args, kwargs)))
         argv += ["--manifest", str(manifest), "--uv", str(uv)]
 
-    assert cli.main(argv) == 0
+    # --update with the update stubbed (no release change) is not-updated (exit 3); the others exit 0.
+    assert cli.main(argv) == (3 if mode == ["--update"] else 0)
     if mode == ["--update"]:
         assert captured["managed_by"] == "pinokio"
         assert captured["run"] == "update"
