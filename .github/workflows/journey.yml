@@ -790,12 +790,12 @@ jobs:
       # The fresh Linux row updates by clicking Update now in the candidate's own hosted App build:
       # the driver serves this build at https://astrid.haus through the update leg's intercept.
       - name: Set up Node for the hosted App build
-        if: matrix.job_id == 'direct-linux-fresh'
+        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off'
         uses: actions/setup-node@v4
         with:
           node-version-file: app/.nvmrc
       - name: Build the candidate's hosted App and the browser that clicks it
-        if: matrix.job_id == 'direct-linux-fresh'
+        if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off'
         shell: bash
         working-directory: app
         timeout-minutes: 30
@@ -822,7 +822,7 @@ jobs:
         if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
-          ASTRID_CI_HOSTED_APP_DIST: ${{ matrix.job_id == 'direct-linux-fresh' && format('{0}/app/dist', github.workspace) || '' }}
+          ASTRID_CI_HOSTED_APP_DIST: ${{ (matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off') && format('{0}/app/dist', github.workspace) || '' }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
           ASTRID_AUTOSTART_CAPTURE_DIR: ${{ matrix.leg == 'fresh-install-autostart-off' && format('{0}/autostart-capture', runner.temp) || '' }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}

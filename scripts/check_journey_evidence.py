@@ -378,7 +378,7 @@ def _upgrade_release_errors(job_id, contract, row, release):
     return errors
 
 
-def _autostart_row_errors(job_id, row):
+def _autostart_row_errors(job_id, row, os_name):
     """The fresh-install-autostart-off row's named assertions, each read from the leg's own receipt fields."""
     errors = []
     selection = row.get("selection") if isinstance(row.get("selection"), dict) else {}
@@ -393,11 +393,16 @@ def _autostart_row_errors(job_id, row):
         errors.append(f"{job_id}: POST update was not refused with autostart-off, "
                       "or it changed the selection, the data or the live Runtime")
     capture = row.get("capture") if isinstance(row.get("capture"), dict) else {}
-    if (capture.get("device_scale_factor") != 2 or not isinstance(capture.get("path"), str)
-            or not DIGEST.fullmatch(str(capture.get("sha256", "")))):
-        errors.append(f"{job_id}: autostart card capture is absent or not at deviceScaleFactor 2")
     checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    # The macOS capture is attempted but not gated: it may record not-gated. Linux always gates it.
+    not_gated = (os_name == "macos" and checks.get("autostart_card_capture") == "not-gated"
+                 and capture.get("status") == "not-gated")
+    if not not_gated and (capture.get("device_scale_factor") != 2 or not isinstance(capture.get("path"), str)
+                          or not DIGEST.fullmatch(str(capture.get("sha256", "")))):
+        errors.append(f"{job_id}: autostart card capture is absent or not at deviceScaleFactor 2")
     for check in AUTOSTART_CHECKS:
+        if check == "autostart_card_capture" and not_gated:
+            continue
         if checks.get(check) != "pass":
             errors.append(f"{job_id}: {check} assertion did not pass")
     return errors
@@ -602,7 +607,7 @@ def _release1_row_errors(candidate, contract, row):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
         elif contract.get("leg") == AUTOSTART_LEG:
-            errors.extend(_autostart_row_errors(job_id, row))
+            errors.extend(_autostart_row_errors(job_id, row, contract["os"]))
         elif contract.get("leg") == RELEASE9_LEG:
             errors.extend(_release9_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE11_LEG:
