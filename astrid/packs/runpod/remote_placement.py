@@ -1,15 +1,8 @@
-"""RunPod pod custody helpers shared by the machine route, plus h3's legacy pod route.
+"""RunPod pod custody helpers shared by the generation machine route.
 
-Generation on RunPod runs as a remote machine (``astrid.packs.runpod.machine``,
-the ``runpod`` contribution to ``generation.machine``). That route reuses this
-module's pieces on an exact existing claim: ``RemotePlacement.prepare_claimed``
-(``_bootstrap``, ``_install``, ``_canonical_installed``), ``_put_checked``,
-``manifest_command``/``_MANIFEST_SCRIPT`` and ``connect_claimed_for_preparation``.
-
-``RemotePlacement.run`` is h3_av's legacy ``--placement runpod`` route (claim,
-bootstrap, install, upload, detached transform, download, release); it imports
-no h3 code (its caller passes verify and ffprobe) and is deleted with its last
-caller in Plan 32 T6b.
+The machine contribution reuses ``RemotePlacement.prepare_claimed`` for
+bootstrap and installation on an existing claim, and the checked file-transfer
+and manifest helpers in this module.
 
 Money rules, enforced here and pinned by tests:
 
@@ -364,8 +357,6 @@ class RemotePlacement:
         source_root: Path | None = None,
         leave_running: bool = False,
         pod_id: str | None = None,
-        verify_fn: Callable[[Path, Mapping[str, Any]], None] | None = None,
-        ffprobe_fn: Callable[[Path], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -374,9 +365,6 @@ class RemotePlacement:
         self.source_root = source_root
         self.leave_running = leave_running
         self.pod_id = pod_id
-        # The h3 caller passes its own verify/ffprobe; this module imports no h3 code.
-        self._verify_fn = verify_fn
-        self._ffprobe_fn = ffprobe_fn
         self._clock = clock
         self._sleep = sleep
         self._claims_made = 0

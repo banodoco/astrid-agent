@@ -271,8 +271,6 @@ def sources(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _wrapper(provider, sources, **kwargs):
-    kwargs.setdefault("verify_fn", lambda out, result: None)
-    kwargs.setdefault("ffprobe_fn", lambda path: None)
     return RemotePlacement(
         provider, limits=Limits(poll_seconds=0), source_root=sources, sleep=lambda s: None, **kwargs
     )

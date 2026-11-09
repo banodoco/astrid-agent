@@ -9,7 +9,7 @@ import pytest
 from astrid.core.extensions import registry as reg
 from astrid.core.extensions.registry import ExtensionRegistry
 
-REQUIRED = ("requirements", "align", "execute", "cancel")
+REQUIRED = ("requirements", "align", "execute")
 
 
 @pytest.fixture
@@ -41,7 +41,6 @@ def test_registry_resolves_comfyui_engine_and_checks_the_protocol(
     assert align_signature.parameters["workflow"].kind is inspect.Parameter.KEYWORD_ONLY
     assert align_signature.parameters["workflow"].default is None
     assert params["execute"] == ["job"]
-    assert params["cancel"] == ["job"]
 
 
 def test_probe_is_optional_but_checked_when_present(
@@ -53,7 +52,6 @@ def test_probe_is_optional_but_checked_when_present(
         def requirements(self, entry, inputs): ...
         def align(self, manifest, mode): ...
         def execute(self, job): ...
-        def cancel(self, job): ...
 
     registry._check_protocol(point, _Req())  # no probe: still valid
 

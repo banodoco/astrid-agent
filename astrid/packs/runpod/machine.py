@@ -334,9 +334,7 @@ def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Pa
 def generation_argv(entry: str | None, remote_root: str, *, mode: str | None) -> list[str]:
     """The ONE pod-side invocation: the same local run the controller would do.
 
-    T4 STUB: ``astrid generate <entry> --placement local`` is T4's local run path
-    (plan32/t4-one-run). Until it lands, this argv is the contract the CPU fake
-    answers; T4's merge replaces the stub flags (``--job``/``--out``/``--json``).
+    The job form runs the shipped job through the local generation command.
     A job with no named entry runs its shipped bundle: ``astrid generate workflow``.
     """
     from astrid.core.execution.machine_run import WORKFLOW_FILE_ENTRY
