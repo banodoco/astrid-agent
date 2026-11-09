@@ -434,11 +434,16 @@ def test_local_server_mode_selection_canonicalizes_url_and_requires_managed_resu
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     run = Mock(return_value=production_engine.ProductionRunResult(outputs=()))
     monkeypatch.setattr(production_engine, "run_workflow_result_path", run)
+    from astrid.core.generation import entries
+    probed = []  # nothing listens on this port: the engine probe is a double here (real in test_local_run_site)
+    monkeypatch.setattr(type(entries.engine_table()["comfyui"]), "probe",
+                        lambda self, endpoint, timeout=5.0: probed.append(endpoint) or {"ready": True, "endpoint": endpoint})
     with pytest.raises(ValueError, match="managed_generation_result_path"):
         action._run_and_settle(
             tmp_path / "workflow.json", tmp_path / "attempt" / "outputs",
             task_identity="task-1", comfy_url="http://localhost:43217",
         )
+    assert probed == ["http://127.0.0.1:43217"]
     assert run.call_args.kwargs["profile_id"] == "local_server"
     assert run.call_args.kwargs["comfy_url"] == "http://127.0.0.1:43217"
     assert "comfy_output_dir" not in run.call_args.kwargs
