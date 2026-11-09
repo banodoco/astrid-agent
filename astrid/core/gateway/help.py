@@ -47,8 +47,8 @@ Product families:
 
 Generation:
   python3 -m astrid generate image "a dog eating an ice cream" --project PROJECT
-      [--model ENTRY] [--target auto|managed|LOOPBACK_URL|runpod] [--dry-run]
-  python3 -m astrid generate video PROMPT --project PROJECT [--target TARGET]
+      [--model ENTRY] [--placement auto|managed|LOOPBACK_URL|runpod] [--dry-run]
+  python3 -m astrid generate video PROMPT --project PROJECT [--placement TARGET]
 
 Timeline evidence:
   python3 -m astrid timelines visualize --project PROJECT [--timeline-slug REF]

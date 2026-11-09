@@ -301,7 +301,7 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _runpod_target_policy(controls, *, engine):
+def _runpod_placement_policy(controls, *, engine):
     """Snapshot the user's disclosed offer and preferences into the task."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
@@ -318,7 +318,7 @@ def _runpod_operation(operation, *, client, wait, include_quote=False):
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": read_runpod_preferences().as_mapping()}
-    inputs = {"target_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
+    inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
     sdk_module = importlib.import_module('astrid.sdk')
@@ -726,7 +726,7 @@ class GenerationFacade:
         return generation_rows(kind)
 
     @_generation_boundary
-    def launch(self, *, target='auto', engine='comfyui', consent=(), timeout=10.0,
+    def launch(self, *, placement='auto', engine='comfyui', consent=(), timeout=10.0,
                project_root=None):
         """Launch/re-probe one selected human ComfyUI with fresh user_env consent.
 
@@ -738,16 +738,16 @@ class GenerationFacade:
         from astrid.core.generation.target_launch import launch_target
 
         _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
-        if target == 'runpod':
+        if placement == 'runpod':
             raise GenerationInputError('launch requires a selected local human ComfyUI')
         try:
-            selection = targets.resolve_target(target, repo=project_root)
+            selection = targets.resolve_target(placement, repo=project_root)
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
         return launch_target(selection, consent=consent, timeout=timeout).readiness
 
     @_generation_boundary
-    def targets(self, *, target='auto', engine='comfyui', save=False, inputs=None,
+    def targets(self, *, placement='auto', engine='comfyui', save=False, inputs=None,
                 project_root=None, client=None):
         """Inspect selection without probing; persist only an explicit save."""
         from astrid.core.generation import targets
@@ -757,7 +757,7 @@ class GenerationFacade:
             if targets.canonical_engine(engine) != 'comfyui':
                 raise ValueError('Phase 1 targets support only comfyui')
             updates = merge_input_values(inputs if inputs is not None else {})
-            if target == 'runpod':
+            if placement == 'runpod':
                 if save:
                     allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
                                'provider_account_ref', 'credential_ref'}
@@ -782,9 +782,9 @@ class GenerationFacade:
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
-            selection = targets.resolve_target(target, repo=project_root)
+            selection = targets.resolve_target(placement, repo=project_root)
             record = selection.record
-            if record is None and target == 'managed':
+            if record is None and placement == 'managed':
                 record = targets.TargetRecord(owner='astrid')
             if save:
                 if not selection.bound:
@@ -798,11 +798,11 @@ class GenerationFacade:
 
     @_generation_boundary
     def describe(self, entry: str | None = None, *, workflow=None, mode=None,
-                 target=None, engine='comfyui', client=None):
+                 placement=None, engine='comfyui', client=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
-        if target is not None:
+        if placement is not None:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
-            if target != 'runpod' or entry is not None or workflow is not None:
+            if placement != 'runpod' or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
             return _runpod_status(client=client, include_quote=True)
         if bool(entry) == bool(workflow):
@@ -810,7 +810,7 @@ class GenerationFacade:
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
 
     @_generation_boundary
-    def release(self, *, engine: str, target: str, client=None, wait=False):
+    def release(self, *, engine: str, placement: str, client=None, wait=False):
         """Release a managed engine through its verified owner; never HTTP free an unowned target.
 
         Attached or unmanaged targets are refused and never receive an HTTP free.
@@ -821,15 +821,15 @@ class GenerationFacade:
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
-        if target == 'runpod':
+        if placement == 'runpod':
             return _runpod_operation('release', client=client, wait=wait)
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
             raise generation_error(ValueError('The bound host release owner is unavailable'),
                 code='missing_dependency', details={'field': 'target'},
-                fixes=[{'argv': ['astrid', 'generate', 'targets', '--target', target],
+                fixes=[{'argv': ['astrid', 'generate', 'targets', '--placement', placement],
                         'scope': 'read_only', 'details': {}}])
-        result = bridge(engine='comfyui', target=target, wait=wait)
+        result = bridge(engine='comfyui', target=placement, wait=wait)
         if isinstance(result, dict) and result.get('ok') is False:
             raise generation_error(ValueError(str(result.get('reason') or 'release was not proven')),
                 code='release_not_proven', details={'field': 'target'})
@@ -867,7 +867,7 @@ class GenerationFacade:
     def workflow(
         self, *,
         workflow: WorkflowFile | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         inputs: Mapping[str, Any] | None = None,
         mode: str | None = None,
         engine: str | None = None,
@@ -878,7 +878,7 @@ class GenerationFacade:
         preparation_seconds: float | None = None,
         execution_seconds: float | None = None,
         idle_seconds: float | None = None,
-        target_policy: Mapping[str, Any] | None = None,
+        placement_policy: Mapping[str, Any] | None = None,
         python: WorkflowFile | None = None,
         companion: WorkflowFile | None = None,
         source: WorkflowFile | None = None,
@@ -890,7 +890,7 @@ class GenerationFacade:
         comfy_url: str | None = None,
         comfy_output_dir: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
-        placement: Placement | None = None,
+        engine_placement: Placement | None = None,
         out: Path | str | None = None,
         project: str | None = None,
         client: WorkflowInvocationClient | None = None,
@@ -918,11 +918,11 @@ class GenerationFacade:
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
-        Placement validates scheduling intent; it is never a creative input.
+        engine_placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
         _require_single_declared_output(workflow=workflow, companion=companion)
-        if target is not None:
+        if placement is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
@@ -933,9 +933,9 @@ class GenerationFacade:
             if inputs is not None and not isinstance(inputs, Mapping):
                 raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
-                    execution_request, placement, source, source_video, source_video_node,
+                    execution_request, engine_placement, source, source_video, source_video_node,
                     source_video_widget, managed_assets, workflow_inputs, comfy_url,
-                    comfy_output_dir, generation_intent, target_policy)):
+                    comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
             source_controls = {'client': client, 'project': project, 'out': out,
                                'project_root': project_root}
@@ -965,7 +965,7 @@ class GenerationFacade:
                     'binds': {}, 'defaults': {}, 'needs': []}
                 return self._generate_on_target(registry=_load_model_registry(
                     project_root=project_root, extra_pack_roots=extra_pack_roots), model=None,
-                    mode=description['mode'], modality=description['kind'], target=target,
+                    mode=description['mode'], modality=description['kind'], placement=placement,
                     execution=None, inputs=values, dry_run=dry_run, workflow_entry=workflow_entry,
                     retained_source=retained_source,
                     client=client, project=project, out=out, wait=wait,
@@ -984,7 +984,7 @@ class GenerationFacade:
         )
 
         resolve_workflow_descriptor(
-            GenerationBackendRegistry(), placement=placement,
+            GenerationBackendRegistry(), placement=engine_placement,
             execution_request=execution_request,
         )
         from astrid.core.generation.availability import require_bundled_workflow_available
@@ -999,8 +999,8 @@ class GenerationFacade:
                 "source_video_widget": source_video_widget,
                 "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
-                "target_policy": (json.dumps(dict(target_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
-                                  if target_policy is not None else None),
+                "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
+                                  if placement_policy is not None else None),
                 "generation_intent": generation_intent,
             }.items() if value is not None
         }
@@ -1029,7 +1029,7 @@ class GenerationFacade:
         model: str | None,
         mode: str,
         modality: str,
-        target: str,
+        placement: str,
         execution: str | None,
         inputs: dict[str, Any],
         dry_run: bool,
@@ -1054,11 +1054,16 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
-        is_remote_target = target == 'runpod'
+        from astrid.core.generation import placement as placements
+
+        # The one decision site: request -> user default -> built-in, then frozen.
+        selector, placement = placement, placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(placement)))
+        is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
-        target_policy = _runpod_target_policy(controls, engine=None) if is_remote_target and not dry_run else None
+        placement_policy = _runpod_placement_policy(controls, engine=None) if is_remote_target and not dry_run else None
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
@@ -1145,7 +1150,7 @@ class GenerationFacade:
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
         target_client = (None if is_remote_target else select_generation_target(
-            target, repo=controls.get("project_root"),
+            placements.comfy_selector(placement, selector), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
             mode=mode))
         backend = VibeComfyBackend(target_client=target_client)
@@ -1267,8 +1272,8 @@ class GenerationFacade:
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
         entry_id, workflow, bundle, plan, schema, approval, assets = selected
-        if target_policy is not None:
-            target_policy["engine"] = runpod_engine
+        if placement_policy is not None:
+            placement_policy["engine"] = runpod_engine
         target_record = getattr(target_client, 'generation_target', None)
         from astrid.core.generation.targets import TargetRecord
         if target_record is None:
@@ -1345,7 +1350,7 @@ class GenerationFacade:
                     (plan or {}).get('bindings', {}).items() if name not in assets},
                     sort_keys=True, allow_nan=False),
                 comfy_url=(target_client.target.url if target_client is not None else None),
-                target_policy=target_policy,
+                placement_policy=placement_policy,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
                     "groups": [{"group_key": "main", "selectors": [{
@@ -1411,7 +1416,7 @@ class GenerationFacade:
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1458,8 +1463,8 @@ class GenerationFacade:
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and target is None:
-                target = "auto"
+            if description["source"] == "workflow" and placement is None:
+                placement = "auto"
         resolved_mode = sdk_module._infer_image_mode(mode, inputs)
         explicit_openai = execution == "openai" or (
             isinstance(model, str) and model.startswith("gpt-image")
@@ -1476,12 +1481,12 @@ class GenerationFacade:
                 project_root=project_root,
                 extra_pack_roots=extra_pack_roots,
             )
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
+        if engine is not None and placement is None:
+            placement = 'auto'
+        if placement is not None:
             return self._generate_on_target(
                 registry=registry, model=model, mode=resolved_mode, modality="image",
-                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
+                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
                 active_theme=active_theme, include_missing_roots=include_missing_roots,
@@ -1610,7 +1615,7 @@ class GenerationFacade:
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1671,8 +1676,8 @@ class GenerationFacade:
             )
             model, mode = entry, description["mode"]
             action_entry = description if description.get("action") else None
-            if description["source"] == "workflow" and target is None:
-                target = "auto"
+            if description["source"] == "workflow" and placement is None:
+                placement = "auto"
         elif model is not None:
             from astrid.core.generation.entries import find_entry
             manifest = find_entry(model)
@@ -1686,15 +1691,15 @@ class GenerationFacade:
         if action_entry is not None:
             if action_entry["action"] != "h3_av.transform":
                 raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
-            if target not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
+            if placement not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
                 raise CapabilityValidationError("tracked H3 requires the default Runtime target")
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
-            if target == 'runpod':
+            if placement == 'runpod':
                 _runpod_paid_controls(controls)
                 if not dry_run:
                     from astrid.core.generation.entries import runpod_engine
-                    inputs['target_policy'] = _runpod_target_policy(controls, engine=runpod_engine(action_entry))
+                    inputs['placement_policy'] = _runpod_placement_policy(controls, engine=runpod_engine(action_entry))
             controls = dict(kind="action", inputs=inputs, project=project, out=out,
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
                 banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
@@ -1709,7 +1714,7 @@ class GenerationFacade:
                     return owner.invoke_result("h3_av.transform", **controls)
             invoke = client.invoke_result if client is not None else sdk_module.invoke_result
             return invoke("h3_av.transform", **controls)
-        if resume or recovery_path is not None and target != 'runpod':
+        if resume or recovery_path is not None and placement != 'runpod':
             raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
         if registry is None:
@@ -1717,12 +1722,12 @@ class GenerationFacade:
                 project_root=project_root,
                 extra_pack_roots=extra_pack_roots,
             )
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
+        if engine is not None and placement is None:
+            placement = 'auto'
+        if placement is not None:
             return self._generate_on_target(
                 registry=registry, model=model, mode=resolved_mode, modality="video",
-                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
+                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
                 active_theme=active_theme, include_missing_roots=include_missing_roots,
@@ -1819,7 +1824,7 @@ class GenerationFacade:
         *,
         model: str | None = None,
         entry: str | None = None,
-        target: str | None = None,
+        placement: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         engine: str | None = None,
@@ -1864,17 +1869,17 @@ class GenerationFacade:
             description, inputs = self._resolve_public_entry(entry=entry, model=model, mode=mode,
                 modality='audio', inputs=inputs, registry=registry)
             model, mode = entry, description['mode']
-            if description['source'] == 'workflow' and target is None:
-                target = 'auto'
-        if engine is not None and target is None:
-            target = 'auto'
-        if target is not None:
+            if description['source'] == 'workflow' and placement is None:
+                placement = 'auto'
+        if engine is not None and placement is None:
+            placement = 'auto'
+        if placement is not None:
             if mode is None:
                 raise CapabilityValidationError('mode is required for audio target generation')
             if registry is None:
                 registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
             return self._generate_on_target(
-                registry=registry, model=model, mode=mode, modality='audio', target=target,
+                registry=registry, model=model, mode=mode, modality='audio', placement=placement,
                 execution=execution, inputs=inputs, dry_run=dry_run, client=client, out=out,
                 project=project, project_root=project_root, extra_pack_roots=extra_pack_roots,
                 banodoco_config=banodoco_config, active_theme=active_theme,

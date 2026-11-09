@@ -309,7 +309,7 @@ class LocalGenerationReadiness:
 
 
 def _gpu_guidance(mode: str | None = None) -> str:
-    guidance = 'Generation needs a local GPU or --target runpod.'
+    guidance = 'Generation needs a local GPU or --placement runpod.'
     if mode == 'tts':
         guidance += (' For voice, explicitly choose Edge TTS through '
                      'generation.generate_speech with provider=edge-tts.')
@@ -543,7 +543,7 @@ def check_local_generation_readiness(
     )
     if require_managed_runtime and not managed_ready:
         install = _managed_install_fix()
-        attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+        attach = ['astrid', 'generate', 'image', '--placement', 'http://127.0.0.1:8188']
         import shlex
         guidance = f"start your existing ComfyUI and attach with {shlex.join(attach)}"
         if install:
@@ -665,7 +665,7 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
         raise AstridError(
             "RunPod generation requires an explicitly prepared target; automatic provisioning is unavailable",
             code="COMFY_TARGET_UNSUPPORTED", field="target",
-            fix="Use --target managed inside an existing prepared pod, or --target auto locally",
+            fix="Use --placement managed inside an existing prepared pod, or --placement auto locally",
         )
     try:
         selection = resolve_target(target, repo=repo)
@@ -690,7 +690,7 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
     except (TypeError, ValueError) as exc:
         raise AstridError(
             str(exc), code="COMFY_TARGET_INVALID", field="target",
-            fix="Use --target auto, --target managed, or http://127.0.0.1:<port>",
+            fix="Use --placement auto, --placement managed, or http://127.0.0.1:<port>",
         ) from exc
     try:
         facts = client.request_json("/system_stats", timeout=1.0)
@@ -702,7 +702,7 @@ def _select_generation_target(target: str, *, repo=None, entry_id=None):
         raise AstridError(
             f"ComfyUI target {url} is unavailable: {exc}",
             code="COMFY_TARGET_UNAVAILABLE", field="target",
-            fix=f"Start ComfyUI at {url}, or use --target managed with an installed ComfyUI runtime",
+            fix=f"Start ComfyUI at {url}, or use --placement managed with an installed ComfyUI runtime",
             state_snapshot={'target': record.as_dict()},
         ) from exc
     client = ComfyTargetClient(ComfyTarget(client.target.url, "attached", {**record.facts, **facts}))
@@ -740,7 +740,7 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
                 target=exc.readiness['target'])) from exc
         snapshot = exc.state_snapshot.get('target')
         selector = (snapshot or {}).get('endpoint') or target
-        argv = ['astrid', 'generate', 'targets', '--target', selector]
+        argv = ['astrid', 'generate', 'targets', '--placement', selector]
         raise generation_error(exc, target=snapshot,
             fixes=[{'argv': argv, 'scope': 'read_only', 'details': {'guidance': exc.fix}}]) from exc
 
@@ -755,10 +755,10 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
     if not readiness.ready:
         error = AstridError(
             readiness.reason, code="COMFY_TARGET_NOT_READY", field="target",
-            fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
+            fix=(readiness.recovery_command + "; use --placement http://127.0.0.1:8188 "
                  "when your existing ComfyUI is running there"),
         )
         raise generation_error(error, entry={'id': entry.id, 'engine': 'comfyui', 'mode': mode},
             fixes=readiness.fixes or [
-                {'argv': ['astrid', 'generate', 'targets', '--target', 'http://127.0.0.1:8188'],
+                {'argv': ['astrid', 'generate', 'targets', '--placement', 'http://127.0.0.1:8188'],
                  'scope': 'read_only', 'details': {'guidance': readiness.recovery_command}}])

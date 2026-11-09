@@ -59,7 +59,7 @@ def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, c
     source.write_text(json.dumps(load_bundle(workflow_from_ready("image/z_image_turbo")).materialize_ui()))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     import_as_entry(source, "mine")
-    assert cli.main(["image", "hello", "--entry", "mine", "--target", loopback_comfy.url, "--dry-run"]) == 0
+    assert cli.main(["image", "hello", "--entry", "mine", "--placement", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "mine" and plan["entry"]["reason"] == "explicitly selected workflow entry"
     assert plan["entry"]["bindings"]["prompt"] == "hello"
@@ -67,7 +67,7 @@ def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, c
 
 def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeypatch, capsys):
     monkeypatch.setattr(entries, "user_entries", lambda: [])
-    assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
+    assert cli.main(["image", "hello", "--placement", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "qwen-image-2.1-turbo"
     assert "highest-ranked ready" in plan["entry"]["reason"]
@@ -193,7 +193,7 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
             settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
             try:
                 code = console.main(['generate', 'image', 'entry test prompt', '--entry', 'my-style',
-                    '--target', loopback_comfy.url, '--project', project.data['project_id'], '--json'])
+                    '--placement', loopback_comfy.url, '--project', project.data['project_id'], '--json'])
             finally:
                 host.shutdown()
             results = settled.result(timeout=15)

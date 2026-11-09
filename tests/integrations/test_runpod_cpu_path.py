@@ -170,7 +170,7 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
     # z-image has no pinned RunPod engine lock, so RunPod is refused explicitly
     # before any pod is created (runpod_engine_unavailable; ledger M-42).
     assert console.main(["generate", "image", "A red cube on a white tabletop.",
-        "--model", selected["id"], "--target", "runpod", "--engine", "comfyui",
+        "--model", selected["id"], "--placement", "runpod", "--engine", "comfyui",
         "--width", "1024", "--height", "1024", "--steps", "8", "--seed", "0",
         "--out", str(output), "--consent", "paid", "--max-usd", "10",
         "--deadline", (datetime.now(timezone.utc) + timedelta(minutes=90)).isoformat(),
@@ -465,23 +465,23 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     worker.start()
     def setup(raw):
         return client.invoke_result("runpod.setup", kind="action", project=None,
-            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": raw})},
+            inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": raw})},
             wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
     try:
         assert setup(preferences).ok
         retained = host._target_bindings.provider
         changed = {**preferences, "budget_cap_usd": 1.5}
         mismatch = client.invoke_result("runpod.status", kind="action", project=None,
-            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
+            inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
             wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
         assert not mismatch.ok and "runpod.setup" in str(mismatch.to_dict())
         assert setup(changed).ok
         assert host._target_bindings.provider is not retained and retained.lease_owner.closed
         assert not provider.events, "setup observed provider stock"
-        quote = GenerationFacade().describe(target="runpod", client=client)
+        quote = GenerationFacade().describe(placement="runpod", client=client)
         assert quote["offer"]["datacenter_id"] == "DC-unpinned"
         assert target_selection.read_runpod_preferences().datacenter_id is None
-        result = GenerationFacade().image(entry="cpu-image", target="runpod", client=client,
+        result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
             project=project_id, consent=("paid",), max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
@@ -507,7 +507,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         snapshot = claim_path.read_bytes()
         refusal = setup({**changed, "budget_cap_usd": 1.25})
         assert not refusal.ok and claim_path.read_bytes() == snapshot and len(provider.pods) == 1
-        release = GenerationFacade().release(engine="comfyui", target="runpod", client=client, wait=True)
+        release = GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
         assert release.ok, release.to_dict()
         record = json.loads(claim_path.read_text())
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404

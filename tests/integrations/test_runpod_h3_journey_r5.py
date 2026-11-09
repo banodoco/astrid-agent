@@ -165,9 +165,9 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
                 errors.append(exc)
         worker = threading.Thread(target=serve, daemon=True)
         worker.start()
-        quote = GenerationFacade().describe(target='runpod', client=client)
+        quote = GenerationFacade().describe(placement='runpod', client=client)
         deadline = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-        result = GenerationFacade().video(entry='h3', target='runpod', client=client, project=project_id,
+        result = GenerationFacade().video(entry='h3', placement='runpod', client=client, project=project_id,
             consent=('paid',), max_usd=1.0, deadline=deadline, offer_digest=quote['offer_digest'],
             preparation_seconds=60, execution_seconds=300, idle_seconds=1800, **h3_inputs,
             recovery_path=tmp_path / 'h3-recovery.json')
@@ -177,13 +177,13 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
         assert len(delivered['image_paths']) >= 1 and Path(delivered['image_paths'][0]).stat().st_size > 0
         assert c.creates == 1 and [e[0] for e in events].count('enable') == 1
         retained_owner = host._target_bindings.provider.lease_owner
-        resumed = GenerationFacade().video(entry='h3', target='runpod', client=client, project=project_id,
+        resumed = GenerationFacade().video(entry='h3', placement='runpod', client=client, project=project_id,
             consent=('paid',), max_usd=1.0, deadline=deadline, offer_digest=quote['offer_digest'],
             preparation_seconds=60, execution_seconds=300, idle_seconds=1800, **h3_inputs,
             recovery_path=tmp_path / 'h3-recovery.json', resume=True, wait=False)
         assert resumed.kernel_task_id == result.kernel_task_id
         assert c.creates == 1 and [e[0] for e in events].count('enable') == 1
-        status = GenerationFacade().describe(target='runpod', client=client)
+        status = GenerationFacade().describe(placement='runpod', client=client)
         assert status['pod_id'] == 'pod-1' and status['lease']['state'] == 'idle'
         assert host._target_bindings.provider.lease_owner is retained_owner
         binding = c.read()['lease']['endpoint_binding']
@@ -195,13 +195,13 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
         spec = parent.data['spec'].get('spec', parent.data['spec'])
         plan = spec['inputs']['plan']
         assert plan['workflow_members'] and plan['workflow_inputs_sha256'].startswith('sha256:')
-        assert plan['controls']['target_policy']['offer_digest'] == quote['offer_digest']
+        assert plan['controls']['placement_policy']['offer_digest'] == quote['offer_digest']
         assert not getattr(client, '_generation_prepared_owners', {})
         outputs = result.outputs['managed_outputs']
         digests = {row.get('object_id') or row.get('digest') for row in outputs}
         assert all('sha256:' + hashlib.sha256(Path(path).read_bytes()).hexdigest() in digests
                    for path in delivered['image_paths'])
-        released = GenerationFacade().release(engine='comfyui', target='runpod', client=client, wait=True)
+        released = GenerationFacade().release(engine='comfyui', placement='runpod', client=client, wait=True)
         assert released.ok and c.read()['state'] == 'cleanup_complete'
         assert host._target_bindings.provider.lease_owner is retained_owner
         assert c.deletes == ['pod-1'] and c.read()['cleanup']['absence']['exact_get_status'] == 404

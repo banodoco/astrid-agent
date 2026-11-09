@@ -33,7 +33,7 @@ def test_catalog_entry_resolves_before_existing_target_route(isolated_catalog, m
         "z-image", {"prompt": "silver boat", "seed": 12}, kind="image", registry=isolated_catalog,
     )
     result = GenerationFacade().image(entry="z-image", prompt="silver boat", seed=12,
-                                     target="auto", dry_run=True)
+                                     placement="auto", dry_run=True)
     assert result == expected
     assert len(calls) == 1
     assert calls[0]["model"] == "z-image"
@@ -51,14 +51,14 @@ def test_invalid_sdk_entry_never_reaches_target_or_admission(isolated_catalog, m
     monkeypatch.setattr(GenerationFacade, "_generate_on_target", forbidden)
     monkeypatch.setattr(GenerationFacade, "_invoke", forbidden)
     with pytest.raises(CapabilityValidationError):
-        GenerationFacade().image(entry="z-image", target="auto", **values)
+        GenerationFacade().image(entry="z-image", placement="auto", **values)
 
 
 def test_sdk_entry_selector_conflict_precedes_target(isolated_catalog, monkeypatch):
     monkeypatch.setattr(GenerationFacade, "_generate_on_target",
                         lambda *a, **k: pytest.fail("selector conflict reached target"))
     with pytest.raises(CapabilityValidationError, match="model and entry"):
-        GenerationFacade().image(entry="z-image", model="other", target="auto", prompt="boat")
+        GenerationFacade().image(entry="z-image", model="other", placement="auto", prompt="boat")
 
 
 def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monkeypatch, shipped_catalog):
@@ -98,7 +98,7 @@ def test_cli_json_and_sdk_entry_resolve_identically(isolated_catalog, monkeypatc
     file.write_text(json.dumps(values))
     assert cli.main(["image", "--entry", "z-image", "--inputs-json", str(file), "--dry-run"]) == 0
     cli_result = json.loads(capsys.readouterr().out)
-    sdk_result = GenerationFacade().image(entry="z-image", target="auto", dry_run=True, **values)
+    sdk_result = GenerationFacade().image(entry="z-image", placement="auto", dry_run=True, **values)
     assert cli_result == sdk_result
     assert len(calls) == 2 and calls[0]["inputs"] == calls[1]["inputs"]
 

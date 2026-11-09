@@ -14,12 +14,12 @@ Source citations use ``file:rev:line``. Revs: DEFAULTS donor ``9d3bb248``
 merged candidate (pre-main + Plan 01 + PINS + DEFAULTS + D1b). Every value marked
 ``RE-VERIFY`` must be checked on that tree (see drafts/NOTES.md).
 
-Interpretation of the D2 table's last column: both the ``--target auto`` cell and
-the ``--target runpod`` cell are dry runs with ``--json``. With no engine installed,
-``--target auto`` can only resolve through an attached ComfyUI, so the auto cells
+Interpretation of the D2 table's last column: both the ``--placement auto`` cell and
+the ``--placement runpod`` cell are dry runs with ``--json``. With no engine installed,
+``--placement auto`` can only resolve through an attached ComfyUI, so the auto cells
 attach a stand-in ComfyUI server (it answers ``/system_stats`` and
 ``/object_info`` only, never ``/prompt``) by saving it as the selected target with
-the public ``generate targets --target URL --save`` command. Auto then reads that
+the public ``generate targets --placement URL --save`` command. Auto then reads that
 saved target from ``$HOME/.vibecomfy/config.toml``
 (astrid/core/generation/targets.py:9d3bb248:66, resolve_target at :374-400).
 The fail-closed cases use a fresh HOME with no saved target.
@@ -69,7 +69,7 @@ class Slot:
     entry: str               # selected entry id expected in the JSON
     workflow: str            # VibeComfy workflow id, or the action for H3
     command: str             # generate subcommand
-    argv: tuple[str, ...]    # flags/positionals, without --target/--dry-run/--json
+    argv: tuple[str, ...]    # flags/positionals, without --placement/--dry-run/--json
     template: str | None     # ready template the stand-in ComfyUI must describe
     catalog: bool            # entry is a models.yaml catalog row (model_roles apply)
 
@@ -119,7 +119,7 @@ SLOT_IDS = [slot.name for slot in SLOTS]
 DEFAULT_ENTRY_IDS = frozenset(slot.entry for slot in SLOTS)
 
 # No-engine guidance (astrid/core/generation/preflight.py:9d3bb248:311-316).
-GPU_GUIDANCE = "needs a local GPU or --target runpod"
+GPU_GUIDANCE = "needs a local GPU or --placement runpod"
 EDGE_TTS = "Edge TTS"
 
 # Prompt-only video refusal (astrid/sdk/generation.py:9d3bb248:1560-1566).
@@ -312,15 +312,15 @@ def _inputs(root: Path) -> dict[str, str]:
     return {IMAGE: str(image), VIDEO: str(video), H3_INPUTS: str(h3)}
 
 
-def slot_argv(slot: Slot, files: dict[str, str], *, target: str, dry_run: bool = True) -> list[str]:
+def slot_argv(slot: Slot, files: dict[str, str], *, placement: str, dry_run: bool = True) -> list[str]:
     """Full argv after ``generate`` for one slot and target. Shared with tests/installed."""
     args = [slot.command]
     for item in slot.argv:
         for placeholder, value in files.items():
             item = item.replace(placeholder, value)
         args.append(item)
-    args += ["--target", target]
-    if target == "runpod":
+    args += ["--placement", placement]
+    if placement == "runpod":
         args += list(RUNPOD_FLAGS)
     if dry_run:
         args.append("--dry-run")
@@ -333,11 +333,11 @@ def _extra_argvs(files: dict[str, str], url: str = "http://127.0.0.1:8188") -> l
     return [
         ["list", "--json"],
         ["describe", "--entry", "h3", "--json"],
-        ["targets", "--target", url, "--save", "--json"],
-        ["video", "A lighthouse in gentle rain.", "--target", "auto", "--dry-run", "--json"],
-        ["video", "A lighthouse in gentle rain.", "--target", "runpod", *RUNPOD_FLAGS, "--dry-run", "--json"],
-        ["image", "A tiny blue lighthouse.", "--target", "auto", "--json"],
-        ["audio", "--mode", "tts", "--input", "text=The exact authored words.", "--target", "auto", "--json"],
+        ["targets", "--placement", url, "--save", "--json"],
+        ["video", "A lighthouse in gentle rain.", "--placement", "auto", "--dry-run", "--json"],
+        ["video", "A lighthouse in gentle rain.", "--placement", "runpod", *RUNPOD_FLAGS, "--dry-run", "--json"],
+        ["image", "A tiny blue lighthouse.", "--placement", "auto", "--json"],
+        ["audio", "--mode", "tts", "--input", "text=The exact authored words.", "--placement", "auto", "--json"],
     ]
 
 
@@ -526,12 +526,12 @@ class StandInComfy:
 
 @pytest.fixture
 def attached_auto(tmp_path):
-    """A CLI whose `--target auto` binds the stand-in through the public save command."""
+    """A CLI whose `--placement auto` binds the stand-in through the public save command."""
     cli = _cli(tmp_path)
     with StandInComfy(_stand_in_object_info()) as comfy:
-        # generate targets: --target cli.py:9d3bb248:207, --save :209, --json :211.
+        # generate targets: --placement cli.py:9d3bb248:207, --save :209, --json :211.
         # Saving does not probe (astrid/sdk/generation.py:9d3bb248:716-724).
-        saved = cli.run("targets", "--target", comfy.url, "--save", "--json")
+        saved = cli.run("targets", "--placement", comfy.url, "--save", "--json")
         assert saved.returncode == 0, _describe(saved)
         config = Path(cli.env["HOME"]) / ".vibecomfy" / "config.toml"
         assert config.is_file(), f"generate targets --save did not write {config}\n" + _describe(saved)
@@ -552,7 +552,7 @@ def test_every_flag_used_here_is_in_the_subcommand_help(tmp_path):
     """Assert each flag this module passes appears in that subcommand's --help."""
     cli = _cli(tmp_path)
     files = _inputs(tmp_path)
-    argvs = [slot_argv(slot, files, target=target) for slot in SLOTS for target in ("auto", "runpod")]
+    argvs = [slot_argv(slot, files, placement=target) for slot in SLOTS for target in ("auto", "runpod")]
     argvs += _extra_argvs(files)
     by_command: dict[str, set[str]] = {}
     for argv in argvs:
@@ -572,7 +572,7 @@ def test_every_flag_used_here_is_in_the_subcommand_help(tmp_path):
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_auto_dry_run_resolves_the_slot_default(slot, tmp_path, attached_auto):
     cli, comfy = attached_auto
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"))
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"))
     if slot.name in AUTO_ASSET_REFUSALS:
         assert result.returncode != 0, _describe(result)
         payload = _payload(result)
@@ -601,9 +601,9 @@ def test_auto_dry_run_resolves_the_slot_default(slot, tmp_path, attached_auto):
 
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_runpod_dry_run_resolves_the_slot_default(slot, tmp_path):
-    """Asserted as D1b leaves `--target runpod --dry-run` (tasks.md D1b, D2). No credential, no pod."""
+    """Asserted as D1b leaves `--placement runpod --dry-run` (tasks.md D1b, D2). No credential, no pod."""
     cli = _cli(tmp_path)
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="runpod"))
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="runpod"))
     assert result.returncode == 0, _describe(result)
     payload = _payload(result)
     _assert_entry_named(payload, slot)
@@ -641,7 +641,7 @@ def test_describe_each_default_entry(slot, tmp_path):
 def test_prompt_only_video_refuses_without_substitution(target, tmp_path):
     cli = _cli(tmp_path)
     flags = list(RUNPOD_FLAGS) if target == "runpod" else []
-    result = cli.run("video", "A lighthouse in gentle rain.", "--target", target, *flags, "--dry-run", "--json")
+    result = cli.run("video", "A lighthouse in gentle rain.", "--placement", target, *flags, "--dry-run", "--json")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert PROMPT_ONLY_VIDEO in text, _describe(result)
@@ -669,7 +669,7 @@ def test_no_engine_image_fails_closed_with_gpu_guidance(tmp_path):
     """Exact command from tasks.md D2 (no --dry-run). RE-VERIFY: see NOTES (Runtime connection order)."""
     _require_no_discovered_comfy()
     cli = _cli(tmp_path)
-    result = cli.run("image", "A tiny blue lighthouse.", "--target", "auto", "--json")
+    result = cli.run("image", "A tiny blue lighthouse.", "--placement", "auto", "--json")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert GPU_GUIDANCE in text, _describe(result)
@@ -684,7 +684,7 @@ def test_no_engine_tts_fails_closed_and_names_edge_tts(tmp_path):
     _require_no_discovered_comfy()
     cli = _cli(tmp_path)
     result = cli.run("audio", "--mode", "tts", "--input", "text=The exact authored words.",
-                     "--target", "auto", "--json")
+                     "--placement", "auto", "--json")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert GPU_GUIDANCE in text, _describe(result)
@@ -702,7 +702,7 @@ def _voice_slot() -> Slot:
 def test_attached_voice_passes_with_align_trust(tmp_path, attached_auto):
     cli, comfy = attached_auto
     slot = _voice_slot()
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "trust")
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"), "--align", "trust")
     assert result.returncode == 0, _describe(result)
     payload = _payload(result)
     assert payload["alignment"] == {"mode": "trust", "verified": False}, payload
@@ -714,7 +714,7 @@ def test_attached_voice_passes_with_align_trust(tmp_path, attached_auto):
 def test_attached_voice_fails_with_align_check_and_names_the_fixes(tmp_path, attached_auto):
     cli, comfy = attached_auto
     slot = _voice_slot()
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "check")
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"), "--align", "check")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert AUTO_ASSET_REFUSALS["voice"] in text, _describe(result)

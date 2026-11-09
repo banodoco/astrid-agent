@@ -13,7 +13,7 @@ to a pod. No separate B3 or second live runner.
 - [ ] Integrate R03/R04, A10 and F05/F06/F07, freeze A05 verbs, and prove
   the installed public generation, same-host follow and Runtime release-task
   route. At R05 merge `5075e4a73557a20cf7107417ef5ab7e939173e0e`,
-  `--target runpod` is parsed but preflight returns
+  `--placement runpod` is parsed but preflight returns
   `COMFY_TARGET_UNSUPPORTED`; do not run the template on that base.
 - [ ] M-INT supplies the exact I-11 parent tuple bytes/digest, Agent, Runtime,
   App, VibeComfy and provider/install identities and pins; M03 binds its
@@ -29,7 +29,7 @@ to a pod. No separate B3 or second live runner.
   parser, **not yet a runnable or frozen command**, is:
 
   ```sh
-  astrid generate image --target runpod --engine comfyui --entry '<V08-entry>' --inputs-json '<V08-inputs.json>' --project '<isolated-project>' --out '<V08-output>' --consent paid --max-usd '<approved-journey-cap>' --deadline '<approved-absolute-UTC-deadline>' --no-wait --json
+  astrid generate image --placement runpod --engine comfyui --entry '<V08-entry>' --inputs-json '<V08-inputs.json>' --project '<isolated-project>' --out '<V08-output>' --consent paid --max-usd '<approved-journey-cap>' --deadline '<approved-absolute-UTC-deadline>' --no-wait --json
   ```
 
   V08 must replace every placeholder, use the approved entry's exact required

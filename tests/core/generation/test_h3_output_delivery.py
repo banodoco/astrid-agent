@@ -80,7 +80,7 @@ def test_h3_video_cli_delivers_parent_media(tmp_path, monkeypatch, capsys, failu
     from astrid.core.pack.discovery import pack_discovery_scope
     with pack_discovery_scope():
         code = console.main(['generate', 'video', '--entry', 'h3', '--mode', 'transform',
-                             '--target', 'managed', '--inputs-json', str(inputs),
+                             '--placement', 'managed', '--inputs-json', str(inputs),
                              '--project', 'gpu-shakedown', '--consent', 'user_env',
                              '--out', str(out), '--json'])
     payload = json.loads(capsys.readouterr().out)

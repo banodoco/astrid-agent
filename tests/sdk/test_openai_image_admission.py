@@ -244,7 +244,7 @@ def test_unqualified_target_request_keeps_local_comfyui_route(monkeypatch):
         return marker
 
     monkeypatch.setattr(GenerationFacade, "_generate_on_target", capture)
-    result = GenerationFacade().image(target="auto", prompt="a lantern", dry_run=True)
+    result = GenerationFacade().image(placement="auto", prompt="a lantern", dry_run=True)
     assert result is marker
     assert seen["execution"] is None
     assert seen["model"] is None

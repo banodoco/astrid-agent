@@ -357,7 +357,7 @@ def launch_target(target: TargetRecord | TargetSelection, *, consent=(),
             fixes.append({"argv": list(plan.argv), "scope": "user_env", "details": {
                 "manual_start": True, "cwd": plan.root, "check_existing_process": True}})
         elif record is not None:
-            fixes.append({"argv": ["astrid", "generate", "targets", "--target",
+            fixes.append({"argv": ["astrid", "generate", "targets", "--placement",
                                     record.endpoint or "auto"], "scope": "read_only",
                           "details": {"manual_start": True}})
         envelope = readiness_envelope(target=record, issues=[{
