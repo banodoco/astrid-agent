@@ -1,9 +1,16 @@
+import importlib.util
 import re
 from pathlib import Path
+
+from astrid.installer.outcome import SUCCESS, Outcome
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = "docs/setup/SKILL.md"
+PLAIN_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh"
+FULL_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off"
+FRESH_LABEL = "for a fresh install, or after the choices step only"
+BANNER_ENDING = "Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus."
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 OS_LABEL = re.compile(r"\*\*(macOS or Linux|macOS|Linux|Windows)[^*]*:\*\*")
 OS_OF_LABEL = {"macOS or Linux": ["macOS", "Linux"], "macOS": ["macOS"], "Linux": ["Linux"], "Windows": ["Windows"]}
@@ -121,12 +128,26 @@ def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallb
         assert "--doctor" in body, number
 
 
-def test_skill_never_names_a_bare_astrid_command():
-    text = _skill()
+def _bare_astrid_hits(text: str) -> list:
+    # Old detection only: fenced lines that start with astrid, and backticked astrid commands.
+    hits = []
     for block in FENCE.findall(text):
         for line in block.splitlines():
-            assert not re.match(r"\s*(\$ )?astrid(\s|$)", line), line
-    assert not re.search(r"`astrid\s[^`]*`", text)
+            if re.match(r"\s*(\$ )?astrid(\s|$)", line):
+                hits.append(line)
+    hits += re.findall(r"`astrid\s[^`]*`", text)
+    return hits
+
+
+def test_skill_never_names_a_bare_astrid_command():
+    assert _bare_astrid_hits(_skill()) == []
+
+
+def test_bare_astrid_check_catches_prose_chained_and_fenced_forms():
+    # R1.7 proof: a copy of the skill that names a bare command must be caught.
+    for planted in ("run astrid doctor", "cd astrid-app && astrid doctor", "$ astrid backup --help"):
+        assert _bare_astrid_hits(_skill() + "\n" + planted + "\n"), planted
+    assert _bare_astrid_hits(_skill() + "\nthe `astrid` terminal command on\n") == []
 
 
 def test_skill_entry_routes_appear_once_each_in_order():
@@ -178,3 +199,48 @@ def test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given():
     assert "Install with these choices, or change one?" in route, route
     assert "run the brief's command exactly as given" in route, route
     assert "recommended" not in route, route
+    assert "Then follow step 2's success and failure rules." in route, route
+
+
+def test_success_first_lines_start_with_a_quoted_prefix_in_step_2():
+    # R1.1: the success list is read from installer outcomes, so it cannot drift.
+    quoted = re.findall(r"`(Astrid [^`]*)`", _steps(_skill())[2])
+    for kind in SUCCESS:
+        first = Outcome(kind=kind, still=1, start=1, target=2).headline()[0]
+        assert any(first.startswith(prefix) for prefix in quoted), (kind, first, quoted)
+
+
+def test_step_2_labels_the_full_flag_command_for_fresh_install_only():
+    # R1.3: the full-flag command must not read as safe for an existing install.
+    body = _steps(_skill())[2]
+    assert FRESH_LABEL in body
+    assert body.index(FRESH_LABEL) < body.index(FULL_UNIX_LINE)
+
+
+def test_step_1_keeps_the_brief_values_and_applies_a_changed_choice_alone():
+    # R1.5
+    body = _steps(_skill())[1]
+    assert "brief's values" in body
+    assert "unchanged" not in body
+
+
+def test_getting_started_tells_existing_installs_to_run_the_plain_line():
+    # R1.4: an existing install runs the plain line with no choice flags; saved choices stay.
+    guide = (ROOT / "docs/getting-started.md").read_text(encoding="utf-8")
+    assert "saved choices stay" in guide
+    assert "\n" + PLAIN_UNIX_LINE + "\n" in guide
+    assert guide.index("saved choices stay") < guide.index("\n" + PLAIN_UNIX_LINE + "\n")
+
+
+def test_readme_banner_ends_with_connected_check_and_names_no_missing_heading():
+    # R1.2: the banner ends with the Connected check and names no skill section.
+    spec = importlib.util.spec_from_file_location("render_readme", ROOT / "scripts/render_readme.py")
+    render_readme = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render_readme)
+    banner = render_readme.BANNER
+    prompt = banner.split("```text\n", 1)[1].split("\n```", 1)[0]  # the prompt the person copies
+    assert prompt.rstrip().endswith(BANNER_ENDING)
+    assert "Set up generation" not in banner
+    assert "#" not in prompt  # the prompt links the skill file only, no heading anchor
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert BANNER_ENDING in readme
