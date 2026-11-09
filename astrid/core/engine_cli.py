@@ -96,20 +96,28 @@ def _plain(value):
     return value
 
 
+# Policy minimum free space before an install starts (a proxy, not a measured byte count).
+ENGINE_INSTALL_MIN_FREE_BYTES = 10 * 1024 ** 3
+
+
 def main(argv=None, *, backend_factory=None):
     try:
         args = _parser().parse_args(argv)
         if not math.isfinite(args.deadline) or args.deadline <= 0 or args.deadline > 604800:
             raise RecipeValidationError('deadline must be greater than zero and at most 604800 seconds')
         recipe = load_recipe(args.engine, args.platform)
-        plan = plan_install(recipe, root=_root(args), placement=args.placement,
-                            models_root=getattr(args, 'models_root', None))
+        models_root = getattr(args, 'models_root', None)
+        if models_root is not None and args.placement != 'local':
+            # The model directory is a local install's volume cache; a RunPod pod binds its own.
+            raise UnsupportedPlacement('--models-root applies only to a local install')
+        plan = plan_install(recipe, root=_root(args), placement=args.placement, models_root=models_root)
         if args.command == 'install':
-            # Plan 32 T5h: an install is model-free; align fetches a job's missing model rows,
-            # so the plan quantifies no model bytes. Source and environment space is additional.
-            required = 0
+            # Plan 32 T5h: an install is model-free, so no model bytes are required. Sources and
+            # environments have no recorded sizes yet, so the install is gated on a policy floor:
+            # a proxy minimum, not a measured byte count.
+            required = ENGINE_INSTALL_MIN_FREE_BYTES
             disk = {'required_bytes': required, 'free_bytes': None, 'status': 'unknown',
-                    'basis': 'model_free_install'}
+                    'basis': 'minimum_free_space_floor'}
             if plan.placement == 'local' and plan.platform.startswith('linux-'):
                 _, _, _, free = _disk_anchor(plan.root)
                 disk.update(free_bytes=free, status='ok' if free >= required else 'blocked')

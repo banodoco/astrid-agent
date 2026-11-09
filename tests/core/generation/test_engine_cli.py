@@ -124,9 +124,9 @@ def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsy
         assert rc == 0 and seen == ['backend', 'install'] and not err
     rc, out, err = invoke(['install', 'comfyui', '--root', str(root), '--dry-run'], capsys)
     disk = json.loads(out)['disk_check']
-    assert rc == 0 and not err and disk == {'required_bytes': disk['required_bytes'], 'free_bytes': free,
-                                           'status': status, 'basis': 'locked_model_bytes'}
-    assert disk['required_bytes'] > 0 and not root.exists()
+    assert rc == 0 and not err and disk == {'required_bytes': engine_cli.ENGINE_INSTALL_MIN_FREE_BYTES,
+                                           'free_bytes': free, 'status': status, 'basis': 'minimum_free_space_floor'}
+    assert not root.exists()
 
 
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
@@ -142,7 +142,7 @@ def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
     code, out, err = invoke(['install', *BASE, '--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
     data = json.loads(out)
     assert code == 0 and not err
-    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+    assert {step['kind'] for step in data['plan']['steps']} == {'source', 'environment', 'start', 'health'}
     assert data['plan']['steps'][-1]['depends_on'] == ['start']
     assert data['recipe']['pins']['sha256'] and data['plan']['models_lock_sha256']
     assert data['recipe']['sources'][0]['pin']['revision']
@@ -182,32 +182,33 @@ def test_install_cache_argument_reaches_installer_without_changing_local_root(mo
         seen['plan'], seen['install'] = plan, kwargs
         return InstallResult(status='installed')
     monkeypatch.setattr(engine_cli, 'install_engine', install)
-    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models'], capsys,
+    rc, out, err = invoke(['install', *BASE, '--models-root', '/mounted/models'], capsys,
                           backend_factory=backend)
     assert rc == 0 and not err and json.loads(out)['status'] == 'installed'
-    assert seen['install']['model_cache_root'] == '/mounted/models'
+    # The model directory is part of the install plan; the engine root and backend are unchanged.
+    assert seen['plan'].models_root == '/mounted/models'
     assert seen['plan'].root == seen['backend']['root'] == ROOT
-    assert 'model_cache_root' not in seen['backend']
+    assert 'models_root' not in seen['backend']
     assert recorded_engine_root('comfyui') == ROOT
 
 
 def test_model_cache_is_an_install_only_argument(capsys):
     with pytest.raises(SystemExit) as caught:
-        engine_cli.main(['status', *BASE, '--model-cache-root', '/mounted/models'])
+        engine_cli.main(['status', *BASE, '--models-root', '/mounted/models'])
     assert caught.value.code == 2
     capsys.readouterr()
 
 
-@pytest.mark.parametrize(('cache', 'placement', 'error'), [
+@pytest.mark.parametrize(('models_root', 'placement', 'error'), [
     (ROOT, 'local', 'unsafe_path'),
     (ROOT + '/models', 'local', 'unsafe_path'),
     ('/TARGET_ONLY', 'local', 'unsafe_path'),
     ('relative/cache', 'local', 'unsafe_path'),
     ('/mounted/models', 'runpod', 'unsupported_placement'),
 ])
-def test_invalid_cache_binding_refuses_before_backend(cache, placement, error, capsys):
-    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--model-cache-root', cache],
-                          capsys, backend_factory=lambda **kw: pytest.fail('backend'))
+def test_invalid_models_root_refuses_before_backend(models_root, placement, error, capsys):
+    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--models-root', models_root], capsys,
+                          backend_factory=lambda **kw: pytest.fail('backend'))
     assert rc == 1 and not out and json.loads(err)['error']['code'] == error
 
 
@@ -248,7 +249,8 @@ def test_runner_execution_and_missing_status(capsys):
     result = json.loads(out)
     assert rc == 0 and result['status'] == 'installed' and result['qualified'] is False
     assert seen[-1]['root'] == ROOT and seen[-1]['placement'] == 'local'
-    assert any(event[0] == 'download' for event in context.events)
+    # Plan 32 T5h: the install is model-free, so it downloads nothing.
+    assert not any(event[0] == 'download' for event in context.events)
 
 
 def test_status_json_retains_integrity_gate_without_raw_target_output(monkeypatch, capsys):
@@ -490,23 +492,3 @@ def test_only_successful_explicit_local_installs_change_registration(monkeypatch
     assert rc == 0 and seen[-1] == other and recorded_engine_root(engine) is None
 
 
-def test_authenticated_cache_binding_reaches_installer(monkeypatch, capsys):
-    seen = {}
-    monkeypatch.setattr(engine_cli, 'install_engine',
-                        lambda plan, **kwargs: seen.update(kwargs) or InstallResult(status='installed'))
-    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models',
-                          '--model-cache-device', '99', '--model-cache-mount-id', '71'], capsys,
-                         backend_factory=lambda **kw: (object(), object()))
-    assert rc == 0 and not err
-    assert seen['model_cache_device'] == 99 and seen['model_cache_mount_id'] == 71
-
-
-@pytest.mark.parametrize('flags', [
-    ['--model-cache-device', '99'], ['--model-cache-mount-id', '71'],
-    ['--model-cache-root', '/mounted/models', '--model-cache-device', '99'],
-    ['--model-cache-root', '/mounted/models', '--model-cache-device', '-1', '--model-cache-mount-id', '71'],
-])
-def test_invalid_cache_binding_stops_before_backend(capsys, flags):
-    rc, out, err = invoke(['install', *BASE, *flags], capsys,
-                         backend_factory=lambda **kw: pytest.fail('unbound cache backend'))
-    assert rc == 1 and not out and json.loads(err)['error']['code'] == 'unsafe_path'
