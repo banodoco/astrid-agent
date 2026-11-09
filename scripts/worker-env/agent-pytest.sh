@@ -12,6 +12,6 @@ BT="$E/basetemp/$(date +%s%N)"
 exec env -i PATH="$E/venv/bin:$(cat "$E/uv-dir"):/usr/local/bin:/usr/bin:/bin" HOME="$E/home" TMPDIR="$E/tmp" \
   PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-}" VERIFY_SIDE="${VERIFY_SIDE:-}" \
   XDG_CACHE_HOME="$E/cache" LANG=C.UTF-8 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONSAFEPATH=1 \
-  PYTHONPATH="$E/vibecomfy" VIBECOMFY_SOURCE="$E/vibecomfy" ASTRID_RUNTIME_CHECKOUT="$E/runtime" \
+  PYTHONPATH="$E/vibecomfy" VIBECOMFY_SOURCE="$E/vibecomfy" ASTRID_RUNTIME_CHECKOUT="$E/runtime" ASTRID_VIBECOMFY_CHECKOUT="$E/vibecomfy" \
   ASTRID_VIBECOMFY_CHECKOUT="$E/vibecomfy" ASTRID_TEST_LIFECYCLE_CHECKOUT="$E/lifecycle" \
   "$E/venv/bin/python" -m pytest -p no:cacheprovider --basetemp="$BT" ${DES[@]+"${DES[@]}"} "$@"
