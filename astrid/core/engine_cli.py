@@ -18,9 +18,9 @@ from collections.abc import Mapping
 from astrid.core.generation.engine_contracts import (
     EngineError, EngineReinstallRequired, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
 )
-from astrid.core.generation.engine_recipe import load_model_lock, load_recipe
+from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import (
-    _check_install_identity, _disk_anchor, engine_status, install_engine, plan_install, validate_model_cache_root,
+    _check_install_identity, _disk_anchor, engine_status, install_engine, plan_install,
 )
 
 
@@ -45,9 +45,6 @@ def _parser():
                              help='Operation time limit in seconds (default: 3600)')
         if name == 'install':
             command.add_argument('--dry-run', action='store_true', help='Print the verified plan without executing it')
-            command.add_argument('--model-cache-root', help='Absolute mounted cache for verified locked model bytes')
-            command.add_argument('--model-cache-device', type=int, help='Authenticated cache filesystem device')
-            command.add_argument('--model-cache-mount-id', type=int, help='Authenticated cache Linux mount ID')
     return parser
 
 
@@ -105,26 +102,12 @@ def main(argv=None, *, backend_factory=None):
             raise RecipeValidationError('deadline must be greater than zero and at most 604800 seconds')
         recipe = load_recipe(args.engine, args.platform)
         plan = plan_install(recipe, root=_root(args), placement=args.placement)
-        cache = {}
         if args.command == 'install':
-            cache_root = validate_model_cache_root(
-                args.model_cache_root, engine_root=plan.root, platform=plan.platform, placement=plan.placement)
-            if cache_root is not None:
-                cache['model_cache_root'] = cache_root
-            for option in ('model_cache_device', 'model_cache_mount_id'):
-                value = getattr(args, option)
-                if value is not None:
-                    if cache_root is None or value < (1 if option.endswith('mount_id') else 0):
-                        raise UnsafePathError('model cache binding requires a cache root and valid identity')
-                    cache[option] = value
-            if ('model_cache_device' in cache) != ('model_cache_mount_id' in cache):
-                raise UnsafePathError('model cache requires both authenticated device and mount ID')
-        if args.command == 'install':
-            # The locked model total is the only quantified requirement in the
-            # plan. Source, environment and temporary space are additional.
-            required = sum(model.bytes for model in load_model_lock(recipe.models_lock).models)
+            # Plan 32 T5h: an install is model-free; align fetches a job's missing model rows,
+            # so the plan quantifies no model bytes. Source and environment space is additional.
+            required = 0
             disk = {'required_bytes': required, 'free_bytes': None, 'status': 'unknown',
-                    'basis': 'locked_model_bytes'}
+                    'basis': 'model_free_install'}
             if plan.placement == 'local' and plan.platform.startswith('linux-'):
                 _, _, _, free = _disk_anchor(plan.root)
                 disk.update(free_bytes=free, status='ok' if free >= required else 'blocked')
@@ -158,7 +141,7 @@ def main(argv=None, *, backend_factory=None):
         context, adapter = factory(engine=args.engine, platform=args.platform,
                                    placement=args.placement, root=plan.root, deadline=deadline)
         if args.command == 'install':
-            result = install_engine(plan, context=context, adapter=adapter, deadline=deadline, **cache)
+            result = install_engine(plan, context=context, adapter=adapter, deadline=deadline)
             if args.placement == 'local' and args.root is not None and result.status == 'installed':
                 # Run-path resolution (action run, the pack host) finds this install without an env var.
                 from .generation.engine_local_endpoint import record_engine_root

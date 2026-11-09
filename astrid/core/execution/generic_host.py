@@ -6259,10 +6259,12 @@ def _local_machine(inputs: Mapping[str, Any]) -> dict[str, Any]:
             "device": device if device not in (None, "") else "auto"}
 
 
-def _align_trust(task: Mapping[str, Any]) -> bool:
+def _machine_align_mode(task: Mapping[str, Any]) -> str:
+    """The align mode a rented machine runs: the admitted one, else align (an empty machine has nothing to check)."""
     intent = _task_generation_intent(task)
     metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
-    return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
+    mode = metadata.get("align") if isinstance(metadata, Mapping) else None
+    return mode if mode in ("align", "check", "trust") else "align"
 
 
 def _align_admission(task: Mapping[str, Any]) -> dict[str, str]:
@@ -6996,7 +6998,7 @@ class GenericPackHost:
             inputs={name: value for name, value in inputs.items() if value is not None},
             invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
             scratch=root, progress_path=root / ".astrid-progress.json",
-            align="trust" if _align_trust(task_data) else "align",
+            align=_machine_align_mode(task_data),
         )
         def claimed(lease):
             # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).

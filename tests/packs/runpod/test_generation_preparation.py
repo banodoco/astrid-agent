@@ -337,70 +337,27 @@ def test_retained_install_failure_stays_with_a3_and_does_not_replay(retained):
     assert c.creates == 1 and c.deletes == ["pod-1"]
 
 
-def test_retained_slow_model_download_stops_at_preparation_seconds_and_releases(retained, monkeypatch, tmp_path):
-    """--preparation-seconds bounds the whole preparation, including the model download."""
-    import time as real_time
-    from astrid.core.generation import engine_runner, model_downloader
-    from tests.core.generation import test_engine_runner as canonical
-
+def test_retained_install_is_model_free_and_settles_through_a3(retained):
+    """Plan 32 T5h: preparation installs the engine only. No model transfer starts during it,
+    so a slow model download cannot consume the preparation deadline, and A3 still settles
+    and cleans up the lease."""
     c = retained
-    assert c.grant.preparation_seconds == 60
-    # The paid claim lifetime (USD cap at the quoted rate) alone would not bound preparation.
-    assert c.grant.max_usd / c.actual_rate * 3600 > 10 * c.grant.preparation_seconds
+    downloads = []
 
-    class FakeTime:  # one fake clock for controller, pod-side runner and downloader
-        def __getattr__(self, name):
-            return getattr(real_time, name)
-        monotonic = staticmethod(c.clock)
-        sleep = staticmethod(lambda seconds: None)
-    for module in (engine_runner, model_downloader, canonical):
-        monkeypatch.setattr(module, "time", FakeTime())
-    c.placement._clock = c.clock
-    c.monotonic = c.clock
-    c.install_uses_command_deadline = True
-    c.context.deadline = c.clock() + 10 ** 7
-    started = c.clock()
-    transferred = []
+    def reject_download(model, **kwargs):
+        downloads.append(model)
+        raise AssertionError("model download reached during the model-free install")
 
-    class SlowRange:  # a stalled transfer: 1 KiB per 5 fake seconds, never complete
-        status = 206
-
-        def __init__(self, request):
-            offset, end = request.headers["Range"].removeprefix("bytes=").split("-")
-            self.headers = {"Content-Range": f"bytes {offset}-{end}/{self.total}"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self, size):
-            c.clock.now += 5
-            transferred.append(1024)
-            return b"\0" * min(1024, size)
-
-    def download(model, *, models_root, deadline):
-        SlowRange.total = model.bytes
-        return model_downloader.download_model(
-            model, models_root=str(tmp_path / "models"), deadline=deadline,
-            opener=lambda request, timeout: SlowRange(request))
-    c.context.download_model = download
-
-    with pytest.raises(Exception, match=r"preparation deadline of 60s exceeded during engine install"):
-        c.adapter.prepare(c.request, c.grant)
-    # The machine releases a failed preparation through the same A3 owner.
-    c.host.release(reason="preparation_failed")
-    assert transferred, "the fake download never started"
-    assert c.clock() - started <= c.grant.preparation_seconds + 5
+    c.context.download_model = reject_download
+    prepared = c.adapter.prepare(c.request, c.grant)
+    assert downloads == []
     install = next(line for line in c.pod.job_log if "engines install" in line)
-    assert float(install.split("--deadline ", 1)[1].split()[0]) <= c.grant.preparation_seconds
-    record = c.read()
-    job = record["lease"]["preparation"]["job"]
-    assert record["lease"]["preparation"]["state"] == "unresolved"
-    assert c.pod.cancelled == [job["id"]] and job["state"] == "cancelled"
-    assert c.creates == 1 and c.deletes == ["pod-1"]
-    assert record["state"] == "cleanup_complete"
+    assert "--model-cache" not in install
+    assert c.read()["lease"]["preparation"]["state"] == "prepared"
+    c.host.settle(prepared.lease)
+    c.clock.advance(1800)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
 
 
 def test_retained_snapshot_bytes_changed_refuses_warm_reinstall(retained):

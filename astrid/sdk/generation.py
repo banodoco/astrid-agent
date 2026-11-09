@@ -331,7 +331,8 @@ def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, prep
     controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
     controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                     execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-    controls['align'] = _align_mode(align)
+    if align is not None:
+        controls['align'] = _align_mode(align)
     return controls
 
 
@@ -949,7 +950,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
@@ -961,7 +962,8 @@ class GenerationFacade:
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                             execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-            controls['align'] = _align_mode(align)
+            if align is not None:
+                controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
                 raise GenerationInputError('target workflow requires one local workflow path')
             if inputs is not None and not isinstance(inputs, Mapping):
@@ -1108,7 +1110,8 @@ class GenerationFacade:
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
-        align = _align_mode(controls.pop('align', 'check'))
+        requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
+        align = _align_mode(requested_align or 'check')
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
@@ -1442,7 +1445,7 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": align} if align != "check" else {})},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": requested_align} if requested_align is not None else {})},
                 },
                 **asset_arguments, **controls,
             )
@@ -1535,7 +1538,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
         arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
@@ -1763,7 +1766,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
         inputs = _public_input_values(inputs)
@@ -1933,7 +1936,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
         """Generate audio through the typed action or a selected workflow target."""

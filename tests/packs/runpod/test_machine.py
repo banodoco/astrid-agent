@@ -394,3 +394,25 @@ def test_the_job_records_its_run_and_agent_folders_in_active_job_json(tmp_path):
     subprocess.run(["bash", str(script)], check=True)
     assert json.loads(active.read_text()) == {"run_id": "abc", "task": "t", "attempt": "a",
                                               "run_dir": "/root/astrid/runs/abc", "job_dir": str(job_dir)}
+
+
+def test_claim_sizes_the_volume_by_the_job_manifest_rows(machine_case, monkeypatch):
+    """Plan 32 T5h: the claim hands the job's manifest rows to the volume check, not an empty tuple."""
+    from astrid.core.generation import entries as catalog
+    from astrid.packs.runpod import generation as runpod_generation
+
+    c = machine_case
+    rows = ({"name": "need.safetensors", "subdir": "vae", "size": 10 ** 12},)
+    monkeypatch.setattr(catalog, "find_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(catalog, "requirements", lambda entry, inputs=None: {"models": list(rows)})
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after the volume requirement is captured")
+
+    monkeypatch.setattr(runpod_generation, "prepare_retained_generation", capture)
+    with pytest.raises(RuntimeError, match="stop after"):
+        c.machine.claim(c.job())
+    assert tuple(captured["manifest_rows"]) == rows
+    assert c.machine._require().installation.model_bytes(captured["manifest_rows"]) == 10 ** 12

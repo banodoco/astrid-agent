@@ -309,9 +309,6 @@ class ExecutionContext(Protocol):
                           *, deadline: Deadline) -> None: ...
     def file_fact(self, path: TargetPath, *, hash_bytes: bool,
                   deadline: Deadline) -> FileFact: ...
-    def download_model(self, model: ModelSpec, *, models_root: TargetPath,
-                       deadline: Deadline, model_cache_root: TargetPath | None = None,
-                       model_cache_device: int | None = None, model_cache_mount_id: int | None = None) -> DownloadResult: ...
     def acquire_install_lock(self, root: TargetPath, *,
                              deadline: Deadline) -> ContextManager[None]: ...
 
@@ -332,7 +329,7 @@ class PlatformAdapter(Protocol):
                       *, deadline: Deadline) -> CommandRequest: ...
 
 
-StepKind: TypeAlias = Literal["source", "environment", "model", "start", "health"]
+StepKind: TypeAlias = Literal["source", "environment", "start", "health"]
 
 
 @dataclass(frozen=True)

@@ -670,15 +670,17 @@ def _comfyui_version(transport, root, comfy_root, port, health_path, deadline):
     return matches[0]
 
 
-def _model_root_binding(root, recipe, deadline):
-    """Canonical model lock inventory, fully byte-verified with no extra files."""
-    from . import engine_recipe
+def _model_root_binding(root, receipt, deadline):
+    """The receipt's verified model rows (none on a model-free install), byte-verified."""
     from .model_root import (ModelRootBindingError, canonical_model_inventory_digest,
                              validate_model_root_binding)
 
     inventory = []
-    for model in engine_recipe.load_model_lock(recipe.models_lock).models:
-        destination = PurePosixPath(model.destination)
+    prefix = root + "/models/"
+    for model in getattr(receipt, "models", ()) or ():
+        if getattr(model, "verified", None) is not True or not str(getattr(model, "path", "")).startswith(prefix):
+            raise ReadinessError("installed receipt model is not a verified model-root row")
+        destination = PurePosixPath(model.path[len(prefix):])
         subdir = str(destination.parent)
         inventory.append({"name": destination.name, "sha256": "sha256:" + model.sha256,
                           "size": model.bytes, "subdir": "" if subdir == "." else subdir})
@@ -756,9 +758,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         # 2. Canonical installed status re-verifies sources, locks, models, ownership, health.
         current = (status(root=root, deadline=deadline) if status is not None
                    else canonical_status(root=root, deadline=deadline, engine=engine))
-        lock = engine_recipe.load_model_lock(recipe.models_lock)
-        expected_models = tuple((m.name, root + "/models/" + m.destination, m.bytes, m.sha256)
-                                for m in lock.models)
+        # The receipt's own verified model rows (none on a model-free install), not the whole lock.
+        expected_models = tuple((m.model, m.path, m.bytes, m.sha256) for m in receipt.models)
         if (current is None or current.status != "installed" or current.qualified is not False
                 or current.receipt_id != receipt.receipt_id or current.root != root
                 or current.recipe_sha256 != receipt.recipe_sha256
@@ -788,8 +789,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         version = _comfyui_version(transport, root, comfy_root, recipe.start.port,
                                    recipe.health.path, deadline)
 
-        # 4. Canonical model lock, fully byte-verified, strict existing binding.
-        model_root = _model_root_binding(root, recipe, deadline)
+        # 4. The receipt's verified model rows, byte-verified (empty on a model-free install).
+        model_root = _model_root_binding(root, receipt, deadline)
 
         # 5. Bounded target hardware and disk probes.
         measured = (hardware or probe_hardware)(deadline)

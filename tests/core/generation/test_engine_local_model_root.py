@@ -142,10 +142,12 @@ def test_unverified_model_hash_is_refused_naming_the_install_action(tmp_path, da
     assert INSTALL in str(caught.value)
 
 
-def test_a_receipt_with_no_verified_models_is_refused(tmp_path):
+def test_a_model_free_receipt_derives_an_empty_binding(tmp_path):
+    """Plan 32 T5h: a model-free install records no models. Its binding is empty, and align
+    fetches each job's rows, so an empty receipt is valid rather than refused."""
     root, _models = _install(tmp_path)
-    with pytest.raises(EngineNotInstalled, match="no verified models"):
-        _derive(root, _receipt(()))
+    binding = _derive(root, _receipt(()))
+    assert list(binding.inventory) == []
 
 
 def test_binding_from_receipt_needs_no_engine_status(tmp_path):
