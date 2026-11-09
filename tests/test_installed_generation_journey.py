@@ -229,8 +229,8 @@ class Client:
         return Result({'task_id': 'release-task-a', 'state': 'cleanup_pending',
                        'idempotency_key': 'runpod-release:operation-a'})
 cli._open_client = lambda: nullcontext(Client())
-description = command(['describe', '--target', 'runpod'])
-release = command(['release', '--engine', 'comfyui', '--target', 'runpod', '--no-wait'])
+description = command(['describe', '--placement', 'runpod'])
+release = command(['release', '--engine', 'comfyui', '--placement', 'runpod', '--no-wait'])
 assert events == [['runpod.status', 'action', True], ['runpod.release', 'action', False]]
 print(json.dumps({'origin': astrid.__file__, 'description': description, 'release': release}))
 """, saved_target=True)

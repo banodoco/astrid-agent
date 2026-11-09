@@ -195,7 +195,7 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
         spec = parent.data['spec'].get('spec', parent.data['spec'])
         plan = spec['inputs']['plan']
         assert plan['workflow_members'] and plan['workflow_inputs_sha256'].startswith('sha256:')
-        assert plan['controls']['target_policy']['offer_digest'] == quote['offer_digest']
+        assert plan['controls']['placement_policy']['offer_digest'] == quote['offer_digest']
         assert not getattr(client, '_generation_prepared_owners', {})
         outputs = result.outputs['managed_outputs']
         digests = {row.get('object_id') or row.get('digest') for row in outputs}

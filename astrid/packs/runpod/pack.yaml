@@ -857,7 +857,7 @@ actions:
     short_description: Inspect the retained target and optionally observe an offer.
     description: Read the retained host's target custody and current offer.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Provider policy snapshot.
@@ -883,7 +883,7 @@ actions:
     short_description: Save validated RunPod preferences through the retained owner.
     description: Persist GPU, budget ceiling, volume and idle preferences without authorizing spend.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Explicit RunPod policy containing validated setup preferences.
@@ -904,7 +904,7 @@ actions:
     short_description: List the retained owner's current RunPod lease, if any.
     description: Read zero or one lease from the retained owner without scanning the provider account.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Explicit policy selecting the retained RunPod owner.
@@ -925,7 +925,7 @@ actions:
     short_description: Release the exact retained target.
     description: Ask the retained host to drain and verify release of its target.
     inputs:
-    - name: target_policy
+    - name: placement_policy
       type: string
       required: true
       description: Provider policy snapshot.

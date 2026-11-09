@@ -447,13 +447,13 @@ def test_auto_probes_attached_before_managed_readiness(monkeypatch):
     assert raised.value.code == "engine_not_found"
     fixes = raised.value.to_envelope()['fixes']
     import shlex
-    assert "--target http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
+    assert "--placement http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
     assert raised.value.fix == 'astrid engines install comfyui --platform linux-x86_64-cu130 --placement local'
     assert fixes[0]['argv'] == [
         'astrid', 'engines', 'install', 'comfyui', '--platform',
         'linux-x86_64-cu130', '--placement', 'local']
     assert fixes[1]['argv'] == [
-        'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+        'astrid', 'generate', 'image', '--placement', 'http://127.0.0.1:8188']
     assert events == ["/system_stats", "registered-managed"]
     module_probe.assert_not_called()
     runtime_probe.assert_not_called()
@@ -507,7 +507,7 @@ def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code)
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target=target, prompt="one boat")
     assert raised.value.code == code
-    assert "--target" in raised.value.fix
+    assert "--placement" in raised.value.fix
 
 
 def test_runpod_requires_fresh_paid_authority_before_admission(monkeypatch):
@@ -578,7 +578,7 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and kwargs['recovery_path'] == receipt and not kwargs['wait']
     inputs = kwargs['inputs']
-    assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
+    assert json.loads(inputs['placement_policy'])['kind'] == 'runpod'
     assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
     assert inputs['generation_intent']['modality'] == 'audio'
     # Without an entry the slot's preferred default owns the route; its declared
@@ -590,7 +590,7 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
 
 
 @pytest.mark.parametrize('explicit', [False, True])
-def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypatch, explicit):
+def test_foley_runpod_sound_effects_admits_with_placement_policy(tmp_path, monkeypatch, explicit):
     """Sound effects is an ordinary slot: resolves, then admits one task with a RunPod target policy."""
     import json
     _installed_audio_entry(tmp_path, monkeypatch, 'sfx')
@@ -610,7 +610,7 @@ def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypa
     assert len(calls) == 1
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and not kwargs['wait']
-    assert json.loads(kwargs['inputs']['target_policy'])['kind'] == 'runpod'
+    assert json.loads(kwargs['inputs']['placement_policy'])['kind'] == 'runpod'
 
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
@@ -787,7 +787,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             receipt_path = tmp_path / 'admission.json'
             code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                 '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
-                '--target', f'http://127.0.0.1:{server.server_port}',
+                '--placement', f'http://127.0.0.1:{server.server_port}',
                 '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
             captured = capsys.readouterr()
             assert code == 0, captured.out + captured.err
@@ -819,7 +819,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
             try:
                 code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
                     '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
-                    '--target', f'http://127.0.0.1:{server.server_port}',
+                    '--placement', f'http://127.0.0.1:{server.server_port}',
                     '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
             finally:
                 host.shutdown()

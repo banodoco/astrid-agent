@@ -180,7 +180,7 @@ def installed(tmp_path_factory):
         assert done.returncode == 0, "offline wheel build failed; inspect retained wheel log"
         shutil.rmtree(stage)
     done = _run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--no-compile",
-                 "--target", target, *wheels.glob("*.whl")], cwd=build, env=env, log=build / "install.log")
+                 "--placement", target, *wheels.glob("*.whl")], cwd=build, env=env, log=build / "install.log")
     assert done.returncode == 0, "offline wheel installation failed; inspect retained install.log"
     (target / "action_wheel_observer.py").write_text(_OBSERVER)
     hook = Path(sysconfig.get_paths()["purelib"]) / ("astrid_action_wheel_" + uuid4().hex + ".pth")

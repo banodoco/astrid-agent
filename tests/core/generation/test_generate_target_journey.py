@@ -587,7 +587,7 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
             try:
                 code = console.main([
                     "generate", "image", "A tiny blue lighthouse.",
-                    "--entry", entry_id, "--target", "auto",
+                    "--entry", entry_id, "--placement", "auto",
                     "--project", project.data["project_id"], "--out", str(tmp_path / 'delivered'), "--json",
                 ])
             finally:

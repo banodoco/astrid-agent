@@ -1677,7 +1677,7 @@ def _execute_verified_pass(
             **bundle_inputs,
             "python_execution_consent": "confirmed",
             **({} if endpoint is not None or (managed_client is not None and
-                managed_client.plan.get("controls", {}).get("target_policy") is not None) else {"workflow_inputs": json.dumps(
+                managed_client.plan.get("controls", {}).get("placement_policy") is not None) else {"workflow_inputs": json.dumps(
                 compilation["workflow_inputs"],
                 sort_keys=True,
                 separators=(",", ":"),
@@ -2702,19 +2702,19 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry,
     if not isinstance(project, str) or not project:
         raise AstridError("H3 Runtime project has no canonical identity")
     controls = public_controls(inputs)
-    target_policy = inputs.get("target_policy")
-    if target_policy is not None:
-        if (not isinstance(target_policy, Mapping) or h3_endpoint is not None
+    placement_policy = inputs.get("placement_policy")
+    if placement_policy is not None:
+        if (not isinstance(placement_policy, Mapping) or h3_endpoint is not None
                 or controls["run_execution_request"] is not None or inputs.get("prepared_worker") is not None):
             raise AstridError("host target policy requires ordinary local child placement")
         _validate_endpoint_inputs({key: value for key, value in inputs.items()
-                                   if key not in {"target_policy", "project"}})
-        controls["target_policy"] = json.loads(json.dumps(target_policy, allow_nan=False))
+                                   if key not in {"placement_policy", "project"}})
+        controls["placement_policy"] = json.loads(json.dumps(placement_policy, allow_nan=False))
     if h3_endpoint is not None:
         if controls["run_execution_request"] is not None or inputs.get("prepared_worker") is not None:
             raise AstridError("H3 endpoint executors require the default local target")
         controls["h3_endpoint"] = json.loads(json.dumps(h3_endpoint))
-    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved", "target_policy"} | PUBLIC_CONTROLS):
+    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved", "placement_policy"} | PUBLIC_CONTROLS):
         raise AstridError("unsupported tracked H3 parent controls or caller-supplied roots")
     if type(inputs.get("editorial_approved", False)) is not bool:
         raise AstridError("H3 editorial approval must be an explicit boolean")
@@ -2827,9 +2827,9 @@ class ManagedParentClient:
         if stage is None:
             raise AstridError("H3 parent attempted an undeclared stage")
         values = dict(inputs)
-        target_policy = self.plan.get("controls", {}).get("target_policy")
-        if target_policy is not None and stage == "run":
-            values["target_policy"] = json.dumps(target_policy, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        placement_policy = self.plan.get("controls", {}).get("placement_policy")
+        if placement_policy is not None and stage == "run":
+            values["placement_policy"] = json.dumps(placement_policy, sort_keys=True, separators=(",", ":"), allow_nan=False)
         endpoint = self.plan.get("controls", {}).get("h3_endpoint")
         if endpoint is not None and stage == "run":
             if (values.get("comfy_url") != endpoint["target"]["comfy_url"]

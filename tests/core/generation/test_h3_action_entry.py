@@ -178,7 +178,7 @@ def test_public_prompt_only_video_refuses_before_runtime_without_substitution(
     with pytest.raises(CapabilityValidationError, match="Prompt-only video requires") as exc:
         generate.video(prompt="a moving scene", target=target, client=client)
     assert exc.value.readiness["entry"] is None
-    assert console.main(["generate", "video", "a moving scene", "--target", target]) == 2
+    assert console.main(["generate", "video", "a moving scene", "--placement", target]) == 2
     captured = capsys.readouterr()
     error = captured.out + captured.err
     assert "Prompt-only video requires a reference or an H3 request" in error

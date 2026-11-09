@@ -169,7 +169,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
-            "--target", action=_Once, default='auto', metavar="TARGET",
+            "--placement", action=_Once, default='auto', metavar="PLACEMENT",
             help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
                   else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
         )
@@ -197,7 +197,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('workflow', nargs='?')
     command.add_argument("--entry")
     command.add_argument("--mode")
-    command.add_argument('--target', action=_Once, help='Describe the retained RunPod target.')
+    command.add_argument('--placement', action=_Once, help='Describe the retained RunPod target.')
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
@@ -205,7 +205,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
     command.add_argument('--replace', action='store_true')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
-    command.add_argument("--target", action=_Once, default="auto")
+    command.add_argument("--placement", action=_Once, default="auto")
     command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
     command.add_argument("--project")
     command.add_argument("--out")
@@ -230,13 +230,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--consent', action='append', choices=('user_env',), default=[])
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
-    command.add_argument('--target', action=_Once, default='auto')
+    command.add_argument('--placement', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument('--save', action='store_true')
     command.add_argument('--input', action='append', default=[])
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('launch', help='Launch or re-probe only the selected human ComfyUI.')
-    command.add_argument('--target', action=_Once, default='auto')
+    command.add_argument('--placement', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--timeout', action=_Once, type=float, default=10.0,
@@ -244,7 +244,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
-    command.add_argument('--target', required=True)
+    command.add_argument('--placement', required=True)
     command.add_argument('--no-wait', action='store_true')
     command.add_argument('--json', action='store_true')
     return parser
@@ -283,7 +283,7 @@ def _controls(parsed):
 
 def _targets_command(parsed):
     from astrid.core.generation.entries import merge_input_values
-    payload = _generate_facade().targets(target=parsed.target, engine=parsed.engine,
+    payload = _generate_facade().targets(placement=parsed.placement, engine=parsed.engine,
         save=parsed.save, inputs=merge_input_values(assignments=parsed.input))
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -317,7 +317,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     def generate(client=None):
         facade = _generate_facade()
         if not parsed.as_entry:
-            return facade.workflow(workflow=path, target=parsed.target, mode=parsed.mode,
+            return facade.workflow(workflow=path, placement=parsed.placement, mode=parsed.mode,
                 inputs=values, dry_run=parsed.dry_run, client=client,
                 project=parsed.project, out=parsed.out, **_controls(parsed))
         from astrid.sdk.generation import _load_model_registry
@@ -327,7 +327,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
             selected = dict(entry, modes=[mode], needs=[need for need in entry['needs']
                 if need.get('ambiguity') != 'audio mode is unknown; choose tts, music, or sfx'])
         return facade._generate_on_target(registry=_load_model_registry(), model=None,
-            mode=mode, modality=selected['kind'], target=parsed.target, execution=None,
+            mode=mode, modality=selected['kind'], placement=parsed.placement, execution=None,
             inputs=values, dry_run=False, workflow_entry=selected,
             client=client, project=parsed.project, out=parsed.out, **_controls(parsed))
     if parsed.dry_run:
@@ -367,13 +367,13 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'launch':
-        payload = _generate_facade().launch(target=parsed.target, engine=parsed.engine,
+        payload = _generate_facade().launch(placement=parsed.placement, engine=parsed.engine,
             consent=parsed.consent, timeout=parsed.timeout)
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 2 if payload['status'] == 'blocked' else 0
     if parsed.modality == 'release':
         with _open_client() as client:
-            result = _generate_facade().release(engine=parsed.engine, target=parsed.target,
+            result = _generate_facade().release(engine=parsed.engine, placement=parsed.placement,
                                                client=client, wait=not parsed.no_wait)
         if getattr(result, 'ok', True) is False:
             from astrid.core.generation.preflight import generation_error
@@ -383,11 +383,11 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if parsed.modality == "describe":
-        if parsed.target is not None:
+        if parsed.placement is not None:
             if parsed.entry is not None or parsed.workflow is not None:
                 parser.error('target describe cannot also select an entry or workflow')
             with _open_client() as client:
-                description = _generate_facade().describe(target=parsed.target, engine=parsed.engine, client=client)
+                description = _generate_facade().describe(placement=parsed.placement, engine=parsed.engine, client=client)
             print(json.dumps(description, indent=2, sort_keys=True))
             return 0
         from astrid.core.generation.entries import describe_entry
@@ -441,7 +441,7 @@ def _main(argv: list[str]) -> int:
     from astrid.sdk.exceptions import AstridSDKError
 
     kwargs: dict[str, Any] = {
-        "target": parsed.target,
+        "placement": parsed.placement,
         "dry_run": parsed.dry_run,
         **values,
         **_controls(parsed),
@@ -467,7 +467,7 @@ def _main(argv: list[str]) -> int:
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
-        elif description is not None and description["source"] == "action" and parsed.target != 'runpod':
+        elif description is not None and description["source"] == "action" and parsed.placement != 'runpod':
             from astrid.sdk.generation import _action_client_scope
             with _action_client_scope(_open_client) as current_client:
                 result = generate(**kwargs)
@@ -479,7 +479,7 @@ def _main(argv: list[str]) -> int:
             try:
                 client_scope = _open_client()
             except AstridSDKError:
-                if parsed.target != 'runpod' and _no_generation_target(parsed.target):
+                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement):
                     # No workspace and no engine or ComfyUI: the target guidance
                     # (the refusal a dry run gives) is the actionable answer.
                     generate(**{**kwargs, "dry_run": True})
@@ -496,7 +496,7 @@ def _main(argv: list[str]) -> int:
         selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
         raise generation_error(exc, fixes=[{
             'argv': ['astrid', 'generate', 'describe', *selector] if selector else
-                    ['astrid', 'generate', 'targets', '--target', parsed.target],
+                    ['astrid', 'generate', 'targets', '--placement', parsed.placement],
             'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error

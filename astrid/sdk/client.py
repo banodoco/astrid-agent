@@ -689,7 +689,7 @@ class AstridClient:
             raise generation_error(
                 ValueError("release refuses attached or unmanaged targets; only the managed engine can be released"),
                 code="release_refused", details={"field": "target"},
-                fixes=[{"argv": ["astrid", "generate", "targets", "--target", target],
+                fixes=[{"argv": ["astrid", "generate", "targets", "--placement", target],
                         "scope": "read_only", "details": {}}],
             )
         registered = _registered_managed_engine()
@@ -697,7 +697,7 @@ class AstridClient:
             raise generation_error(
                 ValueError("no managed ComfyUI engine is installed or registered"),
                 code="missing_dependency", details={"field": "target"},
-                fixes=[{"argv": ["astrid", "generate", "targets", "--target", "managed"],
+                fixes=[{"argv": ["astrid", "generate", "targets", "--placement", "managed"],
                         "scope": "read_only", "details": {}}],
             )
         from urllib.parse import urlsplit

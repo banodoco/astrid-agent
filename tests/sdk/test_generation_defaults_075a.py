@@ -132,7 +132,7 @@ def test_no_gpu_envelope_names_target_and_explicit_voice_option(mode, monkeypatc
     assert envelope['status'] == 'blocked' and envelope['task_id'] is None
     assert envelope['issues'][0]['code'] == 'engine_not_found'
     message = envelope['issues'][0]['message']
-    assert 'needs a local GPU or --target runpod' in message
+    assert 'needs a local GPU or --placement runpod' in message
     assert ('Edge TTS' in message) == (mode == 'tts')
     if mode == 'tts':
         assert 'generation.generate_speech with provider=edge-tts' in message
@@ -157,5 +157,5 @@ def test_installed_engine_refusal_retains_default_context(mode, monkeypatch):
     assert envelope['entry'] == {'id': 'preferred', 'mode': mode, 'engine': 'comfyui'}
     assert envelope['issues'][0]['code'] == 'engine_not_found'
     message = envelope['issues'][0]['message']
-    assert 'needs a local GPU or --target runpod' in message
+    assert 'needs a local GPU or --placement runpod' in message
     assert ('Edge TTS' in message) == (mode == 'tts')

@@ -53,7 +53,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
     target = "http://127.0.0.1:8188"
     assert cli.main([
         modality, "a dog", "--entry", "flux-schnell", "--mode", "edit",
-        "--target", target, "--project", "demo", "--out", "export",
+        "--placement", target, "--project", "demo", "--out", "export",
         "--edit", "reference.png", "--width", "768", "--height", "512",
         "--steps", "8", "--seed", "41", "--cfg", "1.5", "--json",
     ]) == 0
@@ -70,7 +70,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
 def test_dry_run_is_forwarded_to_sdk_without_a_second_invocation(monkeypatch, capsys):
     calls = _facade(monkeypatch)
     monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("dry-run connected to Runtime"))
-    assert cli.main(["image", "a dog", "--model", "flux-schnell", "--target", "managed", "--dry-run"]) == 0
+    assert cli.main(["image", "a dog", "--model", "flux-schnell", "--placement", "managed", "--dry-run"]) == 0
     assert len(calls) == 1
     assert calls[0]["model"] == "flux-schnell"
     assert calls[0]["target"] == "managed"
@@ -100,7 +100,7 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
         error = CapabilityPreconditionError("No Comfy target is ready.")
         error.code = "COMFY_TARGET_UNAVAILABLE"
         error.field = "target"
-        error.fix = "Use --target http://127.0.0.1:8188 after starting ComfyUI."
+        error.fix = "Use --placement http://127.0.0.1:8188 after starting ComfyUI."
         raise error
 
     monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=fail))
@@ -109,7 +109,7 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert not captured.out
     assert "code: target_unreachable" in captured.err
-    assert "fix: astrid generate targets --target auto" in captured.err
+    assert "fix: astrid generate targets --placement auto" in captured.err
     assert "this is a bug" not in captured.err
 
 
@@ -178,8 +178,8 @@ def test_installed_console_dispatches_generate_to_the_gateway(monkeypatch, modal
 
     calls = []
     monkeypatch.setattr(gateway, "main", lambda argv: calls.append(argv) or 0)
-    assert console.main(["generate", modality, "a dog", "--target", "runpod"]) == 0
-    assert calls == [["generate", modality, "a dog", "--target", "runpod"]]
+    assert console.main(["generate", modality, "a dog", "--placement", "runpod"]) == 0
+    assert calls == [["generate", modality, "a dog", "--placement", "runpod"]]
 
 
 def _public_main(entrypoint):
@@ -215,7 +215,7 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
     # continue exercising public forwarding for an admissible video form.
     reference = ["--image-ref", "dog.png"] if modality == "video" else []
     assert _public_main(entrypoint)([
-        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json", *reference,
+        "generate", modality, "a dog", "--placement", "http://127.0.0.1:8188", "--json", *reference,
     ]) == 0
     assert calls == [{
         "model": None, "target": "http://127.0.0.1:8188", "dry_run": False,
@@ -227,8 +227,8 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
 
 @pytest.mark.parametrize(("args", "handler"), [
     (["list", "--json"], "listing"),
-    (["image", "a dog", "--target", "managed"], "cli"),
-    (["video", "a dog", "--target", "auto"], "cli"),
+    (["image", "a dog", "--placement", "managed"], "cli"),
+    (["video", "a dog", "--placement", "auto"], "cli"),
 ])
 def test_console_uses_process_arguments_for_each_generate_form(monkeypatch, args, handler):
     import sys
@@ -248,7 +248,7 @@ def test_console_uses_process_arguments_for_each_generate_form(monkeypatch, args
 
 @pytest.mark.parametrize("entrypoint", ["console", "gateway"])
 @pytest.mark.parametrize(("args", "diagnostic"), [
-    (["list", "--target", "managed"], "unrecognized arguments: --target managed"),
+    (["list", "--placement", "managed"], "unrecognized arguments: --placement managed"),
     (["list", "--kind", "model"], "invalid choice: 'model'"),
     (["image", "a dog", "--kind", "image"], "unrecognized arguments: --kind image"),
     (["video", "a dog", "--steps", "many"], "argument --steps: invalid int value"),
@@ -284,7 +284,7 @@ def test_generation_help_does_not_load_sdk_or_start_runtime(monkeypatch, capsys)
     with pytest.raises(SystemExit) as exc:
         cli.main(["image", "--help"])
     assert exc.value.code == 0
-    assert "--target" in capsys.readouterr().out
+    assert "--placement" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('entrypoint', ['console', 'gateway'])
@@ -327,7 +327,7 @@ def test_launch_default_does_not_supply_consent(monkeypatch, capsys):
 
 def test_launch_rejects_duplicate_selector_before_sdk(monkeypatch, capsys):
     monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('duplicate reached SDK'))
-    assert cli.main(['launch', '--target', 'auto', '--target', 'managed', '--json']) == 2
+    assert cli.main(['launch', '--placement', 'auto', '--placement', 'managed', '--json']) == 2
     assert json.loads(capsys.readouterr().out)['issues'][0]['code'] == 'input_rejected'
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
@@ -338,7 +338,7 @@ def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode)
         return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
-    assert cli.main(['audio', 'hello', '--mode', mode, '--target', 'runpod', '--consent', 'paid',
+    assert cli.main(['audio', 'hello', '--mode', mode, '--placement', 'runpod', '--consent', 'paid',
         '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
         '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
         '--recovery-path', 'receipt.json', '--resume', '--no-wait', '--json']) == 0
@@ -357,7 +357,7 @@ def test_audio_cli_runpod_sound_effects_admits_like_any_slot(monkeypatch, capsys
         return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
     monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
-    assert cli.main(['audio', 'waves', '--mode', 'sfx', '--target', 'runpod', '--consent', 'paid',
+    assert cli.main(['audio', 'waves', '--mode', 'sfx', '--placement', 'runpod', '--consent', 'paid',
         '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
         '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
         '--recovery-path', 'receipt.json', '--no-wait', '--json']) == 0

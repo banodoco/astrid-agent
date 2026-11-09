@@ -370,7 +370,7 @@ def test_noneditable_wheel_align_entrypoint_and_module(tmp_path):
     repo = Path(__file__).resolve().parents[3]
     installed = tmp_path / 'installed'
     result = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', '--no-build-isolation',
-                             '--target', str(installed), str(repo)], cwd=tmp_path,
+                             '--placement', str(installed), str(repo)], cwd=tmp_path,
                             capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
     import runtime_protocol
