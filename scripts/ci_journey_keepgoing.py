@@ -235,8 +235,11 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         def fresh_admission():
             app = args.app_checkout.resolve(strict=True)
             path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
-            if gate.validate_tuple(journey.read_json(args.candidate), app, path) != manifest or manifest.get("release") != 1:
-                raise RuntimeError("fresh-install requires a frozen release-1 manifest")
+            if gate.validate_tuple(journey.read_json(args.candidate), app, path) != manifest:
+                raise RuntimeError("fresh-install requires the frozen candidate manifest")
+            release = manifest.get("release")
+            if type(release) is not int or release < 0:
+                raise RuntimeError("fresh-install requires a frozen manifest with an integer release")
             if (root / "current").exists():
                 raise RuntimeError("fresh-install requires an uninstalled machine")
             if not journey.sentinel_observation(sentinel, birth)["alive"]:
@@ -244,7 +247,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             state.update(app=app, candidate_path=path, manifest=manifest)
         def fresh_install():
             try:
-                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+                journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data,
+                                  agent=getattr(args, "candidate_agent_checkout", None))
             except Exception:
                 if getattr(args, "mode", "direct") == "direct":
                     journey.capture_failed_windows_fresh_install(root, evidence)
@@ -256,8 +260,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
             state["started1"] = True
         def fresh_select():
             path, selected_data, version = journey.installation(root, data)
-            if selected_data != data or jumps.installed_release(version) != 1:
-                raise RuntimeError("Fresh install did not select release 1 and the requested data root")
+            if selected_data != data or jumps.installed_release(version) != state["manifest"]["release"]:
+                raise RuntimeError("Fresh install did not select the candidate release and the requested data root")
             journey.selected_tuple(state["manifest"], version)
             journey.assert_direct_service_ownership(root, data)
             state.update(version=version, version_path=path)
@@ -286,18 +290,19 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         stage("sentinel", [], fresh_sentinel, evidence)
         return report
     def admission():
-        fixture, manifest0, receipt = jumps.release0_admission(args)
+        fixture, manifest0, receipt = jumps.release9_admission(args, root.parent / "release9-source")
         app = args.app_checkout.resolve(strict=True)
         path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
-        if gate.validate_tuple(candidate, app, path) != manifest or manifest.get("release") != 1:
-            raise RuntimeError("release0-to-release1 requires a frozen release-1 manifest")
+        if gate.validate_tuple(candidate, app, path) != manifest:
+            raise RuntimeError("release0-to-release1 requires a frozen candidate manifest")
+        jumps.candidate_release(manifest)
         if not journey.sentinel_observation(sentinel, birth)["alive"]:
             raise RuntimeError("Unrelated sentinel exited before release-0 bootstrap")
         state.update(fixture=fixture, manifest0=manifest0, manifest=manifest, candidate_path=path, app=app)
-        report["release0_fixture"] = receipt
+        report["release9_source"] = receipt
     def bootstrap0():
-        jumps.bootstrap_release0(state["fixture"], state["manifest0"], args.shell, evidence / "release0", root, data)
+        jumps.bootstrap_release9(state["fixture"], state["manifest0"], args.shell, evidence / "release0", root, data)
         state["bootstrap0"] = True
     def start0():
         jumps.start_direct_runtime(evidence / "release0")
@@ -305,12 +310,12 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         state["started0"] = True
     def select0():
         path, selected_data, old = journey.installation(root, data)
-        if selected_data != data or jumps.installed_release(old) != 0:
-            raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
+        if selected_data != data or jumps.installed_release(old) != jumps.RELEASE9_RELEASE:
+            raise RuntimeError("Pinned Release-9 bootstrap did not select release 9")
         release0_owner(root, data)
         old_tuple = journey.selected_tuple(journey.read_json(state["manifest0"]), old)
         jumps.write_diagnostic_release0_preconditions(
-            args, root, data, fixture_receipt=report["release0_fixture"],
+            args, root, data, fixture_receipt=report["release9_source"],
             release0_manifest=state["manifest0"], target_manifest=state["manifest"],
             candidate=journey.read_json(args.candidate), version_path=path, version=old)
         state.update(old=old, old_path=path, old_tuple=old_tuple)
@@ -324,8 +329,8 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
     def assert_selection0():
         path, selected_data, version = journey.installation(root, data)
         if (selected_data != data or path != state["old_path"] or version != state["old"]
-                or jumps.installed_release(version) != 0):
-            raise RuntimeError("Selected installation changed from release 0 before the direct release-1 update")
+                or jumps.installed_release(version) != jumps.RELEASE9_RELEASE):
+            raise RuntimeError("Selected installation changed from release 9 before the candidate upgrade")
     def owner0():
         assert_selection0()
         owner = release0_owner(root, data)
@@ -334,7 +339,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         assert_selection0()
         assert_release0_owner(root, data, {"health": state["health0"],
                                            "pid": state["pid0"], "birth": state["birth0"]})
-        journey.bootstrap(state["app"], state["candidate_path"], args.shell, "update", evidence / "release1", root, data)
+        journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
         state["updated"] = True
     def start1():
         jumps.start_direct_runtime(evidence / "release1")
@@ -342,13 +347,13 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         state["started1"] = True
     def select1():
         path, selected_data, version = journey.installation(root, data)
-        if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != 1:
-            raise RuntimeError("Release-1 update did not retain data and activate release 1")
+        if selected_data != data or path == state["old_path"] or jumps.installed_release(version) != state["manifest"]["release"]:
+            raise RuntimeError("Candidate upgrade did not retain data and activate the candidate release")
         jumps.selected_candidate(state["manifest"], version, state["old_tuple"])
-        journey.assert_direct_service_ownership(root, data, release=1)
+        journey.assert_direct_service_ownership(root, data)
         health = journey.healthy(jumps.selected_data_root(root, data))
         if health["runtime_instance_id"] == state["health0"]["runtime_instance_id"] or journey.process_birth(state["pid0"]) == state["birth0"]:
-            raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
+            raise RuntimeError("Release-9 Runtime survived the candidate upgrade")
         state.update(version=version, version_path=path)
     def verify0():
         receipt_path = journey.verify("observe", state["old_path"], data, evidence / "release0-api-seed")
@@ -371,8 +376,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         journey.verify("install", state["version_path"], jumps.selected_data_root(root, data), evidence)
     def snap1():
         state["after"] = jumps.live_workspace(root, jumps.selected_data_root(root, data),
-                                              evidence / "release1-api-observe", "snapshot", state["keys"],
-                                              release=1)
+                                              evidence / "release1-api-observe", "snapshot", state["keys"])
     def preserve():
         jumps.assert_preserved(state["before"], state["after"])
         if jumps.semantic_digest(state["before"]) != jumps.semantic_digest(state["after"]):

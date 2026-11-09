@@ -412,8 +412,10 @@ def install(shell, *, source_override=False):
     # Python's standard browser override suppresses the installer's website open.
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     try:
+        # The unattended installer stops for consent unless --yes accepts the
+        # recommended plan; this job has no operator to answer the prompt.
         run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-File", app / "public" / "install.ps1"], "bootstrap.log", env=env, timeout=3600)
+             "-File", app / "public" / "install.ps1", "--yes"], "bootstrap.log", env=env, timeout=3600)
     finally:
         server.shutdown()
         server.server_close()

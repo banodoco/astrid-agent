@@ -9,6 +9,18 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+# The fresh Linux row's update is the hosted App build's own Update now, clicked in a browser.
+BUTTON = {**HOSTED, "driver": "app-button",
+          "request": {**HOSTED["request"], "headers": ["accept", "content-length", "host", "origin", "user-agent"]},
+          "page": {"entry": "/tools/video-editor?settings=updates", "offered": True, "clicked": True,
+                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
+
+
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
@@ -32,25 +44,16 @@ def release1_receipts(tmp_path):
                           "task_settled": "pass", "unrelated_sentinel": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
-            row["release_transition"] = {"from": 0, "to": 1,
-                                         "harness_override": "frozen-release0-direct-to-release1"}
-            row["release0_fixture"] = {
-                "fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64,
-                "provenance_sha256": "a" * 64,
-                "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
-                "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                            "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"},
+            row["release_transition"] = {"from": 9, "to": 10,
+                                         "source": "pinned-release9-plain-install"}
+            row["release9_source"] = {
+                "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
+                "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
+                                     "public/install.ps1": "3" * 64},
+                "identity": gate.RELEASE9_IDENTITY,
             }
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
                                     "after_sha256": "b" * 64}
-            if contract["job_id"] in {"direct-linux", "direct-macos"}:
-                row["final_cleanup"] = "retained-after-upgrade-refusal"
-                row["upgrade_uninstall_refusal"] = {
-                    "exit_code": 1,
-                    "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
-                    "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
-                    "service_manager": {"manager": "native", "foreground_fallback": False},
-                }
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
@@ -59,13 +62,14 @@ def release1_receipts(tmp_path):
         if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
             name = "astrid.service" if contract["job_id"] == "direct-linux-fresh" else "haus.astrid.runtime.plist"
             row["update"] = {"status": "pass", "release_from": 1, "release_to": 2,
+            "hosted": BUTTON if contract["job_id"] == "direct-linux-fresh" else HOSTED,
                              "old_version": "old", "new_version": "new", "manifest_sha256": "c" * 64,
                              "service": {"service_path": "/service/" + name, "foreground_fallback": False},
                              "service_names": [name],
                              "checks": {name: "pass" for name in ("new_version", "old_version_retained", "same_service", "no_boundary_handoff", "health", "workspace_content", "unrelated_sentinel", "verify_update", "task_settled")}}
         if contract["job_id"] == "direct-windows":
             row["update"] = {
-                "outcome": "updated", "from_release": 1, "to_release": 2,
+                "outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
                 "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
                 "old_version": "old", "current_version": "new", "exit_code": 0,
                 "refusal": None, "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
@@ -75,7 +79,7 @@ def release1_receipts(tmp_path):
             row["windows_upgrade_refusal"] = {
                 "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
                 "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
-                "release0_fixture": row["release0_fixture"], "data_marker": {"sha256": "b" * 64},
+                "release0_fixture": {"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64, "provenance_sha256": "a" * 64, "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256, "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649", "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"}}, "data_marker": {"sha256": "b" * 64},
                 "scheduled_task": {"before_sha256": "c" * 64, "after_sha256": "c" * 64},
                 "refusal": {"exit_code": 1, "message": "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."},
                 "checks": {key: "pass" for key in ("refusal", "data_marker", "r0_selected", "scheduled_task")},
@@ -231,23 +235,22 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     candidate = release1_receipts(tmp_path)
     direct = tmp_path / "direct-linux" / "journey-result.json"
     data = json.loads(direct.read_text())
-    data["upgrade_uninstall_refusal"]["message"] = "unrelated failure"
+    data["release9_source"]["app_commit"] = "e" * 40
     direct.write_text(json.dumps(data), encoding="utf-8")
-    assert any("direct-linux: required preserved-state uninstall refusal" in error
+    assert any("direct-linux: pinned release-9 source provenance is absent or wrong" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
-def test_release1_gate_distinguishes_retained_refusal_from_successful_uninstall(tmp_path):
+def test_release1_gate_requires_an_ordinary_final_uninstall_for_every_row(tmp_path):
     candidate = release1_receipts(tmp_path)
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)
     for job_id in ("direct-linux", "direct-macos", "direct-macos-fresh"):
         path = tmp_path / job_id / "journey-result.json"
         original = json.loads(path.read_text())
         altered = copy.deepcopy(original)
-        altered["final_cleanup"] = ("pass" if job_id != "direct-macos-fresh"
-                                    else "retained-after-upgrade-refusal")
+        altered["final_cleanup"] = "retained-after-upgrade-refusal"
         path.write_text(json.dumps(altered))
-        assert any(f"{job_id}: final cleanup" in error
+        assert any(f"{job_id}: final cleanup is not pass" in error
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path))
         path.write_text(json.dumps(original))
 
@@ -295,7 +298,8 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert 'run_root="$RUNNER_TEMP/astrid-r1-$JOB_ID"' in workflow
     assert "if: matrix.mode == 'direct' && matrix.os == 'linux'" in workflow
     assert "candidate-agent" in workflow and "pinokio" in workflow
-    assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+    assert "--release9-app-checkout" in workflow and "--allow-release0-to-release1" in workflow
+    assert "--release0-fixture" in workflow
 
 
 def test_r1_1_pinokio_matrix_has_exact_three_rows_and_own_checker(tmp_path):
@@ -498,7 +502,7 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
     for job_id in ("direct-linux-fresh", "direct-macos-fresh"):
         path = tmp_path / job_id / "journey-result.json"
         row = json.loads(path.read_text())
-        for key in ("release_transition", "release0_fixture", "semantic_data"):
+        for key in ("release_transition", "release9_source", "semantic_data"):
             row.pop(key)
         row["checks"] = {name: "pass" for name in ("task_settled", "workspace_content", "unrelated_sentinel")}
         path.write_text(json.dumps(row), encoding="utf-8")
@@ -519,13 +523,13 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
     upgrade = tmp_path / "direct-linux" / "journey-result.json"
     row = json.loads(upgrade.read_text())
     fresh_shaped = dict(row, scenario="fresh-install")
-    for key in ("release_transition", "release0_fixture", "semantic_data"):
+    for key in ("release_transition", "release9_source", "semantic_data"):
         fresh_shaped.pop(key)
     upgrade.write_text(json.dumps(fresh_shaped), encoding="utf-8")
     errors = gate.evaluate_release1_matrix(candidate, tmp_path)
     assert "direct-linux: scenario does not match the required matrix leg" in errors
-    assert "direct-linux: direct receipt did not run the authentic release-0 to release-1 leg" in errors
-    assert "direct-linux: release-0 to release-1 transition is absent or wrong" in errors
+    assert "direct-linux: direct receipt did not run the release0-to-release1 leg" in errors
+    assert "direct-linux: release-9 to candidate transition is absent or wrong" in errors
 
 
 def test_both_fresh_rows_require_complete_update_receipt(tmp_path):

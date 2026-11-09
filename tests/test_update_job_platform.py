@@ -28,7 +28,8 @@ def job(tmp_path):
     root = tmp_path / "Astrid user's 安装"
     root.mkdir()
     return {"job_name": "astrid-update-" + OPERATION, "operation_id": OPERATION,
-            "program_root": str(root), "log_path": str(root / "logs" / "update.log")}
+            "program_root": str(root), "log_path": str(root / "logs" / "update.log"),
+            "home": str(tmp_path / "install-home")}
 
 
 def completed(args, returncode=0, stdout="", stderr=""):
@@ -129,6 +130,73 @@ def test_mac_launch_writes_private_one_shot_plist_with_literal_argv(tmp_path, mo
     assert calls == [["launchctl", "bootstrap", descriptor["domain"], str(plist)]]
 
 
+def test_mac_update_job_plist_pins_the_home_the_install_record_is_found_through(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    command = ["worker"]
+    install_home = tmp_path / "install-home"
+    monkeypatch.setattr(platform.Path, "home", classmethod(lambda cls: install_home))
+    descriptor = platform.describe(record, command, system="darwin")
+    assert descriptor["home"] == str(install_home)
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args))
+
+    platform.launch(descriptor, command, record["log_path"], system="darwin")
+
+    items = list(ET.parse(descriptor["plist_path"]).getroot().find("dict"))
+    decoded = {items[index].text: items[index + 1] for index in range(0, len(items), 2)}
+    assert [child.text for child in decoded["EnvironmentVariables"]] == ["HOME", str(install_home)]
+
+
+def test_every_platform_descriptor_records_the_accepted_home(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    monkeypatch.setattr(platform, "_windows_sid", lambda: "S-1-5-21-12345")
+    monkeypatch.setattr(platform, "_run", lambda args: completed(args))
+    for system in ("linux", "darwin", "win32"):
+        descriptor = platform.describe(record, ["worker"], system=system)
+        assert descriptor["home"] == record["home"], system
+
+
+def test_a_legacy_job_without_a_recorded_home_stays_checkable_but_is_never_launched(tmp_path, monkeypatch):
+    record = job(tmp_path)
+    del record["home"]
+    monkeypatch.setattr(platform, "_windows_sid", lambda: "S-1-5-21-12345")
+    monkeypatch.setattr(platform, "_run", lambda args: completed(args))
+    for system in ("linux", "darwin", "win32"):
+        descriptor = platform.describe(record, ["worker"], system=system)
+        assert "home" not in descriptor, system
+        assert platform._validate(descriptor, system)[1] == descriptor["name"], system
+        with pytest.raises(ValueError, match="installation home"):
+            platform.launch(descriptor, ["worker"], record["log_path"], system=system)
+
+
+def test_worker_wrapper_keeps_the_whole_error_and_exits_with_the_worker_code(tmp_path):
+    script = platform._worker_script(["C:\\py\\python.exe", "-c", "print(1)"], tmp_path / "job.log")
+    call = script.index("& $exe @workerArgs")
+    # Errors continue only around the worker call, so its first stderr line cannot end the wrapper.
+    assert script.index("$ErrorActionPreference = 'Continue'") < call < script.index("$ErrorActionPreference = 'Stop'", call)
+    # One writer per file: the wrapper writes only its own wrapper log, never the job log.
+    assert platform.wrapper_log_path(tmp_path / "astrid-update-x.log") == tmp_path / "astrid-update-x.wrapper.log"
+    assert "*>> $wrapperLog" in script and "$log" not in script
+    assert "exit $code" in script and "if ($null -eq $code) { $code = 1 }" in script
+    assert script.count("Add-Content -LiteralPath $wrapperLog") == 1 and "exit 1 }" in script
+
+
+@pytest.mark.windows_native
+def test_worker_wrapper_keeps_a_multiline_traceback_and_exits_one(tmp_path):
+    worker = [sys.executable, "-c", "import sys\n"
+              "sys.stderr.write('Traceback (most recent call last):\\n  File \\\"x.py\\\", line 3\\n'\n"
+              "                 'ValueError: the real cause\\n')\n"
+              "sys.exit(1)"]
+    log = tmp_path / "job.log"
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                platform._worker_script(worker, log)], capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 1
+    text = log.with_name("job.wrapper.log").read_text(encoding="utf-8", errors="replace")
+    assert "Traceback (most recent call last):" in text
+    assert "the real cause" in text
+    assert not log.exists()  # the wrapper never writes the job log
+
+
 def test_mac_cleanup_retains_active_and_removes_inactive_plist_before_bootout(tmp_path, monkeypatch):
     record = job(tmp_path)
     descriptor = platform.describe(record, ["worker"], system="darwin")
@@ -205,7 +273,7 @@ def test_windows_uses_current_sid_on_demand_and_safely_encoded_arguments(tmp_pat
     worker_script = base64.b64decode(worker_encoded).decode("utf-16le")
     assert "O''Brien" in worker_script
     assert "雪" in worker_script
-    assert "*>> $log" in worker_script
+    assert "*>> $wrapperLog" in worker_script and "$log" not in worker_script
     assert "-Trigger" not in task_script
     assert "-Repetition" not in task_script
     assert "Restart" not in task_script
@@ -217,6 +285,23 @@ def test_windows_uses_current_sid_on_demand_and_safely_encoded_arguments(tmp_pat
     assert "-StartWhenAvailable" not in task_script
     assert "-Force" not in task_script
     assert "-EncodedCommand" in calls[1]
+
+
+def test_windows_powershell_is_absolute_without_stubbing_sid(tmp_path, monkeypatch):
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "winroot"))
+    expected = str(tmp_path / "winroot" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    assert Path(platform._encoded_ps("1")[0]).is_absolute()
+    assert platform._encoded_ps("1")[0] == expected
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return completed(args, stdout="S-1-5-21-12345\n")
+
+    # _windows_sid is deliberately real; only the process boundary is faked.
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert platform._windows_sid() == "S-1-5-21-12345"
+    assert calls[0][0] == expected and Path(calls[0][0]).is_absolute()
 
 
 def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp_path, monkeypatch):
@@ -253,6 +338,7 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
         "operation_id": operation,
         "program_root": str(program_root),
         "log_path": str(log),
+        "home": str(tmp_path / "install-home"),
         "metadata": {
             "manifest_path": str(manifest), "bootstrap_path": str(bootstrap),
             "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
@@ -293,7 +379,8 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
 
     # Capture the actual Windows adapter wrapper generated around this argv.
     record = {"job_name": "astrid-update-" + operation, "operation_id": operation,
-              "program_root": str(program_root), "log_path": str(log)}
+              "program_root": str(program_root), "log_path": str(log),
+              "home": str(tmp_path / "install-home")}
     calls = []
 
     def capture(args):
@@ -416,3 +503,146 @@ def test_descriptor_rejects_unowned_names_and_platform_mismatch(tmp_path):
     descriptor["name"] = descriptor["unit"]
     with pytest.raises(ValueError, match="another system"):
         platform.is_active(descriptor, system="darwin")
+
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "installer"
+
+
+def _captured_task_rows():
+    """Real Task Scheduler values from the Windows update wait of run 42495154518."""
+    rows = [json.loads(line) for line in
+            (FIXTURES / "windows-update-wait-run-42495154518.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows and all(row["scheduled_task"] for row in rows)
+    return rows
+
+
+def test_captured_task_scheduler_wait_parses_as_the_exit_1_it_was():
+    # 30 polls while the status route said "active": the task was Ready with LastTaskResult 1 throughout.
+    from datetime import datetime
+    started = int(datetime(2026, 11, 8, 15, 35, 35).timestamp())  # [string] LastRunTime is local time.
+    for row in _captured_task_rows():
+        task = row["scheduled_task"]
+        observed = {"State": task["state"], "LastTaskResult": task["last_result"],
+                    "LastRunTime": task["last_run"]}
+        assert platform.parse_scheduled_task_result(observed) == {
+            "exit_code": 1, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "started_at": started, "bound": "start-time"}
+        if row["status"] is not None:
+            assert row["status"]["state"] == "active" and row["status"]["launch_status"] == "acknowledged"
+
+
+@pytest.mark.parametrize("change", [
+    {"State": "Running", "LastTaskResult": 0x41301},
+    {"LastTaskResult": 0x41303, "LastRunTime": "11/30/1999 00:00:00"},
+    {"State": "Queued"},
+    {"State": "Disabled"},
+    {"LastRunTime": ""},
+    {"LastRunTime": "not a time"},
+    {"LastTaskResult": "1"},
+], ids=["running", "never-run", "queued", "disabled", "no-run-time", "unparsable-time", "non-integer"])
+def test_captured_task_values_without_positive_evidence_are_none(change):
+    task = _captured_task_rows()[0]["scheduled_task"]
+    observed = {"State": task["state"], "LastTaskResult": task["last_result"], "LastRunTime": task["last_run"]}
+    observed.update(change)
+    assert platform.parse_scheduled_task_result(observed) is None
+
+
+def test_task_result_reports_hresult_unsigned():
+    observed = {"State": "Ready", "LastTaskResult": -2147024894, "LastRunTime": "11/08/2026 15:35:35"}
+    assert platform.parse_scheduled_task_result(observed)["exit_code"] == 0x80070002
+
+
+def _windows_result(tmp_path, monkeypatch, output, returncode=0):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    calls = []
+
+    def run(args):
+        script = base64.b64decode(args[-1]).decode("utf-16le") if "-EncodedCommand" in args else ""
+        if "WindowsIdentity" in script:
+            return completed(args, stdout="S-1-5-21-2")
+        calls.append(script)
+        return completed(args, returncode=returncode, stdout=output, stderr="denied" if returncode else "")
+
+    monkeypatch.setattr(platform, "_run", run)
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="win32")
+    return descriptor, calls
+
+
+def test_windows_finished_result_queries_only_the_recorded_task(tmp_path, monkeypatch):
+    task = _captured_task_rows()[0]["scheduled_task"]
+    output = json.dumps({"State": task["state"], "LastTaskResult": task["last_result"],
+                         "LastRunTime": task["last_run"]})
+    descriptor, calls = _windows_result(tmp_path, monkeypatch, output)
+    assert platform.finished_result(descriptor)["exit_code"] == 1
+    assert "Get-ScheduledTaskInfo -TaskName 'astrid-update-" in calls[-1]
+    assert "-TaskPath '\\'" in calls[-1]
+    assert "LastRunTime=[string]$i.LastRunTime" in calls[-1]
+
+
+def test_windows_finished_result_absent_task_and_query_failure(tmp_path, monkeypatch):
+    descriptor, _ = _windows_result(tmp_path / "absent", monkeypatch, "ASTRID_NOT_FOUND")
+    assert platform.finished_result(descriptor) is None
+    descriptor, _ = _windows_result(tmp_path / "denied", monkeypatch, "", returncode=1)
+    with pytest.raises(RuntimeError, match="Could not query"):
+        platform.finished_result(descriptor)
+    descriptor, _ = _windows_result(tmp_path / "garbled", monkeypatch, "not json")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        platform.finished_result(descriptor)
+
+
+@pytest.mark.parametrize("stdout,returncode,expected", [
+    ("ActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainStartTimestamp=@1794152135\n", 0, (1, 1794152135)),
+    ("ActiveState=inactive\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, (0, 1794152135)),
+    ("ActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainStartTimestamp=\n", 0, None),
+    ("ActiveState=active\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, None),
+    ("ActiveState=activating\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=@1794152135\n", 0, None),
+    ("", 4, None),
+], ids=["failed", "succeeded", "never-started", "active", "activating", "collected"])
+def test_linux_finished_result_mirrors_unit_state(tmp_path, monkeypatch, stdout, returncode, expected):
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, returncode, stdout))
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="linux")
+    result = platform.finished_result(descriptor)
+    assert (None if result is None else (result["exit_code"], result["started_at"])) == expected
+    assert calls[-1][:5] == ["systemctl", "--user", "show", descriptor["name"], "--timestamp=unix"]
+
+
+def _launchd_capture(name):
+    return (FIXTURES / f"launchctl-print-{name}-run-42491171373.txt").read_text(encoding="utf-8")
+
+
+def test_captured_launchd_print_parses_state_and_last_exit():
+    # Real launchctl print output (Runtime LaunchAgent, macOS fresh run 42491171373).
+    assert platform.parse_launchd_result(_launchd_capture("running")) is None  # pid, (never exited)
+    finished = platform.parse_launchd_result(_launchd_capture("not-running-exit-0"))
+    assert finished == {"exit_code": 0, "evidence": "launchd state=not running last exit code",
+                        "started_at": None, "bound": "command"}
+    # The same output after a non-zero exit (launchd prints the decimal status).
+    failed = _launchd_capture("not-running-exit-0").replace("last exit code = 0", "last exit code = 1")
+    assert platform.parse_launchd_result(failed)["exit_code"] == 1
+    never_ran = _launchd_capture("not-running-exit-0").replace("runs = 1", "runs = 0").replace(
+        "last exit code = 0", "last exit code = (never exited)")
+    assert platform.parse_launchd_result(never_ran) is None
+    signalled = _launchd_capture("not-running-exit-0").replace(
+        "last exit code = 0", "last terminating signal = Killed: 9")
+    assert platform.parse_launchd_result(signalled) is None
+
+
+def test_mac_finished_result_requires_the_exact_loaded_command(tmp_path, monkeypatch):
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="darwin")
+    printed = _launchd_capture("not-running-exit-0").replace("last exit code = 0", "last exit code = 1")
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, stdout=printed))
+    monkeypatch.setattr(platform, "is_registered", lambda d, command, system=None: command == ["worker"])
+    assert platform.finished_result(descriptor)["exit_code"] == 1
+    assert calls[-1] == ["launchctl", "print", f"{descriptor['domain']}/{descriptor['name']}"]
+
+    def foreign(*_args, **_kwargs):
+        raise RuntimeError("The launchd update service command does not match its accepted operation.")
+
+    monkeypatch.setattr(platform, "is_registered", foreign)
+    with pytest.raises(RuntimeError, match="does not match"):
+        platform.finished_result(descriptor)
+    monkeypatch.setattr(platform, "is_registered", lambda *_args, **_kwargs: False)
+    assert platform.finished_result(descriptor) is None

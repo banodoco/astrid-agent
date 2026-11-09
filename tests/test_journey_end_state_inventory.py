@@ -10,6 +10,18 @@ from scripts.journey_matrix import (END_STATE_INVENTORY, M4_5_SCENARIO_IDS, M4_6
                                     RELEASE1_MATRIX)
 
 
+HOSTED = {"route": "hosted-button", "request": {"method": "POST", "path": "/api/runtime/v1/update",
+          "origin": "https://astrid.haus", "content_length": 0, "authorization": False, "cookie": False,
+          "status": 202, "operation_id": "a" * 32},
+          "served": {"/install-manifest.json": 1, "/install": 1, "/install.ps1": 0},
+          "final": {"state": "terminal", "outcome": "updated", "target_release": 2}, "intercept_reverted": True}
+# The fresh Linux row's update is the hosted App build's own Update now, clicked in a browser.
+BUTTON = {**HOSTED, "driver": "app-button",
+          "request": {**HOSTED["request"], "headers": ["accept", "content-length", "host", "origin", "user-agent"]},
+          "page": {"entry": "/tools/video-editor?settings=updates", "offered": True, "clicked": True,
+                   "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
+
+
 def candidate():
     return {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd", strict=True)}
 
@@ -35,23 +47,15 @@ def release1_row(contract, pinned):
     if contract["mode"] == "direct":
         row.update(
             service_manager={"manager": "native", "foreground_fallback": False},
-            release_transition={"from": 0, "to": 1, "harness_override": "frozen-release0-direct-to-release1"},
-            release0_fixture={
-                "fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64,
-                "provenance_sha256": "a" * 64, "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
-                "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                            "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"},
+            release_transition={"from": 9, "to": 10, "source": "pinned-release9-plain-install"},
+            release9_source={
+                "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
+                "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
+                                     "public/install.ps1": "3" * 64},
+                "identity": gate.RELEASE9_IDENTITY,
             },
             semantic_data={"identical": True, "before_sha256": "b" * 64, "after_sha256": "b" * 64},
         )
-        if contract["job_id"] in {"direct-linux", "direct-macos"}:
-            row["final_cleanup"] = "retained-after-upgrade-refusal"
-            row["upgrade_uninstall_refusal"] = {
-                "exit_code": 1,
-                "message": "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade isn't supported yet. Both data folders were kept.",
-                "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
-                "service_manager": {"manager": "native", "foreground_fallback": False},
-            }
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
@@ -60,6 +64,7 @@ def release1_row(contract, pinned):
     if contract["job_id"] in {"direct-linux-fresh", "direct-macos-fresh"}:
         row["update"] = {
             "status": "pass", "release_from": 1, "release_to": 2,
+            "hosted": BUTTON if contract["job_id"] == "direct-linux-fresh" else HOSTED,
             "old_version": "old", "new_version": "new", "manifest_sha256": "d" * 64,
             "service": {"foreground_fallback": False, "service_path": "/run/astrid.service"},
             "service_names": ["astrid.service"],
@@ -70,7 +75,7 @@ def release1_row(contract, pinned):
         }
     if contract["job_id"] == "direct-windows":
         row["update"] = {
-            "outcome": "updated", "from_release": 1, "to_release": 2,
+            "outcome": "updated", "from_release": 1, "to_release": 2, "hosted": HOSTED,
             "marker": "M-RT UPDATE TEST STAND-IN", "manifest_sha256": "d" * 64,
             "old_version": "old", "current_version": "new", "exit_code": 0, "refusal": None,
             "task_id": "task-1", "task_labels": [{"name": "Astrid Runtime", "path": "\\"}], "service_names": [],
@@ -80,7 +85,7 @@ def release1_row(contract, pinned):
         row["windows_upgrade_refusal"] = {
             "receipt_kind": "windows-upgrade-refusal", "job_id": "direct-windows", "scenario": "windows-upgrade-refusal", "mode": "direct", "status": "pass", "final_cleanup": "pass", "source_override_test_mode": False,
             "runner_image": row["runner_image"], "runner_provenance": row["runner_provenance"], "os_build": row["os_build"], "shell": row["shell"], "candidate_checkouts": row["candidate_checkouts"],
-            "release0_fixture": row["release0_fixture"], "data_marker": {"sha256": "b" * 64},
+            "release0_fixture": {"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64, "provenance_sha256": "a" * 64, "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256, "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649", "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"}}, "data_marker": {"sha256": "b" * 64},
             "scheduled_task": {"before_sha256": "c" * 64, "after_sha256": "c" * 64},
             "refusal": {"exit_code": 1, "message": "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."},
             "checks": {key: "pass" for key in ("refusal", "data_marker", "r0_selected", "scheduled_task")},

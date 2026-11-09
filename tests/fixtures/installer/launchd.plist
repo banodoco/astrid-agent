@@ -8,6 +8,8 @@
 		<string></string>
 		<key>ASTRID_INSTALL_RELEASE</key>
 		<string>0</string>
+		<key>HOME</key>
+		<string>/Users/astrid-test</string>
 		<key>PATH</key>
 		<string>/astrid/tools:/usr/bin:/bin</string>
 		<key>PYTHONUTF8</key>
