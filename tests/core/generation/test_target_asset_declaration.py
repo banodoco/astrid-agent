@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -519,3 +520,80 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
     if change != 'match':
         assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
+
+
+# --- interim inventory wire: receipt rows -> host document -> child -----------------------------
+
+def _rows_for(workflow):
+    from astrid.core.generation.target_inventory import declared_rows
+    rows = declared_rows(workflow)
+    assert rows, 'the fixture workflow declares model assets'
+    return list(rows)
+
+
+def _runpod_like_target(tmp_path, monkeypatch):
+    """An attached stand-in pod: ordinary object_info, no model files on this disk."""
+    client, workflow, path = _selected_managed_target(tmp_path, monkeypatch)
+    pod = SimpleNamespace(target=ComfyTarget(client.target.url, 'attached'),
+                          object_info=client.object_info, http_origin=client.http_origin)
+    workflow.metadata.pop('models_root', None)
+    path.unlink()  # absent locally: only the pod could hold it
+    bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
+    return pod, workflow, bundle
+
+
+def test_runpod_bound_model_absent_locally_passes_as_available_on_target(tmp_path, monkeypatch):
+    pod, workflow, bundle = _runpod_like_target(tmp_path, monkeypatch)
+    provider = local_server_engine._live_preflight(
+        bundle, {}, pod.http_origin, tmp_path, client=pod, target_custody=_rows_for(workflow))
+    assert provider.auxiliary_model_custody == 'target'
+    record = local_server_engine._approve_live(bundle, {}, provider)
+    assert record.api_digest
+    declaration = next(row for row in provider._approval_diagnostics if row['code'] == 'target_model_asset')
+    assert declaration['status'] == 'available_on_target'
+
+
+def test_runpod_bound_model_missing_from_inventory_fails_approval(tmp_path, monkeypatch):
+    pod, workflow, bundle = _runpod_like_target(tmp_path, monkeypatch)
+    provider = local_server_engine._live_preflight(
+        bundle, {}, pod.http_origin, tmp_path, client=pod, target_custody=[])
+    with pytest.raises(local_server_engine.ProductionEngineError) as raised:
+        local_server_engine._approve_live(bundle, {}, provider)
+    message = str(raised.value)
+    assert pod.http_origin in message and 'does not declare auxiliary model asset' in message
+
+
+def test_local_comfy_url_without_inventory_keeps_the_local_disk_check(tmp_path, monkeypatch):
+    pod, workflow, bundle = _runpod_like_target(tmp_path, monkeypatch)
+    provider = local_server_engine._live_preflight(bundle, {}, pod.http_origin, tmp_path, client=pod)
+    assert provider.auxiliary_model_custody == 'local'
+    with pytest.raises(WorkflowBundleError, match='not present locally'):
+        local_server_engine._approve_live(bundle, {}, provider)
+
+
+def test_host_inventory_channel_is_absent_for_local_and_strict_when_present(tmp_path, monkeypatch):
+    from astrid.core.generation import target_inventory
+    url = 'http://127.0.0.1:12345'
+    monkeypatch.delenv(target_inventory.ENV, raising=False)
+    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) is None
+    row = {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64}
+    for bad in ('not json', '[]', json.dumps({'mode': 'inventory', 'comfy_url': url}),
+                json.dumps({'mode': 'other', 'comfy_url': url, 'models': []}),
+                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'extra': 1}]}),
+                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'size': '3'}]}),
+                json.dumps({'mode': 'trust', 'comfy_url': url, 'models': [row]})):
+        monkeypatch.setenv(target_inventory.ENV, bad)
+        with pytest.raises(local_server_engine.ProductionEngineError):
+            local_server_engine._inventory_from_environment(SimpleNamespace(), url)
+        assert target_inventory.ENV not in os.environ  # consumed, never inherited by a subprocess
+    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document('inventory', url, [row]))
+    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) == (row,)
+
+
+def test_child_refuses_inventory_for_another_comfy_url(monkeypatch):
+    from astrid.core.generation import target_inventory
+    row = {'name': 'a.bin', 'subdir': '', 'size': 3, 'sha256': 'a' * 64}
+    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document(
+        'inventory', 'http://127.0.0.1:1111', [row]))
+    with pytest.raises(local_server_engine.ProductionEngineError, match='another ComfyUI URL'):
+        local_server_engine._inventory_from_environment(SimpleNamespace(), 'http://127.0.0.1:2222')

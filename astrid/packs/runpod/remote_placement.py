@@ -52,8 +52,9 @@ ENGINE_ID = "vibecomfy-h3"
 DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
 # One pod storage root on the container disk. Attempts, outputs, engines, bootstrap and runs all derive
-# from it. /workspace is a small mount on an ephemeral pod (and FUSE: it ignores mkdir's mode), so the
-# task-storage free-space guard would measure the wrong device there.
+# from it, so the task-storage free-space guard measures the device the models and outputs live on.
+# The network volume (mounted at /workspace, FUSE: it ignores mkdir's mode) holds only the verified
+# model cache, passed to the engine install as --model-cache-root; models are copied to the local root.
 POD_ROOT = "/root/astrid"
 # Engine custody (astrid.core.generation.engine_custody) needs owner-only directories, which the
 # container disk honours; this is the scripts/pod_session.py route.
@@ -358,6 +359,9 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
+    # Parsed receipt model rows ({name, subdir, size, sha256}); in memory only, never in the snapshot.
+    models: tuple[Mapping[str, Any], ...] = ()
+    model_cache_root: str | None = None
 
     @property
     def remote_in(self) -> str:
@@ -410,11 +414,14 @@ class RemotePlacement:
     def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
                         installation: RunPodInstallation | None = None,
                         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
-                        reuse_snapshot: Mapping[str, Any] | None = None) -> RemoteRun:
+                        reuse_snapshot: Mapping[str, Any] | None = None,
+                        model_cache_root: str | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
         owners. This method never claims a pod or invokes the H3 transform.
+        ``model_cache_root`` is the mounted volume cache for verified model bytes;
+        models are still installed under the local engine root.
         """
         if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
@@ -426,7 +433,8 @@ class RemotePlacement:
         if (installation is None) != (checkpoint is None):
             raise RemotePlacementError("retained installation requires its lease checkpoint")
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
-                          installation=installation, checkpoint=checkpoint)
+                          installation=installation, checkpoint=checkpoint,
+                          model_cache_root=model_cache_root)
         try:
             if reuse_snapshot is not None:
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
@@ -705,13 +713,14 @@ class RemotePlacement:
             state.note("install", "skipped")
             return
         installation = state.installation
+        cache = "" if state.model_cache_root is None else f" --model-cache-root {shlex.quote(state.model_cache_root)}"
         command = (
             f"{POD_VENV}/bin/astrid engines install {installation.engine} "
             f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)} "
-            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}"
+            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}{cache}"
         ) if installation is not None else (
             f"{POD_VENV}/bin/astrid engines install {ENGINE_ID} --placement local "
-            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}"
+            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}{cache}"
         )
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):
@@ -755,6 +764,9 @@ class RemotePlacement:
             "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
             "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
         }
+        from astrid.core.generation.target_inventory import rows_from_receipt
+        # The receipt parse above verified every row's sha256, bytes and path.
+        state.models = rows_from_receipt(saved.models, installation.root)
         return True
 
     # -- step 4 ------------------------------------------------------------

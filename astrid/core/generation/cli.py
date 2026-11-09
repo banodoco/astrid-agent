@@ -185,6 +185,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
+        command.add_argument("--align", action=_Once, choices=("check", "trust"), default="check",
+                             help="check: judge models against the target's inventory (default); "
+                                  "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
         if modality == 'audio':
@@ -271,7 +274,7 @@ def _controls(parsed):
     if getattr(parsed, 'resume', False):
         controls['resume'] = True
     for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
-                 'preparation_seconds', 'execution_seconds', 'idle_seconds'):
+                 'preparation_seconds', 'execution_seconds', 'idle_seconds', 'align'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
@@ -402,9 +405,6 @@ def _main(argv: list[str]) -> int:
         return 0
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
-    if parsed.modality == 'audio' and parsed.mode == 'sfx' and parsed.target == 'runpod':
-        # Ask the SDK for its canonical refusal before entry or input resolution.
-        _generate_facade().audio(mode='sfx', target='runpod')
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
