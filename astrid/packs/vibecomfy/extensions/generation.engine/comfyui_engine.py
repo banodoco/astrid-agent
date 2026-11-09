@@ -162,7 +162,9 @@ class ComfyUIEngine:
         if not isinstance(nodes, list) or not all(
                 isinstance(node, dict) and set(node) == {"repo", "commit"}
                 and all(isinstance(v, str) and v for v in node.values()) for node in nodes):
-            raise ValueError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
+            error = ValueError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
+            error.unpinned = True  # a custom node ref without its repo or commit, as distinct from a loader failure
+            raise error
 
     def align(self, manifest: Any, mode: str) -> Any:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.

@@ -707,16 +707,17 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
     lists nothing (the target's own preflight still checks what it needs).
     """
-    from vibecomfy.workflow_bundle import WorkflowBundleError
     from astrid.core.generation.engine_contracts import EngineError
     from astrid.core.generation.engine_local_endpoint import default_engine_root
 
     try:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
-    except WorkflowBundleError:
+    except Exception as exc:
+        if getattr(exc, "unpinned", False):  # validate_extra: a custom node ref without its repo or commit
+            raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
+        # The bundle loader could not read this file (not a canonical bundle, or it does not execute on its own):
+        # it declares nothing here, and the run's own loader reports the real error.
         return {"models": [], "extra": {"nodes": []}}
-    except ValueError as exc:  # validate_extra: a custom node ref without its repo or commit
-        raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
     try:
         root = default_engine_root("comfyui")
     except EngineError:
