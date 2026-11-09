@@ -111,9 +111,10 @@ def test_fresh_cli_decline_returns_before_setup_effects(tmp_path, monkeypatch, c
     monkeypatch.setattr(cli, "Backend", FakeBackend)
     monkeypatch.setattr(cli, "_prompt_choices", lambda: (None, True))
 
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 0
+    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 3
     output = capsys.readouterr().out
-    assert "Result: setup declined" in output
+    assert "Astrid was NOT installed." in output
+    assert "Why: you declined the setup, so nothing was changed." in output
     assert "Way back:" in output
     assert not (root / "install.json").exists()
     assert not (tmp_path / "selection.json").exists()
@@ -135,7 +136,7 @@ def test_fresh_unattended_cli_prints_plan_and_stops_before_install_writes(tmp_pa
     assert "Astrid install plan" in output
     assert "autostart: on" in output
     assert "command: off" in output
-    assert "interactive consent is required" in output
+    assert "Why: setup needs your consent; run the exact rerun command shown above." in output
     assert "Absolute Astrid CLI path" not in output
     assert not (root / "install.json").exists()
     assert not install_selection(tmp_path, cli.sys.platform).exists()

@@ -694,7 +694,7 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
     assert cli.main([
         *arguments, "--root", str(root), "--uv", str(tmp_path / "unavailable-uv"),
         "--manifest", str(tmp_path / "unavailable-manifest"),
-    ]) == 0
+    ]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert current(root) == old
     assert read_json(journal)["step"] == "rolled_back"
     assert ready == [(17, "realm-1")]

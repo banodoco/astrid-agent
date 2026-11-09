@@ -1,0 +1,224 @@
+"""The run receipt: what one install, update, repair or recovery run actually achieved.
+
+``settle`` runs exactly once at the end of every such run, whichever way it
+ends. It re-resolves the installation, reads the live Runtime's release at the
+active data root and compares it with what the run was asked for. The result
+is the only source of the terminal headline, of the exit code and of
+``last-run.json`` (beside the installer's ``install.log``, which diagnostics
+already read; never inside a program or data root). Exit 0 means the live release is the target.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+# Exit-code contract (ruled by M-INT on PR #319). The target follows the request:
+# --update targets the manifest release; a plain install or repair (including
+# Pinokio finishing an interrupted update) targets "the selected version is live
+# and healthy". 0 = target reached (updated, already-current, repaired; a
+# recovery that ends healthy is repaired with reason recovered-previous-version
+# as detail); 3 = not updated, including a declined run and a recovery-only
+# --update that leaves the release unchanged;
+# 2 = setup consent required (kept: the bootstrap and journeys rerun with --yes);
+# 1 = failed or rolled back. Readers: App public/install and install.ps1 pass
+# the code through; the Pinokio launcher and the journey harness treat every
+# non-zero code as "did not finish"; update_job's worker reads its job record,
+# never this code. tests/test_update_from_field_states.py pins the mapping.
+FORMAT = "astrid-last-run/v1"
+RECORD = "last-run.json"
+SUCCESS = ("updated", "already-current", "repaired")
+EXIT_CODES = {"updated": 0, "already-current": 0, "repaired": 0,
+              "not-updated": 3, "failed": 1, "rolled-back": 1}
+
+# One line of copy for each reason. The terminal, diagnostics and App render these.
+REASONS = {
+    "self-update-too-old": "releases before 10 can't update from the App, so this one update needs the command.",
+    "disk-space": "there isn't enough free disk space for the update.",
+    "busy": "Astrid or another installer is busy; try again when it finishes.",
+    "needs-repair": "something on this computer is out of step with the installed release; run the install line to repair it.",
+    "other-runtime-running": "two copies of Astrid are running for the same workspace.",
+    "windows-upgrade-unsupported": "upgrading from an earlier Windows version isn't supported yet.",
+    "pinokio-managed": "this Astrid is managed by Pinokio; use Pinokio's Update button.",
+    "source-checkout": "this Astrid runs from source checkouts; update those instead.",
+    "consent-required": "setup needs your consent; run the exact rerun command shown above.",
+    "declined": "you declined the setup, so nothing was changed.",
+    "recovered-previous-version": "an earlier update was interrupted and Astrid restored the version before it; run the same command again to update.",
+    "runtime-not-running": "the new release was installed, but the running Astrid did not restart onto it.",
+    "refused": "the installer refused to continue; the message above says why.",
+    "error": "the run stopped with an error; the message above says why.",
+    "installer-bug": "the installer finished without installing the new release. This is a bug in Astrid, not something you did.",
+}
+
+
+@dataclass(frozen=True)
+class Request:
+    """What the run was asked to achieve: ``target`` is the manifest release, when known."""
+    mode: str
+    target: int | None = None
+    reason: str | None = None
+    refused: bool = False
+
+
+@dataclass(frozen=True)
+class Outcome:
+    kind: str
+    still: int | None
+    start: int | None = None
+    target: int | None = None
+    reason: str | None = None
+    mode: str = "install"
+
+    @property
+    def exit_code(self) -> int:
+        if self.kind == "not-updated" and self.reason == "consent-required":
+            return 2  # The bootstrap and journeys read 2 as "rerun with consent".
+        return EXIT_CODES[self.kind]
+
+    def headline(self) -> list[str]:
+        def release(value):
+            return "an unknown release" if value is None else f"Release {value}"
+        why = REASONS.get(self.reason or "installer-bug", REASONS["installer-bug"])
+        if self.kind == "updated":
+            if self.start is None:
+                return [f"Astrid installed: {release(self.target)}."]
+            return [f"Astrid updated: {release(self.start)} → {release(self.target)}."]
+        if self.kind == "already-current":
+            return [f"Astrid is already up to date ({release(self.still)}). Nothing was changed."]
+        if self.kind == "repaired":
+            lines = [f"Astrid is installed and running ({release(self.still)})."]
+            if self.reason == "recovered-previous-version":
+                lines.append("An earlier update was interrupted; Astrid restored the version before it. "
+                             "Run the command with --update to update.")
+            return lines
+        if self.kind == "not-updated":
+            if self.still is None and self.start is None:
+                first = "Astrid was NOT installed."
+            else:
+                first = f"Astrid did NOT update. It is still {release(self.still)}"
+                first += f"; {release(self.target)} is available." if self.target is not None else "."
+            return [first, f"Why: {why}", "Your projects are safe — nothing was changed."]
+        if self.kind == "rolled-back":
+            return ["Astrid did NOT update: the new version didn't start.",
+                    f"Astrid went back to {release(self.still)}. Your projects are unchanged.",
+                    "Next: run the same command again. If it fails twice, send the diagnostics to support."]
+        still = "Nothing was installed." if self.still is None else f"Astrid is still {release(self.still)}."
+        return [f"Astrid did NOT update: {why}", still]
+
+    def record(self) -> dict:
+        return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,
+                "reason_line": REASONS.get(self.reason) if self.reason else None,
+                "headline": self.headline()[0], "finished_at": int(time.time())}
+
+
+def reason_of(failure: BaseException | None) -> str:
+    """Map a run's failure to the reason enum; unknown failures are errors, never success."""
+    from .core import BackupSpaceError, RuntimeOperationError, is_lifecycle_refusal
+
+    if failure is None:
+        return "installer-bug"
+    message = str(failure)
+    if isinstance(failure, BackupSpaceError):
+        return "disk-space"
+    if isinstance(failure, BlockingIOError) or "busy" in message.lower() or "Finish or cancel" in message:
+        return "busy"
+    if isinstance(failure, RuntimeOperationError) and is_lifecycle_refusal(failure):
+        return "busy"
+    if "earlier Windows version" in message:
+        return "windows-upgrade-unsupported"
+    if "Pinokio" in message:
+        return "pinokio-managed"
+    if "source checkouts" in message:
+        return "source-checkout"
+    if "repair" in message.lower():
+        return "needs-repair"
+    if isinstance(failure, ValueError):
+        return "refused"
+    return "error"
+
+
+def _live(state) -> int | None:
+    if state is None:
+        return None
+    if state.kind == "pinokio":
+        return state.selected_release  # Pinokio starts the Runtime; there is no live owner to ask.
+    return state.live_release
+
+
+def settle(request: Request, before, resolver, *, failure: BaseException | None = None,
+           rolled_back: bool = False) -> Outcome:
+    """Observe the world after a run and classify it against the request."""
+    try:
+        after = resolver()
+    except Exception:  # noqa: BLE001 - an unreadable installation is an observation
+        after = None
+    live = _live(after)
+    start = _live(before)
+    if start is None and before is not None and before.kind not in {"none"}:
+        start = before.selected_release
+    target = request.target
+    if failure is not None:
+        kind = "rolled-back" if rolled_back else "failed"
+        return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode)
+    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
+    if request.refused or others:
+        # Refused before any work, or a second Runtime is live for this workspace.
+        reason = request.reason or "other-runtime-running"
+        return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode)
+    if request.mode == "update":
+        # --update: the target is the manifest release.
+        if live is not None and target is not None and live == target:
+            kind = "updated" if start != target else "already-current"
+            return Outcome(kind, live, start, target, None, request.mode)
+    elif live is not None and after is not None and live == after.selected_release:
+        # A plain install or repair (including Pinokio finishing an interrupted
+        # update): the target is "the selected version is live and healthy".
+        # A recovery that ends healthy is repaired; its reason stays as detail.
+        kind = "repaired" if start == live else "updated"
+        return Outcome(kind, live, start, live, request.reason, request.mode)
+    reason = request.reason
+    if reason is None:
+        # The selected version advanced but the live Runtime did not follow it.
+        selected = after.selected_release if after is not None else None
+        reason = ("runtime-not-running" if selected is not None and selected != start
+                  and selected == (target if request.mode == "update" else selected) else "installer-bug")
+    return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode)
+
+
+def clear_record(path: Path) -> None:
+    """Remove a previous run's receipt at the start of a run, so it can never outlive it.
+
+    Only Astrid's own regular, single-link record is removed.
+    """
+    try:
+        info = os.lstat(path)
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and read_record(path) is not None:
+            os.unlink(path)
+    except (OSError, ValueError):
+        pass
+
+
+def write_record(path: Path, outcome: Outcome, *protected: Path, run: dict | None = None) -> Path | None:
+    """Write the receipt; never into a protected program or data root."""
+    from .core import absolute, write_json
+
+    try:
+        path = absolute(path)
+        if any(path.is_relative_to(absolute(root)) for root in protected):
+            return None
+        write_json(path, {**outcome.record(), **(run or {})})
+        return path
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def read_record(path: Path) -> dict | None:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) and value.get("format") == FORMAT else None

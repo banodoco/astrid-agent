@@ -348,6 +348,9 @@ def apply_update_recovery(root: Path | str, data_root: Path | str, plan_sha256: 
     selected = Version.load(plan["selected_version"])
     active_backend = backend or Backend(root_path, root_path / "logs" / "maintenance.log",
                                         root_path / "bootstrap" / "uv")
+    from .installation import adopt_if_handed_off
+
+    adopt_if_handed_off(active_backend, root_path)
 
     # All gates happen before archive/copy/publish writes.  A caller can repair
     # a missing bundle, unsafe path, schema, or stop proof and rerun the plan.
