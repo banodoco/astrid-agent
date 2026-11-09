@@ -188,8 +188,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
-        command.add_argument("--align", action=_Once, choices=("check", "trust"), default="check",
-                             help="check: judge models against the target's inventory (default); "
+        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"), default="check",
+                             help="align: fetch what the target lacks (local run only); "
+                                  "check: judge models against the target's inventory (default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
@@ -424,8 +425,34 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _job_command(argv: list[str]) -> int:
+    """``generate <entry> --placement local --job FILE --out DIR --json``: the pod-side run."""
+    parser = _GenerationParser(prog='astrid generate', description='Run one machine job file locally.')
+    parser.json_errors = '--json' in argv
+    parser.add_argument('entry')
+    parser.add_argument('--placement', required=True, choices=('local',))
+    parser.add_argument('--job', required=True, metavar='FILE')
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--mode')
+    parser.add_argument('--align', choices=('align', 'check', 'trust'),
+                        help="Override the job's align mode.")
+    parser.add_argument('--json', action='store_true')
+    parsed = parser.parse_args(argv)
+    from astrid.core.generation.local_job import JobFileError, run_job
+    from astrid.core.generation.progress import write_progress
+    try:
+        result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
+    except JobFileError as exc:
+        parser.error(str(exc))
+    write_progress('done')
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    if '--job' in argv:
+        return _job_command(argv)
     parser = _parser(_context_description(argv))
     def configure(parser):
         parser.json_errors = '--json' in argv

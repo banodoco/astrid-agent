@@ -242,7 +242,7 @@ def _prompt_only_video(*, model, entry, inputs):
     return model is None and entry is None and set(inputs) == {"prompt"}
 
 
-_ALIGN_MODES = ('check', 'trust')
+_ALIGN_MODES = ('align', 'check', 'trust')
 
 
 def _align_mode(align):
@@ -1378,7 +1378,7 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": "trust"} if align == "trust" else {})},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": align} if align != "check" else {})},
                 },
                 **asset_arguments, **controls,
             )
