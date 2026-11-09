@@ -14,6 +14,10 @@ Money rules (pinned by ``tests/packs/runpod/test_machine.py``):
   it warm, and only when its machine custody matches the warm lease's;
 * the detached job id is checkpointed in the lease journal before the job
   starts, so a crashed host's job is cancelled by ``recover()``.
+* the pod keeps one long-lived Runtime (T5f): after the digest-verified fetch a
+  detached reset (``pod_reset``) restores the empty-realm template in place,
+  before the lease settles warm; a failed reset releases the pod. The next job's
+  command opens the prepared connection: no ``up`` and no ``connect`` per job.
 
 Warm reuse is keyed on one machine-custody digest of the account, the observed
 GPU type, the image, the pinned volume (id, mount path, cache device, mount id)
@@ -168,17 +172,86 @@ def extract_selection_command(remote_root: str) -> str:
             f"tar -xzf {shlex.quote(f'{remote_root}/{SELECTION_NAME}')} -C {root}")
 
 
-def runtime_check_command(remote_root: str | None = None) -> str:
-    """Start the pod's Runtime headless (it picks its own port) and list entries.
+# The pod's one long-lived Runtime and its in-place reset (T5f): see pod_reset.py.
+POD_STATE_MARK = "pod-state:"
+#: Bound on one detached reset (restore + replace + one ensure) before the pod is released.
+RESET_SECONDS = 600.0
 
-    With ``remote_root``, the shipped selection is extracted first and the listing
-    sees only its packs and entries.
+
+def pod_paths() -> dict[str, str]:
+    from . import pod_reset
+
+    return {"root": str(pod_reset.POD_ROOT), "data_root": str(pod_reset.DATA_ROOT),
+            "source_manifest": str(pod_reset.SOURCE_MANIFEST), "ready": str(pod_reset.READY),
+            "prepared": str(pod_reset.PREPARED), "active": str(pod_reset.ACTIVE_JOB),
+            "lock": str(pod_reset.LOCK), "prepared_env": pod_reset.PREPARED_ENV}
+
+
+def pod_state_command() -> str:
+    """``ready`` (ready.json and a prepared connection, no active job), ``pending`` or ``absent``."""
+    p = {key: shlex.quote(value) for key, value in pod_paths().items()}
+    return (f"s=absent; if [ -f {p['ready']} ] && [ -f {p['prepared']} ]; then s=ready; fi; "
+            f"if [ -e {p['active']} ]; then s=pending; fi; echo {POD_STATE_MARK}$s")
+
+
+def reset_command(*, run_dir: str | None = None, job_dir: str | None = None) -> str:
+    """The detached in-place reset: template restore + replace, sweep, one ensure, ready.json."""
+    argv = [f"{POD_VENV}/bin/python", "-m", "astrid.packs.runpod.pod_reset", "reset"]
+    if run_dir:
+        argv += ["--run-dir", run_dir]
+    if job_dir:
+        argv += ["--job-dir", job_dir]
+    return " ".join(shlex.quote(part) for part in argv)
+
+
+def parse_reset(stdout: str) -> dict[str, Any]:
+    for line in reversed(stdout.strip().splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, Mapping) and "reset" in value:
+            return dict(value)
+    return {"reset": "failed", "error": "the reset printed no result"}
+
+
+def ensure_pod_ready(placement: RemotePlacement, state: RemoteRun) -> dict[str, Any]:
+    """At the claim: a ready warm pod is opened as is; otherwise the reset runs first.
+
+    A fresh pod (no ready.json) takes its empty-realm template here; a pod left
+    with ``active-job.json`` (a job that never reached its reset) is reset again.
     """
-    prefix = "" if remote_root is None else f"{extract_selection_command(remote_root)} && "
-    env = "" if remote_root is None else f"env {selection_env(remote_root)} "
-    return (prefix + f"{POD_VENV}/bin/python -c "
-            + shlex.quote("from astrid.sdk.autobootstrap import ensure_runtime; ensure_runtime()")
-            + f" >/dev/null && {env}{POD_VENV}/bin/astrid generate list --json")
+    code, stdout, stderr = placement._exec(state, pod_state_command(), timeout=60)
+    line = next((row for row in stdout.splitlines() if row.startswith(POD_STATE_MARK)), None)
+    if code != 0 or line is None:
+        raise MachineError(f"pod readiness check failed (exit {code}): {(stderr or stdout)[-400:]}")
+    found = line[len(POD_STATE_MARK):].strip()
+    if found == "ready":
+        state.note("pod_ready", "ready")
+        return {"entry": None, "ready": True, "found": found, "reset": "skipped"}
+    result = parse_reset(placement._run_job(state, reset_command(), "pod reset"))
+    if result.get("reset") != "ok":
+        raise MachineError(f"pod reset failed: {result.get('error')}")
+    state.note("pod_ready", "reset", found=found)
+    return {"entry": None, "ready": True, "found": found, "reset": result.get("template") or "restored"}
+
+
+_ENTRY_CHECK = (
+    "import json,sys\n"
+    "rows=json.load(open(sys.argv[1],encoding='utf-8'));entry=sys.argv[2] or None\n"
+    "if not isinstance(rows,list): sys.exit('the pod runtime did not list entries as JSON')\n"
+    "rows=[r for r in rows if isinstance(r,dict) and r.get('id')==entry]\n"
+    "if entry is not None and not rows: sys.exit(f\"entry {entry!r} is not listed by the pod's runtime\")\n"
+    "if any(r.get('ready') is False for r in rows): sys.exit(f\"entry {entry!r} is not ready on the pod's runtime\")\n"
+)
+
+
+#: One line: writes active-job.json atomically, adding the job's own agent folder.
+_ACTIVE_WRITE = (
+    "import json,os,sys; value=json.loads(sys.argv[1]); value['job_dir']=os.path.abspath(sys.argv[2]); "
+    "tmp=sys.argv[3]+'.partial'; open(tmp,'w',encoding='utf-8').write(json.dumps(value,sort_keys=True)); "
+    "os.replace(tmp,sys.argv[3])"
+)
 
 
 def build_selection(entry: str | None, staging: Path, *, sources: Any = None,
@@ -258,32 +331,6 @@ def _user_entry_folder(entry: str | None, entries_dir: Path | None = None) -> Pa
     return None
 
 
-def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str | None,
-                  *, command: str | None = None) -> dict[str, Any]:
-    """After install: the pod's own local Runtime starts and lists ``entry`` as ready.
-
-    A job without a named entry ships its workflow bundle; then only the
-    Runtime start and the listing are checked.
-    """
-    code, stdout, stderr = placement._exec(state, command or runtime_check_command(), timeout=300)
-    if code != 0:
-        raise MachineError(f"pod runtime check failed (exit {code}): {(stderr or stdout)[-400:]}")
-    try:
-        rows = json.loads(stdout)
-    except ValueError:
-        raise MachineError("pod runtime check did not list entries as JSON") from None
-    if not isinstance(rows, list):
-        raise MachineError("pod runtime check did not list entries as JSON")
-    rows = [row for row in rows if isinstance(row, Mapping) and row.get("id") == entry]
-    if entry is not None and not rows:
-        raise MachineError(f"entry {entry!r} is not listed by the pod's runtime")
-    if any(row.get("ready") is False for row in rows):
-        raise MachineError(f"entry {entry!r} is not ready on the pod's runtime")
-    state.note("runtime_check", "done", entry=entry)
-    return {"entry": entry, "ready": True,
-            "listing_sha256": "sha256:" + hashlib.sha256(stdout.encode()).hexdigest()}
-
-
 def generation_argv(entry: str | None, remote_root: str, *, mode: str | None) -> list[str]:
     """The ONE pod-side invocation: the same local run the controller would do.
 
@@ -303,13 +350,40 @@ def generation_argv(entry: str | None, remote_root: str, *, mode: str | None) ->
     return argv
 
 
-def generation_command(entry: str | None, remote_root: str, *, mode: str | None) -> str:
+def generation_command(entry: str | None, remote_root: str, *, mode: str | None,
+                       active_job: Mapping[str, Any] | None = None) -> str:
+    """The job's one pod command: the entry check and the run on the prepared connection.
+
+    It holds the reset lock shared, requires ready.json with no pending reset,
+    records ``active-job.json`` (deleted by the next reset), and opens the
+    Runtime through the prepared connection: no ``up`` and no ``connect``.
+    """
+    from astrid.core.execution.machine_run import WORKFLOW_FILE_ENTRY
+
+    p = {key: shlex.quote(value) for key, value in pod_paths().items()}
     line = " ".join(shlex.quote(part) for part in generation_argv(entry, remote_root, mode=mode))
     result = shlex.quote(f"{remote_root}/result.json")
+    listing = shlex.quote(f"{remote_root}/listing.json")
+    active = json.dumps({**dict(active_job or {"run_id": remote_root.rsplit("/", 1)[-1]}), "run_dir": remote_root},
+                        sort_keys=True)
+    check_entry = "" if entry in (None, WORKFLOW_FILE_ENTRY) else entry
     return (
         "set -u\n"
+        f"exec 9>>{p['lock']}\n"
+        "flock -s 9 || exit 75\n"
+        f"if [ ! -f {p['ready']} ] || [ ! -f {p['prepared']} ] || [ -e {p['active']} ]; then "
+        "echo 'the pod is not ready: a reset is pending' >&2; exit 75; fi\n"
+        # active-job.json names this job's run folder and its own agent job folder
+        # (the agent runs `bash "$d/command.sh"`), so a redone reset can remove both.
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ACTIVE_WRITE)} {shlex.quote(active)} \"$(dirname \"$0\")\" "
+        f"{p['active']} || exit 75\n"
+        f"export {p['prepared_env']}={p['prepared']} ASTRID_RUNTIME_DATA_ROOT={p['data_root']} "
+        f"ASTRID_RUNTIME_SOURCE_MANIFEST={p['source_manifest']} ASTRID_RUNTIME_DOOR_PORT=0\n"
         f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
         f"export {selection_env(remote_root)}\n"
+        f"{extract_selection_command(remote_root)} || exit 3\n"
+        f"{POD_VENV}/bin/astrid generate list --json > {listing} || exit 3\n"
+        f"{POD_VENV}/bin/python -c {shlex.quote(_ENTRY_CHECK)} {listing} {shlex.quote(check_entry)} || exit 3\n"
         f"{line} > {result}\n"
         "rc=$?\n"
         "if [ $rc -ne 0 ]; then exit $rc; fi\n"
@@ -333,6 +407,9 @@ class MachineLease:
     custody: Mapping[str, Any]
     warm: bool
     released: bool = False
+    #: The job's run directory and detached job directory, removed by the reset.
+    run_dir: str | None = None
+    job_dir: str | None = None
 
 
 @dataclass
@@ -429,7 +506,7 @@ class RunPodMachine:
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
                     requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
-                    entry=None, runtime_check=True, observe_mounts=self._observe_mounts,
+                    entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
                 )
             except BaseException:
                 if acquired:
@@ -470,7 +547,8 @@ class RunPodMachine:
             else:
                 shipped[name] = value
         body = {"schema": "astrid.machine-job.v1", "entry": job.entry, "mode": job.mode, "align": job.align,
-                "task_identity": job.task_id, "attempt_identity": job.attempt_id, "inputs": shipped}
+                "task_identity": job.task_id, "attempt_identity": job.attempt_id,
+                "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}", "inputs": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
@@ -481,8 +559,10 @@ class RunPodMachine:
         archive.unlink(missing_ok=True)
         lease.state.note("selection", "shipped", packs=[row["pack_id"] for row in selection["packs"]],
                          entries=[row["id"] for row in selection["entries"]])
-        runtime_check(placement, state, job.entry, command=runtime_check_command(remote_root))
-        command = generation_command(job.entry, remote_root, mode=job.mode)
+        # The entry check runs inside the job's one command, on the prepared connection.
+        command = generation_command(job.entry, remote_root, mode=job.mode, active_job={
+            "run_id": run_id, "task": job.task_id, "attempt": job.attempt_id})
+        lease.run_dir = remote_root
         job_id = uuid.uuid4().hex
         # The exact detached identity is durable before launch; a lost ACK never
         # invents or retries another job, and recover() can cancel this one.
@@ -491,6 +571,7 @@ class RunPodMachine:
         if started.get("id") != job_id:
             raise MachineError("detached job differs from the checkpointed job custody")
         self._checkpoint(lease, {"id": job_id, "state": "running"})
+        lease.job_dir = str(started.get("dir") or "") or None
         state.note("job", "started", job_id=job_id)
         return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
                           Path(job.progress_path), staging)
@@ -606,13 +687,23 @@ class RunPodMachine:
     # -- release -------------------------------------------------------------
 
     def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed") -> None:
-        """Settle warm after a successful job; otherwise release the exact pod (idempotent)."""
+        """Reset the pod's Runtime, then settle warm; otherwise release the exact pod (idempotent).
+
+        Only a successful job settles warm, and only after its in-place reset
+        (after the digest-verified fetch); a failed reset releases the pod.
+        """
         from .worker_preparation import AcquisitionUnresolvedError
 
         adapter = self._require()
         if lease.released:
             return
         owner = adapter.lease_owner
+        if warm:
+            try:
+                self._reset(lease)
+            except Exception as exc:  # noqa: BLE001 (any failed reset releases the pod)
+                lease.state.note("reset", "failed", error=f"{type(exc).__name__}: {exc}"[:400])
+                warm, reason = False, "reset_failed"
         self._finish(lease.lease)
         if warm:
             owner.settle(lease.lease)
@@ -630,6 +721,43 @@ class RunPodMachine:
                         and record.get("lease", {}).get("state") == "releasing"):
                     raise
         lease.released = True
+
+    def _reset(self, lease: MachineLease) -> dict[str, Any]:
+        """The detached in-place reset of the pod's one Runtime, checkpointed like a job."""
+        import time
+
+        ops = lease.claim.ops
+        job_id = uuid.uuid4().hex
+        self._checkpoint(lease, {"id": job_id, "state": "starting"})
+        started = ops.job_start(reset_command(run_dir=lease.run_dir, job_dir=lease.job_dir), job_id=job_id)
+        if started.get("id") != job_id:
+            raise MachineError("reset job differs from the checkpointed job custody")
+        self._checkpoint(lease, {"id": job_id, "state": "running"})
+        limit = time.monotonic() + RESET_SECONDS
+        poll = min(POLL_SECONDS, float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 1.0))
+        while True:
+            record = ops.job_poll(job_id)
+            if record.get("state") == "exited":
+                break
+            if record.get("state") in {"missing", "cancelled"}:
+                raise MachineError(f"reset job is {record.get('state')}")
+            if time.monotonic() > limit:
+                ops.job_cancel(job_id)
+                self._checkpoint(lease, {"id": job_id, "state": "cancelled"})
+                raise MachineError(f"reset did not finish in {RESET_SECONDS:.0f}s")
+            time.sleep(poll)
+        self._checkpoint(lease, {"id": job_id, "state": "exited"})
+        directory = str(started.get("dir") or "")
+        stdout = ""
+        if directory:
+            _c, stdout, _e = ops.exec(f"cat {shlex.quote(directory)}/stdout", 120)
+        result = parse_reset(stdout)
+        if str(record.get("exit_code")) != "0" or result.get("reset") != "ok":
+            raise MachineError(f"pod reset failed (exit {record.get('exit_code')}): {result.get('error')}")
+        if directory:
+            ops.exec(f"rm -rf {shlex.quote(directory)}", 120)  # the agent keeps at most 128 job folders
+        lease.state.note("reset", "done", removed=result.get("removed"))
+        return result
 
     # -- helpers -------------------------------------------------------------
 
@@ -767,4 +895,4 @@ MACHINE = RunPodMachine()
 
 __all__ = ["MACHINE", "journal_leases", "unshipped_entry_reason", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
            "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
-           "runtime_check"]
+           "ensure_pod_ready", "generation_command", "pod_state_command", "reset_command"]

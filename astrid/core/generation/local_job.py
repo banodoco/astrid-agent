@@ -77,10 +77,12 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
                      out: Path, *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
     """A named entry through the contract the controller's facade applies (sdk/generation.py).
 
-    * the CLI's own validation of the entry's public inputs;
+    * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
+      names) are what every later step reads;
     * readiness and ``target_schema`` of the entry, as the facade's local path checks them;
     * a contribution's ``build`` once, before the run, and its ``after_outputs`` once, after it
-      (``entries.build_entry`` / ``ComfyUIEngine.finish``: the one hook site);
+      (``entries.build_entry``; ``after_outputs`` runs inside ``_run_and_settle`` through its
+      ``after_outputs_job`` seam, before the outputs are sealed);
     * otherwise the entry's ``binds`` and ``defaults`` applied to the workflow
       (``entries.apply_workflow_inputs``, the same function ``entries.prepare`` calls).
     """
@@ -93,7 +95,7 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
     from astrid.packs.vibecomfy.actions.run import run as run_action
 
     try:
-        description, _ = entries.resolve_entry_inputs(named, inputs, mode=mode)
+        description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
     except (ValueError, KeyError, TypeError) as exc:
         raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
     mode = description.get("mode") or mode
@@ -105,12 +107,15 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
     hooks = entries.entry_hooks(described)
     run_files = dict(files)
     job_dir = None
+    manifest = None
     try:
         if "build" in hooks:
             job_dir = Path(tempfile.mkdtemp(prefix="astrid-job-"))
             built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
             workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
             assets = dict(built.get("assets") or {})
+            # The requirements of the graph build chose, not of the static bundle.
+            manifest = entries.requirements(entries.attach_hooks(described, inputs, job_dir), inputs)
             entries.target_schema(described, built["workflow"], None, align=align)
             if assets:
                 import zipfile
@@ -140,17 +145,18 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
             if assets:
                 # Media bindings are file paths on this machine; they ride as plain bindings.
                 workflow_inputs.update({name: str(path) for name, path in assets.items()})
+        hook_job = {}
+        if "after_outputs" in hooks:
+            # (b) after_outputs once, inside the run, on the managed outputs before they are sealed;
+            # a raise fails the job. It reads the state build left in this job directory.
+            job = entries.entry_job(described, inputs, job_dir, hooks={})
+            hook_job = {"after_outputs_job": json.dumps(
+                {"entry": named, "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
+                sort_keys=True, default=str)}
         result = run_action._run_and_settle(
             workflow, out, task_identity=task, attempt_identity=attempt,
             workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
-            align=align, **run_files)
-        if "after_outputs" in hooks:
-            # (b) after_outputs, once, before copy-back; a raise fails the job.
-            produced = [str(out / row["path"]) if isinstance(row, dict) and "path" in row else str(row)
-                        for row in result.get("outputs", [])]
-            job = entries.entry_job(described, inputs, job_dir, hooks=hooks, align=align)
-            finished = entries.engine_table()[described.get("engine") or "comfyui"].finish(job, produced)
-            result = {**result, "after_outputs": [str(path) for path in finished or ()]}
+            align=align, manifest=manifest, **hook_job, **run_files)
         return result
     finally:
         if job_dir is not None:

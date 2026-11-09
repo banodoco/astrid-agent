@@ -1028,9 +1028,22 @@ def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any,
             'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
 
 
+def attach_hooks(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any]:
+    """The entry with what the engine's ``requirements`` and ``prepare`` read: hooks, files, inputs, job_dir.
+
+    ``registry`` is the ExtensionRegistry (the facade's model catalog is a different object).
+    """
+    hooks = entry_hooks(entry, registry)
+    if not hooks:
+        return dict(entry)
+    job = entry_job(entry, inputs, job_dir, hooks=hooks)
+    return {**entry, 'hooks': hooks, 'files': job['files'], 'job_dir': job_dir, 'job_inputs': job['inputs']}
+
+
 def build_entry(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, registry: Any = None) -> dict[str, Any] | None:
     """Run the entry's ``build`` through the engine's ``prepare``: ``{workflow, bindings, plan, ...}``, or None."""
-    hooks = entry_hooks(entry, registry)
-    if 'build' not in hooks:
+    attached = entry if entry.get('hooks') else attach_hooks(entry, inputs, job_dir, registry=registry)
+    if 'build' not in (attached.get('hooks') or {}):
         return None
-    return engine_table()[entry.get('engine') or 'comfyui'].prepare(entry_job(entry, inputs, job_dir, hooks=hooks))
+    return engine_table()[entry.get('engine') or 'comfyui'].prepare(
+        entry_job(entry, inputs, job_dir, hooks=attached['hooks']))

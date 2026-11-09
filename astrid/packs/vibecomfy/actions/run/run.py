@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object of scalar public workflow inputs; managed assets supply media basenames.",
     )
     parser.add_argument(
+        "--after-outputs-job",
+        default="{}",
+        help="JSON {entry, job_dir, inputs, files}: run that entry's after_outputs hook before sealing outputs.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         help="Host-assigned output spool (required for run; optional for validate).",
@@ -284,8 +289,13 @@ def _materialize_managed_generation_result(
     workflow_path: Path,
     source_snapshot: dict[str, Any] | None = None,
     producer_context: dict[str, Any] | None = None,
+    after_outputs: Any = None,
 ) -> dict[str, Any]:
-    """Rebase one producer envelope into the host-owned output spool."""
+    """Rebase one producer envelope into the host-owned output spool.
+
+    ``after_outputs`` (a vibecomfy.workflows hook, see ``_after_outputs``) sees the copied output
+    files before their digests are recorded here, and may replace them (h3's composed candidate).
+    """
     output_root = output_root.expanduser().resolve()
     envelope_path = Path(production_result.managed_generation_result_path).expanduser()
     if not envelope_path.is_file():
@@ -341,6 +351,17 @@ def _materialize_managed_generation_result(
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
+    if after_outputs is not None and rebased_outputs:
+        produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
+        if len(produced) != len(rebased_outputs):
+            raise AstridValueError("after_outputs must return one file per output")
+        for row, replacement in zip(rebased_outputs, produced):
+            target = managed_root / row["path"]
+            if replacement.resolve() != target.resolve():
+                shutil.copyfile(replacement, target)
+            data = target.read_bytes()
+            row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+            row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
     rebased_payload["outputs"] = rebased_outputs
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -669,15 +690,36 @@ def _t9_child_dispatch(
     return run, marker
 
 
-def _comfyui_engine() -> Any:
-    """The ComfyUI contribution to generation.engine, loaded from its extension file."""
-    import importlib.util
+def _engine_for(manifest: dict[str, Any]) -> Any:
+    """The generation.engine named by manifest["engine"] (default comfyui), from entries.engine_table()."""
+    from astrid.core.generation import entries
 
-    path = Path(__file__).resolve().parents[2] / "extensions" / "generation.engine" / "comfyui_engine.py"
-    spec = importlib.util.spec_from_file_location("astrid_comfyui_engine", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.ComfyUIEngine()
+    name = manifest.get("engine") or "comfyui"
+    engine = entries.engine_table().get(name)
+    if engine is None:
+        raise AstridValueError(f"no generation.engine contribution for {name!r}")
+    return engine
+
+
+def _after_outputs(spec: Any) -> Any:
+    """The after_outputs callable for ``--after-outputs-job``, or None.
+
+    The entry's hook runs through ``ComfyUIEngine.finish``, on this machine, with the job
+    directory build already wrote into.
+    """
+    job = json.loads(spec) if isinstance(spec, str) else dict(spec or {})
+    if not job or not job.get("entry"):
+        return None
+    from astrid.core.generation import entries
+
+    row = next((r for r in entries.user_entries() if r["id"] == job["entry"] and r.get("hooks_declared")), None)
+    hooks = entries.entry_hooks(row) if row else {}
+    if "after_outputs" not in hooks:
+        raise AstridValueError(f"entry {job['entry']!r} declares no after_outputs hook")
+    engine = _engine_for({"engine": "comfyui"})
+    run_job = {"hooks": hooks, "inputs": job.get("inputs", {}), "files": job.get("files", {}),
+               "job_dir": job.get("job_dir")}
+    return lambda outputs: engine.finish(run_job, outputs)
 
 
 class _LocalEngineServer:
@@ -727,6 +769,20 @@ def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any]
     return entries.requirements(described, inputs) if described is not None else None
 
 
+class _AttachedServer(_LocalEngineServer):
+    """The ``local`` for an attached run: the caller's ComfyUI at comfy_url, probed by the engine, never started here."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        super().__init__(adapter, output_root, production_kwargs)
+
+    def ensure_running(self) -> str:
+        return self._kwargs["comfy_url"]
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **self._kwargs)
+        return self.result
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -747,6 +803,7 @@ def _run_and_settle(
     align: str = "check",
     manifest: dict[str, Any] | None = None,
     entry: str | None = None,
+    after_outputs_job: Any = "{}",
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt.
 
@@ -884,17 +941,20 @@ def _run_and_settle(
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
                 write_progress("align")
-                _comfyui_engine().run(
-                    {"workflow": workflow_path, "out": output_root,
-                     "manifest": manifest if manifest is not None else {"models": [], "extra": {"nodes": []}},
-                     "mode": align},
-                    local)
+                engine_manifest = {"engine": "comfyui", **(manifest if manifest is not None
+                                                            else {"models": [], "extra": {"nodes": []}})}
+                _engine_for(engine_manifest).run(
+                    {"workflow": workflow_path, "out": output_root, "manifest": engine_manifest, "mode": align}, local)
                 write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
-                production_result = adapter.workflow(
-                    workflow_path, output_root, **production_kwargs,
-                )
+                # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.
+                manifest = {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                _engine_for(manifest).run(
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "trust",
+                     "endpoint": comfy_url}, local)
+                production_result = local.result
             else:
                 run, marker = synthetic
                 production_kwargs["profile_id"] = "t9_cpu_stub"
@@ -956,6 +1016,7 @@ def _run_and_settle(
             workflow_path=workflow_path,
             source_snapshot=source_snapshot,
             producer_context=producer_context,
+            after_outputs=_after_outputs(after_outputs_job),
         )
         execution = manifest["managed_generation_result"]["outcomes"]["execution"]
         if execution["status"] != "succeeded":
@@ -1106,6 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_video_widget=args.source_video_widget,
                 managed_assets=args.managed_assets,
                 workflow_inputs=args.workflow_inputs,
+                after_outputs_job=args.after_outputs_job,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
                 align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else "check",

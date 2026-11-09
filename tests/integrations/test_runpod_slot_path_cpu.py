@@ -62,6 +62,14 @@ def _slot_classes(slot):
     return classes
 
 
+def _h3_built_classes(request_path, asset_map, tmp):
+    """Node classes of the graph h3's build picks for this request (the stand-in ComfyUI must know them)."""
+    from astrid.core.generation import entries
+    built = entries.build_entry(entries.find_entry("h3"), {"request": str(request_path), "asset_map": asset_map},
+                                Path(tmp) / "classes-job")
+    return {node.class_type for node in built["workflow"].runtime_nodes().values()}
+
+
 def _media(kind, tmp):
     """A small real media file, so delivery and thumbnails probe real bytes."""
     import subprocess
@@ -112,7 +120,7 @@ class SlotPod(MachineProviderHTTP):
 
 
 @contextlib.contextmanager
-def _attached_comfy(comfy):
+def _attached_comfy(comfy, port=0):
     """A human-attached ComfyUI on loopback: the stand-in pod's ComfyUI behind a real socket."""
     import http.server
     from urllib.parse import parse_qs, urlsplit
@@ -165,7 +173,7 @@ def _attached_comfy(comfy):
                                         "type": "input"})
             self._send(404, {})
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -175,8 +183,54 @@ def _attached_comfy(comfy):
 
 
 @contextlib.contextmanager
+def _managed_local_engine(provider, tmp_path, monkeypatch):
+    """A registered managed ComfyUI install on this machine: a receipt under a recorded root, with the stand-in
+    pod's ComfyUI listening where the recipe starts it. Only the install-health probe is a double."""
+    import json as _json
+    from astrid.core.generation import engine_recipe, engine_runner, entries
+    from astrid.core.generation.engine_local_endpoint import DEFAULT_PLATFORM, record_engine_root
+    # What the machine's installs list, read before the home directory moves to the test's.
+    files = [p for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
+             for p in receipt_files(provider._receipt_for(engine))]
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = str(tmp_path / "managed" / "engines" / "comfyui")
+    receipt = provider._install_receipt("comfyui", root)
+    path = Path(root) / ".astrid-engine" / "install.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(_json.dumps(receipt))
+    record_engine_root("comfyui", root)
+    provider.comfy.installed_files = lambda: files
+    plan = engine_runner.plan_install(engine_recipe.load_recipe("comfyui", DEFAULT_PLATFORM), root=root, placement="local")
+    monkeypatch.setattr(engine_runner, "engine_status",
+                        lambda engine, **kwargs: engine_runner._parse_receipt(_json.loads(path.read_text()), plan))
+    # The install holds every model a ready entry declares. The CPU harness keeps sparse placeholder files and answers
+    # the byte-hash readers from the declarations, as the pod's stand-in does (real weights are Plan 34's).
+    from astrid.core.generation import model_downloader, model_root
+    from astrid.core.generation.asset_gaps import declared_model_specs
+    sizes = {}
+    declared = [(m["path"].split("/models/", 1)[-1], m["bytes"], m["sha256"].removeprefix("sha256:"))
+                for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
+                for m in provider._receipt_for(engine)["models"]]
+    for entry in entries.ready_entries():
+        declared += [(m.destination, m.bytes, m.sha256) for m in
+                     declared_model_specs(entry.get("model_assets", []), require_complete=False)]
+    for destination, size, sha in declared:
+        file = Path(root) / "models" / destination.removeprefix("models/")
+        file.parent.mkdir(parents=True, exist_ok=True)
+        with file.open("wb") as handle:
+            handle.truncate(size)  # sparse: the declared size, no bytes
+        sizes[str(file)] = (size, sha)
+    real_digest, real_sha = model_downloader._digest, model_root._file_sha256
+    monkeypatch.setattr(model_downloader, "_digest", lambda path, **kw: sizes.get(str(path)) or real_digest(path, **kw))
+    monkeypatch.setattr(model_root, "_file_sha256", lambda path: "sha256:" + sizes[str(path)][1] if str(path) in sizes else real_sha(path))
+    port = engine_recipe.load_recipe("comfyui", DEFAULT_PLATFORM).start.port
+    with _attached_comfy(provider.comfy, port) as url:
+        yield url
+
+
+@contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod"):
+           machine_identity=False, target_kind="runpod", h3_output=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -198,6 +252,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
+    provider.comfy.h3_output = h3_output
     send, send_requests, connect = httpx.Client.send, requests.Session.send, socket.socket.connect
     local = {"127.0.0.1", "localhost", "::1"}
     def respond(request):
@@ -291,6 +346,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                 url = stack.enter_context(_attached_comfy(provider.comfy))
                 controls = dict(placement=url, client=client, project=project_id, wait=True)
             else:
+                stack.enter_context(_managed_local_engine(provider, tmp_path, monkeypatch))
                 controls = dict(placement="managed", client=client, project=project_id, wait=True)
             result = call(GenerationFacade(), controls, tmp_path)
             yield client, project_id, provider, result
@@ -361,6 +417,7 @@ def test_h3_av_through_the_runpod_machine(tmp_path, monkeypatch, real_runtime, t
     assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
     h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                  / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+    h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
     def call(facade, controls, tmp):
         return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
     with _drive(("video", "h3"), tmp_path, monkeypatch, real_runtime, tuple_sources,
@@ -455,17 +512,19 @@ CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio",
                 ("audio", "sfx"), ("video", "i2v"), ("video", "h3")]
 # T1 characterization. Each red cell asserts today's refusal: (exception type or "result", key message, task that flips it).
 # T3 Placement and attached routing, T4 local run path, T5 RunPod as a machine, T6 one generate, T6b h3_av.
-_NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
 _RED = {
-    **{(c, "local-managed"): ("GenerationReadinessError", _NO_ENGINE, "T4")
-       for c in CAPABILITIES if c != ("video", "h3")},
-    (("video", "h3"), "local-managed"): ("result", "capability 'h3_av.transform' child exited 1", "T6b"),
+    # The managed local target now exists (T4f); these three still refuse, for reasons it cannot fix on CPU.
+    (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
+    (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
+    (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
+    # h3 builds its graph and reaches vibecomfy.run on the stand-in; the graph declares node 1027's audio input COMBO
+    # while the stand-in's loader menu is a CHOICE socket (vibecomfy matches CHOICE/ENUM, not COMBO).
+    (("video", "h3"), "local-managed"): ("CapabilityRuntimeError", "public input 'node:1027.audio' type 'COMBO' is incompatible with 'CHOICE'", "T8"),
+    (("video", "h3"), "attached"): ("CapabilityRuntimeError", "public input 'node:1027.audio' type 'COMBO' is incompatible with 'CHOICE'", "T8"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
     (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
-    (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
 }
 
 
@@ -518,9 +577,10 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
         h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                      / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+        h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
         def call(facade, controls, tmp):
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
-        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True)
+        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True, h3_output=True)
     else:
         drive = dict(call=_capability_call(capability))
     red = _RED.get((capability, target_kind))
