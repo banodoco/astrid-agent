@@ -114,7 +114,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert json.loads(job.progress_path.read_text()) == {"phase": "fetch"}
     record = c.read()
     assert record["lease"]["state"] == "idle" and record["lease"]["job"]["state"] == "exited"
-    assert record["lease"]["preparation"]["runtime_check"]["entry"] == "cpu-image"
+    assert record["lease"]["preparation"]["runtime_check"]["entry"] is None  # claim: the runtime starts
+    # start: the shipped selection is extracted and the entry must be listed from it.
+    assert any("tar -xzf" in line and "generate list --json" in line for line in c.pod.exec_log)
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
     # Inputs shipped inside the job directory, each digest-checked after upload.
@@ -134,12 +136,14 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
 
 def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
     c = machine_case
-    c.pod.listed = []  # the pod's runtime does not list the entry
+    c.pod.listed = []  # the pod's runtime does not list the entry from the shipped selection
+    job = c.job()
     with pytest.raises(rm.MachineError, match="not listed by the pod's runtime"):
-        c.machine.claim(c.job())
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
     record = c.read()
     assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
-    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert record["lease"].get("ended") == "task_failed"
     assert not [line for line in c.pod.job_log if " generate " in line]
 
 
@@ -266,7 +270,7 @@ def test_an_entry_from_a_pack_missing_from_the_shipped_selection_is_refused_befo
                               fields={"entries": [{"id": "z-image"}]})
     registry = SimpleNamespace(contributions=lambda point: [installed, builtin])
     reason = rm.unshipped_entry_reason("studio-look", registry=registry, action_rows=[])
-    assert "studio.workflows (installed pack" in reason and "not in the selection shipped" in reason
+    assert "studio.workflows (installed pack" in reason and "outside the active pack selection" in reason
     assert rm.unshipped_entry_reason("z-image", registry=registry, action_rows=[]) is None
     assert rm.unshipped_entry_reason(None, registry=registry, action_rows=[]) is None
     assert rm.unshipped_entry_reason("h3", registry=SimpleNamespace(contributions=lambda p: []),
@@ -281,8 +285,39 @@ def test_an_entry_from_a_pack_missing_from_the_shipped_selection_is_refused_befo
         job = c.job()
         job = type(job)(**{**job.__dict__, "entry": "studio-look"})
         quotes = len(c.quotes)
-        with pytest.raises(rm.MachineError, match="not in the selection shipped"):
+        with pytest.raises(rm.MachineError, match="outside the active pack selection"):
             c.machine.claim(job)
     finally:
         module.unshipped_entry_reason = original
     assert c.creates == 0 and len(c.quotes) == quotes and not c.owner.path.exists()
+
+
+def test_the_selection_ships_active_sources_and_the_user_entry_folder(tmp_path):
+    """T5e: build_selection pins each active source and copies the --as-entry folder."""
+    import tarfile
+    from types import SimpleNamespace
+
+    pack = tmp_path / "studio"
+    (pack / "extensions" / "vibecomfy.workflows").mkdir(parents=True)
+    (pack / "pack.yaml").write_text("id: studio\n")
+    (pack / ".git").mkdir()
+    (pack / ".git" / "HEAD").write_text("ref")
+    entries = tmp_path / "entries" / "mine"
+    entries.mkdir(parents=True)
+    (entries / "entry.json").write_text(json.dumps({"id": "mine"}))
+    (entries / "workflow.py").write_text("# bundle")
+    source = SimpleNamespace(pack_id="studio", pack_root=pack, revision="a" * 40, repository="file:///studio",
+                             tree_sha256="b" * 64, manifest_sha256="c" * 64)
+    archive, manifest = rm.build_selection("mine", tmp_path / "stage", sources=[source],
+                                           entries_dir=tmp_path / "entries")
+    assert manifest["packs"][0]["tree_sha256"] == "b" * 64 and "pack.yaml" in manifest["packs"][0]["files"]
+    assert manifest["entries"] == [{"id": "mine", "folder": "mine", "files": {
+        "entry.json": rm.sha256_file(entries / "entry.json"), "workflow.py": rm.sha256_file(entries / "workflow.py")}}]
+    with tarfile.open(archive) as handle:
+        names = set(handle.getnames())
+    assert {"packs/studio/pack.yaml", "entries/mine/entry.json", "entries/mine/workflow.py", "selection.json"} <= names
+    assert not any(".git" in name for name in names)
+    env = rm.selection_env("/root/astrid/runs/x")
+    assert "ASTRID_PACKS_PATH=/root/astrid/runs/x/selection/packs" in env
+    assert "VIBECOMFY_ENTRIES_DIR=/root/astrid/runs/x/selection/entries" in env
+    assert "ASTRID_SOURCE_STATE=" in env and "ASTRID_USER_PACKS=" in env
