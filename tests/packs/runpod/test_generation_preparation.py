@@ -25,6 +25,15 @@ def _selected_runtime_commit():
     return json.loads((repo_root / "runtime.lock.json").read_text())["source_commit"]
 
 
+def _pod_plan(installation, command):
+    """The plan the pod's own ``engines install`` binds: the model root the command names (a saved volume cache)."""
+    from astrid.core.generation import engine_recipe, engine_runner
+
+    models_root = command.split("--models-root ", 1)[1].split()[0] if "--models-root " in command else None
+    recipe = engine_recipe.load_recipe(installation.engine, installation.platform)
+    return engine_runner.plan_install(recipe, root=installation.root, placement="local", models_root=models_root)
+
+
 @pytest.fixture
 def retained(small_lease, sources, tmp_path, monkeypatch, request):
     """Real adapter→A3→lifecycle→HTTPS→canonical runner, fake paid/OS edges."""
@@ -180,7 +189,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:
-                    receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
+                    receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
                                                            deadline=c.monotonic() + seconds)
                 except Exception as exc:  # the pod-side process exits non-zero
                     self.jobs[job_id] = 1
@@ -188,7 +197,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
                 else:
                     self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             elif "engines install" in command and not self.jobs[job_id]:
-                receipt = engine_runner.install_engine(plan, context=context, adapter=context.adapter,
+                receipt = engine_runner.install_engine(_pod_plan(installation, command), context=context, adapter=context.adapter,
                                                        deadline=context.deadline)
                 self.files[installation.root + "/.astrid-engine/install.json"] = engine_runner._json(receipt).encode()
             if c.lost_start:
