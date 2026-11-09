@@ -710,7 +710,7 @@ def test_f02_sdk_bound_target_failure_is_read_only(source, tmp_path, monkeypatch
     original, modified = config.read_bytes(), config.stat().st_mtime_ns
     output = tmp_path / "absent-output"
     with pytest.raises(AstridError) as error:
-        GenerationFacade().image(target="http://localhost:8202" if source == "request" else "auto",
+        GenerationFacade().image(placement="http://localhost:8202" if source == "request" else "auto",
             project_root=repo if source == "repo" else None, prompt="one boat", out=output, dry_run=True)
     assert error.value.code == "target_unreachable"
     port = {"global": 8199, "repo": 8200, "env": 8201, "request": 8202}[source]

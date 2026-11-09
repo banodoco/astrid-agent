@@ -17,18 +17,18 @@ def test_target_discovery_and_transient_override_do_not_write(monkeypatch, tmp_p
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('discovery opened Runtime'))
     assert cli.main(['targets', '--placement', 'http://localhost:8191', '--json']) == 0
     observed = json.loads(capsys.readouterr().out)
-    assert observed == GenerationFacade().targets(target='http://localhost:8191')
+    assert observed == GenerationFacade().targets(placement='http://localhost:8191')
     assert observed['target']['endpoint'] == 'http://127.0.0.1:8191'
     assert not targets.config_path().parent.exists()
     with pytest.raises(GenerationInputError, match='explicit target'):
         GenerationFacade().targets(save=True)
     assert not targets.config_path().parent.exists()
-    saved = GenerationFacade().targets(target='http://localhost:8192', save=True)
+    saved = GenerationFacade().targets(placement='http://localhost:8192', save=True)
     config = targets.config_path()
     before = config.read_bytes(), config.stat().st_mtime_ns
     targets.config_lock_path().unlink()
     assert GenerationFacade().targets() == saved
-    override = GenerationFacade().targets(target='http://localhost:8193')
+    override = GenerationFacade().targets(placement='http://localhost:8193')
     assert override['target']['endpoint'].endswith(':8193')
     assert (config.read_bytes(), config.stat().st_mtime_ns) == before
     assert not targets.config_lock_path().exists()

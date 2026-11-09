@@ -174,9 +174,9 @@ def route(request, tmp_path, monkeypatch):
 
 def generate_route(route, *, raw=False, wait=False, **kwargs):
     if raw:
-        return GenerationFacade().workflow(workflow=route.source, target='runpod', inputs={},
+        return GenerationFacade().workflow(workflow=route.source, placement='runpod', inputs={},
             client=route.client, project='demo', wait=wait, **kwargs)
-    return getattr(GenerationFacade(), route.kind)(entry=route.entry['id'], target='runpod',
+    return getattr(GenerationFacade(), route.kind)(entry=route.entry['id'], placement='runpod',
         client=route.client, project='demo', wait=wait, **kwargs)
 
 
@@ -231,7 +231,7 @@ def test_foley_runpod_sound_effects_resolves_before_owner_or_allocation(monkeypa
 
     monkeypatch.setattr(sdk, '_load_model_registry', registry)
     with pytest.raises(RegistryReached):
-        GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', target='runpod',
+        GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', placement='runpod',
                                  video_ref='clip.mp4', client=NoOwnerClient())
     assert calls == []
 
@@ -254,7 +254,7 @@ def test_status_and_release_are_runtime_tasks(route, monkeypatch):
             kernel_task_id='task-' + capability, raw_result={'result': {'payload': {'target_operation': {'state': 'absent'}}}})
 
     route.client.invoke_result = invoke
-    assert GenerationFacade().describe(target='runpod', client=route.client) == {'state': 'absent'}
+    assert GenerationFacade().describe(placement='runpod', client=route.client) == {'state': 'absent'}
     release = GenerationFacade().release(target='runpod', engine='comfyui', client=route.client, wait=False)
     assert release.kernel_task_id == 'task-runpod.release'
     assert [capability for capability, _ in calls] == ['runpod.status', 'runpod.release']
@@ -332,7 +332,7 @@ def test_missing_fresh_paid_authority_denies_before_claim(route, changes):
 
 
 def test_invalid_entry_values_and_raw_source_block_before_claim(route):
-    GenerationFacade().targets(target='runpod', save=True, inputs={
+    GenerationFacade().targets(placement='runpod', save=True, inputs={
         'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
         'image': 'worker@sha256:' + 'a' * 64})
     disclosed = {**PAID, 'offer_digest': 'sha256:' + 'b' * 64,
@@ -526,7 +526,7 @@ def test_h3_no_wait_uses_prepared_child_and_preserves_parent_default(retained_ho
     r = retained_host
     from tests.sdk.test_h3_endpoint_r4 import h3_inputs as input_fixture
     h3_inputs = input_fixture.__wrapped__(r.tmp)
-    result = GenerationFacade().video(entry='h3', target='runpod', client=r.client,
+    result = GenerationFacade().video(entry='h3', placement='runpod', client=r.client,
         project=r.project, wait=False, **h3_inputs, **r.paid)
     assert result.ok and result.kernel_task_id
     task = r.show(result.kernel_task_id)

@@ -604,7 +604,7 @@ def test_foley_alignment_projects_the_real_complete_declaration_without_download
     target = alignment.ManagedAssetTarget(tmp_path / 'engine', tmp_path / 'engine/models',
         tmp_path / 'engine/nodes', sys.executable, 'http://127.0.0.1:8188', 'a' * 64,
         tmp_path / 'engine/cache.json')
-    report = alignment.align(entry_id=entry_id, target=target,
+    report = alignment.align(entry_id=entry_id, placement=target,
         opener=lambda *a, **k: pytest.fail('declaration inspection downloaded weights'))
     assert report['entries'][0]['status'] == 'not_ready'
     assert report['total_missing_bytes'] == sum(asset['size_bytes'] for asset in assets)

@@ -108,7 +108,7 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
         monkeypatch.setattr(entries, 'ready_entries', lambda: [])
         selected = GenerationFacade()._generate_on_target(
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
-            target=client.target.url, execution='local', inputs=params, dry_run=True,
+            placement=client.target.url, execution='local', inputs=params, dry_run=True,
         )
         assert selected['entry']['id'] == model
         assert selected['entry']['model'] == model

@@ -165,7 +165,7 @@ def runtime(monkeypatch, tmp_path):
         yield state
 
 
-def argv(out=None, *, target='managed'):
+def argv(out=None, *, placement='managed'):
     args = ['generate', 'image', '--entry', 'qwen-image-2.1-turbo', '--mode', 't2i',
             '--placement', target, '--width', '512', '--height', '512', '--seed', '19',
             '--project', 'gpu-shakedown', '--consent', 'user_env', '--json', PROMPT]
@@ -181,7 +181,7 @@ def test_exact_cli_delivers_verified_caller_local_image(runtime, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     out = {'file': tmp_path / 'out/R4-512.png', 'directory': tmp_path / 'export',
            'default': None}[destination]
-    assert console.main(argv(out, target=target)) == 0
+    assert console.main(argv(out, placement=target)) == 0
     payload = json.loads(capsys.readouterr().out)
     expected = (out if destination == 'file' else
                 (out or tmp_path / 'outputs' / TASK_ID) / 'Qwen_image_2.1.png')

@@ -552,7 +552,7 @@ def test_every_flag_used_here_is_in_the_subcommand_help(tmp_path):
     """Assert each flag this module passes appears in that subcommand's --help."""
     cli = _cli(tmp_path)
     files = _inputs(tmp_path)
-    argvs = [slot_argv(slot, files, target=target) for slot in SLOTS for target in ("auto", "runpod")]
+    argvs = [slot_argv(slot, files, placement=target) for slot in SLOTS for target in ("auto", "runpod")]
     argvs += _extra_argvs(files)
     by_command: dict[str, set[str]] = {}
     for argv in argvs:
@@ -572,7 +572,7 @@ def test_every_flag_used_here_is_in_the_subcommand_help(tmp_path):
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_auto_dry_run_resolves_the_slot_default(slot, tmp_path, attached_auto):
     cli, comfy = attached_auto
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"))
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"))
     if slot.name in AUTO_ASSET_REFUSALS:
         assert result.returncode != 0, _describe(result)
         payload = _payload(result)
@@ -603,7 +603,7 @@ def test_auto_dry_run_resolves_the_slot_default(slot, tmp_path, attached_auto):
 def test_runpod_dry_run_resolves_the_slot_default(slot, tmp_path):
     """Asserted as D1b leaves `--placement runpod --dry-run` (tasks.md D1b, D2). No credential, no pod."""
     cli = _cli(tmp_path)
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="runpod"))
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="runpod"))
     assert result.returncode == 0, _describe(result)
     payload = _payload(result)
     _assert_entry_named(payload, slot)
@@ -702,7 +702,7 @@ def _voice_slot() -> Slot:
 def test_attached_voice_passes_with_align_trust(tmp_path, attached_auto):
     cli, comfy = attached_auto
     slot = _voice_slot()
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "trust")
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"), "--align", "trust")
     assert result.returncode == 0, _describe(result)
     payload = _payload(result)
     assert payload["alignment"] == {"mode": "trust", "verified": False}, payload
@@ -714,7 +714,7 @@ def test_attached_voice_passes_with_align_trust(tmp_path, attached_auto):
 def test_attached_voice_fails_with_align_check_and_names_the_fixes(tmp_path, attached_auto):
     cli, comfy = attached_auto
     slot = _voice_slot()
-    result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="auto"), "--align", "check")
+    result = cli.run(*slot_argv(slot, _inputs(tmp_path), placement="auto"), "--align", "check")
     assert result.returncode != 0, _describe(result)
     text = result.stdout + result.stderr
     assert AUTO_ASSET_REFUSALS["voice"] in text, _describe(result)

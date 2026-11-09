@@ -478,10 +478,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert setup(changed).ok
         assert host._target_bindings.provider is not retained and retained.lease_owner.closed
         assert not provider.events, "setup observed provider stock"
-        quote = GenerationFacade().describe(target="runpod", client=client)
+        quote = GenerationFacade().describe(placement="runpod", client=client)
         assert quote["offer"]["datacenter_id"] == "DC-unpinned"
         assert target_selection.read_runpod_preferences().datacenter_id is None
-        result = GenerationFacade().image(entry="cpu-image", target="runpod", client=client,
+        result = GenerationFacade().image(entry="cpu-image", placement="runpod", client=client,
             project=project_id, consent=("paid",), max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
@@ -507,7 +507,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         snapshot = claim_path.read_bytes()
         refusal = setup({**changed, "budget_cap_usd": 1.25})
         assert not refusal.ok and claim_path.read_bytes() == snapshot and len(provider.pods) == 1
-        release = GenerationFacade().release(engine="comfyui", target="runpod", client=client, wait=True)
+        release = GenerationFacade().release(engine="comfyui", placement="runpod", client=client, wait=True)
         assert release.ok, release.to_dict()
         record = json.loads(claim_path.read_text())
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404

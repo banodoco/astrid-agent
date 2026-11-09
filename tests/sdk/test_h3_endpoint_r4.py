@@ -29,7 +29,7 @@ from tests.integrations.test_runpod_host_endpoint_r5 import (
 
 
 def _admit_host_h3(r, inputs, **kwargs):
-    return GenerationFacade().video(entry='h3', target='runpod', client=r.client,
+    return GenerationFacade().video(entry='h3', placement='runpod', client=r.client,
         project=r.project, wait=False, **inputs, **{**r.paid, **kwargs})
 
 

@@ -56,7 +56,7 @@ def test_failed_qwen_default_surfaces_own_error_without_z_image(network, monkeyp
         monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
     client, calls = install_target(network, info)
     with pytest.raises(AstridError) as caught:
-        GenerationFacade().image(target=client.target.url, prompt='boat', dry_run=True)
+        GenerationFacade().image(placement=client.target.url, prompt='boat', dry_run=True)
     assert caught.value.code == ('input_rejected' if failure == 'pin' else 'missing_model')
     if failure == 'pin':
         assert 'failed its sha256 pin' in str(caught.value)
@@ -86,7 +86,7 @@ def test_audio_preferred_row_owns_its_error(network, monkeypatch, mode, preferre
     monkeypatch.setattr(entries, 'prepare', prepare)
     with pytest.raises(AstridError, match='preferred workflow dependency') as caught:
         GenerationFacade()._generate_on_target(registry=ModelRegistry([]), model=None,
-            mode=mode, modality='audio', target=client.target.url, execution=None,
+            mode=mode, modality='audio', placement=client.target.url, execution=None,
             inputs={}, dry_run=True)
     assert caught.value.code == 'missing_node_pack'
     assert attempted == [Path(row['bundle']).stem]

@@ -353,7 +353,7 @@ def test_installed_inventory_lists_the_six_defaults(installed, tmp_path):
 @pytest.mark.parametrize("slot", SLOTS, ids=SLOT_IDS)
 def test_installed_runpod_dry_run_per_default(slot, installed, tmp_path):
     stage = f"dry run {slot.name} runpod"
-    result = installed.generate(*slot_argv(slot, _inputs(tmp_path), target="runpod"),
+    result = installed.generate(*slot_argv(slot, _inputs(tmp_path), placement="runpod"),
                                 root=tmp_path, stage=stage)
     if slot.name == "sound-effects":
         _expect(result, stage, ok=False, contains=(FOLEY_REFUSAL_CODE, FOLEY_REFUSAL_MESSAGE))
@@ -377,7 +377,7 @@ def test_installed_sound_effects_auto_dry_run_resolves_foley(installed, tmp_path
                                    root=tmp_path, stage="save stand-in target")
         _expect(saved, "save stand-in target", ok=True)
         stage = "dry run sound-effects auto"
-        result = installed.generate(*slot_argv(slot, files, target="auto"), root=tmp_path, stage=stage)
+        result = installed.generate(*slot_argv(slot, files, placement="auto"), root=tmp_path, stage=stage)
         _expect(result, stage, ok=True)
         payload = _payload(result)
         assert isinstance(payload, dict) and payload["entry"]["id"] == slot.entry, payload

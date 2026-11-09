@@ -34,7 +34,7 @@ def test_h3_freezes_policy_into_default_local_stages(monkeypatch, tmp_path, endp
         return run.project_parent(kwargs['inputs'], project=kwargs['project'], client=client, registry=registry)
 
     client.invoke_result = invoke
-    projected, policy = GenerationFacade().video(entry='h3', target='runpod', client=client,
+    projected, policy = GenerationFacade().video(entry='h3', placement='runpod', client=client,
         project='project-a', wait=False, **h3_inputs, **PAID,
         offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
         execution_seconds=60, idle_seconds=1800)
