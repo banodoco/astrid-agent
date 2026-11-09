@@ -6,9 +6,21 @@ from pathlib import Path
 from astrid import installer
 from astrid.installer.outcome import NEXT_STEPS, REASONS, Outcome
 
-# Reasons whose receipt copy is drafted in the PR body and awaits the owner's approval. Remove an entry the
-# moment its copy lands; the test below fails while an entry is left behind.
-PENDING_COPY = frozenset({"acknowledgement-unknown", "legacy-update-record"})
+# Reasons without receipt copy yet. Empty once every reason the installer can emit has copy.
+PENDING_COPY: frozenset[str] = frozenset()
+
+# The owner-approved copy for the two reasons that had none (PR #331).
+APPROVED_COPY = {
+    "legacy-update-record": (
+        "this update was started by an older Astrid, so this one can't continue it.",
+        "Next: run the update command from a terminal to start a fresh update.",
+    ),
+    "acknowledgement-unknown": (
+        "the update was started, but Astrid can't confirm yet that it was accepted.",
+        "Next: wait a minute, then run the same update command again. It checks the earlier attempt "
+        "before starting a new one.",
+    ),
+}
 
 _NAME = r'"([a-z][a-z0-9-]*)"'
 _REASON_SITES = (
@@ -70,3 +82,9 @@ def test_a_failed_update_of_an_existing_install_still_says_did_not_update():
     lines = Outcome("failed", 1, 1, 2, "error", "update").headline()
     assert lines[0].startswith("Astrid did NOT update: ")
     assert "Astrid is still Release 1." in lines
+
+
+def test_the_approved_copy_for_the_two_pending_reasons_is_exact():
+    for reason, (why, next_line) in APPROVED_COPY.items():
+        assert REASONS[reason] == why, reason
+        assert NEXT_STEPS[reason] == next_line, reason
