@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 
 # Explicit runtime adapter precedence.  The pip-installed embedded runtime is
 # preferred; the checked-out managed server runtime remains the second choice.
-ADAPTER_ORDER: tuple[str, ...] = ("pip_embedded", "checkout_server")
+ADAPTER_ORDER: tuple[str, ...] = ("checkout_server",)
 
 COMFYUI_VERSION = "0.26.0"
 VIBECOMFY_SESSION_OWNERSHIP_ATTESTED_ENV = (
@@ -521,7 +521,7 @@ class VibeComfyBackend(BackendAdapter):
         attempt_identity: str | None = None,
         expected_execution_identity: str | None = None,
         workflow_input_bindings: Mapping[str, Any] | None = None,
-        profile_id: str = "pip_embedded",
+        profile_id: str = "local_server",
         hc03_profile: Mapping[str, Any] | None = None,
         comfy_url: str = "", comfy_output_dir: str = "",
     ) -> ProductionRunResult:

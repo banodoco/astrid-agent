@@ -882,7 +882,7 @@ actions:
         - --capability
         - vibecomfy.video_enhance
         - --profile
-        - pip_embedded
+        - local_server
         - --task-identity
         - '{task_identity}'
         - --readiness-profile-path
@@ -1008,7 +1008,7 @@ actions:
         - --capability
         - vibecomfy.character_animation
         - --profile
-        - pip_embedded
+        - local_server
         - --task-identity
         - '{task_identity}'
         - --readiness-profile-path
