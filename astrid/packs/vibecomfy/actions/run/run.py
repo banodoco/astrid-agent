@@ -764,7 +764,7 @@ def _run_and_settle(
             raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
-    engine_local_run = not comfy_url and not runpod_route
+    engine_local_run = not comfy_url
     profile_id = "local_server" if (comfy_url or engine_local_run) else "checkout_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
