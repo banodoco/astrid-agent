@@ -668,6 +668,47 @@ def _t9_child_dispatch(
     return run, marker
 
 
+def _comfyui_engine() -> Any:
+    """The ComfyUI contribution to generation.engine, loaded from its extension file."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "extensions" / "generation.engine" / "comfyui_engine.py"
+    spec = importlib.util.spec_from_file_location("astrid_comfyui_engine", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ComfyUIEngine()
+
+
+class _LocalEngineServer:
+    """The ``local`` that ComfyUIEngine.run drives: the installed local ComfyUI, and one production submit."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        self._adapter, self._output_root, self._kwargs = adapter, output_root, production_kwargs
+        self._output_dir = ""
+        self.result: Any = None
+
+    def ensure_running(self) -> str:
+        from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
+        from astrid.core.generation.engine_contracts import EngineError
+        from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+
+        try:
+            engine = local_engine_endpoint("comfyui")
+        except EngineError as exc:
+            reason = f" ({exc.reason_code})" if isinstance(exc, EngineNotInstalled) else ""
+            raise AstridValueError(
+                f"local ComfyUI engine is not ready: {exc.code}{reason}; run `astrid engines install comfyui`") from exc
+        self._output_dir = validate_output_directory(engine.comfy_output_dir, self._output_root.parent)
+        return validate_comfy_url(engine.endpoint.url)
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        kwargs = {**self._kwargs, "comfy_url": url, "profile_id": "local_server", "hc03_profile": None}
+        if self._output_dir:
+            kwargs["comfy_output_dir"] = self._output_dir
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **kwargs)
+        return self.result
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -742,12 +783,10 @@ def _run_and_settle(
             readiness_profile = read_workflow_profile(readiness_profile_path, readiness_profile_hash)
         except (EngineError, OSError):
             raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
-    if comfy_url:
-        profile_id = "local_server"
-    elif isinstance(readiness_profile, dict) and isinstance(readiness_profile.get("vibecomfy_session"), dict):
-        profile_id = "checkout_server"
-    else:
-        profile_id = "pip_embedded"
+    # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
+    # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
+    engine_local_run = not comfy_url and not runpod_route
+    profile_id = "local_server" if (comfy_url or engine_local_run) else "checkout_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
         resolved_assets = _stage_managed_asset_manifest(
@@ -833,7 +872,13 @@ def _run_and_settle(
     producer_run_id = f"astrid-{uuid4().hex}"
     try:
         with provenance.capture():
-            if synthetic is None:
+            if synthetic is None and engine_local_run:
+                local = _LocalEngineServer(adapter, output_root, production_kwargs)
+                _comfyui_engine().run(
+                    {"workflow": workflow_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"},
+                    local)
+                production_result = local.result
+            elif synthetic is None:
                 production_result = adapter.workflow(
                     workflow_path, output_root, **production_kwargs,
                 )
