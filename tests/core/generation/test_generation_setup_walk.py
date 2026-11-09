@@ -57,3 +57,47 @@ def test_setup_walk_discover_preview_and_undo(tmp_path: Path, monkeypatch, capsy
     # 3. Describe the saved workflow, as the skill tells the user to.
     code, described = _run(capsys, ["describe", str(workflow), "--json"])
     assert code == 0 and described is not None
+
+
+def test_as_entry_no_run_saves_and_queues_nothing(tmp_path: Path, monkeypatch, capsys) -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    seen: list[tuple[str, str]] = []
+
+    class _Recording(BaseHTTPRequestHandler):
+        def _record(self) -> None:
+            seen.append((self.command, self.path))
+            self.send_error(404)
+
+        do_GET = do_POST = _record
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Recording)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    entries_dir = tmp_path / "entries"
+    monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(entries_dir))
+    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("--no-run opened Runtime"))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: pytest.fail("--no-run ran the workflow"))
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    workflow = tmp_path / "lighthouse.json"
+    workflow.write_text(json.dumps(load_bundle(workflow_from_ready("image/flux2_klein_4b_t2i")).materialize_ui()))
+    try:
+        target = f"http://127.0.0.1:{server.server_address[1]}"
+        code, saved = _run(capsys, ["workflow", str(workflow), "--as-entry", "lighthouse",
+                                    "--no-run", "--placement", target, "--json"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert code == 0
+    assert saved == {"saved": True, "ran": False, "entry": "lighthouse", "replaced": False}
+    assert [request for request in seen if request[1].startswith("/prompt")] == []
+    assert seen == []
+    assert entries_dir.exists() and any(entries_dir.iterdir())

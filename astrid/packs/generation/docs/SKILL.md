@@ -43,8 +43,9 @@ never read or print an API key; never write a change without that change's own y
    user ticks, preview it first, then save it as an entry:
    `python3 -m astrid generate workflow FILE --as-entry NAME --dry-run --json`
    shows the inputs the entry would declare and writes nothing.
-   Saving with `--as-entry NAME` (without `--dry-run`) also queues one run, so
-   ask before saving.
+   Save it with `python3 -m astrid generate workflow FILE --as-entry NAME --no-run`.
+   `--no-run` saves the entry and queues nothing on any target, so setup never
+   touches the user's ComfyUI queue.
 6. **Show how to run each one** (the commands in the sections below), then offer one
    test generation. Run it only on a yes.
 7. **List every change and its undo.** Undo a placement with `settings checkout`
@@ -115,7 +116,8 @@ python3 -m astrid generate workflow FILE --placement runpod --consent paid --inp
 run, so the workflow does not need a path on the target. Add `--dry-run` first on any placement.
 
 To turn a workflow into a named entry the user can run again, use
-`--as-entry NAME` (it validates the inputs as it saves). `--replace` overwrites an
+`--as-entry NAME` (it validates the inputs as it saves). `--no-run` with it saves
+without queueing a run, which is how setup saves. `--replace` overwrites an
 entry with the same name.
 
 Adding your own entry or shortcut is a pack contribution through the

@@ -204,6 +204,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
     command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
     command.add_argument('--replace', action='store_true')
+    command.add_argument('--no-run', action='store_true',
+                         help='With --as-entry: save the entry and queue nothing on any target.')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
     command.add_argument("--placement", action=_Once, default="auto")
     command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
@@ -302,6 +304,8 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
         raise ValueError('--replace requires --as-entry')
+    if parsed.no_run and not parsed.as_entry:
+        raise ValueError('--no-run requires --as-entry')
     if parsed.as_entry and parsed.dry_run:
         # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
         description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
@@ -326,6 +330,10 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                                        code='missing_dependency', details={'field': 'replace'})
         entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
+        if parsed.no_run:
+            print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
+                              'replaced': bool(parsed.replace)}, indent=2, sort_keys=True))
+            return 0
     def generate(client=None):
         facade = _generate_facade()
         if not parsed.as_entry:
