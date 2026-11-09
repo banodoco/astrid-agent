@@ -31,7 +31,7 @@ Check the routes in this order. Use the first one that fits, and only that one:
 1. **App brief**: the brief lists the setup choices and a command. Show those
    values back, ask "Install with these choices, or change one?", and on no
    change run the brief's command exactly as given. If they change one, go to
-   step 1.
+   step 1. Then follow step 2's success and failure rules.
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
    consent once, unless they have already given it. Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
@@ -58,14 +58,13 @@ choices are:
 - skill copies: off (`--skill-copies on|off`)
 
 Ask the user whether they want to change any choice. If they change one, use
-its new value in step 2. If the user approved an App brief, keep its selected
-values unchanged. Do not run the install until the choices are settled. Then
+its new value in step 2. If the user approved an App brief, keep the brief's values,
+and when the user changes one, use the new value for that choice only. Do not run the install until the choices are settled. Then
 go to step 2.
 
 ## 2. Install
 
-Run one install command for the user's OS, after consent. The commands below
-use the recommended values. Replace any value the user changed in step 1. On a
+Run one install command for the user's OS, after consent. The full-flag commands below are for a fresh install, or after the choices step only. Existing installs follow route 3 in step 0. The commands use the recommended values. Replace any value the user changed in step 1. On a
 new machine, the command installs Astrid. On an existing install, it repairs
 or restarts Astrid and keeps existing work. Open Terminal on macOS or Linux,
 or PowerShell on Windows. Read the installer before you run it. `--yes`
@@ -95,7 +94,7 @@ by that app can inherit its filesystem redirection. Files written under
 scheduled task cannot find them.
 
 Succeeds when the first line of output starts with `Astrid installed:`,
-`Astrid is installed and running`, or `Astrid is already up to date`. Any other
+`Astrid updated:`, `Astrid is installed and running`, or `Astrid is already up to date`. Any other
 first line, including `Astrid was NOT installed`, means the install failed. On
 success, go to step 3.
 

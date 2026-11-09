@@ -18,9 +18,7 @@ Do not install the guide itself as a skill.
 
 Before you run anything, show me the setup choices and let me change them.
 Keep my existing work and credentials.
-Confirm that the Runtime is connected.
-Then follow its "Set up generation" section, and help me begin at
-https://astrid.haus.
+Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus.
 ```
 """
 
