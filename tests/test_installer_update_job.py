@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -18,6 +19,24 @@ from astrid.installer import update_job
 from astrid.installer.core import Installer, Version, current, read_json, write_json
 from astrid.installer.service import LABEL, Service, install_selection
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
+
+
+
+def test_the_job_reads_the_install_record_of_the_home_it_was_accepted_under(tmp_path, monkeypatch):
+    for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    install_home, launcher_home = tmp_path / "install-home", tmp_path / "launcher-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: launcher_home))
+    job = {"operation_id": "0" * 32, "home": str(install_home)}
+    assert update_job._recorded_selection_path(job) == install_selection(install_home, sys.platform)
+    assert update_job._recorded_selection_path(job) != install_selection(launcher_home, sys.platform)
+
+
+@pytest.mark.parametrize("job", [{"operation_id": "0" * 32}, {"home": "relative/home"}, {"home": None}])
+def test_a_job_with_no_recorded_home_never_falls_back_to_the_ambient_home(job, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "ambient"))
+    with pytest.raises(ValueError, match="installation home"):
+        update_job._recorded_selection_path(job)
 
 
 def _fixture(tmp_path, monkeypatch, *, available=True):
@@ -150,7 +169,27 @@ def test_update_job_availability_action_preserves_get_reason(monkeypatch):
     update_job.main()
 
     assert json.loads(stdout.getvalue()) == {
-        "available": False, "reason": "unsupported-service-manager"}
+        "available": False, "reason": "unsupported-service-manager",
+        "actions": list(update_job.SUPPORTED_ACTIONS)}
+
+
+@pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
+def test_availability_action_lists_supported_actions_on_every_os(monkeypatch, system):
+    availability = update_job.update_job_availability
+    monkeypatch.setattr(update_job, "update_job_availability", lambda: availability(system=system))
+    monkeypatch.setattr(update_job.subprocess, "run", Mock(side_effect=[
+        CompletedProcess([], 0, "systemd 255 (255.4)\n", ""),
+        CompletedProcess([], 0, "", ""),
+    ]))
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
+    stdout = io.StringIO()
+    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
+
+    update_job.main()
+
+    reply = json.loads(stdout.getvalue())
+    assert reply["available"] is True
+    assert {"availability", "prepare", "accept", "launch"} <= set(reply["actions"])
 
 
 @pytest.mark.parametrize("probe_results", [
@@ -268,11 +307,14 @@ def test_windows_handoff_copies_same_private_bytes_to_ps1_and_preserves_cli_sele
     script = update_job._windows_bootstrap_script(original, job["operation_id"])
     args = ["--manifest", original["manifest_path"], "--root", job["program_root"],
             "--data-root", job["data_root"], "--update-job", job["operation_id"]]
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "winroot"))
     command = update_job._bootstrap_command(script, args, system="win32")
     assert script.suffix == ".ps1"
     assert script.read_bytes() == selected_bytes
     assert platform.is_owner_only(script)
-    assert command == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    assert Path(command[0]).is_absolute()
+    assert command[0] == str(tmp_path / "winroot" / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    assert command[1:] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                        "-File", str(script), *args]
     assert job["metadata"] == original
     script.unlink()
@@ -947,3 +989,437 @@ def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkey
             probe()
     assert calls == [(payload, "instance")]
     assert path.read_bytes() == before
+
+
+def test_supported_actions_cover_every_action_runtime_sends():
+    # Runtime's request path: availability, reconcile, prepare (no action key), accept, launch.
+    assert {"availability", "reconcile", "prepare", "accept", "launch"} <= set(update_job.SUPPORTED_ACTIONS)
+
+
+def _worker_source_for(monkeypatch, tmp_path, system):
+    monkeypatch.setattr(update_job, "read_json", lambda path: {})
+    monkeypatch.setattr(update_job, "_attempt_tuple", lambda job: (1, "a" * 32))
+    monkeypatch.setattr(update_job, "sys", SimpleNamespace(platform=system))
+    old = SimpleNamespace(profile=tmp_path / "profile.json", env={})
+    job = {"log_path": str(tmp_path / "job.log"), "program_root": str(tmp_path), "operation_id": "0" * 32}
+    return update_job._worker_command_source(old, job)
+
+
+def test_the_worker_preamble_is_the_same_on_every_platform(tmp_path, monkeypatch):
+    windows = _worker_source_for(monkeypatch, tmp_path, "win32")
+    assert "from astrid.installer.update_job import run_job" in windows
+    assert "_log=open(" in windows and "sys.stdout=sys.stderr=_log" in windows
+    for system in ("linux", "darwin"):
+        assert _worker_source_for(monkeypatch, tmp_path, system) == windows
+
+
+def _windows_worker_file(monkeypatch, tmp_path, first_line=""):
+    source = _worker_source_for(monkeypatch, tmp_path, "win32")
+    stub = ("import sys,types\n"
+            "m=types.ModuleType('astrid.installer.update_job')\n"
+            "m.run_job=lambda root, operation, epoch, nonce: print('run-job-output') or {'ran': True}\n"
+            "for name in ('astrid', 'astrid.installer'):\n"
+            "    sys.modules[name]=types.ModuleType(name)\n"
+            "sys.modules['astrid.installer.update_job']=m\n")
+    worker = tmp_path / "worker.py"
+    worker.write_text(first_line + stub + source + "\n", encoding="utf-8")
+    return worker
+
+
+@pytest.mark.windows_native
+def test_the_worker_owns_the_job_log_and_the_wrapper_never_writes_it(tmp_path, monkeypatch):
+    from astrid.installer import update_job_platform as job_platform
+
+    worker = _windows_worker_file(monkeypatch, tmp_path)
+    log = tmp_path / "job.log"
+    script = job_platform._worker_script([sys.executable, "-B", str(worker)], log)
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    job_text = log.read_text(encoding="utf-8", errors="replace")
+    assert "run-job-output" in job_text and '"ran": true' in job_text
+    assert "PermissionError" not in job_text
+    wrapper = log.with_name("job.wrapper.log")
+    assert "PermissionError" not in (wrapper.read_text(encoding="utf-8", errors="replace") if wrapper.exists() else "")
+
+
+@pytest.mark.windows_native
+def test_a_startup_traceback_lands_in_the_wrapper_log_and_the_wrapper_exits_one(tmp_path, monkeypatch):
+    from astrid.installer import update_job_platform as job_platform
+
+    worker = _windows_worker_file(monkeypatch, tmp_path, first_line="raise RuntimeError('startup boom')\n")
+    log = tmp_path / "job.log"
+    script = job_platform._worker_script([sys.executable, "-B", str(worker)], log)
+    completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 1
+    wrapper = log.with_name("job.wrapper.log").read_text(encoding="utf-8", errors="replace")
+    assert "startup boom" in wrapper
+    assert not log.exists()
+
+
+class _DeadWorkerAdapter:
+    """A Windows Scheduled Task manager whose recorded task reports a fixed outcome."""
+
+    def __init__(self, finished):
+        self.finished = finished
+        self.calls = []
+
+    def describe(self, value, command):
+        name = value["job_name"]
+        return {"format": "astrid-update-platform/v1", "system": "win32",
+                "kind": "scheduled-task-on-demand", "name": name, "task_name": name,
+                "user": "S-1-5-21-2", "operation_id": value["operation_id"],
+                "program_root": value["program_root"], "log_path": value["log_path"],
+                "command": command, "home": value["home"]}
+
+    def launch(self, *_args, **_kwargs):
+        self.calls.append("launch")
+
+    def finished_result(self, descriptor):
+        self.calls.append("finished_result")
+        return self.finished
+
+    def is_active(self, descriptor):
+        return self.finished is None
+
+    def cleanup(self, descriptor, **_kwargs):
+        self.calls.append("cleanup")
+
+
+def _launched_job(tmp_path, monkeypatch, finished):
+    """An accepted, acknowledged job: the state the live Windows run stayed in."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    job = update_job.accept(request)
+    adapter = _DeadWorkerAdapter(finished)
+    adapter.request = request  # the reconcile request Runtime's POST sends for this install
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    launched = update_job.launch_job(root, job["operation_id"])
+    assert launched["state"] == "launching" and launched["launch_status"] == "acknowledged"
+    assert launched["bootstrap_proof"]["claim_state"] == "unclaimed"
+    log = Path(launched["log_path"])
+    log.write_text("Traceback (most recent call last):\nValueError: worker refused before claim\n",
+                   encoding="utf-8")
+    return root, launched, adapter
+
+
+def _finished(code, started_at=None, bound="start-time"):
+    # Task Scheduler/systemd report the run's start; a run of this attempt starts after its submission.
+    return {"exit_code": code, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "started_at": int(time.time()) + 1 if started_at is None and bound == "start-time" else started_at,
+            "bound": bound}
+
+
+def test_dead_worker_that_never_claimed_is_failed_with_exit_code_and_log_tail(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before_current = (root / "current").read_text()
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed"
+    assert settled["worker_exit_code"] == 1
+    assert "ValueError: worker refused before claim" in settled["worker_log_tail"]
+    assert "code 1" in settled["message"] and "worker refused before claim" in settled["message"]
+    assert settled["message"].startswith("Failed:")
+    assert "transaction_id" not in settled
+    assert settled["cleanup_status"] == "clean"
+    assert "cleanup" in adapter.calls
+    # Nothing was installed: the old version stays selected.
+    assert (root / "current").read_text() == before_current
+    assert update_job.read_job(root)["worker_exit_code"] == 1
+
+
+def test_dead_worker_after_claim_is_recovery_needed_not_failed(tmp_path, monkeypatch):
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    attempt = dict(launched["attempt"], phase="claimed",
+                   claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active",
+                          message="Update is running.",
+                          fields={"bootstrap_proof": proof, "attempt": attempt})
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "recovery-needed"
+    assert settled["worker_exit_code"] == 1
+    assert "code 1" in settled["message"]
+
+
+@pytest.mark.parametrize("finished", [None, _finished(0)], ids=["still-running", "exit-zero"])
+def test_running_or_zero_exit_worker_is_left_unchanged(tmp_path, monkeypatch, finished):
+    root, _launched, adapter = _launched_job(tmp_path, monkeypatch, finished)
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    assert "cleanup" not in adapter.calls
+
+
+def test_lost_acknowledgement_is_left_for_reconcile(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    update_job._write_job(root, launched["operation_id"], state="launching",
+                          message="Update launch acknowledgement was lost; repair will inspect the owned job.",
+                          fields={"launch_status": "unknown",
+                                  "attempt": dict(launched["attempt"], submit="unknown", handoff=None)})
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    assert "finished_result" not in adapter.calls
+
+
+def test_a_run_that_started_before_this_attempt_was_submitted_is_left_unchanged(tmp_path, monkeypatch):
+    # A continuation keeps the task name; the previous attempt's exit must not end the new attempt.
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, None)
+    submitted = launched["attempt"]["submitted_at"]
+    _adapter.finished = _finished(1, started_at=submitted - 3)
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+    # Within the clock-resolution tolerance it is this attempt's run.
+    _adapter.finished = _finished(1, started_at=submitted - 2)
+    assert update_job.settle_dead_worker(root)["state"] == "failed"
+
+
+def test_an_attempt_with_no_submission_time_is_left_unchanged(tmp_path, monkeypatch):
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    attempt = dict(launched["attempt"])
+    attempt.pop("submitted_at")
+    update_job._write_job(root, launched["operation_id"], state="launching", message="Update job launched.",
+                          fields={"attempt": attempt})
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_an_attempt_replaced_before_the_lock_is_left_unchanged(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    original = adapter.finished_result
+
+    def replaced_during_first_look(descriptor):
+        # A continuation lands between the lockless look and the locked re-read.
+        current = read_json(root / "install.json")["update_job"]
+        epoch = current["attempt"]["epoch"] + 1
+        attempt = dict(current["attempt"], epoch=epoch,
+                       handoff={"epoch": epoch, "nonce": current["attempt"]["nonce"]})
+        update_job._write_job(root, launched["operation_id"], state="launching",
+                              message="Update job launched.", fields={"attempt": attempt})
+        adapter.finished_result = original
+        return original(descriptor)
+
+    adapter.finished_result = replaced_during_first_look
+    before_state = read_json(root / "install.json")["update_job"]["state"]
+    assert update_job.settle_dead_worker(root) is None
+    assert read_json(root / "install.json")["update_job"]["state"] == before_state == "launching"
+
+
+def test_launchd_result_bound_by_its_loaded_command_is_settled(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1, bound="command"))
+    assert update_job.settle_dead_worker(root)["state"] == "failed"
+
+
+def test_a_result_with_an_unknown_binding_is_left_unchanged(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1, started_at=None, bound=None))
+    before = (root / "install.json").read_bytes()
+    assert update_job.settle_dead_worker(root) is None
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_held_installer_lock_leaves_dead_worker_unchanged(tmp_path, monkeypatch):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    stream = update_job._locked(root)
+    try:
+        assert update_job.settle_dead_worker(root) is None
+    finally:
+        update_job._unlock(stream)
+    assert (root / "install.json").read_bytes() == before
+
+
+def _status_get(monkeypatch, capsys):
+    """Runtime's status GET: the Agent helper's availability action, with the lock unavailable to it."""
+    taken, writes = [], []
+    locked, write_job = update_job._locked, update_job._write_job
+    # Recorded, not raised: main() suppresses every exception on this path.
+    monkeypatch.setattr(update_job, "_locked", lambda root: taken.append(root) or locked(root))
+    monkeypatch.setattr(update_job, "_write_job",
+                        lambda *args, **kwargs: writes.append(args) or write_job(*args, **kwargs))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "availability"})))
+    update_job.main()
+    assert taken == [], "A status read must not take the installer lock."
+    assert writes == [], "A status read must not write the job record."
+    return json.loads(capsys.readouterr().out)
+
+
+def _claimed(root, launched):
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active", message="Update is running.",
+                          fields={"bootstrap_proof": proof})
+
+
+def test_status_get_reports_a_dead_unclaimed_worker_as_failed_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    with monkeypatch.context() as get:
+        reply = _status_get(get, capsys)
+    assert (root / "install.json").read_bytes() == before
+    assert not (root / "update-transaction.json").exists()
+    assert {key: reply[key] for key in ("available", "actions")} == {
+        "available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
+    observed = reply["observed_job"]
+    assert observed["operation_id"] == launched["operation_id"] and observed["persisted"] is False
+    assert observed["state"] == "failed" and observed["worker_exit_code"] == 1
+    assert "transaction_id" not in observed
+    assert "ValueError: worker refused before claim" in observed["worker_log_tail"]
+    assert observed["message"].endswith("ValueError: worker refused before claim")
+    assert "cleanup" not in adapter.calls  # GET leaves the task registered
+
+    # The next Update press reaches the locked reconciler, which records exactly that outcome.
+    reconciled = update_job.reconcile(adapter.request)
+    assert reconciled["disposition"] == "confirmed-prior"
+    job = read_json(root / "install.json")["update_job"]
+    for key in ("state", "message", "worker_exit_code", "worker_log_tail", "worker_wrapper_log_tail"):
+        assert job[key] == observed[key], key
+    assert reconciled["job"]["state"] == "failed" and "cleanup" in adapter.calls
+    assert "launch" not in adapter.calls[adapter.calls.index("finished_result"):]  # not continued
+
+
+def test_status_get_reports_a_dead_claimed_worker_as_recovery_needed_and_writes_nothing(
+        tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    _claimed(root, launched)
+    before = (root / "install.json").read_bytes()
+    with monkeypatch.context() as get:
+        observed = _status_get(get, capsys)["observed_job"]
+    assert (root / "install.json").read_bytes() == before
+    assert observed["state"] == "recovery-needed" and observed["worker_exit_code"] == 1
+    assert observed["message"].startswith("Recovery needed.")
+
+    with pytest.raises(update_job._BusyRefusal) as refusal:
+        update_job.reconcile(adapter.request)
+    assert str(refusal.value) == observed["message"]
+    job = read_json(root / "install.json")["update_job"]
+    for key in ("state", "message", "worker_exit_code", "worker_log_tail"):
+        assert job[key] == observed[key], key
+
+
+def test_status_get_on_a_held_lock_still_only_observes(tmp_path, monkeypatch, capsys):
+    # A live installer holds the lock; the GET still reports, and still writes nothing.
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    before = (root / "install.json").read_bytes()
+    stream = update_job._locked(root)
+    try:
+        with monkeypatch.context() as get:
+            assert _status_get(get, capsys)["observed_job"]["state"] == "failed"
+    finally:
+        update_job._unlock(stream)
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_status_get_and_the_writer_change_nothing_without_attempt_bound_evidence(tmp_path, monkeypatch, capsys):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, None)
+    submitted = launched["attempt"]["submitted_at"]
+    for finished in (None, _finished(0), _finished(1, started_at=submitted - 3), _finished(1, bound=None)):
+        adapter.finished = finished
+        before = (root / "install.json").read_bytes()
+        with monkeypatch.context() as get:
+            assert "observed_job" not in _status_get(get, capsys)
+        assert update_job.settle_dead_worker(root) is None
+        assert (root / "install.json").read_bytes() == before
+
+
+def test_reconciler_leaves_a_journal_bearing_dead_worker_to_its_transaction_recovery(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    write_json(root / "update-transaction.json",
+               {"operation_id": "b" * 32, "step": "staged", "update_job": {"operation_id": launched["operation_id"]}})
+    before = (root / "install.json").read_bytes()
+    assert update_job._settle_dead_worker_locked(root, adapter, defer_transactions=True) is None
+    assert (root / "install.json").read_bytes() == before
+    # The install-line writer records it, with the transaction, as GET reported it.
+    observed = update_job.observe_dead_worker(root, adapter)
+    settled = update_job._settle_dead_worker_locked(root, adapter)
+    assert observed["state"] == settled["state"] == "recovery-needed"
+    assert observed["transaction_id"] == settled["transaction_id"] == "b" * 32
+
+
+def test_install_line_sweep_records_the_same_attempt_bound_outcome(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    observed = update_job.observe_dead_worker(root, adapter)
+    swept = update_job.sweep_owned_jobs(root)
+    job = read_json(root / "install.json")["update_job"]
+    assert swept[0]["state"] == job["state"] == observed["state"] == "failed"
+    assert job["message"] == observed["message"] and job["worker_exit_code"] == 1
+    assert job["launch_status"] == "acknowledged"
+
+
+def test_status_availability_read_leaves_a_running_worker_alone(tmp_path, monkeypatch, capsys):
+    root, _launched, _adapter = _launched_job(tmp_path, monkeypatch, None)
+    before = (root / "install.json").read_bytes()
+    with monkeypatch.context() as get:
+        reply = _status_get(get, capsys)
+    assert reply == {"available": True, "actions": list(update_job.SUPPORTED_ACTIONS)}
+    assert (root / "install.json").read_bytes() == before
+
+
+def test_sweep_of_an_inactive_claimed_job_is_recovery_needed(tmp_path, monkeypatch):
+    root, launched, adapter = _launched_job(tmp_path, monkeypatch, None)
+    proof = dict(launched["bootstrap_proof"], claim_state="claimed",
+                 native_claim={"operation_id": launched["operation_id"]})
+    update_job._write_job(root, launched["operation_id"], state="active", message="Update is running.",
+                          fields={"bootstrap_proof": proof})
+    adapter.finished = _finished(1)  # now inactive
+    swept = update_job.sweep_owned_jobs(root)
+    assert swept[0]["state"] == "recovery-needed"
+
+
+_CAPTURED_WORKER_LOG = (Path(__file__).parent / "fixtures" / "installer"
+                        / "windows-update-job-run-42498677457.log")
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-8"], ids=["as-powershell-wrote-it", "decoded"])
+def test_captured_windows_worker_death_is_failed_with_its_error(tmp_path, monkeypatch, encoding):
+    # Run 42498677457: the worker raised on its first line, before any claim, and the task ended with 1.
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    text = _CAPTURED_WORKER_LOG.read_text(encoding="utf-8")
+    Path(launched["log_path"]).write_bytes(text.encode(encoding))  # utf-16: little-endian with a mark
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed"
+    assert settled["worker_exit_code"] == 1
+    assert settled["message"].startswith(
+        "Failed: the update worker exited with code 1 before it started; Astrid is unchanged. "
+        "Last log line: ogs\\\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'")
+    tail = settled["worker_log_tail"]
+    assert "\x00" not in tail and "PermissionError: [Errno 13] Permission denied" in tail
+    assert tail.splitlines()[-1] == "ogs\\\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'"
+
+
+@pytest.mark.parametrize("job_log", ["empty", "absent"])
+def test_startup_traceback_only_in_the_wrapper_log_is_the_failed_message(tmp_path, monkeypatch, job_log):
+    # One writer per file: a worker that dies before run_job leaves its traceback only in
+    # astrid-update-<op>.wrapper.log. The captured text of run 42498677457 is exactly what
+    # the wrapper's *>> wrote (PowerShell's NativeCommandError header, then the traceback).
+    from astrid.installer.update_job_platform import wrapper_log_path
+
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    log = Path(launched["log_path"])
+    if job_log == "empty":
+        log.write_bytes(b"")
+    else:
+        log.unlink()
+    wrapper = wrapper_log_path(log)
+    assert wrapper.name == log.stem + ".wrapper.log"
+    wrapper.write_bytes(_CAPTURED_WORKER_LOG.read_text(encoding="utf-8").encode("utf-16"))
+    settled = update_job.settle_dead_worker(root)
+    assert settled["state"] == "failed" and settled["worker_exit_code"] == 1
+    assert settled["worker_log_tail"] is None
+    assert "PermissionError: [Errno 13] Permission denied" in settled["worker_wrapper_log_tail"]
+    assert settled["message"].startswith(
+        "Failed: the update worker exited with code 1 before it started; Astrid is unchanged. "
+        "Last log line: ogs\\\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'")
+
+
+def test_the_job_log_is_preferred_and_the_wrapper_log_is_kept(tmp_path, monkeypatch):
+    from astrid.installer.update_job_platform import wrapper_log_path
+
+    root, launched, _adapter = _launched_job(tmp_path, monkeypatch, _finished(1))
+    wrapper_log_path(Path(launched["log_path"])).write_bytes(
+        "python.exe : RuntimeError: wrapper side\r\n".encode("utf-16"))
+    settled = update_job.settle_dead_worker(root)
+    assert settled["message"].endswith("ValueError: worker refused before claim")
+    assert "RuntimeError: wrapper side" in settled["worker_wrapper_log_tail"]

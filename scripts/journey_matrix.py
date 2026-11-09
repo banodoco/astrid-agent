@@ -31,6 +31,9 @@ RELEASE1_DIRECT_FRESH_MATRIX: Final = (
     {"job_id": "direct-linux-fresh", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install"},
 )
 RELEASE1_DIRECT_FRESH_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_DIRECT_FRESH_MATRIX)
+# The one fresh row whose update is the hosted App build's own Update now, clicked in a browser;
+# the other fresh rows send the page's request to the Runtime door themselves.
+HOSTED_BUTTON_JOB_IDS: Final = frozenset({"direct-linux-fresh"})
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)
 
 # The R1.1 Pinokio journey gate is a separate three-OS hosted backend matrix.

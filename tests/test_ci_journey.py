@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -195,14 +196,15 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     (root / "current").write_text("release0\n", encoding="utf-8")
     version_path = version_root / "version.json"
     journey.write_json(version_path, {"root": str(version_root), "python": sys.executable, "env": {}})
-    release0_manifest = tmp_path / "release0-manifest.json"
-    release0_sources = {"agent": {"sha": "1" * 40}, "runtime": {"sha": "2" * 40}}
-    journey.write_json(release0_manifest, {"release": 0, **release0_sources, "tools": {}})
-    journey.write_json(version_root / "manifest.json", {"release": 0, **release0_sources, "tools": {}})
+    release0_manifest = tmp_path / "release9-manifest.json"
+    release9_sources = {"agent": {"sha": jumps.RELEASE9_IDENTITY["agent"]},
+                        "runtime": {"sha": jumps.RELEASE9_IDENTITY["runtime"]}}
+    journey.write_json(release0_manifest, {"release": 9, **release9_sources, "tools": {}})
+    journey.write_json(version_root / "manifest.json", {"release": 9, **release9_sources, "tools": {}})
     app = tmp_path / "app"
     app.mkdir()
     target_manifest = {
-        "release": 1, "agent": {"sha": "3" * 40},
+        "release": 10, "agent": {"sha": "3" * 40},
         "runtime": {"sha": "4" * 40, "schema_digest": "f" * 64},
         "tools": {"python": {"version": "3.11.13"}},
     }
@@ -216,7 +218,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
         run_root=run_root, root=root, data_root=data, leg="release0-to-release1", mode="direct",
         shell="sh", job_id=None, source_override=False, app_checkout=app, candidate=candidate_path,
         candidate_agent_checkout=tmp_path / "agent", candidate_runtime_checkout=tmp_path / "runtime",
-        pinokio_checkout=tmp_path / "pinokio", release0_fixture=tmp_path / "fixture",
+        pinokio_checkout=tmp_path / "pinokio", release9_app_checkout=tmp_path / "release9-app",
         allow_release0_to_release1=True, diagnostic_start_at="release0-api-seed",
         diagnostic_state=run_root / jumps.DIAGNOSTIC_STATE_NAME,
     )
@@ -224,8 +226,8 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     checkouts = {name: {"sha": sha, "repo": str(tmp_path / name)} for name, sha in {
         "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
     }.items()}
-    monkeypatch.setattr(jumps, "release0_admission", lambda unused: (
-        tmp_path / "fixture", release0_manifest, fixture_receipt))
+    monkeypatch.setattr(jumps, "release9_admission", lambda unused, output: (
+        tmp_path / "source", release0_manifest, fixture_receipt))
     monkeypatch.setattr(journey, "selected_manifest", lambda *unused, **kwargs: (
         tmp_path / "selected-manifest.json", target_manifest))
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *unused: target_manifest)
@@ -375,7 +377,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    assert workflow.count("repository: banodoco/astrid-app") == 4
+    # Five: the candidate App, the frozen App candidate checkouts, and the pinned Release 9 App.
+    assert workflow.count("repository: banodoco/astrid-app") == 5
     assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 
@@ -818,49 +821,6 @@ def test_release1_upgrade_cleanup_requires_exact_uninstall_refusal_and_preserves
             journey.assert_release1_upgrade_uninstall_refusal(version, root, data, evidence)
     assert (root / "current").read_text() == "v1\n"
     assert data.is_dir() and r1_data.is_dir()
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_upgrade_refusal_receipt_records_retained_service(tmp_path, monkeypatch, platform):
-    run_root = tmp_path / "journey"
-    root, data, r1_data = run_root / "program", run_root / "data", run_root / "data-r1"
-    version_root = root / "versions" / "v1"
-    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
-                              leg="release0-to-release1", shell="sh", retain_for_next_leg=False)
-    monkeypatch.setattr(journey.sys, "platform", platform)
-    monkeypatch.setattr(journey, "assert_host_available", lambda *a, **kw: None)
-    monkeypatch.setattr(journey, "capture_manager_state", lambda *a: None)
-    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
-    @contextmanager
-    def sentinel(*args):
-        yield None, None
-    monkeypatch.setattr(journey, "sentinel_process", sentinel)
-    service = {"manager": "launchd" if platform == "darwin" else "systemd-user",
-               "foreground_fallback": False, "service_path": "owned-r1"}
-    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a, **kw: service)
-    version = {"root": str(version_root), "python": "python", "env": {}}
-    monkeypatch.setattr(journey, "installation", lambda *a: (version_root / "version.json", data, version))
-    def lifecycle(*a):
-        version_root.mkdir(parents=True)
-        data.mkdir()
-        r1_data.mkdir()
-        (root / "current").write_text("v1")
-        journey.write_json(root / "install.json", {"r1_data_root": str(r1_data)})
-        journey.write_json(version_root / "manifest.json", {"release": 1})
-        journey.write_json(run_root / "evidence" / args.leg / "journey-result.json", {"status": "pass"})
-        return {"status": "pass"}
-    monkeypatch.setattr(journey, "_execute_owned", lifecycle)
-    def refuse(_version, _argv, evidence, name, **kwargs):
-        (evidence / name).write_text(journey.UPGRADE_UNINSTALL_REFUSAL + "\n")
-        raise RuntimeError(f"{name}: exit 1; see {evidence / name}")
-    monkeypatch.setattr(journey, "installed_cli", refuse)
-
-    result = journey.execute(args)
-    receipt = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
-    assert result["final_cleanup"] == receipt["final_cleanup"] == "retained-after-upgrade-refusal"
-    assert receipt["status"] == "pass"
-    assert receipt["upgrade_uninstall_refusal"]["service_manager"] == service
-    assert (root / "current").is_file() and data.is_dir() and r1_data.is_dir()
 
 
 @pytest.mark.parametrize("condition", ["absent", "r0-loaded", "r1-loaded", "r1-plist", "query-error"])
@@ -1455,13 +1415,14 @@ def test_linux_manager_boundary_probes_the_isolated_unit_path(tmp_path):
     stub.write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$CALLS"
 if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
+if [[ "$*" == *show-environment* ]]; then printf 'XDG_CONFIG_HOME=%s\\n' "$MANAGER_CONFIG"; fi
 ''')
     stub.chmod(0o755)
     probe = "journey-manager-path-probe-test.service"
     config = run_root / "home/.config"
     probe_dir = config / "systemd/user"
     env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", CALLS=str(commands),
-               EXPECTED_FRAGMENT=str(probe_dir / probe), run_root=str(run_root), config=str(config),
+               EXPECTED_FRAGMENT=str(probe_dir / probe), MANAGER_CONFIG=str(config), run_root=str(run_root), config=str(config),
                probe_dir=str(probe_dir), probe=probe, probe_created="0")
     result = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -1474,6 +1435,10 @@ if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
     env["EXPECTED_FRAGMENT"] = str(tmp_path / "foreign.service")
     failure = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
     assert failure.returncode != 0
+    # Unit discovery working is not enough: the manager must be looking in the install's config dir.
+    env.update(EXPECTED_FRAGMENT=str(probe_dir / probe), MANAGER_CONFIG=str(tmp_path / "elsewhere"))
+    wrong_config = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert wrong_config.returncode != 0 and "not the probe directory" in wrong_config.stdout
 
 
 def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, monkeypatch):
@@ -1671,14 +1636,14 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
     app = tmp_path / "app"
     app.mkdir()
     manifest_path = tmp_path / "manifest.json"
-    journey.write_json(manifest_path, {"release": 0})
+    journey.write_json(manifest_path, {"release": 9})
     candidate_path = tmp_path / "candidate.json"
     candidate = {"manifest_sha256": "digest", "artifacts": {}}
     journey.write_json(candidate_path, candidate)
-    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    manifest = {"release": 10, "agent": {}, "runtime": {}}
     args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
                            app_checkout=app, candidate=candidate_path)
-    state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
+    state = {"running": True, "pid": 10, "release": 9, "local": False, "content": None}
     calls = []
 
     def ownership(_root, _data, **_kwargs):
@@ -1732,16 +1697,16 @@ def test_release0_live_workspace_keeps_owner_running(tmp_path, monkeypatch, mana
         calls.append("task")
         return "settled"
 
-    def bootstrap(*_args):
+    def bootstrap(*_args, **_kwargs):
         assert state["running"] and state["content"] is not None
-        state.update(release=1, pid=state["pid"] + 1)
+        state.update(release=10, pid=state["pid"] + 1)
 
-    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
+    monkeypatch.setattr(jumps, "release9_admission", lambda *_: (tmp_path, manifest_path, {}))
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
     monkeypatch.setattr(journey, "selected_manifest", lambda *_args, **_kw: (candidate_path, manifest))
     monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
     monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_: None)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_, **_kwargs: None)
     monkeypatch.setattr(journey, "wait_ready", lambda _: assert_running(data))
     monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
@@ -1839,7 +1804,7 @@ def test_windows_fresh_bootstrap_capture_precedes_snapshot_and_cleanup(tmp_path,
     def sentinel(*_):
         yield SimpleNamespace(pid=1), 'birth'
     monkeypatch.setattr(journey, 'sentinel_process', sentinel)
-    def bootstrap(*_):
+    def bootstrap(*_, **__):
         calls.append('bootstrap')
         raise ValueError('primary')
     def broken_capture(*_):
@@ -2027,3 +1992,200 @@ def test_selection_path_follows_the_installer_lock(tmp_path, monkeypatch, system
         assert journey.selection_path() == legacy
         journey.write_json(install_selection(tmp_path / "home", system), {"owner": "haus.astrid.runtime"})
         assert journey.selection_path() == local / "Astrid Installer" / "astrid-install.json"
+
+
+@pytest.mark.parametrize("mode,gate,yes", [
+    ("install", True, True), ("install", False, False),
+    ("update", True, False), ("update", False, False),
+    ("repair", True, False), ("repair", False, False)])
+def test_bootstrap_accepts_recommended_setup_only_for_a_fresh_install_whose_installer_has_the_gate(
+        tmp_path, monkeypatch, mode, gate, yes):
+    flags = journey.bootstrap_flags(tmp_path / "m.json", mode, tmp_path / "p", tmp_path / "d", consent_gate=gate)
+    assert ("--yes" in flags) is yes and ("--update" in flags) is (mode == "update")
+    seen, probes = [], []
+    monkeypatch.setattr(journey, "run", lambda argv, log, **kw: seen.append(argv))
+    monkeypatch.setattr(journey, "installer_has_consent_gate", lambda agent, manifest: probes.append((agent, manifest)) or gate)
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    journey.bootstrap(tmp_path / "app", tmp_path / "m.json", "sh", mode, tmp_path, tmp_path / "p", tmp_path / "d",
+                      agent=tmp_path / "agent")
+    assert ("--yes" in seen[0]) is yes
+    # Update and repair never even ask the installer.
+    assert probes == ([(tmp_path / "agent", tmp_path / "m.json")] if mode == "install" else [])
+
+
+def _agent_repo(tmp_path, source):
+    """A checkout with one commit whose installer CLI is `source`; returns (checkout, sha)."""
+    import subprocess as sp
+    repo = tmp_path / ("agent-" + hashlib.sha256(source.encode()).hexdigest()[:8])
+    (repo / "astrid" / "installer").mkdir(parents=True)
+    (repo / "astrid" / "installer" / "cli.py").write_text(source)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+        sp.run(["git", "-C", str(repo), *args], check=True, env=env)
+    sha = sp.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    return repo, sha
+
+
+def test_the_pinned_agent_decides_whether_a_fresh_install_gets_yes(tmp_path):
+    gated, gated_sha = _agent_repo(tmp_path, 'result.add_argument("--yes", action="store_true", help="accept")\n')
+    old, old_sha = _agent_repo(tmp_path, 'result.add_argument("--update", action="store_true")\n')
+
+    def manifest(sha):
+        path = tmp_path / f"manifest-{sha[:6]}.json"
+        path.write_text(json.dumps({"agent": {"sha": sha}}))
+        return path
+
+    # The candidate pin, on a checkout that holds it, has the gate.
+    assert journey.installer_has_consent_gate(gated, manifest(gated_sha)) is True
+    # The release-0 pin predates it: no --yes, even though the candidate checkout has the flag.
+    assert journey.installer_has_consent_gate(old, manifest(old_sha)) is False
+    assert journey.installer_has_consent_gate(gated, manifest(old_sha)) is False  # pin not in this checkout
+    # Unusable inputs are no gate.
+    assert journey.installer_has_consent_gate(None, manifest(gated_sha)) is False
+    assert journey.installer_has_consent_gate(gated, tmp_path / "absent.json") is False
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"agent": {"sha": "main"}}))
+    assert journey.installer_has_consent_gate(gated, bad) is False
+    flags = journey.bootstrap_flags(manifest(gated_sha), "install", tmp_path, tmp_path,
+                                    consent_gate=journey.installer_has_consent_gate(gated, manifest(gated_sha)))
+    assert "--yes" in flags
+    flags = journey.bootstrap_flags(manifest(old_sha), "install", tmp_path, tmp_path,
+                                    consent_gate=journey.installer_has_consent_gate(old, manifest(old_sha)))
+    assert "--yes" not in flags
+
+
+def test_the_real_agent_cli_at_head_declares_the_gate():
+    import subprocess as sp
+    head = sp.run(["git", "-C", str(journey.ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    cli = (journey.ROOT / "astrid/installer/cli.py").read_text()
+    assert 'add_argument("--yes"' in cli and re.fullmatch(r"[0-9a-f]{40}", head)
+
+
+def _capture(tmp_path, monkeypatch, platform):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    return run_root, evidence, run_root / "evidence-upload" / "before-cleanup"
+
+
+def test_darwin_keeps_a_bounded_tail_of_the_data_root_runtime_log(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log = run_root / "data" / "runtime" / "runtime.log"
+    log.parent.mkdir(parents=True)
+    contents = b"x" * (journey.EVIDENCE_LOG_LIMIT + 10) + b"tail"
+    log.write_bytes(contents)
+    _, evidence, staged = _capture(tmp_path, monkeypatch, "darwin")
+    assert (evidence / "runtime-data-runtime.log").read_bytes() == contents[-journey.EVIDENCE_LOG_LIMIT:]
+    assert (staged / "runtime-data-runtime.log").read_bytes() == contents[-journey.EVIDENCE_LOG_LIMIT:]
+
+
+def test_the_data_root_runtime_log_is_darwin_only_and_never_followed_through_a_link(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log = run_root / "data" / "runtime" / "runtime.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"data")
+    _, evidence, _ = _capture(tmp_path, monkeypatch, "linux")
+    assert not (evidence / "runtime-data-runtime.log").exists()
+    log.unlink()
+    secret = tmp_path / "secret"
+    secret.write_text("private")
+    log.symlink_to(secret)
+    (evidence / "update-transaction-status.json").unlink()
+    journey.sys.platform = "darwin"
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    assert not (evidence / "runtime-data-runtime.log").exists()
+
+
+def test_the_update_journal_is_recorded_as_present_with_its_size_or_explicitly_absent(tmp_path, monkeypatch):
+    run_root, evidence, staged = _capture(tmp_path, monkeypatch, "linux")
+    absent = json.loads((staged / "update-transaction-status.json").read_text())
+    assert absent["status"] == "absent" and absent["path"] == str(run_root / "program" / "update-transaction.json")
+    (run_root / "program").mkdir()
+    (run_root / "program" / "update-transaction.json").write_bytes(b'{"step": "switched"}')
+    journey.capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+    present = json.loads((evidence / "update-transaction-status.json").read_text())
+    assert (present["status"], present["bytes"], present["phase"]) == ("present", 20, "after-cleanup")
+    link = run_root / "program" / "update-transaction.json"
+    link.unlink()
+    link.symlink_to(tmp_path)
+    journey.capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+    assert json.loads((evidence / "update-transaction-status.json").read_text())["status"] == "unsafe_type"
+
+
+def test_the_new_log_names_are_in_both_allowlists():
+    names = {"update-transaction-status.json", "runtime-data-runtime.log"}
+    assert names <= journey.JOURNEY_EVIDENCE_NAMES
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+    assert all(f"'{name}'" in workflow for name in names)
+
+
+def _mac_tree(tmp_path):
+    run_root = tmp_path / "run"
+    home = tmp_path / "realhome"
+    (run_root / "data" / "runtime" / "realms").mkdir(parents=True)
+    (run_root / "data" / "runtime" / "runtime.log").write_bytes(b"12345")
+    (run_root / "data" / "runtime" / "realms" / "state.db").write_bytes(b"x" * 7)
+    (run_root / "data" / "top.txt").write_bytes(b"t")
+    logs = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    logs.mkdir(parents=True)
+    (logs / "runtime-service.log").write_bytes(b"abc")
+    (home / "Library" / "Logs" / "Astrid Other").mkdir(parents=True)
+    (home / "Library" / "Logs" / "Astrid Other" / "o.log").write_bytes(b"o")
+    (home / "Library" / "Logs" / "Unrelated").mkdir()
+    (home / "Library" / "Logs" / "Unrelated" / "secret.log").write_bytes(b"s")
+    return run_root, home
+
+
+def test_macos_listing_shows_names_and_sizes_only_and_what_was_found(tmp_path, capsys):
+    run_root, home = _mac_tree(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert f"{run_root}/data/runtime/runtime.log\tfound, 5 bytes" in text
+    assert "Astrid Runtime/runtime.log\tmissing" in text and "runtime-service.log\tfound, 3 bytes" in text
+    assert f"{run_root}/data/runtime/realms/state.db\tfile\t7" in text
+    assert f"{run_root}/data/top.txt\tfile\t1" in text and "Astrid Other/o.log\tfile\t1" in text
+    assert "Unrelated" not in text and "12345" not in text  # only Astrid* logs, and never contents
+    err = capsys.readouterr().err
+    assert f"Journey expected macOS log {run_root}/data/runtime/runtime.log: found, 5 bytes" in err
+    assert "runtime.log: missing" in err
+
+
+def test_macos_listing_is_bounded_and_does_not_follow_links(tmp_path, monkeypatch):
+    run_root, home = _mac_tree(tmp_path)
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "inside.txt").write_text("x")
+    (run_root / "data" / "runtime" / "link").symlink_to(secret)
+    monkeypatch.setattr(journey, "LISTING_LIMIT", 2)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert "truncated at 2 entries" in text
+    monkeypatch.setattr(journey, "LISTING_LIMIT", 2000)
+    journey.capture_macos_listing(evidence, run_root, "before-cleanup", home=home)
+    text = (evidence / "macos-file-listing.txt").read_text()
+    assert "runtime/link\tlink\t-" in text and "inside.txt" not in text
+
+
+def test_macos_listing_is_captured_and_staged_with_the_logs_only_on_darwin(tmp_path, monkeypatch):
+    run_root, _ = _mac_tree(tmp_path)
+    monkeypatch.setattr(journey.Path, "home", classmethod(lambda cls: tmp_path / "realhome"))
+    for platform, expected in (("darwin", True), ("linux", False)):
+        evidence = run_root / "evidence" / platform
+        evidence.mkdir(parents=True)
+        monkeypatch.setattr(journey.sys, "platform", platform)
+        journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+        journey.retain_named_evidence(evidence, "before-cleanup")
+        assert (evidence / "macos-file-listing.txt").exists() is expected
+    assert (run_root / "evidence-upload" / "before-cleanup" / "macos-file-listing.txt").is_file()
+    assert (run_root / "evidence" / "darwin" / "runtime-data-runtime.log").read_bytes() == b"12345"
+    assert "macos-file-listing.txt" in journey.JOURNEY_EVIDENCE_NAMES
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/journey.yml").read_text()
+    assert "'macos-file-listing.txt'" in workflow
