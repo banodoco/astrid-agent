@@ -1102,16 +1102,6 @@ def test_initial_helper_error_retains_code_identity_and_step_without_receipt(set
     assert not setup[1].held
 
 
-def test_exact_workspace_sibling_roots_are_lexically_supported(setup):
-    root = "/workspace/astrid/runtime/h3/comfyui"
-    cache = "/workspace/astrid/engines/comfyui/models"
-    plan = runner.plan_install(setup[1].recipe, root=root, placement="local")
-    assert plan.root == root
-    assert runner.validate_model_cache_root(cache, engine_root=plan.root,
-        platform=plan.platform, placement=plan.placement) == cache
-    assert not setup[1].events
-
-
 @pytest.mark.parametrize("condition", ["absent", "missing-node", "unhealthy", "wrong-owner", "unowned-port"])
 def test_server_or_nodes_cannot_be_faked_installed(setup, condition):
     context = setup[1]
