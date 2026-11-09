@@ -26,33 +26,41 @@ PATH entry. Use the path for the user's OS:
 
 ## 0. Work out the entry route
 
-Pick exactly one route, checking them in this order:
+Check the routes in this order. Use the first one that fits, and only that one:
 
-1. **App brief**: the brief gives a yes/no line about installing with the
-   recommended choices. A yes means the choices are supplied. Go to step 1 and
-   ask, "install with these choices, or change one?"
-2. **Fresh install**: no launcher exists at its path above. Ask for consent
-   once if it has not already been given, then go to step 1.
-3. **Existing install**: the launcher exists. Skip the consent question only
-   if the user has already approved the run. Go to step 1; the install line
-   repairs or restarts it and keeps existing work.
+1. **App brief**: the brief has a yes/no line about installing with the
+   recommended choices. A yes means the choices are supplied. Go to step 1.
+   There, ask the user, "Install with these choices, or change one?"
+2. **Fresh install**: no launcher exists at its path above. Ask the user for
+   consent once, unless they have already given it. Then go to step 1.
+3. **Existing install**: the launcher exists. Ask the user for consent, unless
+   they have already approved this run. Then go to step 1. The install command
+   will repair or restart Astrid and keep existing work.
 
 ## 1. The choices
 
-Show the setup choices and offer a change. The recommended choices are startup
-at sign-in on, the `astrid` terminal command on, Astrid skills on, and skill
-copies off. Each choice has a flag: `--autostart on|off`, `--command on|off`,
-`--skills on|off`, and `--skill-copies on|off`. If the user changes one, use
-its value in step 2. An approved handoff keeps its selected values unchanged.
-Do not run the install until the choices are settled.
+Show the user the setup choices before you run anything. The recommended
+choices are:
+
+- startup at sign-in: on (`--autostart on|off`)
+- the `astrid` terminal command: on (`--command on|off`)
+- Astrid skills: on (`--skills on|off`)
+- skill copies: off (`--skill-copies on|off`)
+
+Ask the user whether they want to change any choice. If they change one, use
+its new value in step 2. If the user approved a handoff, keep its selected
+values unchanged. Do not run the install until the choices are settled. Then
+go to step 2.
 
 ## 2. Install
 
-Run one install command for the user's OS after consent. It installs Astrid on
-a new machine, or repairs or restarts an existing installation, and keeps
-existing work. Open Terminal on macOS or Linux, or PowerShell on Windows.
-Read the installer before running it. `--yes` records consent that was already
-given and must not be used to bypass the consent question.
+Run one install command for the user's OS, after consent. The commands below
+use the recommended values. Replace any value the user changed in step 1. On a
+new machine, the command installs Astrid. On an existing install, it repairs
+or restarts Astrid and keeps existing work. Open Terminal on macOS or Linux,
+or PowerShell on Windows. Read the installer before you run it. `--yes`
+records consent the user already gave. Never use `--yes` to skip the consent
+question.
 
 **macOS or Linux:**
 
@@ -66,37 +74,41 @@ curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command
 & ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off
 ```
 
-For an agent using another shell on Windows (such as Git Bash), run
+If you use another shell on Windows (such as Git Bash), run this command
+after consent, with the user's approved choice values:
 `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off"`
-after consent, or preserve the user's approved choice values in that command.
 
-If the agent runs inside an MSIX-packaged Windows desktop app, use standalone
-PowerShell opened from the Start menu for installation. Launching PowerShell
-as a child of that app can inherit filesystem redirection: files written under
-`%LOCALAPPDATA%` may land in the app's private cache, where the Astrid scheduled
-task cannot find them.
+If you run inside an MSIX-packaged Windows desktop app, install from a
+standalone PowerShell window opened from the Start menu. A PowerShell started
+by that app can inherit its filesystem redirection. Files written under
+`%LOCALAPPDATA%` may then land in the app's private cache, where the Astrid
+scheduled task cannot find them.
 
 Succeeds when the first line of output starts with `Astrid installed:`,
-`Astrid is installed and running`, or `Astrid is already up to date`. It fails
-on `Astrid was NOT installed`, and on any other first line.
+`Astrid is installed and running`, or `Astrid is already up to date`. Any other
+first line, including `Astrid was NOT installed`, means the install failed. On
+success, go to step 3.
 
-If the installer stops with consent required (exit code 2), show the plan it
-prints and run the printed rerun command only after the user agrees.
+If the installer stops because consent is required (exit code 2), show the
+user the plan it prints. Run the printed rerun command only after the user
+agrees.
 
-If the install fails, read the log at the printed `Details:` path. For help,
-run the install line for the user's OS with `--doctor` added, attach the
-bundle, and follow [Troubleshooting](troubleshooting.md#make-a-support-bundle).
+If the install fails, read the log at the printed `Details:` path. To get help,
+run the install command for the user's OS with `--doctor` added. Attach the
+bundle it makes, and follow [Troubleshooting](troubleshooting.md#make-a-support-bundle).
 
 ## 3. Connected
 
-The installer checks that Astrid is healthy and opens astrid.haus itself. Tell
-the user to choose Allow if Chrome or Edge asks to reach their computer, then
-confirm astrid.haus shows Connected. Setup is connected at that point.
+The installer checks that Astrid is healthy. Then it tries to open astrid.haus
+in the browser. If no browser opens, ask the user to open https://astrid.haus.
+If Chrome or Edge asks to reach this computer, tell the user to choose Allow.
+Confirm that astrid.haus shows Connected. When it does, go to step 4. If it
+does not, follow [Troubleshooting](troubleshooting.md#asking-for-help).
 
 ## 4. What this machine can generate with
 
-This step is read-only. Install nothing. Run the probe for the user's OS and
-report what it prints.
+This step is read-only. Install nothing. Run the probe for the user's OS.
+Report what it prints.
 
 **Linux:**
 
@@ -118,14 +130,15 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 Succeeds when the Linux or Windows probe prints one line per GPU with a name
 and a memory total, or the macOS probe prints the machine type. The local
-engines need an NVIDIA GPU with at least 12 GB of memory.
+engines need an NVIDIA GPU with at least 12 GB of memory. Then go to
+[Set up generation](#set-up-generation).
 
-Doctor fallback: if a probe is missing or fails, say that it could not be
-checked and install nothing. Run the install line for the user's OS with
-`--doctor` added, as in [Troubleshooting](troubleshooting.md#make-a-support-bundle),
-and attach the bundle it prints.
+Doctor fallback: if a probe is missing or fails, tell the user it could not be
+checked. Install nothing. Run the install command for the user's OS with
+`--doctor` added, as in [Troubleshooting](troubleshooting.md#make-a-support-bundle).
+Attach the bundle it prints. Then go to [Set up generation](#set-up-generation).
 
-Managed local engines by platform:
+Managed local engines, by platform:
 
 | Platform | Engine |
 | --- | --- |
@@ -137,13 +150,17 @@ No managed local engine is listed for macOS yet.
 
 ## Set up generation
 
-Pick the path that matches this machine:
+Pick the one path that matches this machine, and follow it now:
 
-- A ComfyUI is already running here: follow
-  [Find their ComfyUI](../../astrid/packs/vibecomfy/docs/SKILL.md#find-their-comfyui).
-- No ComfyUI on this machine: use the
-  [RunPod skill](../../astrid/packs/runpod/docs/SKILL.md) for a cloud GPU.
-- A managed engine install is coming. This setup does not run one yet.
+- A ComfyUI is already running on this machine: follow
+  [Find their ComfyUI](../../astrid/packs/vibecomfy/docs/SKILL.md#find-their-comfyui)
+  in the vibecomfy skill.
+- No ComfyUI is running on this machine: follow the
+  [RunPod skill](../../astrid/packs/runpod/docs/SKILL.md) to generate on a
+  cloud GPU.
+
+This setup does not install a managed engine. That install is coming, but it
+is not here today, so use one of the two paths above.
 
 ## Run everything on this computer
 
