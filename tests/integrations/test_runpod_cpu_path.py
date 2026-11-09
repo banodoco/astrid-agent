@@ -43,6 +43,13 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def tuple_pins(source_root):
+    """The (repository, commit) pins of the shared source tuple; no installed release manifest."""
+    return {directory: ("https://example.invalid/" + Path(directory).name, subprocess.check_output(
+        ["git", "-C", str(Path(source_root) / directory), "rev-parse", "HEAD"], text=True).strip())
+        for directory in remote_placement.SOURCE_DIRS}
+
+
 def _same_root_lifecycle(root, realm_root, realm_id):
     """Attach this journey's existing stopped realm; never create a workspace."""
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
@@ -242,6 +249,12 @@ class ProviderHTTP:
         if "DataCenterPrices" in query:
             assert variables["p0"]["dataCenterId"] == "DC-unpinned"
             return {"gpuTypes": [{"id": "gpu-exact", "dc0": {"stockStatus": "High", "uninterruptablePrice": 1.0}}]}
+        if "gpuTypes(input:" in query:
+            # The acquired machine is checked against the catalog row of the
+            # requested GPU type (the preference names it by display name).
+            requested = re.search(r'id: "([^"]+)"', query)[1]
+            assert requested in {"gpu-exact", "CPU fixture GPU"}
+            return {"gpuTypes": [{"id": requested, "displayName": "CPU fixture GPU"}]}
         if "query GpuTypes" in query:
             # The actual SDK validates the accepted exact ID before create.
             assert 'id: "gpu-exact"' in query
@@ -256,7 +269,7 @@ class ProviderHTTP:
             assert record["worker_image"] in query and record["request_name"] in query
             assert 'gpuTypeId: "gpu-exact"' in query
             self.pods.append({"id": self.pod_id, "name": record["request_name"],
-                "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0,
+                "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0, "gpuCount": 1,
                 "imageName": record["worker_image"], "networkVolumeId": None,
                 "dataCenterId": "DC-unpinned", "machineType": "CPU fixture GPU",
                 "machine": {"gpuTypeId": "gpu-exact", "gpuDisplayName": "CPU fixture GPU",
@@ -388,6 +401,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
 
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
+    monkeypatch.setattr('astrid.packs.runpod.managed_sources._pins', lambda: tuple_pins(tuple_sources))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": ["CPU fixture GPU"],
         "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
