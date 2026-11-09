@@ -239,7 +239,6 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         "volume": {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"},
         "idle_timeout_seconds": 1800,
         "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
-    target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
@@ -296,6 +295,9 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                     'verified': True, 'evidence_digest': 'sha256:' + hashlib.sha256(b'test-machine').hexdigest()}}})
     owner = WorkspaceClient(daemon.endpoint, daemon.token)
     client = AstridClient(remote=RemoteAstridClient(owner))
+    # Preferences live in the Runtime's generation settings document; seed them through the same
+    # connection the facade reads (describe/generate are handed this client).
+    target_selection.save_runpod_preferences(preferences, client=client)
     project = client.projects.create(name="CPU RunPod", slug="cpu-runpod", idempotency_key="project")
     assert project.ok, project.error
     project_id = project.data["project_id"]
