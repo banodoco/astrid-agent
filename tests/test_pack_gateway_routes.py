@@ -46,19 +46,27 @@ def test_undeclared_pack_operation_is_usage_error(capsys: pytest.CaptureFixture[
     assert "no declared CLI commands" in capsys.readouterr().err
 
 
-def test_public_generate_audio_uses_audio_parser_and_preserves_runpod_refusal(
+def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from astrid import core
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from astrid.core import gateway
     from astrid.core.generation import cli
 
-    assert core.gateway.main(["generate", "audio", "--help"]) == 0
+    assert gateway.main(["generate", "audio", "--help"]) == 0
     help_output = capsys.readouterr().out
     assert "--mode {music,tts,sfx}" in help_output
     assert "generation history" not in help_output
 
-    monkeypatch.setattr(cli, "_open_client", lambda: pytest.fail("RunPod refusal opened Runtime"))
-    assert core.gateway.main([
-        "generate", "audio", "--mode", "sfx", "--target", "runpod", "--json",
-    ]) == 2
-    assert "foley_runpod_unsupported" in capsys.readouterr().out
+    calls = []
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        audio=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(ok=True, kernel_task_id=None,
+            to_dict=lambda: {"status": "preview"})))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    assert gateway.main([
+        "generate", "audio", "waves", "--mode", "sfx", "--target", "runpod", "--dry-run", "--json",
+    ]) == 0
+    assert calls and calls[0]["mode"] == "sfx" and calls[0]["target"] == "runpod"
+    capsys.readouterr()

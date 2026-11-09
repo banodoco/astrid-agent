@@ -64,7 +64,8 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
     return targets
 
 
-def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *, client: Any = None) -> Any:
+def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *,
+                    client: Any = None, target_custody: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
@@ -106,9 +107,13 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                 raise ProductionEngineError(f'invalid live schema for {node.class_type}')
         return observed
 
+    custody = {}
+    if target_custody is not None:
+        # Rows the host verified for this exact ComfyUI; approval skips the local-disk presence check.
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
     provider = UploadedTargetSchema.from_object_info(
         read_object_info(), server_url=url, model_availability="target",
-        refresh_object_info=read_object_info,
+        refresh_object_info=read_object_info, **custody,
     )
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
@@ -177,7 +182,13 @@ def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
     """Approve canonically against the selected target's exact model choices."""
     bundle.require_canonical_authority("attached target execution")
     _capture_live_schemas(bundle, provider)
-    return bundle.compile(run_inputs=bindings, schema_provider=provider)
+    try:
+        return bundle.compile(run_inputs=bindings, schema_provider=provider)
+    except Exception as exc:
+        if (getattr(provider, "auxiliary_model_custody", "local") == "target"
+                and "target" in str(exc) and "auxiliary model" in str(exc)):
+            raise ProductionEngineError(f"ComfyUI at {provider.server_url}: {exc}") from exc
+        raise
 
 
 def _capture_live_schemas(bundle: Any, provider: Any) -> None:
@@ -268,6 +279,20 @@ def _staged_digest(destination: Path, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _inventory_from_environment(bundle: Any, url: str) -> tuple[dict[str, Any], ...] | None:
+    """The host's one inventory document, consumed once; none means this machine's disk is the inventory."""
+    from astrid.core.generation import target_inventory
+
+    raw = os.environ.pop(target_inventory.ENV, None)
+    if raw is None:
+        return None
+    try:
+        mode, rows = target_inventory.parse_document(raw, url)
+    except target_inventory.InventoryError as exc:
+        raise ProductionEngineError(str(exc)) from exc
+    return target_inventory.declared_rows(bundle.workflow) if mode == "trust" else rows
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
@@ -310,7 +335,8 @@ def run_local_server(
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    provider = _live_preflight(bundle, run_inputs, url, destination)
+    custody = _inventory_from_environment(bundle, url)
+    provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(

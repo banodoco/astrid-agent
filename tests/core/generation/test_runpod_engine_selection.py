@@ -22,7 +22,7 @@ PAID = dict(consent=('paid',), max_usd=2.0, deadline='2099-01-01T00:00:00Z')
 LIVE = dict(PAID, offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
             execution_seconds=60, idle_seconds=1800)
 # Explicit refusals a target route may answer with instead of resolving.
-REFUSALS = {'runpod_engine_unavailable', 'foley_runpod_unsupported', 'missing_dependency',
+REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
             'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
 TARGETS = ('auto', 'managed', 'runpod')
 
@@ -201,3 +201,13 @@ def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypa
     assert chosen == ['h3']
     assert [capability for capability, _ in client.calls] == ['h3_av.transform']
     assert client.calls[0][1]['inputs']['target_policy']['engine'] == 'vibecomfy-h3'
+
+
+def test_uncovered_entry_refuses_before_prepare(image, preferences):
+    """Live path, explicit entry: no engine lock covers ltx-2.3, so nothing is claimed or prepared."""
+    client = NoPodClient()
+    with pytest.raises(AstridError) as raised:
+        GenerationFacade().video(entry='ltx-2.3', prompt='a boat', image_ref=str(image),
+                                 target='runpod', client=client, project='demo', wait=False, **LIVE)
+    assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
+    assert client.calls == []
