@@ -57,13 +57,11 @@ def test_console_dry_run_and_help_are_isolated_and_exact():
     assert result.returncode == 0, result.stderr
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
-    assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    required_bytes = sum(model.bytes for model in load_recipe_model_lock('comfyui', 'linux-x86_64-cu130').models)
-    assert required_bytes > 0
+    assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'start', 'health'}
+    # Plan 32 T5h: an install is model-free, so the plan quantifies no model bytes.
     assert plan['disk_check'] == {
-        'required_bytes': required_bytes, 'free_bytes': free_bytes,
-        'status': 'ok', 'basis': 'locked_model_bytes',
+        'required_bytes': 0, 'free_bytes': free_bytes,
+        'status': 'ok', 'basis': 'model_free_install',
     }
     local_code = (
         f"import astrid.core.engine_cli as c; c._disk_anchor = lambda root: (root, 1, 1, {free_bytes}); "
@@ -242,7 +240,7 @@ def test_real_path_distribution_metadata_forms(monkeypatch, tmp_path, form):
         assert archive.read(f'astrid-{dist.version}.dist-info/entry_points.txt') == entries
     result = run(bundle)
     assert result.returncode == 0, result.stderr
-    assert {s['kind'] for s in json.loads(result.stdout)['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+    assert {s['kind'] for s in json.loads(result.stdout)['plan']['steps']} == {'source', 'environment', 'start', 'health'}
 
 
 def test_missing_or_unsupported_distribution_metadata(monkeypatch, tmp_path):
