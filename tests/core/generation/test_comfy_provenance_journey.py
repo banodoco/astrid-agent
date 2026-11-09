@@ -324,13 +324,11 @@ def test_producer_failure_spool_retains_observations_without_inventing_stop_proo
         client.object_info()
         raise error
 
-    descriptor = SimpleNamespace(create=lambda **kwargs: SimpleNamespace(workflow=execute),
-                                 placement=SimpleNamespace(resolve=lambda placement: "local"))
-    monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+    monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: SimpleNamespace(workflow=execute))
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     spool = tmp_path / "spool"
     with pytest.raises(error_type) as raised:
-        run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1", registry=object())
+        run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1")
     assert raised.value is error
     envelope = json.loads((spool / "manifest.json").read_bytes())["managed_generation_result"]
     assert envelope["outcomes"]["execution"]["status"] == status
@@ -404,16 +402,14 @@ def test_real_runtime_retains_version_evidence_after_terminal_cleanup_and_restar
             payload.update(task_id=task_id, attempt_id=attempt_id)
             return _write_production(producer, payload)
 
-        descriptor = SimpleNamespace(create=lambda **kwargs: SimpleNamespace(workflow=execute),
-                                     placement=SimpleNamespace(resolve=lambda placement: "local"))
-        monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+        monkeypatch.setattr("astrid.packs.vibecomfy.workflow_route.WorkflowRunner", lambda **kwargs: SimpleNamespace(workflow=execute))
         run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
         spool = tmp_path / "spool"
         if status == "succeeded":
-            run._run_and_settle(workflow, spool, task_identity=task_id, attempt_identity=attempt_id, registry=object())
+            run._run_and_settle(workflow, spool, task_identity=task_id, attempt_identity=attempt_id)
         else:
             with pytest.raises(RuntimeError if status == "failed" else KeyboardInterrupt):
-                run._run_and_settle(workflow, spool, task_identity=task_id, attempt_identity=attempt_id, registry=object())
+                run._run_and_settle(workflow, spool, task_identity=task_id, attempt_identity=attempt_id)
         assert len(calls) == 2
         assert readiness.current_comfy_provenance() is None
 

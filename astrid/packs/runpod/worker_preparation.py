@@ -905,7 +905,7 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or stopped_session.get("config_digest") != managed_session.get("config_digest")
                 or stopped_session.get("gpu_qualified") is not False):
             raise TargetObservationError("release lacks exact managed VibeComfy session stop evidence")
-        if managed_session.get("session_ref") == "vibecomfy-h3":
+        if managed_session.get("session_ref") == "comfyui":
             receipt = managed_session.get("receipt")
             if (not isinstance(receipt, Mapping)
                     or stopped_session.get("supervisor_stop") != "original_installation_owner"

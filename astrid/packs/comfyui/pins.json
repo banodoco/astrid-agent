@@ -1,9 +1,0 @@
-{
-  "schema": "astrid.engine-pins.v1",
-  "sources": {
-    "comfyui": {
-      "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-      "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
-    }
-  }
-}

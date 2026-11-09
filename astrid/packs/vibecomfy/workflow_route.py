@@ -1,17 +1,21 @@
-"""H3 workflow backend: local engine endpoint, or RunPod via the injected checkout owner."""
+"""The comfyui engine's workflow run: local engine endpoint, or RunPod via the injected checkout owner.
+
+The engine's run site (actions/run/run.py _run_and_settle, reached by ComfyUIEngine.execute) constructs
+this; it is not a registered backend and nothing selects it by name.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, TYPE_CHECKING
 
-from .vibecomfy import VibeComfyBackend
+from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
 
 
 if TYPE_CHECKING:
     from astrid.packs.vibecomfy.production_engine import ProductionRunResult
 
 
-class VibeComfyWorkflowBackend(VibeComfyBackend):
+class WorkflowRunner(VibeComfyBackend):
     def __init__(self, *, endpoint_checkout: Callable[..., ContextManager[Any]] | None = None):
         self._endpoint_checkout = endpoint_checkout
 

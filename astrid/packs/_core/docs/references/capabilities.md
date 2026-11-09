@@ -6,7 +6,6 @@
 
 | id | short_description |
 | --- | --- |
-| `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
 | `generation.generate_audio` | Generate audio from text prompts via local or cloud backends. v2: model→mode→backend with music mode. |
 | `generation.generate_image` | Bounded registry-backed cloud text-to-image generation. |
 | `generation.generate_image_cloud_i2i` | One bounded z-image cloud i2i task with CAS source custody and enforced storage limits. |

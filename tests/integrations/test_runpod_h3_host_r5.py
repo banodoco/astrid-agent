@@ -39,7 +39,7 @@ def test_h3_freezes_policy_into_default_local_stages(monkeypatch, tmp_path, endp
         offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
         execution_seconds=60, idle_seconds=1800)
     target = projected['plan']['controls']['placement_policy']
-    assert target['engine'] == 'vibecomfy-h3' and target['kind'] == 'runpod'
+    assert target['engine'] == 'comfyui' and target['kind'] == 'runpod'
     assert target == calls[0][1]['inputs']['placement_policy']
     assert policy['targets'] == [{'kind': 'default'}]
     assert all(stage['target'] == {'kind': 'default'} for stage in policy['stages'])

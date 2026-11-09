@@ -30,7 +30,7 @@ def test_plan_is_read_only_and_retains_unknown_disk_requirement(tmp_path):
     binding, disk = prepare_install(root=str(root))
     assert not root.exists()
     assert binding.root == str(root)
-    assert binding.engine == 'vibecomfy-h3'
+    assert binding.engine == 'comfyui'
     assert binding.python.startswith(str(root) + '/')
     assert binding.python_version
     assert len(binding.recipe_sha256) == len(binding.models_lock_sha256) == 64

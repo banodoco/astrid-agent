@@ -11,9 +11,9 @@ from pathlib import Path
 from astrid.core.generation.engine_recipe import engine_source_revision, load_recipe
 
 VIBECOMFY_CHECKOUT_ENV = "ASTRID_VIBECOMFY_CHECKOUT"
-VIBECOMFY_ENGINE_REVISION = engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy")
+VIBECOMFY_ENGINE_REVISION = engine_source_revision("comfyui", "windows-x86_64-cu130", "vibecomfy")
 VIBECOMFY_FORK_URL = next(source.pin.repository for source in load_recipe(
-    "vibecomfy", "windows-x86_64-cu130").sources if source.name == "vibecomfy")
+    "comfyui", "windows-x86_64-cu130").sources if source.name == "vibecomfy")
 VIBECOMFY_CANDIDATE_KIND_ENV = "ASTRID_VIBECOMFY_CANDIDATE_KIND"
 VIBECOMFY_CANDIDATE_REVISION_ENV = "ASTRID_VIBECOMFY_CANDIDATE_REVISION"
 VIBECOMFY_CANDIDATE_CONTENT_DIGEST_ENV = "ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST"

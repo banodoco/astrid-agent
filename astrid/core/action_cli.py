@@ -35,7 +35,7 @@ ACTIONS: Mapping[str, Mapping[str, str]] = {
     "h3_av.transform": {"request": "request", "asset_map": "asset_map"},
 }
 PLACEMENTS = ("local",)
-LOCAL_ENGINE = "vibecomfy-h3"
+LOCAL_ENGINE = "comfyui"
 _LIFECYCLE_TIMEOUT = 300.0
 
 

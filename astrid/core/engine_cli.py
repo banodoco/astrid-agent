@@ -35,7 +35,7 @@ def _parser():
     commands = parser.add_subparsers(dest='command', required=True, parser_class=_Parser)
     for name in ('install', 'status'):
         command = commands.add_parser(name)
-        command.add_argument('engine', help='Engine ID, for example vibecomfy-h3')
+        command.add_argument('engine', help='Engine ID, for example comfyui')
         command.add_argument('--platform', default='linux-x86_64-cu130',
                              help='Target platform (default: linux-x86_64-cu130)')
         command.add_argument('--placement', choices=('local', 'runpod'), default='local',

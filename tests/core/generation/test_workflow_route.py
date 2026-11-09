@@ -10,11 +10,10 @@ from unittest.mock import Mock
 import pytest
 
 from astrid.core.generation.backends.base import BackendAdapter, GenerationResult
-from astrid.core.generation.backends.registry import (
-    GenerationBackendDescriptor, GenerationBackendRegistry, resolve_workflow_descriptor,
-)
+from astrid.core.generation.backends.registry import GenerationBackendDescriptor, GenerationBackendRegistry
+from astrid.core.generation.placement import resolve_workflow_placement
 from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
-from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.packs.vibecomfy.workflow_route import WorkflowRunner as VibeComfyWorkflowBackend
 from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
 from astrid.core.generation.engine_contracts import UnsupportedPlacement
 from astrid.core.pack.entrypoint import canonical_runtime_entrypoint
@@ -31,16 +30,16 @@ def action():
         return importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
 
 
-@pytest.mark.parametrize("placement,execution_request_value,backend", [
-    (None, None, "vibecomfy-h3-workflow"), ("local", None, "vibecomfy-h3-workflow"),
-    (None, {"target": {"kind": "default"}}, "vibecomfy-h3-workflow"),
-    ("runpod", RUNPOD, "vibecomfy-h3-workflow"),
+@pytest.mark.parametrize("placement,execution_request_value,resolved", [
+    (None, None, "local"), ("local", None, "local"),
+    (None, {"target": {"kind": "default"}}, "local"),
+    ("runpod", RUNPOD, "runpod"),
 ])
-def test_pure_registry_selection_keeps_model_defaults(monkeypatch, placement, execution_request_value, backend):
+def test_pure_placement_resolution_keeps_model_defaults(monkeypatch, placement, execution_request_value, resolved):
     registry = GenerationBackendRegistry()
     monkeypatch.setattr(GenerationBackendDescriptor, "load_class", Mock(side_effect=AssertionError("import")))
-    selected = resolve_workflow_descriptor(registry, placement=placement, execution_request=execution_request_value)
-    assert selected.backend_id == backend
+    assert resolve_workflow_placement(placement, execution_request_value) == resolved
+    assert "comfyui-workflow" not in {d.backend_id for d in registry.descriptors()}
     assert registry.get_descriptor("local").placement.default == "local"
     assert registry.get_descriptor("local").init_kwargs == {}
     assert registry.get_descriptor("cloud").placement.default == "local"
@@ -51,15 +50,13 @@ def test_pure_registry_selection_keeps_model_defaults(monkeypatch, placement, ex
     (False, None), (None, {"target": {"kind": "machine", "id": "machine"}}),
 ])
 def test_wrong_placement_precedes_all_action_effects(action, monkeypatch, tmp_path, placement, execution_request_value):
-    registry = GenerationBackendRegistry()
-    monkeypatch.setattr(GenerationBackendDescriptor, "create", Mock(side_effect=AssertionError("create")))
     stage = Mock(side_effect=AssertionError("stage"))
     monkeypatch.setattr(action, "_stage_managed_asset_manifest", stage)
     endpoint = Mock(side_effect=AssertionError("endpoint"))
     with pytest.raises(UnsupportedPlacement):
         action._run_and_settle(tmp_path / "absent", tmp_path / "out", task_identity="task-1",
                                managed_assets="absent", placement=placement, execution_request=execution_request_value,
-                               registry=registry, endpoint_checkout=endpoint)
+                               endpoint_checkout=endpoint)
     stage.assert_not_called()
     endpoint.assert_not_called()
     assert not (tmp_path / "out").exists()
@@ -85,16 +82,6 @@ def test_local_workflow_optional_api_preserves_result_and_legacy_defaults(monkey
                                     expected_execution_identity=None)
     assert VibeComfyWorkflowBackend.generate is VibeComfyBackend.generate
     assert BackendAdapter.__abstractmethods__ == frozenset({"generate"})
-
-
-def test_model_only_adapter_still_constructs_but_cannot_run_workflow(action, monkeypatch, tmp_path):
-    class ModelOnly(BackendAdapter):
-        def generate(self, entry, mode, params, out_dir):
-            return GenerationResult()
-    monkeypatch.setattr(GenerationBackendDescriptor, "load_class", lambda self: ModelOnly)
-    with pytest.raises(ValueError, match="does not support workflows"):
-        action._run_and_settle(tmp_path / "absent", tmp_path / "out", task_identity="task-1")
-    assert not (tmp_path / "out").exists()
 
 
 @pytest.fixture
@@ -181,18 +168,14 @@ def test_action_registry_production_and_existing_manifestv2(action, canonical_ca
         workflow_calls.append((args, kwargs))
         return original_workflow(self, *args, **kwargs)
     monkeypatch.setattr(backend_class, "workflow", tracked_workflow)
-    registry = GenerationBackendRegistry()
-    selection = Mock(wraps=registry.get_descriptor)
-    monkeypatch.setattr(registry, "get_descriptor", selection)
     kwargs = dict(
         task_identity="task-1", attempt_identity="attempt-1", execution_identity=case.identity,
         readiness_profile_path=case.profile_path, readiness_profile_hash=case.profile_hash,
-        workflow_inputs=' { "value" : 8 } ', registry=registry,
+        workflow_inputs=' { "value" : 8 } ',
     )
     if route == "runpod":
         kwargs.update(placement="runpod", execution_request=RUNPOD, endpoint_checkout=endpoint)
     manifest = action._run_and_settle(case.workflow, case.out, **kwargs)
-    selection.assert_called_once_with("vibecomfy-h3-workflow")
     assert len(workflow_calls) == len(calls) == 1
     assert calls[0][2] == {"task_identity": "task-1", "attempt_identity": "attempt-1", "run_inputs": {"value": 8}}
     if route == "runpod":
@@ -319,16 +302,12 @@ def test_workflow_backend_attached_mode_requires_no_shared_output_directory(monk
     assert "comfy_output_dir" not in produce.call_args.kwargs
 
 
-def test_resolver_selects_h3_backend_for_engine_bound_workflows_and_refuses_stray_runpod_targets():
-    registry = GenerationBackendRegistry()
-    descriptor = registry.get_descriptor("vibecomfy-h3-workflow")
-    assert descriptor.placement.supported == ("local", "runpod")
-    assert descriptor.placement.default == "local" and descriptor.placement.engine == "vibecomfy-h3"
+def test_resolver_validates_placement_for_engine_bound_workflows_and_refuses_stray_runpod_targets():
     for placement in (None, "local"):
-        assert resolve_workflow_descriptor(registry, placement=placement).backend_id == "vibecomfy-h3-workflow"
-    assert resolve_workflow_descriptor(registry, placement="runpod", execution_request=RUNPOD).placement.resolve("runpod") == "runpod"
+        assert resolve_workflow_placement(placement) == "local"
+    assert resolve_workflow_placement("runpod", RUNPOD) == "runpod"
     for placement in (None, "local"):
         with pytest.raises(UnsupportedPlacement):
-            resolve_workflow_descriptor(registry, placement=placement, execution_request=RUNPOD)
+            resolve_workflow_placement(placement, RUNPOD)
     with pytest.raises(UnsupportedPlacement):
-        resolve_workflow_descriptor(registry, placement="runpod")
+        resolve_workflow_placement("runpod")

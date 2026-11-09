@@ -206,11 +206,39 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
         host.shutdown()
 
 
-def test_runpod_engines_derive_from_engine_index():
-    import json
+def test_runpod_engines_derive_from_engine_declarations():
     from astrid.core.generation import entries
-    from astrid.core.generation.engine_recipe import _INDEX_PATH
-    rows = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))["entries"]
+    from astrid.core.generation.engine_recipe import _index_rows
+    rows = _index_rows()
     assert entries.runpod_engines() == tuple(
         row["engine"] for row in rows if row["platform"] == entries.RUNPOD_PLATFORM)
-    assert entries.runpod_engines() == ("comfyui", "vibecomfy-h3")
+    assert entries.runpod_engines() == ("comfyui",)
+
+
+def test_file_map_input_ships_in_the_managed_assets_archive(tmp_path):
+    """Plan 32 T6: a {id: path} input is a declared type, and rides the existing managed-assets archive."""
+    from astrid.packs.vibecomfy import asset_manifest
+
+    assert entries._input_type('file_map') == 'file_map'
+    assert entries._input_type('files') == 'file_map'
+    refs = {'hero': tmp_path / 'hero.png', 'side': tmp_path / 'side.png'}
+    refs['hero'].write_bytes(b'hero-bytes')
+    refs['side'].write_bytes(b'side-bytes')
+    description = {'inputs': [{'name': 'refs', 'type': 'file_map', 'required': True}]}
+
+    value = {key: str(path) for key, path in refs.items()}
+    assert entries.validate_inputs(description, {'refs': value}) == {'refs': value}
+    for bad in ({}, {'hero': 3}, {'': 'x.png'}, ['x.png'], {'hero': ''}):
+        with pytest.raises(ValueError, match="refs"):
+            entries.validate_inputs(description, {'refs': bad})
+
+    bindings = asset_manifest.file_map_bindings('refs', value)
+    assert sorted(bindings) == ['refs/hero', 'refs/side']
+    archive = tmp_path / 'assets.zip'
+    asset_manifest.write_archive(bindings, archive)
+    resolved = asset_manifest.read_archive(archive)
+    # The manifest keys by binding name; the map is recovered from it by input name.
+    assert sorted(record['binding'] for record in resolved.manifest['assets']) == ['refs/hero', 'refs/side']
+    recovered = asset_manifest.file_map_members('refs', resolved)
+    assert recovered == {'hero': b'hero-bytes', 'side': b'side-bytes'}
+    assert asset_manifest.file_map_members('other', resolved) == {}

@@ -50,7 +50,7 @@ from astrid.sdk.results import InvocationResult
 UNSUPPORTED_TARGET_MESSAGE = (
     "H3 execution-request target must be default or runpod; choose where H3 runs with --placement local|runpod"
 )
-LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
+LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install comfyui"
 
 
 def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
@@ -76,7 +76,7 @@ def _resolve_local_engine() -> Any:
     from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
 
     try:
-        return local_engine_endpoint("vibecomfy-h3")
+        return local_engine_endpoint("comfyui")
     except EngineError as exc:
         if exc.code == "endpoint_ownership":
             raise AstridError(f"local H3 engine endpoint ownership error ({exc.code}): {exc}",
@@ -1303,9 +1303,7 @@ def _invoke_canonical_run_impl(
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
-    from astrid.core.generation.backends.registry import (
-        GenerationBackendRegistry, resolve_workflow_descriptor,
-    )
+    from astrid.core.generation.placement import resolve_workflow_placement
 
     # An unplaced call carrying a RunPod target is the legacy prepared route.
     if placement is None:
@@ -1314,11 +1312,7 @@ def _invoke_canonical_run_impl(
             placement = "runpod"
     # Resolve only inert placement metadata before touching admission or the
     # prepared client. The facade validates this same original target again.
-    descriptor = resolve_workflow_descriptor(
-        GenerationBackendRegistry(), placement=placement,
-        execution_request=execution_request,
-    )
-    workflow_placement = descriptor.placement.resolve(placement)
+    workflow_placement = resolve_workflow_placement(placement, execution_request=execution_request)
     workflow_route = f"generation.workflow.v1/{workflow_placement}"
 
     admission_payload = {

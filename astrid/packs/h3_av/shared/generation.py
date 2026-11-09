@@ -171,8 +171,17 @@ def character_swap_asset_sha256() -> str:
 
 
 def _h3_locked_urls() -> dict[str, Any]:
-    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     return {model.destination: model for model in lock.models}
+
+
+def _locked_asset(models: Mapping[str, Any], destination: str, **kwargs: Any) -> Any:
+    """A ModelAsset carrying the lock's own url, digest and size."""
+    from vibecomfy.templates import ModelAsset
+    model = models[destination] if destination in models else None
+    url = _required_locked_url(models, destination)
+    digest = model.sha256.removeprefix("sha256:")
+    return ModelAsset(url=url, sha256=digest, size_bytes=model.bytes, **kwargs)
 
 
 def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
@@ -239,15 +248,12 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         "audio_vae": ("vae", "minimax_h3_audio_vae_fp32.safetensors"),
     }
     model_assets = {
-        key: ModelAsset(url=_required_locked_url(locked_models, f"{subdir}/{name}"), subdir=subdir)
+        key: _locked_asset(locked_models, f"{subdir}/{name}", subdir=subdir)
         for key, (subdir, name) in names.items()
     }
     if turbo_enabled:
-        model_assets["turbo_lora"] = ModelAsset(
-            filename=TURBO_FILENAME,
-            url=_required_locked_url(locked_models, f"loras/{TURBO_FILENAME}"),
-            subdir="loras",
-        )
+        model_assets["turbo_lora"] = _locked_asset(
+            locked_models, f"loras/{TURBO_FILENAME}", filename=TURBO_FILENAME, subdir="loras")
     if adapter_strength is not None:
         model_assets["character_swap_lora"] = ModelAsset(
             filename=CHARACTER_SWAP_FILENAME,
@@ -262,7 +268,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         models=model_assets,
         requirements={
             "runtime": {
-                "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
+                "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
                 "comfy_version": "==0.36.0",
                 "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],

@@ -175,7 +175,7 @@ def prevalidate_task(policy, inputs, *, scratch):
                 "preparation_seconds", "execution_seconds", "idle_seconds"}
     if not isinstance(policy, dict) or set(policy) != required or policy["kind"] != "runpod":
         raise PaidSelectionError("target policy lacks exact offer and paid bounds")
-    if policy["engine"] not in {"comfyui", "vibecomfy-h3"}:
+    if policy["engine"] not in {"comfyui"}:
         raise PaidSelectionError("unsupported retained installation route")
     if RunPodPreferences.from_mapping(policy["preferences"]).as_mapping() != policy["preferences"]:
         raise PaidSelectionError("target preferences are not canonical")
@@ -217,7 +217,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility, RunPodPreferences
     from astrid.packs.runpod.worker_owner import RunPodLeaseOwner
 
-    if engine not in {"comfyui", "vibecomfy-h3"}:
+    if engine not in {"comfyui"}:
         raise PaidSelectionError("unsupported retained installation route")
     preferences = RunPodPreferences.from_mapping(preferences)
     credential_name = (preferences.credential_ref or "env:RUNPOD_API_KEY").removeprefix("env:")

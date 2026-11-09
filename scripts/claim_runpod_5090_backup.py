@@ -66,7 +66,7 @@ DEFAULT_ALLOWED_CUDA_VERSIONS = ("13.0",)
 DEFAULT_RELEASE_ROOT = "/workspace/h3-golden/releases/h3-cu130-v1-candidate"
 # The engine installs into CANONICAL_RELEASE_ROOT. The old candidate path stays
 # accepted; any other root is refused before the pod is contacted.
-CANONICAL_RELEASE_ROOT = "/root/astrid/engines/vibecomfy-h3"
+CANONICAL_RELEASE_ROOT = "/root/astrid/engines/comfyui"
 ACCEPTED_RELEASE_ROOTS = (CANONICAL_RELEASE_ROOT, DEFAULT_RELEASE_ROOT)
 DEFAULT_HANDLE_PATH = Path(
     ".otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json"

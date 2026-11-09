@@ -286,7 +286,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                          for path in receipt_files(provider._receipt_for(engine))]
                 provider.comfy.installed_files = lambda: files
                 url = stack.enter_context(_attached_comfy(provider.comfy))
-                controls = dict(target=url, client=client, project=project_id, wait=True)
+                controls = dict(placement=url, client=client, project=project_id, wait=True)
             else:
                 controls = dict(placement="managed", client=client, project=project_id, wait=True)
             result = call(GenerationFacade(), controls, tmp_path)
@@ -397,7 +397,7 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     import sys
     pod = SlotPod(tmp_path / "claim.json", tmp_path / "attempts", _slot_classes(("audio", "tts")))
     # The managed target's inventory is the stand-in pod's install receipt; the controller keeps no model files.
-    pod.receipts["comfyui"] = pod._receipt_for("vibecomfy-h3")
+    pod.receipts["comfyui"] = pod._receipt_for("comfyui")
     pod.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = b"{}"
     comfy = pod.comfy
     class Handler(http.server.BaseHTTPRequestHandler):

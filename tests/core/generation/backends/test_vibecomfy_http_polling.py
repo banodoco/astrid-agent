@@ -450,7 +450,7 @@ def test_canonical_registry_without_input_directory_uploads_from_pinned_default(
 @pytest.mark.parametrize("change", ["cwd", "base_directory", "runtime_root", "missing_runtime_root"])
 def test_input_directory_derivation_requires_actual_launch_selection(tmp_path, change):
     from astrid.core.generation.engine_recipe import load_recipe
-    recipe = load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = load_recipe("comfyui", PLATFORM)
     config = dict(canonical_session(tmp_path).config)
     assert backend._endpoint_session_input_directory(config, recipe) == config["cwd"] + "/input"
     if change == "missing_runtime_root":
@@ -464,7 +464,7 @@ def test_input_directory_derivation_requires_actual_launch_selection(tmp_path, c
 def test_explicit_input_directory_is_kept_and_override_flags_refused(tmp_path, monkeypatch):
     from dataclasses import replace
     from astrid.core.generation.engine_recipe import load_recipe
-    recipe = load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = load_recipe("comfyui", PLATFORM)
     config = dict(canonical_session(tmp_path).config)
     explicit = str(tmp_path / "explicit-input")
     assert backend._endpoint_session_input_directory({**config, "input_directory": explicit}, recipe) == explicit
