@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from types import ModuleType
 
+from astrid.core.generation.progress import write_progress  # noqa: E402
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.pack_api import AstridError, render_astrid_error  # noqa: E402
 from astrid.pack_api import add_choice_arg  # noqa: E402
@@ -688,6 +689,7 @@ class _LocalEngineServer:
         self.result: Any = None
 
     def ensure_running(self) -> str:
+        write_progress("start_engine")
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
         from astrid.core.generation.engine_contracts import EngineError
         from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
@@ -702,6 +704,7 @@ class _LocalEngineServer:
         return validate_comfy_url(engine.endpoint.url)
 
     def submit(self, url: str, workflow: Any) -> Any:
+        write_progress("run")
         kwargs = {**self._kwargs, "comfy_url": url, "profile_id": "local_server", "hc03_profile": None}
         if self._output_dir:
             kwargs["comfy_output_dir"] = self._output_dir
@@ -726,8 +729,14 @@ def _run_and_settle(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     execution_request: Any = None,
+    align: str = "check",
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run *workflow_path*, copy every engine result, and write its receipt."""
+    """Run *workflow_path*, copy every engine result, and write its receipt.
+
+    ``align`` (align | check | trust) and ``manifest`` (the entry's requirements) reach
+    the engine's ``align``; the default is the old empty-manifest ``check``.
+    """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
     output_root = output_root.expanduser().resolve()
@@ -851,9 +860,13 @@ def _run_and_settle(
         with provenance.capture():
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
+                write_progress("align")
                 _comfyui_engine().run(
-                    {"workflow": workflow_path, "out": output_root, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"},
+                    {"workflow": workflow_path, "out": output_root,
+                     "manifest": manifest if manifest is not None else {"models": [], "extra": {"nodes": []}},
+                     "mode": align},
                     local)
+                write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
                 production_result = adapter.workflow(
