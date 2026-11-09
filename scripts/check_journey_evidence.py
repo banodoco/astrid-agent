@@ -316,11 +316,22 @@ def _windows_fresh_update_errors(update, job_id):
     return errors
 
 
+# The receipt kind each Release-1 matrix leg writes. The R0 handoff leg writes
+# its own kind; every other leg writes the shared lifecycle receipt.
+RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update"}
+RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
+
+
+def release1_receipt_kind(contract):
+    """The receipt kind a Release-1 matrix row must carry for its leg."""
+    return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
+
+
 def _release1_row_errors(candidate, contract, row):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
     errors = []
-    if row.get("receipt_kind") != "release1-installed-lifecycle":
+    if row.get("receipt_kind") != release1_receipt_kind(contract):
         errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
     if row.get("status") != "pass":
         errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
@@ -344,8 +355,22 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: OS build does not match the required matrix")
     if row.get("source_override_test_mode") is not False:
         errors.append(f"{job_id}: source override is not admissible")
-    # Every row, including the Release-9 to candidate upgrade, ends in an ordinary uninstall.
-    if row.get("final_cleanup") != "pass":
+    # Every row ends in an ordinary uninstall, except that a handed-off install may
+    # end in the documented uninstall refusal that keeps both data roots.
+    handoff_leg = contract.get("leg") == "r0-handoff-then-update"
+    cleanup = row.get("final_cleanup")
+    if handoff_leg and cleanup == "retained-after-upgrade-refusal":
+        refusal = row.get("upgrade_uninstall_refusal")
+        if (not isinstance(refusal, dict) or type(refusal.get("exit_code")) is not int
+                or refusal.get("exit_code") == 0
+                or refusal.get("message") != (
+                    "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade "
+                    "isn't supported yet. Both data folders were kept.")
+                or refusal.get("r0_data_root") != (row.get("run_roots") or {}).get("data")
+                or not isinstance(refusal.get("r1_data_root"), str)
+                or refusal.get("r1_data_root") == refusal.get("r0_data_root")):
+            errors.append(f"{job_id}: required preserved-state uninstall refusal is absent or invalid")
+    elif cleanup != "pass":
         errors.append(f"{job_id}: final cleanup is not pass")
     observed = row.get("candidate_checkouts")
     if not isinstance(observed, dict):
@@ -417,29 +442,54 @@ def _release1_row_errors(candidate, contract, row):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
         elif not fresh:
-            if row.get("scenario") != "release0-to-release1":
-                errors.append(f"{job_id}: direct receipt did not run the release0-to-release1 leg")
-            transition = row.get("release_transition")
-            if (not isinstance(transition, dict) or transition.get("from") != 9
-                    or type(transition.get("to")) is not int or transition["to"] <= 9
-                    or transition.get("source") != "pinned-release9-plain-install"):
-                errors.append(f"{job_id}: release-9 to candidate transition is absent or wrong")
-            source = row.get("release9_source")
+            if row.get("scenario") != "r0-handoff-then-update":
+                errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
+            fixture = row.get("release0_fixture")
+            if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
+                    or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256
+                    or not all(isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
+                               for name in ("manifest_sha256", "provenance_sha256"))
+                    or fixture.get("sources") != {
+                        "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                        "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+                    }):
+                errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
+            source = row.get("handoff_source")
             bootstrap = source.get("bootstrap_sha256") if isinstance(source, dict) else None
             if (not isinstance(source, dict) or source.get("app_commit") != RELEASE9_APP_COMMIT
                     or source.get("identity") != RELEASE9_IDENTITY
                     or not DIGEST.fullmatch(str(source.get("manifest_sha256", "")))
                     or not isinstance(bootstrap, dict) or set(bootstrap) != set(ARTIFACTS)
                     or not all(isinstance(value, str) and DIGEST.fullmatch(value) for value in bootstrap.values())):
-                errors.append(f"{job_id}: pinned release-9 source provenance is absent or wrong")
+                errors.append(f"{job_id}: pinned release-9 handoff installer provenance is absent or wrong")
+            handoff = row.get("handoff")
+            data_root = (row.get("run_roots") or {}).get("data")
+            if (not isinstance(handoff, dict) or handoff.get("phase") != "complete"
+                    or handoff.get("release") != 9 or handoff.get("r0_data_root") != data_root
+                    or not isinstance(data_root, str) or handoff.get("r1_data_root") != data_root + "-r1"):
+                errors.append(f"{job_id}: completed R0 handoff start state is absent or wrong")
+            update = row.get("update")
+            if (not isinstance(update, dict) or update.get("command") != "install --update"
+                    or update.get("exit_code") != 0):
+                errors.append(f"{job_id}: candidate install --update did not exit 0")
+            transition = row.get("release_transition")
+            if (not isinstance(transition, dict) or transition.get("from") != 9
+                    or type(transition.get("to")) is not int or transition["to"] <= 9
+                    or transition.get("start_state") != "r0-handoff-complete"
+                    or transition.get("source") != "candidate-install-update"):
+                errors.append(f"{job_id}: handed-off release-9 to candidate transition is absent or wrong")
+            health = row.get("health_transition")
+            if (not isinstance(health, dict) or not isinstance(transition, dict)
+                    or health.get("candidate_live_release") != transition.get("to")):
+                errors.append(f"{job_id}: the live Runtime does not report the candidate release")
             semantic = row.get("semantic_data")
             if (not isinstance(semantic, dict) or semantic.get("identical") is not True
                     or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
                                for name in ("before_sha256", "after_sha256"))
                     or semantic.get("before_sha256") != semantic.get("after_sha256")):
                 errors.append(f"{job_id}: semantic data preservation is absent or unequal")
-            for check in ("release", "service", "health", "semantic_data", "task_settled",
-                          "unrelated_sentinel"):
+            for check in ("handed_off_start", "update_exit", "release", "service", "health",
+                          "semantic_data", "task_settled", "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
                     errors.append(f"{job_id}: {check} assertion did not pass")
     elif (prerequisite.get("outcome") != "explicit-owner"
@@ -1013,7 +1063,7 @@ def _visibility_receipts(results):
             errors.append(f"{path}: malformed journey receipt: {exc}")
             continue
         kind = row.get("receipt_kind")
-        if kind == "release1-installed-lifecycle":
+        if kind in {RELEASE1_DEFAULT_RECEIPT_KIND, *RELEASE1_RECEIPT_KINDS.values()}:
             add(release1, row.get("job_id"), (row, path), path)
         elif kind == "release2-installed-lifecycle":
             add(m4_5, row.get("scenario_id"), (row, path), path)

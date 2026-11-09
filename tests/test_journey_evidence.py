@@ -21,13 +21,36 @@ BUTTON = {**HOSTED, "driver": "app-button",
                    "progress_shown": True, "build_sha256": "b" * 64, "served_manifest": 1}}
 
 
+def handoff_upgrade_fields():
+    """The r0-handoff-then-update receipt fields the upgrade rows must carry."""
+    return {
+        "release_transition": {"from": 9, "to": 10, "start_state": "r0-handoff-complete",
+                               "source": "candidate-install-update"},
+        "release0_fixture": {"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256,
+                             "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
+                             "manifest_sha256": "4" * 64, "provenance_sha256": "5" * 64,
+                             "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                                         "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"}},
+        "handoff_source": {
+            "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
+            "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
+                                 "public/install.ps1": "3" * 64},
+            "identity": gate.RELEASE9_IDENTITY,
+        },
+        "handoff": {"phase": "complete", "release": 9, "r0_data_root": "/run/data",
+                    "r1_data_root": "/run/data-r1"},
+        "update": {"command": "install --update", "exit_code": 0},
+        "health_transition": {"candidate_live_release": 10},
+    }
+
+
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
         runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
-        row = {"receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
+        row = {"receipt_kind": gate.release1_receipt_kind(contract), "job_id": contract["job_id"],
                "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
                "status": "pass", "runner_image": contract["runner"],
                "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
@@ -41,17 +64,11 @@ def release1_receipts(tmp_path):
                "import_origins": {"runtime": "/owned/runtime"},
                "service_manager_prerequisite": service,
                "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass",
-                          "task_settled": "pass", "unrelated_sentinel": "pass"}}
+                          "task_settled": "pass", "unrelated_sentinel": "pass",
+                          "handed_off_start": "pass", "update_exit": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
-            row["release_transition"] = {"from": 9, "to": 10,
-                                         "source": "pinned-release9-plain-install"}
-            row["release9_source"] = {
-                "app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
-                "bootstrap_sha256": {"public/install": "1" * 64, "public/install.sh": "2" * 64,
-                                     "public/install.ps1": "3" * 64},
-                "identity": gate.RELEASE9_IDENTITY,
-            }
+            row.update(handoff_upgrade_fields())
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
                                     "after_sha256": "b" * 64}
         else:
@@ -235,24 +252,57 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     candidate = release1_receipts(tmp_path)
     direct = tmp_path / "direct-linux" / "journey-result.json"
     data = json.loads(direct.read_text())
-    data["release9_source"]["app_commit"] = "e" * 40
+    data["handoff_source"]["app_commit"] = "e" * 40
     direct.write_text(json.dumps(data), encoding="utf-8")
-    assert any("direct-linux: pinned release-9 source provenance is absent or wrong" in error
+    assert any("direct-linux: pinned release-9 handoff installer provenance is absent or wrong" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
-def test_release1_gate_requires_an_ordinary_final_uninstall_for_every_row(tmp_path):
+def test_release1_gate_requires_an_ordinary_final_uninstall_or_the_handoff_refusal(tmp_path):
     candidate = release1_receipts(tmp_path)
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)
-    for job_id in ("direct-linux", "direct-macos", "direct-macos-fresh"):
+    path = tmp_path / "direct-macos-fresh" / "journey-result.json"
+    original = json.loads(path.read_text())
+    path.write_text(json.dumps(dict(original, final_cleanup="retained-after-upgrade-refusal")))
+    assert any("direct-macos-fresh: final cleanup is not pass" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    path.write_text(json.dumps(original))
+    refusal = {"exit_code": 1, "r0_data_root": "/run/data", "r1_data_root": "/run/data-r1",
+               "message": ("Astrid was upgraded from an earlier version; automatic uninstall after an upgrade "
+                           "isn't supported yet. Both data folders were kept.")}
+    for job_id in ("direct-linux", "direct-macos"):
         path = tmp_path / job_id / "journey-result.json"
         original = json.loads(path.read_text())
-        altered = copy.deepcopy(original)
-        altered["final_cleanup"] = "retained-after-upgrade-refusal"
-        path.write_text(json.dumps(altered))
+        retained = dict(original, final_cleanup="retained-after-upgrade-refusal")
+        path.write_text(json.dumps(retained))
+        assert any(f"{job_id}: required preserved-state uninstall refusal is absent or invalid" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+        path.write_text(json.dumps(dict(retained, upgrade_uninstall_refusal=refusal)))
+        assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+        path.write_text(json.dumps(dict(original, final_cleanup="fail")))
         assert any(f"{job_id}: final cleanup is not pass" in error
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path))
         path.write_text(json.dumps(original))
+
+
+def test_handoff_rows_require_the_completed_handoff_and_a_real_update(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    path = tmp_path / "direct-linux" / "journey-result.json"
+    original = json.loads(path.read_text())
+    for change, message in (
+        ({"update": {"command": "install --update", "exit_code": 3}}, "candidate install --update did not exit 0"),
+        ({"handoff": dict(original["handoff"], phase="starting")}, "completed R0 handoff start state"),
+        ({"handoff": dict(original["handoff"], r1_data_root="/run/data")}, "completed R0 handoff start state"),
+        ({"release0_fixture": None}, "frozen release-0 fixture provenance"),
+        ({"health_transition": {"candidate_live_release": 9}}, "the live Runtime does not report the candidate release"),
+        ({"release_transition": dict(original["release_transition"], start_state="release9")},
+         "handed-off release-9 to candidate transition"),
+    ):
+        path.write_text(json.dumps(dict(original, **change)))
+        assert any(f"direct-linux: {message}" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path)), message
+    path.write_text(json.dumps(original))
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
 
 
 def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
@@ -285,8 +335,8 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     contract_rows = {(row["job_id"], row["mode"], row["os"], row["leg"]) for row in gate.RELEASE1_MATRIX}
     assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 5
     assert contract_rows == {
-        ("direct-linux", "direct", "linux", "release0-to-release1"),
-        ("direct-macos", "direct", "macos", "release0-to-release1"),
+        ("direct-linux", "direct", "linux", "r0-handoff-then-update"),
+        ("direct-macos", "direct", "macos", "r0-handoff-then-update"),
         ("direct-windows", "direct", "windows", "fresh-install"),
         ("direct-linux-fresh", "direct", "linux", "fresh-install"),
         ("direct-macos-fresh", "direct", "macos", "fresh-install"),
@@ -466,7 +516,8 @@ def test_direct_receipts_require_observed_checks_without_pid_count(tmp_path):
     row = json.loads(path.read_text())
     assert "one_runtime" not in row["checks"]
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)
-    for check in ("release", "service", "health", "semantic_data", "task_settled", "unrelated_sentinel"):
+    for check in ("handed_off_start", "update_exit", "release", "service", "health", "semantic_data",
+                  "task_settled", "unrelated_sentinel"):
         bad = copy.deepcopy(row)
         bad["checks"][check] = "not-run"
         path.write_text(json.dumps(bad))
@@ -502,7 +553,7 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
     for job_id in ("direct-linux-fresh", "direct-macos-fresh"):
         path = tmp_path / job_id / "journey-result.json"
         row = json.loads(path.read_text())
-        for key in ("release_transition", "release9_source", "semantic_data"):
+        for key in ("release_transition", "handoff_source", "semantic_data"):
             row.pop(key)
         row["checks"] = {name: "pass" for name in ("task_settled", "workspace_content", "unrelated_sentinel")}
         path.write_text(json.dumps(row), encoding="utf-8")
@@ -513,7 +564,7 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
             path.write_text(json.dumps(bad), encoding="utf-8")
             assert f"{job_id}: fresh {check} assertion did not pass" in gate.evaluate_release1_matrix(candidate, tmp_path)
         for field, value, message in (
-            ("scenario", "release0-to-release1", "scenario does not match the required matrix leg"),
+            ("scenario", "release9-then-install", "scenario does not match the required matrix leg"),
             ("service_manager", {"foreground_fallback": True}, "direct service ownership"),
         ):
             bad = dict(row, **{field: value})
@@ -523,13 +574,13 @@ def test_release1_fresh_rows_use_fresh_expectations_and_upgrade_rows_stay_strict
     upgrade = tmp_path / "direct-linux" / "journey-result.json"
     row = json.loads(upgrade.read_text())
     fresh_shaped = dict(row, scenario="fresh-install")
-    for key in ("release_transition", "release9_source", "semantic_data"):
+    for key in ("release_transition", "handoff_source", "semantic_data"):
         fresh_shaped.pop(key)
     upgrade.write_text(json.dumps(fresh_shaped), encoding="utf-8")
     errors = gate.evaluate_release1_matrix(candidate, tmp_path)
     assert "direct-linux: scenario does not match the required matrix leg" in errors
-    assert "direct-linux: direct receipt did not run the release0-to-release1 leg" in errors
-    assert "direct-linux: release-9 to candidate transition is absent or wrong" in errors
+    assert "direct-linux: direct receipt did not run the r0-handoff-then-update leg" in errors
+    assert "direct-linux: handed-off release-9 to candidate transition is absent or wrong" in errors
 
 
 def test_both_fresh_rows_require_complete_update_receipt(tmp_path):
@@ -549,4 +600,24 @@ def test_both_fresh_rows_require_complete_update_receipt(tmp_path):
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path))
         row["update"] = original
         path.write_text(json.dumps(row))
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+
+
+def test_each_release1_leg_needs_its_own_receipt_kind(tmp_path):
+    """The R0 handoff rows carry their leg's receipt kind; the other rows the shared one."""
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    kinds = {row["job_id"]: gate.release1_receipt_kind(row) for row in gate.RELEASE1_MATRIX}
+    assert kinds["direct-linux"] == kinds["direct-macos"] == "r0-handoff-then-update"
+    assert {kinds[job] for job in ("direct-windows", "direct-linux-fresh", "direct-macos-fresh")} == {
+        "release1-installed-lifecycle"}
+    swapped = {"r0-handoff-then-update": "release1-installed-lifecycle",
+               "release1-installed-lifecycle": "r0-handoff-then-update"}
+    for job_id, kind in kinds.items():
+        path = tmp_path / job_id / "journey-result.json"
+        original = json.loads(path.read_text())
+        assert original["receipt_kind"] == kind
+        path.write_text(json.dumps(dict(original, receipt_kind=swapped[kind])))
+        assert f"{job_id}: not a Release-1 lifecycle receipt" in gate.evaluate_release1_matrix(candidate, tmp_path)
+        path.write_text(json.dumps(original))
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)

@@ -96,6 +96,22 @@ def active_service(root: Path, data: Path) -> dict:
     return service
 
 
+# The boundary state of an install that never met the R0 handoff.
+NO_BOUNDARY = {"journals": [], "r1_data_root": None, "selection_r1_data_root": None, "r1_data_exists": False}
+
+
+def is_handed_off(state: dict, data: Path) -> bool:
+    """Whether ``state`` is what a completed R0 to R1 storage handoff leaves behind.
+
+    R0's data stays at ``data`` and the active copy is ``data-r1``. This is the
+    state real pre-R1 installs are in, so a leg may start from it on purpose.
+    """
+    r1 = str(Path(str(data) + "-r1"))
+    return ("astrid-r1-handoff.json" in state.get("journals", [])
+            and state.get("r1_data_root") == r1 and state.get("selection_r1_data_root") == r1
+            and state.get("r1_data_exists") is True)
+
+
 def boundary_state(root: Path, data: Path) -> dict:
     parent = journey.program_root().parent
     names = ("astrid-r0-upgrade-in-progress.json", "astrid-r1-handoff.json",
@@ -110,7 +126,8 @@ def boundary_state(root: Path, data: Path) -> dict:
 
 def assert_transition(root: Path, old_path: Path, new_path: Path, versions_before: set[str],
                       old_service: dict, new_service: dict, names_before: list[str],
-                      names_after: list[str], boundary_before: dict, boundary_after: dict) -> dict:
+                      names_after: list[str], boundary_before: dict, boundary_after: dict,
+                      *, expected_boundary: dict = NO_BOUNDARY) -> dict:
     old_id, new_id = old_path.parent.name, new_path.parent.name
     versions_after = {path.name for path in (root / "versions").iterdir() if path.is_dir()}
     if (old_path.parent.parent != root / "versions" or new_path.parent.parent != root / "versions"
@@ -121,16 +138,21 @@ def assert_transition(root: Path, old_path: Path, new_path: Path, versions_befor
         raise RuntimeError("Update did not retain the old version")
     if (old_service != new_service or not names_before or names_before != names_after):
         raise RuntimeError("Update changed the service label or added a service")
-    empty = {"journals": [], "r1_data_root": None, "selection_r1_data_root": None, "r1_data_exists": False}
-    if boundary_before != empty or boundary_after != empty:
-        raise RuntimeError("Fresh update entered the R0 boundary handoff")
+    if boundary_before != expected_boundary or boundary_after != expected_boundary:
+        raise RuntimeError("Update changed the R0 boundary handoff state it started from")
     return {"old_version": old_id, "new_version": new_id,
             "service": new_service, "service_names": names_after}
 
 
 def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: dict,
             version_path: Path, version: dict, project: str, marker: Path, digest: str,
-            sentinel, birth: str, result: dict) -> None:
+            sentinel, birth: str, result: dict, *, expected_boundary: dict = NO_BOUNDARY) -> None:
+    """Update a fresh install through the hosted request.
+
+    ``expected_boundary`` is the R0 handoff state the install starts in. The
+    fresh rows start from none; it is a parameter, not a precondition, so a
+    handed-off install is a start state rather than a forbidden one.
+    """
     update = result["update"] = {"status": "not-run", "checks": {key: "not-run" for key in CHECKS}}
     try:
         dist = hosted_dist(getattr(args, "job_id", None))
@@ -144,8 +166,8 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         service_before = active_service(root, data)
         names_before = service_names(data)
         boundary_before = boundary_state(root, data)
-        if boundary_before != {"journals": [], "r1_data_root": None, "selection_r1_data_root": None, "r1_data_exists": False}:
-            raise RuntimeError("Fresh update baseline has R0 boundary handoff state")
+        if boundary_before != expected_boundary:
+            raise RuntimeError("Update baseline is not the expected R0 boundary handoff state")
         before_health = journey.healthy(data)
         before_runtime_instance_id = before_health["runtime_instance_id"]
         # The hosted page's own request: POST through the Runtime door, with the stand-in
@@ -165,7 +187,7 @@ def execute(args, root: Path, data: Path, evidence: Path, app: Path, manifest: d
         service_after = active_service(root, data)
         update.update(assert_transition(root, version_path, new_path, versions_before, service_before,
                                         service_after, names_before, service_names(data), boundary_before,
-                                        boundary_state(root, data)))
+                                        boundary_state(root, data), expected_boundary=expected_boundary))
         update["checks"].update(new_version="pass", old_version_retained="pass", same_service="pass",
                                 no_boundary_handoff="pass")
         health = journey.healthy(data)
