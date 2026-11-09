@@ -713,10 +713,13 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     try:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
     except Exception as exc:
+        if isinstance(exc, (EngineError, AstridError)):
+            raise
         if getattr(exc, "unpinned", False):  # validate_extra: a custom node ref without its repo or commit
             raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
         # The bundle loader could not read this file (not a canonical bundle, or it does not execute on its own):
-        # it declares nothing here, and the run's own loader reports the real error.
+        # it declares nothing here, and the run's own loader reports the real error. Limit: a loader that cannot
+        # run the bundle standalone means no pre-queue model check for that file.
         return {"models": [], "extra": {"nodes": []}}
     try:
         root = default_engine_root("comfyui")

@@ -131,3 +131,21 @@ def test_local_run_proceeds_when_the_workflow_loader_cannot_read_a_bundle(comfy,
     monkeypatch.setitem(engine.requirements.__globals__, "_workflows", unreadable)
     manifest = action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
     assert len(comfy.prompts) == 1 and manifest["outputs"]
+
+
+def test_local_run_does_not_swallow_an_engine_error_from_requirements(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """Only loader failures mean 'declares nothing'; an EngineError from the engine is the real refusal."""
+    import pytest
+    from astrid.core.generation import entries
+    from astrid.core.generation.engine_contracts import EngineError
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    engine = entries.engine_table()["comfyui"]
+
+    def refused(entry, inputs=None):
+        raise EngineError("engine refused the declared requirements")
+
+    monkeypatch.setitem(engine.requirements.__globals__, "_workflows", refused)
+    with pytest.raises(EngineError, match="engine refused"):
+        action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []
