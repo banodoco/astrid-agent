@@ -40,40 +40,13 @@ def _host(tmp_path: Path) -> GenericPackHost:
     return host
 
 
-def _legacy_h3_command(pack):
-    """Keep the native command/runpy receipt boundary independently of admission.
 
-    The public declaration now selects a tracked Python parent. These tests
-    retain the real legacy command interpreter and all of its observation
-    assertions; they do not claim Runtime parent acceptance.
-    """
-    import copy
 
-    action = copy.deepcopy(pack.actions["transform"])
-    action["metadata"].update(local_orchestrator=True, runtime_entrypoint="main")
-    action["metadata"].pop("tracked_h3_parent", None)
-    action["invocation"] = {"kind": "command", "command": {
-        "argv": ["{python_exec}", "-m", "astrid.packs.h3_av.actions.transform.run",
-                 "--request", "{request}", "--asset-map", "{asset_map}", "--out", "{out}"],
-        "input_args": [{"input": "dry_run", "flag": "--dry-run", "optional": True}],
-    }}
-    return action
 
 
 def _invoke(host: GenericPackHost, capability_id: str, inputs: dict[str, object],
             tmp_path: Path, *, bridge=None):
     host.discover()
-    if capability_id == "h3_av.transform":
-        # Project the retained native command explicitly; public H3 admission
-        # uses the tracked Python parent declaration.
-        from astrid.core.pack.loader import load_pack_manifest
-        from astrid.core.execution.executor.actions import _action_definition
-        from astrid.core.execution.generic_host import CapabilityRecord, _capability_digest
-
-        pack = load_pack_manifest(_PACK_ROOT / "h3_av" / "pack.yaml")
-        definition = _action_definition(pack, "transform", _legacy_h3_command(pack))
-        host.capabilities[capability_id] = CapabilityRecord(
-            definition, _capability_digest(definition.to_dict()), "unit-source", pack.root)
     attempt = tmp_path / "attempt"
     output = attempt / "outputs"
     output.mkdir(parents=True)
@@ -129,8 +102,7 @@ def test_direct_validator_subprocess_records_action_entry_and_host_binding(tmp_p
     ).resolve()
     assert all(row["status"] == "not_loaded" for row in action["modules"]
                if row["module_name"] in {"astrid.core.execution.generic_host",
-                                          "astrid.core.execution._child_bridge",
-                                          "astrid.packs.h3_av.actions.transform.run"})
+                                          "astrid.core.execution._child_bridge"})
 
 
 def test_bridge_wrapped_validator_records_worker_and_action_entry(tmp_path: Path, leaf_cleanup) -> None:
@@ -316,7 +288,7 @@ def test_child_receipt_rejects_oversized_packet(tmp_path: Path) -> None:
 def test_loaded_module_with_unavailable_file_is_explicit(tmp_path, monkeypatch, file_value):
     from types import ModuleType
 
-    name = "astrid.packs.h3_av.actions.transform.run"
+    name = "astrid.packs.vibecomfy.actions.validate.run"
     monkeypatch.delitem(sys.modules, name, raising=False)
     absent = receipt._module(name)
     assert absent["status"] == "not_loaded"

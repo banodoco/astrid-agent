@@ -221,8 +221,8 @@ def _verify_installed_candidate_actions(candidate: Path) -> None:
     files = manifest.get("source_files", {})
     for relative in (
         "astrid/packs/h3_av/pack.yaml",
-        "astrid/packs/h3_av/actions/transform/run.py",
-        "astrid/packs/h3_av/actions/transform/operation.py",
+        "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py",
+        "astrid/packs/h3_av/shared/compile.py",
         "astrid/packs/vibecomfy/pack.yaml",
         "astrid/packs/vibecomfy/actions/run/run.py",
     ):
