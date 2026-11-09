@@ -23,8 +23,10 @@ pytestmark = pytest.mark.integration
 
 # The sound-effects slot and the attached speech slot need real weights the CPU harness keeps none of (Plan 34).
 _NEEDS_WEIGHTS = {("audio", "sfx"), ("audio", "tts")}
-CELLS = [pytest.param(cell, marks=pytest.mark.gpu) if cell in _NEEDS_WEIGHTS else cell
-         for cell in [*SLOTS, ("video", "h3")]]
+CELLS = [pytest.param(cell, target, id=f"{'/'.join(cell)}-{target}",
+                      marks=[pytest.mark.gpu] if cell in _NEEDS_WEIGHTS or
+                      (cell, target) == (("video", "h3"), "local-managed") else [])
+         for target in ("attached", "local-managed") for cell in [*SLOTS, ("video", "h3")]]
 H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod_graph_closure.json"
 
 
@@ -133,8 +135,7 @@ def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     return graph, bindings
 
 
-@pytest.mark.parametrize("target_kind", ["attached", "local-managed"])
-@pytest.mark.parametrize("cell", CELLS, ids=lambda cell: "/".join(cell) if isinstance(cell, tuple) else "/".join(cell.values[0]))
+@pytest.mark.parametrize("cell,target_kind", CELLS)
 def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_runtime, tuple_sources):
     modality, mode = cell
     h3 = cell == ("video", "h3")

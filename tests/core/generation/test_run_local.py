@@ -220,3 +220,22 @@ def test_build_and_after_outputs_share_one_job_dir(tmp_path):
     job = {"hooks": hooks, "out": tmp_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"}
     mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(True))
     assert seen == [("build", tmp_path), ("after_outputs", tmp_path)]
+
+
+def test_catalog_requirements_use_the_resolved_workflow_not_the_first_mode(tmp_path, monkeypatch):
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.actions.run import run as action
+
+    monkeypatch.setattr(entries, "find_entry", lambda identifier: None)
+    seen = []
+    class Engine:
+        def requirements(self, entry, inputs):
+            seen.append((entry, inputs))
+            return {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}}
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Engine())
+    resolved = tmp_path / "selected-second-mode" / "workflow.py"
+    manifest = action._entry_manifest("multi-mode-catalog", {"prompt": "selected"}, workflow_path=resolved)
+    assert seen == [({"bundle": str(resolved)}, {"prompt": "selected"})]
+    assert manifest["engine"] == "comfyui"
+    with pytest.raises(ValueError, match="resolved workflow path"):
+        action._entry_manifest("multi-mode-catalog", {})
