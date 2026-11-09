@@ -1425,6 +1425,19 @@ class GenerationFacade:
         for source, candidate in candidates:
             source_ref = retained_source
             identifier = candidate.id if source == "catalog" else candidate["id"]
+            if automatic and identifier != pinned and source == "workflow" and candidate.get('hooks_declared'):
+                # A contributed default may require a different public input shape. Only
+                # skip it for missing required inputs; a chosen candidate's build errors
+                # and explicitly pinned entries remain fail-closed.
+                description = workflow_entries.describe_entry(identifier, mode=mode, _native=True)
+                names = {name for port in description['inputs']
+                         for name in (port['name'], *port.get('aliases', []))}
+                try:
+                    workflow_entries.validate_inputs(description, {k: v for k, v in inputs.items() if k in names})
+                except ValueError as exc:
+                    if str(exc).startswith('missing required entry inputs:'):
+                        failures.append(f"{identifier}: {exc}")
+                        continue
             try:
                 assets = {}
                 if is_remote_target:
