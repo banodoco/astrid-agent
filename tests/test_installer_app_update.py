@@ -529,7 +529,9 @@ def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, cap
     assert cli.main(["doctor"]) == 1
     report = capsys.readouterr().out
     assert "Last update result: " + ("rolled_back" if rollback else "complete") in report
-    assert "Installer transaction log:" in report and "[REDACTED]" in report
+    # The pinned Runtime (744cf248) prints the installer log as "Installer log (<name>, last 80 lines):"
+    # (the old "Installer transaction log:" label is gone; its test_diagnostics_headline asserts that).
+    assert f"Installer log ({env.backend.log.name}, last 80 lines):" in report and "[REDACTED]" in report
     assert "catalog_missing" in report
     for secret in ["bearer-secret", "cookie-secret", "api-secret", "token-secret", str(paths.home)]:
         assert secret not in report
