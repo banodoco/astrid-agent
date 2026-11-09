@@ -21,17 +21,11 @@ FROZEN_FIXTURE_DIGESTS: dict[str, str] = {
     "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
 }
 
-VIBE_PROFILE_ORDER: tuple[str, str] = ("pip_embedded", "checkout_server")
+VIBE_PROFILE_ORDER: tuple[str, ...] = ("checkout_server",)
 
 # Registry-derived identity.  ``binding`` is intentionally a generic profile
 # binding, not an engine route; transport/provider selection is out of scope.
 VIBE_PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
-    "pip_embedded": {
-        "definition_version": 1,
-        "binding": "vibe.profile",
-        "output_policy": "staged_artifact",
-        "probe": "accepted_profile_fixture",
-    },
     "checkout_server": {
         "definition_version": 1,
         "binding": "vibe.profile",
@@ -61,15 +55,9 @@ class VibeProfileFixture:
 
 _PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = (
     VibeProfileFixture(
-        "pip_embedded",
-        "6a940bc5f16a332500a24fea729814a08846c9470b811556a16e3503be92976f",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())[:3]),
-        "accepted D-3 profile evidence",
-    ),
-    VibeProfileFixture(
         "checkout_server",
         "7ac8da29bad6da2b7486df4fde4fa9a2a0c39fbd0911a6a60f988b3fb2f54fc8",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())[3:]),
+        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())),  # all five frozen fixtures; the removed pip_embedded row carried three
         "accepted D-4/D-5 profile evidence",
     ),
 )
