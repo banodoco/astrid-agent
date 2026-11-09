@@ -13,12 +13,12 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
 
     # The approved census lock is the core-only set, so the installed packs
     # reconcile completely with no drift.
-    assert sources["counts"]["pack_labels"] == 42
-    assert sources["counts"]["historical_pack_labels"] == 46
+    assert sources["counts"]["pack_labels"] == 35
+    assert sources["counts"]["historical_pack_labels"] == 39
     lock = json.loads(Path("config/astrid-capability-census.lock.json").read_text(encoding="utf-8"))
-    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 56
-    assert len(lock["source_labels"]) == 42
-    assert len(lock["historical_source_labels"]) == 46
+    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 49
+    assert len(lock["source_labels"]) == 35
+    assert len(lock["historical_source_labels"]) == 39
     assert all(section["complete"] for section in coverage.values())
     for section in ("source_labels", "historical_source_labels", "executor_inventory"):
         assert coverage[section]["status"] == "ok"
@@ -48,7 +48,7 @@ def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
         pack_roots=[Path("astrid/packs")],
         capability_matrix=Path("config/astrid-beta-capabilities.json"),
     )
-    assert host.ledger["sources"]["counts"]["pack_labels"] == 42
+    assert host.ledger["sources"]["counts"]["pack_labels"] == 35
     # The host matrix is the shipped readiness matrix, row for row; deriving the
     # count keeps it from drifting each time a capability is admitted.
     shipped = json.loads(Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8"))
@@ -195,10 +195,10 @@ def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
 
     def without_reviewed_occurrence(repo_root, **kwargs):
         census = original(repo_root, **kwargs)
-        census["current"]["source_labels"].discard("h3_av.finalize_publication")
+        census["current"]["source_labels"].discard("generation.generate_audio")
         return census
 
     monkeypatch.setattr(capability_ledger, "_census_sets", without_reviewed_occurrence)
     row = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))["sources"]["coverage"]["source_labels"]
     assert row["status"] == "drift"
-    assert "h3_av.finalize_publication" in row["missing"]
+    assert "generation.generate_audio" in row["missing"]
