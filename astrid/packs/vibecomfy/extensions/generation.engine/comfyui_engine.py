@@ -246,10 +246,10 @@ class ComfyUIEngine:
             if not probed["ready"]:
                 raise ValueError(f"ComfyUI at {endpoint} is not ready: {probed['reason']}") from probed.get("exception")
             if job.get("mode") == "align":
-                self.align(job["manifest"], "align", workflow=job["workflow"])
+                self.align(job["manifest"], "align", workflow=job.get("workflow"))
             url = endpoint
         else:
-            report = self.align(job["manifest"], job.get("mode", "align"), workflow=job["workflow"])
+            report = self.align(job["manifest"], job.get("mode", "align"), workflow=job.get("workflow"))
             if job.get("refuse_missing") and report.get("status") == "missing":
                 error = ValueError("local engine is missing declared models: " + ", ".join(report["missing"])
                                    + "; run: astrid generate align --apply --consent user_env --all")
