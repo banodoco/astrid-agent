@@ -58,12 +58,9 @@ _INTERNAL_DISPATCH_TOKEN = object()
 
 class _RetainedPreparedOwner:
     """One host-owned monitor for one exact task and binding, including follow."""
-    def __init__(self, monitor, owner=None, execution_request=None,
-                 h3_target=None, h3_endpoint=None):
+    def __init__(self, monitor, owner=None, execution_request=None):
         self.monitor, self.owner = monitor, owner
         self.execution_request = execution_request
-        self.h3_target = h3_target
-        self.h3_endpoint = json.loads(json.dumps(h3_endpoint)) if h3_endpoint is not None else None
         self.identity = None
         self.locator = None
         self.retained = False
@@ -88,9 +85,6 @@ class _RetainedPreparedOwner:
             raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
         if self.locator is not None and self.locator != identity:
             raise CapabilityInvocationError('prepared owner observed a foreign task/run/capability')
-        if self.h3_endpoint is not None and self.retired and self.identity == identity:
-            return
-        self.verify_h3_endpoint()
         if self.execution_request is not None:
             if task.get('execution_request') != self.execution_request:
                 raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
@@ -117,31 +111,10 @@ class _RetainedPreparedOwner:
             else:
                 self.activated = True
             return
-        if self.h3_endpoint is not None:
-            terminal = str(task.get('state') or task.get('status') or '').casefold() in {
-                'succeeded', 'completed', 'failed', 'cancelled', 'canceled'}
-            if terminal and self.retired:
-                return
-            self.monitor(task)
-            if terminal:
-                self.retired = True
-            return
         self.monitor(task)
 
-    def verify_h3_endpoint(self):
-        if self.h3_endpoint is not None:
-            from astrid.core.generation.preflight import freeze_h3_endpoint
-            try:
-                observed = freeze_h3_endpoint(self.h3_target)
-            except (ValueError, RuntimeError, OSError) as exc:
-                raise CapabilityInvocationError('H3 original retained endpoint is unavailable; retain custody') from exc
-            if observed != self.h3_endpoint['target']:
-                raise CapabilityInvocationError('H3 retained endpoint identity changed; retain original custody')
-
-
 def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
-                          owner=None, execution_request=None,
-                          h3_target=None, h3_endpoint=None):
+                          owner=None, execution_request=None):
     """F07 host seam: retain the owner on the authenticated client, not a CLI stack."""
     if client is None or recovery_path is None:
         raise CapabilityValidationError('prepared generation requires an owner client and recovery_path')
@@ -151,11 +124,9 @@ def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
         client._generation_prepared_owners = owners
     key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
     if key not in owners:
-        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request,
-                                             h3_target, h3_endpoint)
+        owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request)
     elif (owners[key].monitor is not monitor or owners[key].owner is not owner
-          or owners[key].execution_request != execution_request
-          or owners[key].h3_target is not h3_target or owners[key].h3_endpoint != h3_endpoint):
+          or owners[key].execution_request != execution_request):
         raise CapabilityValidationError('prepared recovery path already belongs to another owner')
     return owners[key]
 
@@ -4401,9 +4372,6 @@ def invoke(
             "execution_request", "idempotency_context", "project_root", "extra_pack_roots",
             "python_exec", "orchestrator_args", "argv", "read_managed_outputs", "child_delegation",
         )}
-        if getattr(owner_tick, 'h3_endpoint', None) is not None:
-            owner_tick.verify_h3_endpoint()
-            request['h3_endpoint'] = owner_tick.h3_endpoint
         try:
             with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
                 if resume:
@@ -4576,9 +4544,7 @@ def invoke(
         from astrid.core.contracts.errors import AstridError
         try:
             request_inputs, validated_child_policy = project_parent(
-                request_inputs, project=project, client=_client, registry=registries[0],
-                **({'h3_endpoint': owner_tick.h3_endpoint}
-                   if getattr(owner_tick, 'h3_endpoint', None) is not None else {}))
+                request_inputs, project=project, client=_client, registry=registries[0])
             project = request_inputs["plan"]["project"]
         except (AstridError, ValueError, OSError) as exc:
             raise CapabilityPreconditionError(str(exc)) from exc
@@ -5042,8 +5008,6 @@ def invoke(
             kernel_kwargs["registry"] = registry
         if rerun:
             kernel_kwargs["rerun"] = True
-        if getattr(owner_tick, 'h3_endpoint', None) is not None:
-            owner_tick.verify_h3_endpoint()
         kr, kt, ka, mpath, raw_result, ok, _ = _kernel_invoke(
             capability,
             **kernel_kwargs,

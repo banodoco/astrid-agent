@@ -20,8 +20,7 @@ from typing import Any
 
 from astrid.core.generation.engine_recipe import load_recipe
 
-# No longer changes anything; still accepted in service-env.json so old
-# settings files load (astrid/installer/service.py SERVICE_SETTINGS).
+# NOTICE: ASTRID_ALLOW_UNQUALIFIED_GPU is gone; it no longer changes anything and is read nowhere. Old settings files still load (astrid/installer/service.py SERVICE_SETTINGS).
 ALLOW_UNQUALIFIED_ENV = "ASTRID_ALLOW_UNQUALIFIED_GPU"
 # Add an exact (pack, OS, device name) only after testers qualify it.
 QUALIFIED_COMBINATIONS: frozenset[tuple[str, str, str]] = frozenset()
