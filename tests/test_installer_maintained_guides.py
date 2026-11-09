@@ -158,3 +158,37 @@ def test_skill_has_set_up_generation_section_routing_to_generation_skills():
     assert "not covered here yet" not in text
     vibecomfy = (ROOT / "astrid/packs/vibecomfy/docs/SKILL.md").read_text(encoding="utf-8")
     assert "### Find their ComfyUI" in vibecomfy
+
+
+CHOICE_FLAG_NAMES = ("--autostart", "--command", "--skills", "--skill-copies")
+EXISTING_INSTALL_COMMANDS = (
+    "curl -fsSL https://astrid.haus/install | sh",
+    "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))",
+)
+
+
+def _routes() -> dict:
+    # Map each entry route's bold name ("App brief", ...) to its text.
+    body = _steps(_skill()).get(0, "")
+    return {match.group(1): match.group(0) for match in re.finditer(
+        r"^\d\. \*\*([^*]+)\*\*:.*?(?=^\d\. \*\*|\Z)", body, re.M | re.S)}
+
+
+def test_existing_install_route_keeps_saved_choices_and_passes_no_choice_flags():
+    route = _routes()["Existing install"]
+    assert "Your saved setup choices stay as they are. Tell me if you want to change one." in route
+    assert "step 1" not in route, route
+    assert "`--yes` is not needed" in route, route
+    for command in EXISTING_INSTALL_COMMANDS:
+        assert f"`{command}`" in route, command
+    for flag in CHOICE_FLAG_NAMES:
+        assert flag not in route, flag
+
+
+def test_app_brief_route_shows_the_brief_values_and_runs_its_command_as_given():
+    route = _routes()["App brief"]
+    assert "lists the setup choices and a command" in route, route
+    assert "Show those values back" in route, route
+    assert "Install with these choices, or change one?" in route, route
+    assert "run the brief's command exactly as given" in route, route
+    assert "recommended" not in route, route
