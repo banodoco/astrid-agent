@@ -479,7 +479,7 @@ def test_run_adapter_approves_the_final_uploaded_h3_graph_before_prompt(monkeypa
     with pytest.raises(PromptBoundary, match='GPU prompt boundary'):
         _run_and_settle(Path(compiled['workflow']['workflow.py']['path']), tmp_path / 'run',
             comfy_url=endpoint.http_origin, task_identity='parent-run', attempt_identity='attempt-a',
-            placement='local', workflow_inputs=json.dumps(compiled['workflow_inputs']),
+            workflow_inputs=json.dumps(compiled['workflow_inputs']),
             managed_assets=compiled['managed_assets']['path'])
     assert len(submitted) == 1 and uploaded
 

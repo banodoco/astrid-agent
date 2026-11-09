@@ -97,7 +97,7 @@ def test_plan_verb_equals_handwritten_and_does_not_call_execution(tmp_path, monk
         raise AssertionError("planning reached execution")
 
     monkeypatch.setattr(action_cli, "main", forbidden)
-    for name in ("_resolve_local_engine", "_run_remote_placement", "_invoke_stage", "_invoke_canonical_run",
+    for name in ("_resolve_local_engine", "_invoke_stage", "_invoke_canonical_run",
                  "ensure_runpod_worker", "load_worker_qualification", "generate"):
         monkeypatch.setattr(transform, name, forbidden)
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", forbidden)

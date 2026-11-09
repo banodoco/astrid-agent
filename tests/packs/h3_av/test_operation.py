@@ -753,12 +753,15 @@ def test_local_readiness_reason_survives_h3_failure_without_private_details(tmp_
     assert calls == ([] if fault == "invalid_record" else [str(root)])
 
 
-def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:
+def test_runpod_placement_without_prepared_worker_has_no_pod_route(tmp_path: Path, monkeypatch) -> None:
+    """The legacy pod wrapper is gone: RunPod H3 runs through the generation front door."""
+    from astrid.core.contracts.errors import AstridError
     from astrid.packs.h3_av.actions.transform import run as transform
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected"))
     monkeypatch.setattr(transform, "_resolve_local_engine", lambda: pytest.fail("local engine resolved"))
-    monkeypatch.setattr(transform, "_run_remote_placement", lambda args: {"placement": "runpod"})
-    assert transform.run_transform(_transform_args(tmp_path, "--placement", "runpod")) == {"placement": "runpod"}
+    assert not hasattr(transform, "_run_remote_placement")
+    with pytest.raises(AstridError, match="generation front door"):
+        transform.run_transform(_transform_args(tmp_path, "--placement", "runpod"))
 
 
 @pytest.mark.parametrize("target", [{"kind": "runpod"}, {"kind": "runpod", "pod_id": "pod"}])

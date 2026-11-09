@@ -1606,10 +1606,10 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     workflow_facade.assert_called_once()
     forwarded = workflow_facade.call_args.kwargs
     assert forwarded["client"] is client
-    assert forwarded["placement"] == placement
+    assert "placement" not in forwarded
     assert {name: forwarded[name] for name in call_inputs["vibecomfy.run"]} == call_inputs["vibecomfy.run"]
     assert forwarded["workflow_inputs"] == json.dumps(client.compilation["workflow_inputs"], sort_keys=True, separators=(",", ":"))
-    assert all(event["workflow_route"] == f"generation.workflow.v1/{placement}"
+    assert all(event["workflow_route"] == "generation.workflow.v1"
                for event in journal["events"] if event["phase"] == "run")
     if placement == "local":
         assert forwarded["comfy_url"] == engine.endpoint.url

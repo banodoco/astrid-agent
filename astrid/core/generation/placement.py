@@ -188,27 +188,3 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
 
 __all__ = ["BUILTIN_KINDS", "Placement", "PlacementPolicy", "comfy_selector", "registered_machine_kinds", "request_from_selector", "resolve_placement",
            "validate_placement"]
-
-
-def resolve_workflow_placement(placement: str | None = None, execution_request: Any = None) -> str:
-    """Resolve and validate the placement of a workflow run; read-only, no backend or provider lookup.
-
-    A workflow runs on the comfyui engine, locally by default or on RunPod. A ``runpod``
-    execution-request target is accepted only with placement ``runpod`` (the legacy prepared
-    route); otherwise it is refused. Profile/machine selectors cannot establish the exact
-    RunPod proof target.
-    """
-    from astrid.core.generation.engine_contracts import PlacementDescriptor, UnsupportedPlacement
-    from astrid.sdk.execution_request import normalize_execution_request
-
-    request = normalize_execution_request(execution_request)
-    target_kind = request["target"]["kind"] if request else "default"
-    if target_kind not in {"default", "runpod"}:
-        raise UnsupportedPlacement("workflow requires a default local or exact RunPod target")
-    resolved = PlacementDescriptor("astrid.generation-placement.v1", ("local", "runpod"), "local",
-                                   "comfyui", True).resolve(placement)
-    if (resolved == "runpod") != (target_kind == "runpod"):
-        raise UnsupportedPlacement(
-            "a runpod target is accepted only with placement runpod (legacy prepared route)"
-        )
-    return resolved

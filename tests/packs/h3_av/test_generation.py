@@ -262,11 +262,8 @@ def prepared_client(tmp_path):
     return prepared, underlying, owner, factory, final
 
 
-@pytest.mark.parametrize("execution,placement", [
-    (None, "local"), ({"target": {"kind": "default"}}, "local"),
-    (_runpod_request(), "runpod"),
-])
-def test_canonical_child_calls_real_workflow_facade_once(canonical_call, facade_spy, execution, placement):
+@pytest.mark.parametrize("execution", [None, {"target": {"kind": "default"}}, _runpod_request()])
+def test_canonical_child_calls_real_workflow_facade_once(canonical_call, facade_spy, execution):
     from types import SimpleNamespace
     from unittest.mock import Mock
     from astrid.packs.h3_av.actions.transform import run as transform
@@ -278,7 +275,7 @@ def test_canonical_child_calls_real_workflow_facade_once(canonical_call, facade_
     facade_spy.assert_called_once()
     forwarded = facade_spy.call_args.kwargs
     assert forwarded["client"] is client
-    assert forwarded["placement"] == placement
+    assert "placement" not in forwarded
     assert forwarded["execution_request"] is execution
     assert forwarded["python"] is canonical_call["inputs"]["python"]
     assert forwarded["workflow_inputs"] is canonical_call["inputs"]["workflow_inputs"]
@@ -305,7 +302,7 @@ def test_canonical_child_preserves_bound_prepared_wrapper_and_one_owner(
     assert transform._invoke_canonical_run(prepared, **canonical_call) is final
     facade_spy.assert_called_once()
     assert facade_spy.call_args.kwargs["client"] is prepared
-    assert facade_spy.call_args.kwargs["placement"] == "runpod"
+    assert "placement" not in facade_spy.call_args.kwargs
     prepared.invoke_result.assert_called_once()
     factory.assert_called_once()
     owner.ensure_for_task.assert_called_once()
@@ -316,27 +313,6 @@ def test_canonical_child_preserves_bound_prepared_wrapper_and_one_owner(
     assert first.kwargs["recovery_path"] == second.kwargs["recovery_path"]
     assert first.kwargs["execution_request"] is second.kwargs["execution_request"] is canonical_call["execution_request"]
     assert first.kwargs["inputs"] == second.kwargs["inputs"] == canonical_call["inputs"]
-
-
-@pytest.mark.parametrize("execution,placement", [
-    (_runpod_request(), "local"), (None, "runpod"), (_runpod_request(), "unknown"),
-    ({"target": {"kind": "profile", "id": "unresolved"}}, None),
-])
-def test_canonical_placement_rejects_before_facade_admission_or_owner_effects(
-    canonical_call, facade_spy, prepared_client, execution, placement,
-):
-    from astrid.core.generation.engine_contracts import UnsupportedPlacement
-    from astrid.packs.h3_av.actions.transform import run as transform
-    prepared, underlying, owner, _factory, _final = prepared_client
-    canonical_call["execution_request"] = execution
-    with pytest.raises(UnsupportedPlacement):
-        transform._invoke_canonical_run(prepared, placement=placement, **canonical_call)
-    facade_spy.assert_not_called()
-    underlying.invoke_result.assert_not_called()
-    owner.ensure_for_task.assert_not_called()
-    owner.retire_after_task.assert_not_called()
-    assert not canonical_call["journal"].has_history
-    assert not canonical_call["saved_result"].exists()
 
 
 @pytest.mark.parametrize("status,route", [
@@ -432,7 +408,7 @@ def test_compiled_four_image_generation_reaches_facade_with_exact_prompt_and_ass
     assert transform._invoke_canonical_run(prepared, **canonical_call) is final
     facade_spy.assert_called_once()
     forwarded = facade_spy.call_args.kwargs
-    assert forwarded["client"] is prepared and forwarded["placement"] == "runpod"
+    assert forwarded["client"] is prepared and "placement" not in forwarded
     assert forwarded["workflow_inputs"] is serialized
     for port, descriptor in descriptors.items():
         assert forwarded[port] is descriptor
@@ -478,7 +454,7 @@ def test_canonical_facade_recovery_observes_original_sdk_receipt_after_lost_repl
         "task-1", "run-1", "attempt-1")
     first, resumed = facade_spy.call_args_list
     assert first.kwargs["resume"] is False and resumed.kwargs["resume"] is True
-    for name in ("client", "placement", "execution_request", "recovery_path", "idempotency_context"):
+    for name in ("client", "execution_request", "recovery_path", "idempotency_context"):
         assert first.kwargs[name] == resumed.kwargs[name]
     assert resumed_journal.submission_id == original_journal.submission_id
     assert resumed_journal.admission_digest == original_journal.admission_digest

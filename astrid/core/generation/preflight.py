@@ -27,12 +27,10 @@ if TYPE_CHECKING:
 class PreparedRunPodGeneration:
     """R03/F07 handoff; endpoint custody stays with the retained host owner.
 
-    The published owner must use ensure_prepared_endpoint and
-    EngineEndpointTransport for endpoint_checkout. A URL is never a handoff.
+    A URL is never a handoff.
     """
     selection: PreparedWorkerSelection
     selection_path: str
-    endpoint_checkout: Callable[..., Any]
     owner_tick: Callable[[Mapping[str, Any]], None]
     # Opt-in H3 endpoint route: a retained, already attested local bridge.
     # The selection still belongs to the same paid owner; no worker is moved.
