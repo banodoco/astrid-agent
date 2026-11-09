@@ -242,3 +242,11 @@ def test_file_map_input_ships_in_the_managed_assets_archive(tmp_path):
     recovered = asset_manifest.file_map_members('refs', resolved)
     assert recovered == {'hero': b'hero-bytes', 'side': b'side-bytes'}
     assert asset_manifest.file_map_members('other', resolved) == {}
+
+
+def test_generation_kinds_are_one_shared_set():
+    # Every entry source validates kind against the same constant, and every
+    # kind has exactly one default mode to try when the caller names none.
+    assert entries._KINDS == frozenset({'image', 'video', 'audio'})
+    assert set(entries._DEFAULT_MODE_CANDIDATES) == entries._KINDS
+    assert entries._DEFAULT_MODE_CANDIDATES == {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}

@@ -249,7 +249,7 @@ def test_run_executor_verifies_checkout_readiness_pair_and_selects_profile(
             readiness_profile_hash=readiness_hash,
         )
 
-    # The verified pair no longer selects checkout_server for a local run: the engine run is local_server.
+    # The verified pair no longer selects the checkout route for a local run: the engine run is local_server.
     assert managed_run.call_args.kwargs["profile_id"] == "local_server"
     assert managed_run.call_args.kwargs["hc03_profile"] is None
     with pytest.raises(ValueError, match="must be supplied together"):

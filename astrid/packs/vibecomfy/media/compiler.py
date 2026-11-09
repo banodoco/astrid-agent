@@ -67,20 +67,6 @@ _LOCAL_SERVER = VibeProfileSemantics(
     output_transport="published_outputs",
     required_runtime_fields=("task_identity", "profile_digest", "model_bytes_digest"),
 )
-_CHECKOUT_SERVER = VibeProfileSemantics(
-    profile_id="checkout_server",
-    engine_identity=f"vibecomfy.checkout_server@{ENGINE_REVISION}",
-    lifecycle="managed_checkout_session",
-    output_transport="checkout_server_publication",
-    required_runtime_fields=(
-        "task_identity",
-        "runtime_instance_id",
-        "environment_fingerprint",
-        "model_bytes_digest",
-        "declared_root",
-        "declared_port",
-    ),
-)
 
 
 def profile_semantics(profile_id: str) -> VibeProfileSemantics:
@@ -88,10 +74,8 @@ def profile_semantics(profile_id: str) -> VibeProfileSemantics:
 
     if profile_id == _LOCAL_SERVER.profile_id:
         return _LOCAL_SERVER
-    if profile_id == _CHECKOUT_SERVER.profile_id:
-        return _CHECKOUT_SERVER
     raise MediaCompileError(
-        f"unsupported Vibe profile {profile_id!r}; expected local_server or checkout_server"
+        f"unsupported Vibe profile {profile_id!r}; expected local_server"
     )
 
 

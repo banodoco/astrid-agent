@@ -411,7 +411,7 @@ are supplied by their owners:
   "custom_nodes_lock_path": "/workspace/<release-candidate>/runtime/vibecomfy/custom_nodes.lock",
   "custom_node_roots": {"h3_custom_node_commit": "/workspace/<release-candidate>/runtime/ComfyUI/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef"},
   "python_executable": "/workspace/<release-candidate>/runtime/venv/bin/python",
-  "engine_mode": "checkout_server"
+  "engine_mode": "local_server"
 }
 ```
 
@@ -421,7 +421,7 @@ the claimed volume id, size, mount and datacenter; its `release_id`, candidate
 namespace, Comfy commit, VibeComfy commit, custom-node lock and model hashes
 must describe the selected mounted release. `custom_node_roots` contains
 exactly the checkouts for the pinned custom-node commits in that manifest (it
-may be empty if the release pins none). `engine_mode` is `checkout_server`. The readiness profile may include the selected Python, Comfy
+may be empty if the release pins none). `engine_mode` is `local_server`. The readiness profile may include the selected Python, Comfy
 root and launcher in `launch`; when present they must agree with this file.
 All local source/manifest paths are absolute, existing, regular non-symlink
 paths. Remote paths are absolute paths on the exact claimed volume.

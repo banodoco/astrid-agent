@@ -175,7 +175,7 @@ def build_parser(capability: str) -> argparse.ArgumentParser:
     parser.add_argument("--task-identity", required=True)
     parser.add_argument(
         "--profile",
-        choices=StaticChoices(("local_server", "checkout_server")),
+        choices=StaticChoices(("local_server",)),
         required=True,
     )
     parser.add_argument("--readiness-profile-path", default="-")
