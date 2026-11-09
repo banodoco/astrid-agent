@@ -518,7 +518,7 @@ def test_release1_launcher_refuses_normalised_records(case, monkeypatch):
 
 def test_every_non_zero_outcome_ends_with_next_and_details():
     """A Release 1 Runtime cannot show the receipt in the App: the terminal must say what to do."""
-    from astrid.installer.outcome import NEXT_STEP, REASONS, Outcome
+    from astrid.installer.outcome import REASONS, Outcome
 
     log = "/home/hannah/Library/Logs/Astrid Runtime/install.log"
     for kind in ("not-updated", "failed", "rolled-back"):
@@ -526,14 +526,57 @@ def test_every_non_zero_outcome_ends_with_next_and_details():
             outcome = Outcome(kind, 1, 1, 2, reason, "update", log)
             lines = outcome.headline()
             assert outcome.exit_code != 0, (kind, reason)
-            assert lines[-2:] == [NEXT_STEP, f"Details: {log}"], (kind, reason, lines)
-            assert lines.count(NEXT_STEP) == 1
+            assert lines[-2].startswith("Next: ") and lines[-1] == f"Details: {log}", (kind, reason, lines)
+            assert sum(line.startswith("Next: ") for line in lines) == 1
         rolled = Outcome("rolled-back", 1, 1, 2, "error", "update", log).headline()
         assert rolled[-3].startswith("Run the same command again")
     console = Outcome("failed", None, None, 2, "error").headline()
     assert console[-1] == "Details: shown above in this window (the installer log was not used)."
     for kind in ("updated", "already-current", "repaired"):
-        assert NEXT_STEP not in Outcome(kind, 2, 1, 2, None, "update", log).headline()
+        assert not any(line.startswith("Next: ")
+                       for line in Outcome(kind, 2, 1, 2, None, "update", log).headline())
+
+
+SUPPORT = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send it to support."
+# Owner rule (Hannah): every failure names its own next action; only a bug or an
+# unexplained error sends the person to support.
+EXPECTED_NEXT = {
+    "self-update-too-old": "Next: run the install command once; after that Update now works.",
+    "disk-space": "Next: free up at least the amount named above, then run the same command again.",
+    "busy": "Next: quit the other Astrid window (or let the other installer finish), "
+            "then run the same command again.",
+    "needs-repair": "Next: run the install command without --update to repair this installation, "
+                    "then update again.",
+    "other-runtime-running": "Next: stop the other Astrid, then run the same command again.",
+    "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
+                                   "Open astrid.haus > Settings > Updates > Download diagnostics "
+                                   "to see what is installed.",
+    "pinokio-managed": "Next: use the Update button in Pinokio.",
+    "source-checkout": "Next: update the source checkout, then run the same command again.",
+    "consent-required": "Next: run the install command again and accept the setup choices, "
+                        "or answer the prompts.",
+    "declined": "Next: nothing to do. To install later, run the install command again "
+                "and accept the setup choices.",
+    "recovered-previous-version": "Next: run the same command again to update.",
+    "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "refused": "Next: fix what the message above names, then run the same command again.",
+    "error": SUPPORT,
+    "installer-bug": SUPPORT,
+}
+
+
+@pytest.mark.parametrize("reason", sorted(EXPECTED_NEXT))
+def test_each_reason_has_its_own_next_step(reason):
+    """Plan 29 R11 card 1: the Next line is the reason's own action; support only for bugs and errors."""
+    from astrid.installer.outcome import REASONS, Outcome
+
+    assert set(REASONS) == set(EXPECTED_NEXT)  # every reason in the enum is covered, none invented
+    log = "/tmp/install.log"
+    for kind in ("not-updated", "failed", "rolled-back"):
+        lines = Outcome(kind, 1, 1, 2, reason, "update", log).headline()
+        assert lines[-2:] == [EXPECTED_NEXT[reason], f"Details: {log}"], (kind, lines)
+        mentions_support = any("to support" in line for line in lines)
+        assert mentions_support == (reason in {"installer-bug", "error"}), (kind, lines)
 
 
 def _local_update(c, monkeypatch, capsys, release):

@@ -338,8 +338,7 @@ class _Run:
         self.operation_id: str | None = None
         self.started_at: int | None = None
         self.protected: list[Path] = []
-        self.log: Path | None = None
-        self.log_path: Path | None = None  # the configured install.log, even when it was not usable  # the installer log, once it is known to be outside every root
+        self.log: Path | None = None  # the installer log, once it is known to be outside every root
 
     def observe(self, home: Path, system: str, root: Path | None) -> None:
         import secrets
@@ -479,7 +478,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         log_path = platform.log_dir() / "install.log"
-        run.log_path = log_path
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
