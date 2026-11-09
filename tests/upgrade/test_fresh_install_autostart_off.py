@@ -28,6 +28,11 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
     data = tmp_path / "data"
     app.mkdir(exist_ok=True)
     candidate_path.write_text("{}", encoding="utf-8")
+    dist = tmp_path / "dist"
+    dist.mkdir(exist_ok=True)
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (dist / "build.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_CI_HOSTED_APP_DIST", str(dist))
     manifest = {"release": 12, "agent": {"sha": "e2a7fad07e4a8bef9aa4c6e126911a1c5a29caf2"},
                 "runtime": {"sha": "744cf24874ea851f95949a706725aba19d18222f"}}
     args = argparse.Namespace(job_id="direct-linux-autostart-off", mode="direct", leg=LEG, shell="sh",
@@ -59,7 +64,7 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
         instance = "after" if runtime_after != "same" and state["post"] else "before"
         return {"runtime_instance_id": instance, "identity": {"release": 12}}
 
-    def capture(evidence, data_root):
+    def capture(evidence, app_path, dist_path):
         return {"path": str(evidence / "autostart-off-card.png"), "sha256": "c" * 64,
                 "device_scale_factor": capture_dpr, "surface": "autostart-off card"}
 
@@ -196,3 +201,99 @@ def test_the_two_autostart_rows_are_linux_and_macos_direct_rows():
     assert matrix["direct-linux-autostart-off"]["runner"] == "ubuntu-24.04"
     assert matrix["direct-macos-autostart-off"]["runner"] == "macos-15"
     assert all(row["leg"] == LEG and row["mode"] == "direct" and row["shell"] == "sh" for row in matrix.values())
+
+
+def failing_capture(*_args):
+    raise RuntimeError("intercept refused")
+
+
+def test_the_capture_needs_the_built_app_in_the_environment(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path)
+    monkeypatch.delenv("ASTRID_CI_HOSTED_APP_DIST")
+    with pytest.raises(RuntimeError, match="needs its build in ASTRID_CI_HOSTED_APP_DIST"):
+        run()
+    recorded = json.loads(receipt.read_text())
+    assert recorded["status"] == "fail"
+    assert recorded["checks"]["install_exit"] == "not-run"
+
+
+def test_the_capture_runs_inside_the_astrid_haus_intercept_at_the_approved_route(monkeypatch, tmp_path):
+    from scripts import journey_hosted_update as hosted
+    events, configs = [], []
+
+    class FakeIntercept:
+        def __init__(self, routes, *, types=None, **_kwargs):
+            self.leaf_spki = "spki-pin"
+
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append("exit")
+
+    class Done:
+        returncode = 0
+
+    def fake_run(argv, **_kwargs):
+        config = json.loads(Path(argv[2]).read_text(encoding="utf-8"))
+        configs.append(config)
+        events.append("node")
+        Path(config["screenshot"]).write_bytes(b"png")
+        Path(config["result"]).write_text(json.dumps({"ok": True, "device_scale_factor": 2}), encoding="utf-8")
+        return Done()
+
+    monkeypatch.setattr(hosted, "Intercept", FakeIntercept)
+    monkeypatch.setattr(hosted, "page_routes", lambda dist: ({"/": dist / "index.html"}, {}))
+    monkeypatch.setattr(hosted, "release_routes", lambda app, manifest: {})
+    monkeypatch.setattr(jumps.subprocess, "run", fake_run)
+    app = tmp_path / "app"
+    (app / "public").mkdir(parents=True)
+    (app / "public" / "install-manifest.json").write_text("{}", encoding="utf-8")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (dist / "build.json").write_text("{}", encoding="utf-8")
+    capture = jumps.capture_autostart_card(tmp_path / "evidence", app, dist)
+    assert events == ["enter", "node", "exit"]
+    assert configs[0]["origin"] == jumps.AUTOSTART_ORIGIN == "https://astrid.haus"
+    assert configs[0]["entry"] == jumps.AUTOSTART_ENTRY == "/tools/video-editor?settings=updates"
+    assert configs[0]["text"] == jumps.AUTOSTART_CARD_TEXT
+    assert configs[0]["spki"] == "spki-pin" and configs[0]["dpr"] == 2
+    assert capture["device_scale_factor"] == 2 and capture["path"] == "autostart-off-card.png"
+
+
+def test_the_wait_text_is_the_approved_card_sentence_and_the_script_waits_for_it():
+    assert jumps.AUTOSTART_CARD_TEXT == (
+        "Start at sign-in is off, so update from a terminal. This command updates Astrid and starts it; "
+        "your choice stays off.")
+    script = (journey.ROOT / "scripts" / "journey_autostart_capture.mjs").read_text(encoding="utf-8")
+    assert "waitFor" in script and "Run this command" not in script and "saved autostart is off" not in script
+
+
+def test_a_macos_capture_failure_is_recorded_and_not_gated(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path)
+    monkeypatch.setattr(jumps, "capture_autostart_card", failing_capture)
+    monkeypatch.setattr(jumps.sys, "platform", "darwin")
+    result = run()
+    assert result["status"] == "pass"
+    assert result["checks"]["autostart_card_capture"] == "not-gated"
+    assert result["capture"]["status"] == "not-gated" and "intercept refused" in result["capture"]["error"]
+    for check in ("selection_autostart_false", "update_status_autostart_off", "post_update_refused_unchanged"):
+        assert result["checks"][check] == "pass", check
+
+
+def test_a_linux_capture_failure_fails_the_leg(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path)
+    monkeypatch.setattr(jumps, "capture_autostart_card", failing_capture)
+    with pytest.raises(RuntimeError, match="intercept refused"):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["autostart_card_capture"] == "not-run"
+
+
+def test_the_autostart_rows_build_and_serve_the_app_on_linux_and_macos():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    assert workflow.count("if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off'") == 2
+    assert "matrix.leg == 'fresh-install-autostart-off') && format('{0}/app/dist', github.workspace)" in workflow
+    build = workflow.split("      - name: Build the candidate's hosted App and the browser that clicks it\n", 1)[1]
+    assert "npm run build:hosted" in build.split("      - name:", 1)[0]

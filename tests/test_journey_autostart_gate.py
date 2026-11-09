@@ -99,3 +99,34 @@ def test_the_autostart_kind_is_the_leg_own_kind():
     assert gate.AUTOSTART_CHECKS == (
         "install_exit", "selection_autostart_false", "update_status_autostart_off",
         "post_update_refused_unchanged", "autostart_card_capture", "service", "health", "unrelated_sentinel")
+
+
+@pytest.mark.parametrize("job_id", ["direct-macos-autostart-off"])
+def test_a_macos_capture_may_be_not_gated_when_its_assertions_hold(tmp_path, job_id):
+    candidate = rows.release1_receipts(tmp_path)
+
+    def not_gated(row):
+        row["checks"]["autostart_card_capture"] = "not-gated"
+        row["capture"] = {"status": "not-gated", "reason": "macOS capture not verified in CI", "error": "intercept"}
+
+    mutate(tmp_path, job_id, not_gated)
+    assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
+
+
+def test_a_linux_capture_may_not_be_not_gated(tmp_path):
+    candidate = rows.release1_receipts(tmp_path)
+
+    def not_gated(row):
+        row["checks"]["autostart_card_capture"] = "not-gated"
+        row["capture"] = {"status": "not-gated", "reason": "macOS capture not verified in CI", "error": "intercept"}
+
+    mutate(tmp_path, "direct-linux-autostart-off", not_gated)
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert "direct-linux-autostart-off: autostart_card_capture assertion did not pass" in errors
+
+
+def test_a_macos_capture_that_did_not_run_is_still_rejected(tmp_path):
+    candidate = rows.release1_receipts(tmp_path)
+    mutate(tmp_path, "direct-macos-autostart-off", lambda row: row["checks"].update(autostart_card_capture="not-run"))
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert "direct-macos-autostart-off: autostart_card_capture assertion did not pass" in errors
