@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = "direct-image.v1"
-_PROFILE_NAMES = ("local_server", "checkout_server")
+_PROFILE_NAMES = ("local_server",)
 _SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
@@ -57,9 +57,7 @@ class ProfileConfig:
         return _digest(self.portable_dict())
 
 
-# The two profiles deliberately have different portable dependencies and
-# session policies.  They share request/output meaning but never silently
-# select one another.
+# The local_server profile is the only supported Vibe execution profile.
 PROFILE_CONFIGS: dict[str, ProfileConfig] = {
     "local_server": ProfileConfig(
         name="local_server",
@@ -67,13 +65,6 @@ PROFILE_CONFIGS: dict[str, ProfileConfig] = {
         session_kind="external_server",
         warm_policy="never",
         cancellation="delete-owned-prompt-and-interrupt-if-running",
-    ),
-    "checkout_server": ProfileConfig(
-        name="checkout_server",
-        dependency_lock="vibecomfy-checkout-comfyui-0.26.0",
-        session_kind="server_session",
-        warm_policy="auto",
-        cancellation="interrupt-clear-free-then-owned_process_group",
     ),
 }
 

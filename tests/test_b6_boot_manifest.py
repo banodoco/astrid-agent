@@ -48,7 +48,7 @@ def test_manifest_is_canonical_and_profile_order_is_frozen() -> None:
     assert first == second
     assert first["profile_order"] == list(VIBE_PROFILE_ORDER)
     assert set(first["fixture_digests"]) == set(FROZEN_FIXTURE_DIGESTS)
-    assert FROZEN_FIXTURE_DIGESTS == {}  # the checkout_server boot row is gone; no fixture files are frozen
+    assert FROZEN_FIXTURE_DIGESTS == {}  # the former checkout boot row is gone; no fixture files are frozen
     assert first["profile_order"] == []
     assert manifest_hash(first) == manifest_hash(second)
 

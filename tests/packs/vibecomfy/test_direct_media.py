@@ -18,7 +18,7 @@ from astrid.packs.vibecomfy.media import (
 )
 
 
-@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server"])
 def test_direct_wan_capabilities_are_typed_and_profile_bound(profile: str) -> None:
     t2i = compile_wan_2_2_t2i(
         WanT2IRequest(prompt="a red kite over a lake"), profile=profile
@@ -39,35 +39,24 @@ def test_direct_wan_capabilities_are_typed_and_profile_bound(profile: str) -> No
     assert i2v.profile.profile_id == profile
 
 
-def test_profile_semantics_are_explicit_and_distinct() -> None:
+def test_profile_semantics_are_explicit_and_local_only() -> None:
     embedded = profile_semantics("local_server")
-    checkout = profile_semantics("checkout_server")
 
-    assert embedded.engine_identity != checkout.engine_identity
     assert embedded.lifecycle == "external_server"
-    assert checkout.lifecycle == "managed_checkout_session"
     assert "runtime_instance_id" not in embedded.required_runtime_fields
-    assert "runtime_instance_id" in checkout.required_runtime_fields
-    assert embedded.output_transport != checkout.output_transport
+    with pytest.raises(MediaCompileError, match="expected local_server"):
+        profile_semantics("checkout_server")
 
 
 def _runtime_context(profile: str) -> dict[str, str | int]:
-    if profile == "local_server":
-        return {
-            "profile_digest": "sha256:" + "a" * 64,
-            "model_bytes_digest": "sha256:" + "b" * 64,
-        }
+    assert profile == "local_server"
     return {
         "profile_digest": "sha256:" + "a" * 64,
-        "runtime_instance_id": "runtime-1",
-        "environment_fingerprint": "env-1",
         "model_bytes_digest": "sha256:" + "b" * 64,
-        "declared_root": "/worker/vibecomfy",
-        "declared_port": 8188,
     }
 
 
-@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server"])
 @pytest.mark.parametrize(
     "media_request",
     [
@@ -112,7 +101,7 @@ def test_video_enhance_unsupported_controls_fail_before_runner(
     assert seen == []
 
 
-@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server"])
 def test_video_enhance_bounded_profile_binds_only_canonical_inputs(profile: str) -> None:
     seen: list[object] = []
 
@@ -137,7 +126,7 @@ def test_video_enhance_bounded_profile_binds_only_canonical_inputs(profile: str)
     }
 
 
-@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server"])
 def test_character_animation_replacement_mode_fails_before_runner(profile: str) -> None:
     seen: list[object] = []
 
@@ -161,7 +150,7 @@ def test_character_animation_replacement_mode_fails_before_runner(profile: str) 
     assert seen == []
 
 
-@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server"])
 def test_character_animation_bounded_profile_binds_two_media_inputs(profile: str) -> None:
     seen: list[object] = []
 
@@ -287,7 +276,7 @@ def test_executor_requires_profile_identity_and_does_not_fallback() -> None:
         assert workflow["nodes"]
         return {"artifact": "media://output"}
 
-    executor = DirectVibeMediaExecutor("checkout_server", runner)
+    executor = DirectVibeMediaExecutor("local_server", runner)
     request = WanT2IRequest(prompt="a quiet lake")
     with pytest.raises(MediaExecutionError, match="runtime identity is incomplete"):
         executor.execute_wan_2_2_t2i(
@@ -302,14 +291,10 @@ def test_executor_requires_profile_identity_and_does_not_fallback() -> None:
         task_identity="task-1",
         runtime_context={
             "profile_digest": "sha256:" + "b" * 64,
-            "runtime_instance_id": "runtime-1",
-            "environment_fingerprint": "env-1",
             "model_bytes_digest": "sha256:" + "a" * 64,
-            "declared_root": "/worker/vibecomfy",
-            "declared_port": 8188,
         },
     )
-    assert result.profile_id == "checkout_server"
-    assert result.output_transport == "checkout_server_publication"
+    assert result.profile_id == "local_server"
+    assert result.output_transport == "published_outputs"
     assert result.outputs == {"artifact": "media://output"}
-    assert seen == [("vibecomfy.wan_2_2_t2i", "wan-2.2-a14b-t2v", "checkout_server")]
+    assert seen == [("vibecomfy.wan_2_2_t2i", "wan-2.2-a14b-t2v", "local_server")]

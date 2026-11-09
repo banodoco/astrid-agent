@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# The checkout_server boot row is removed with the checkout route.  No accepted
+# The former checkout boot row was removed with the checkout route.  No accepted
 # profile fixture remains, so the frozen manifest carries an empty profile set.
 FROZEN_FIXTURE_DIGESTS: dict[str, str] = {}
 
