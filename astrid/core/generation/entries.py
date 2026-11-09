@@ -11,11 +11,94 @@ from typing import Any
 
 
 def user_entries() -> list[dict[str, Any]]:
+    """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
     try:
         from vibecomfy.entries import discover_entries
     except ImportError:
         return []
-    return discover_entries()
+    rows = discover_entries()
+    return rows + contributed_entries(exclude={row.get("id") for row in rows})
+
+
+def _yaml(path: Path) -> Any:
+    import yaml
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _pack_action_entry_ids(pack: Path) -> set[str]:
+    """Ids a pack already serves as action entries (``metadata.generation_entry``)."""
+    manifest = pack / "pack.yaml"
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    if "generation_entry" not in text:
+        return set()
+    found: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            declared = value.get("generation_entry")
+            if isinstance(declared, Mapping) and isinstance(declared.get("id"), str):
+                found.add(declared["id"])
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+    try:
+        import yaml
+        walk(yaml.safe_load(text))
+    except Exception:
+        return set()
+    return found
+
+
+def contributed_entries(*, exclude: Any = ()) -> list[dict[str, Any]]:
+    """Thin entries of every ``vibecomfy.workflows`` contribution, from each pack's manifests.
+
+    Reads YAML only (no registry, no import, no hook). An id that the same pack
+    serves as an action entry (h3_av's ``h3``) stays the action's. The registry
+    still validates a contribution wherever it is run.
+    """
+    try:
+        from astrid.core.extensions.scopes import contribution_roots
+        roots = contribution_roots()
+    except Exception:
+        return []
+    rows, seen = [], set(exclude)
+    for root in roots:
+        path = Path(root.path)
+        if not path.is_dir():
+            continue
+        try:
+            packs = (path,) if (path / "pack.yaml").is_file() else tuple(p for p in path.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for pack in packs:
+            folder = pack / "extensions" / "vibecomfy.workflows"
+            if not folder.is_dir():
+                continue
+            actions = _pack_action_entry_ids(pack)
+            for manifest in sorted(folder.glob("*.y*ml")):
+                try:
+                    data = _yaml(manifest)
+                    ready = (manifest.parent / str(data["ready_root"])).resolve()
+                    listed = data.get("entries") or []
+                except Exception:
+                    continue
+                if not ready.is_relative_to(pack.resolve()):
+                    continue
+                for raw in listed:
+                    if not isinstance(raw, Mapping) or raw.get("id") in actions or raw.get("id") in seen:
+                        continue
+                    bundle = Path(str(raw.get("bundle", "")))
+                    rows.append({"needs": [], "binds": {}, "defaults": {}, **raw,
+                                 "bundle": str(bundle if bundle.is_absolute() else (ready / bundle).resolve()),
+                                 "contribution": f"{pack.name}.{manifest.stem}", "contribution_scope": root.scope,
+                                 "pack_root": str(pack.resolve())})
+                    seen.add(raw.get("id"))
+    return rows
 
 
 def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
