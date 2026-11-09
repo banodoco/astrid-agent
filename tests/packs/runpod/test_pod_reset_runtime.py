@@ -39,12 +39,28 @@ def _cas(realm: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file()] if root.exists() else []
 
 
+def _bootstrap_layout(real_runtime, pod: Path):
+    """pod_bootstrap's layout: the realm at <pod>/realm (``--realm-root``), recorded in the launcher catalog.
+
+    ``astrid-runtime workspace create --data-root D --realm-root R`` writes this
+    catalog (astrid_runtime/workspace.py); the reset finds the realm only there.
+    """
+    realm, data_root = pod / "realm", pod / "runtime-data"
+    daemon = real_runtime(realm, support_root=pod / "support")
+    catalog = data_root / "runtime" / "catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({"version": 1, "selected_realm_id": daemon.service.realm["id"], "realms": [{
+        "realm_id": daemon.service.realm["id"], "display_name": "Astrid", "data_root": str(realm),
+        "selection_source": "create", "source_profile": "astrid"}], "source_profiles": {}}))
+    assert (realm / "realm.sqlite3").is_file()
+    return daemon, realm, data_root
+
+
 def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
-    daemon = real_runtime()
-    realm = tmp_path / "realm"
     pod = tmp_path / "pod"
+    daemon, realm, data_root = _bootstrap_layout(real_runtime, pod)
     paths = dict(template=pod / "realm-template", lock=pod / "reset.lock", prepared=pod / "prepared-connection.json",
-                 ready=pod / "ready.json", active=pod / "active-job.json", data_root=pod / "runtime-data")
+                 ready=pod / "ready.json", active=pod / "active-job.json", data_root=data_root)
     ensures = []
 
     def ensure():
@@ -54,7 +70,7 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
                 "realm_id": daemon.service.realm["id"], "actor_id": "owner"}
 
     # A fresh pod: the realm pod_bootstrap created is empty; the first reset takes the template.
-    first = pod_reset.reset(ensure=ensure, realm=realm, **paths)
+    first = pod_reset.reset(ensure=ensure, **paths)
     assert "template" in first and paths["template"].is_dir()
     assert json.loads(paths["ready"].read_text())["realm_id"] == daemon.service.realm["id"]
     assert paths["prepared"].stat().st_mode & 0o777 == 0o600
@@ -114,7 +130,7 @@ def test_the_pod_reset_empties_the_one_runtime_in_place(real_runtime, tmp_path):
 
     # The claim's redo (no folders passed): the reset reads them from active-job.json.
     started = time.perf_counter()
-    steps = pod_reset.reset(ensure=ensure, realm=realm, runs_root=pod / "runs", **paths)
+    steps = pod_reset.reset(ensure=ensure, runs_root=pod / "runs", **paths)
     elapsed = time.perf_counter() - started
     assert steps["replace"]["state"] == "complete" and "template" not in steps
 
@@ -176,3 +192,38 @@ def test_pending_dirs_only_names_the_jobs_own_folders(tmp_path):
     active.write_text(json.dumps({"run_dir": str(runs / ".." / "elsewhere"), "job_dir": "relative"}))
     assert pod_reset.pending_dirs(active, runs_root=runs) == (None, None)
     assert pod_reset.pending_dirs(tmp_path / "absent.json", runs_root=runs) == (None, None)
+
+
+def test_the_realm_root_comes_from_the_launcher_catalog_only(tmp_path):
+    """No guessed path: the catalog's root for this realm id, holding its store, or the reset fails."""
+    data_root, realm = tmp_path / "runtime-data", tmp_path / "realm"
+    with pytest.raises(pod_reset.ResetError, match="cannot read the launcher catalog"):
+        pod_reset.realm_root("r1", data_root)
+    catalog = data_root / "runtime" / "catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({"version": 1, "realms": [{"realm_id": "r1", "data_root": str(realm)}]}))
+    with pytest.raises(pod_reset.ResetError, match="has no store"):
+        pod_reset.realm_root("r1", data_root)
+    realm.mkdir()
+    (realm / "realm.sqlite3").write_bytes(b"")
+    assert pod_reset.realm_root("r1", data_root) == realm
+    with pytest.raises(pod_reset.ResetError, match="no root for realm 'other'"):
+        pod_reset.realm_root("other", data_root)
+
+
+def test_the_reset_reads_the_data_root_override_like_pod_bootstrap(tmp_path, monkeypatch):
+    """ASTRID_RUNTIME_DATA_ROOT, when set, is the root whose catalog the reset reads."""
+    override = tmp_path / "override-data"
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
+    assert pod_reset.runtime_data_root() == pod_reset.DATA_ROOT
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(override))
+    assert pod_reset.runtime_data_root() == override
+    credential = tmp_path / "token"
+    credential.write_text("t")
+    pod = tmp_path / "pod"
+    (pod / "realm-template").mkdir(parents=True)  # a later reset: it must locate the realm first
+    with pytest.raises(pod_reset.ResetError, match=f"cannot read the launcher catalog {override}/runtime/catalog.json"):
+        pod_reset.reset(ensure=lambda: {"endpoint": "http://127.0.0.1:1", "credential_file": str(credential),
+                                        "realm_id": "r1", "actor_id": "owner"},
+                        template=pod / "realm-template", lock=pod / "reset.lock", prepared=pod / "p.json",
+                        ready=pod / "ready.json", active=pod / "active.json")

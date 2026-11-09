@@ -668,15 +668,15 @@ def _t9_child_dispatch(
     return run, marker
 
 
-def _comfyui_engine() -> Any:
-    """The ComfyUI contribution to generation.engine, loaded from its extension file."""
-    import importlib.util
+def _engine_for(manifest: dict[str, Any]) -> Any:
+    """The generation.engine named by manifest["engine"] (default comfyui), from entries.engine_table()."""
+    from astrid.core.generation import entries
 
-    path = Path(__file__).resolve().parents[2] / "extensions" / "generation.engine" / "comfyui_engine.py"
-    spec = importlib.util.spec_from_file_location("astrid_comfyui_engine", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.ComfyUIEngine()
+    name = manifest.get("engine") or "comfyui"
+    engine = entries.engine_table().get(name)
+    if engine is None:
+        raise AstridValueError(f"no generation.engine contribution for {name!r}")
+    return engine
 
 
 def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
@@ -729,6 +729,20 @@ class _LocalEngineServer:
         if self._output_dir:
             kwargs["comfy_output_dir"] = self._output_dir
         self.result = self._adapter.workflow(Path(workflow), self._output_root, **kwargs)
+        return self.result
+
+
+class _AttachedServer(_LocalEngineServer):
+    """The ``local`` for an attached run: the caller's ComfyUI at comfy_url, probed by the engine, never started here."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        super().__init__(adapter, output_root, production_kwargs)
+
+    def ensure_running(self) -> str:
+        return self._kwargs["comfy_url"]
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **self._kwargs)
         return self.result
 
 
@@ -874,8 +888,8 @@ def _run_and_settle(
         with provenance.capture():
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
-                engine = _comfyui_engine()
-                manifest = _engine_manifest(engine, workflow_path)
+                engine = _engine_for({"engine": "comfyui"})
+                manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
                 missing = engine.align(manifest, "check")["missing"]
                 if manifest.get("models_root") and missing:
                     raise AstridValueError(
@@ -884,9 +898,13 @@ def _run_and_settle(
                 engine.run({"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "check"}, local)
                 production_result = local.result
             elif synthetic is None:
-                production_result = adapter.workflow(
-                    workflow_path, output_root, **production_kwargs,
-                )
+                # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.
+                manifest = {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                _engine_for(manifest).run(
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "trust",
+                     "endpoint": comfy_url}, local)
+                production_result = local.result
             else:
                 run, marker = synthetic
                 production_kwargs["profile_id"] = "t9_cpu_stub"
