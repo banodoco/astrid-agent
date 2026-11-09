@@ -1,0 +1,8 @@
+description: Which entries a pack offers as the default for a (kind, mode) slot; a user pin overrides them.
+version: 1
+min_supported: 1
+side: agent
+cardinality: many
+effects_allowed: [none]
+protocol: data
+schema: defaults.schema.json

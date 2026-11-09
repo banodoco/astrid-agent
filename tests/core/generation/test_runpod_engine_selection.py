@@ -38,7 +38,9 @@ def _slot_kwargs(modality, mode, image):
 
 
 # Default slots come from the facade's own mapping, plus the video default.
-SLOTS = sorted({*generation._DEFAULT_ENTRIES, ('video', 'i2v')})
+from tests.helpers.generation_defaults import default_entries
+SLOT_DEFAULTS = default_entries()
+SLOTS = sorted({*SLOT_DEFAULTS, ('video', 'i2v')})
 
 
 @pytest.fixture

@@ -20,7 +20,9 @@ def _entry(entry_id: str) -> dict:
     return entries.find_entry(entry_id)
 
 
-SLOT_ENTRIES = {"/".join(slot): ids[0] for slot, ids in generation._DEFAULT_ENTRIES.items()}
+from tests.helpers.generation_defaults import default_entries
+SLOT_DEFAULTS = default_entries()
+SLOT_ENTRIES = {"/".join(slot): ids[0] for slot, ids in SLOT_DEFAULTS.items()}
 SLOT_ENTRIES["video/h3"] = "h3"
 
 

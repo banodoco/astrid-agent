@@ -1,0 +1,20 @@
+api: 1
+summary: MiniMax H3 audiovisual transformation (i2v, v2v, video-edit) on the one generate path.
+example: astrid media generate video --entry h3 --request request.json --asset-map assets.json
+effects: none
+ready_root: ../../workflows
+entries:
+  - id: h3
+    kind: video
+    modes: [i2v, v2v, video-edit]
+    bundle: native_h3_continuation
+    needs: [request, asset_map]
+    binds: {}
+    defaults: {}
+    # MiniMax H3 is the video default; a user pin (astrid generate defaults set) overrides it.
+    default_for:
+      - {kind: video, mode: i2v, priority: 100}
+      - {kind: video, mode: v2v, priority: 100}
+      - {kind: video, mode: video-edit, priority: 100}
+build: hooks.py:build
+finalize: hooks.py:finalize

@@ -26,13 +26,6 @@ _PROFILE_CONFIGS = {
         "warm_policy": "never",
         "cancellation": "delete-owned-prompt-and-interrupt-if-running",
     },
-    "pip_embedded": {
-        "name": "pip_embedded",
-        "dependency_lock": "vibecomfy-pip-comfyui-0.26.0",
-        "session_kind": "embedded_session",
-        "warm_policy": "never",
-        "cancellation": "owned_process_group",
-    },
     "checkout_server": {
         "name": "checkout_server",
         "dependency_lock": "vibecomfy-checkout-comfyui-0.26.0",
@@ -41,9 +34,6 @@ _PROFILE_CONFIGS = {
         "cancellation": "interrupt-clear-free-then-owned_process_group",
     },
 }
-
-_EMBEDDED_COMFY_CLIENT = Path("comfy/client/embedded_comfy_client.py")
-
 
 class ProductionEngineError(RuntimeError):
     """The pinned VibeComfy engine rejected or failed a typed workflow."""
@@ -112,39 +102,6 @@ def _profile_comfyui_version_requirement(hc03_profile: Any) -> str | None:
             "worker readiness runtime.comfyui_version must be a non-empty string"
         )
     return declared.strip()
-
-
-def _bootstrap_embedded_comfy_client() -> Path:
-    """Select and import the embedded-client ComfyUI tree for pip execution."""
-    configured = os.environ.get("COMFYUI_PATH")
-    root = Path(configured).expanduser().resolve() if configured else None
-    if root is None or not (root / _EMBEDDED_COMFY_CLIENT).is_file():
-        raise ProductionEngineError(
-            "pip_embedded requires a ComfyUI tree containing "
-            "comfy/client/embedded_comfy_client.py; set COMFYUI_PATH, or use "
-            "local_server mode (comfy_url) with your own ComfyUI"
-        )
-
-    root_string = str(root)
-    sys.path[:] = [entry for entry in sys.path if entry != root_string]
-    sys.path.insert(0, root_string)
-    importlib.invalidate_caches()
-    try:
-        module = importlib.import_module("comfy.client.embedded_comfy_client")
-        getattr(module, "Comfy")
-    except Exception as exc:  # noqa: BLE001 - normalize the third-party import boundary.
-        raise ProductionEngineError(
-            f"pip_embedded cannot import comfy.client.embedded_comfy_client from {root}"
-        ) from exc
-
-    module_path = Path(getattr(module, "__file__", "")).resolve()
-    expected_path = (root / _EMBEDDED_COMFY_CLIENT).resolve()
-    if module_path != expected_path:
-        raise ProductionEngineError(
-            "pip_embedded imported comfy.client.embedded_comfy_client from "
-            f"{module_path}, expected {expected_path}"
-        )
-    return root
 
 
 def _replace_references(value: Any, references: Mapping[str, str]) -> Any:
@@ -669,49 +626,6 @@ def _workflow_comfy_configuration(bundle: Any) -> dict[str, Any]:
     return dict(configured)
 
 
-def _embedded_session_config(
-    bundle: Any,
-    destination: Path,
-    comfy_root: Path,
-    *,
-    task_identity: str,
-    attempt_identity: str | None = None,
-) -> Any:
-    """Build a pinned SessionConfig for the embedded profile.
-
-    The Comfy-specific values remain in VibeComfy's ``extra`` mapping; the
-    runtime-root and cwd fields are typed SessionConfig fields.  This keeps
-    model/configuration identity explicit and prevents the child from
-    inheriting a task worker's ambient cwd or global model registry.
-    """
-    from vibecomfy.runtime.session import SessionConfig
-
-    values = _workflow_comfy_configuration(bundle)
-    values.update(
-        {
-            "base_directory": str(comfy_root.resolve()),
-            "extra_model_paths_config": [
-                str((comfy_root / "extra_model_paths.yaml").resolve())
-            ],
-            "disable_known_models": True,
-            "runtime_root": str((destination / ".vibecomfy-runtime").resolve()),
-            "cwd": str(comfy_root.resolve()),
-            "input_directory": str((destination / "engine-input").resolve()),
-            "port": None,
-            "warm_policy": "never",
-            "quiet_schema_degradation": False,
-        }
-    )
-    config = SessionConfig.from_dict(values)
-    config.extra["output_directory"] = str(
-        (destination / "engine-output").resolve()
-    )
-    config.extra["task_id"] = task_identity
-    if attempt_identity is not None:
-        config.extra["attempt_id"] = attempt_identity
-    return config
-
-
 @contextmanager
 def _checkout_cancellation(control: Any):
     cancelled = False
@@ -799,77 +713,6 @@ def _run_profile_result(
             task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
             workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
         )
-    if profile_id == "pip_embedded":
-        comfy_root = _bootstrap_embedded_comfy_client()
-        from vibecomfy.runtime.run import run_embedded_sync
-
-        if run_inputs is None:
-            # Keep the lightweight test doubles and older internal callers on
-            # the zero-argument seam; real task inputs take the approval path
-            # below and are recorded in the detached projection.
-            record, bundle = _canonical_bundle(resolved)
-        else:
-            record, bundle = _canonical_bundle(resolved, run_inputs=run_inputs)
-        previous_warm = os.environ.get("VIBECOMFY_WARM")
-        previous_warn_only = os.environ.get("VIBECOMFY_SCHEMA_WARN_ONLY")
-        previous_configuration = os.environ.get("VIBECOMFY_COMFY_CONFIGURATION")
-        previous_comfyui_path = os.environ.get("COMFYUI_PATH")
-        previous_attention = os.environ.get("VIBECOMFY_ATTENTION_PROFILE")
-        previous_astrid_attention = os.environ.get("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE")
-        os.environ["VIBECOMFY_WARM"] = "never"
-        os.environ["VIBECOMFY_SCHEMA_WARN_ONLY"] = "0"
-        # VibeComfy's environment layer otherwise has precedence over the
-        # typed SessionConfig.  Pin the environment layer to the empty
-        # object and the already-selected Comfy tree for this invocation.
-        os.environ["VIBECOMFY_COMFY_CONFIGURATION"] = "{}"
-        os.environ["COMFYUI_PATH"] = str(comfy_root.resolve())
-        os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
-        os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
-        try:
-            result = run_embedded_sync(
-                record,
-                bundle,
-                config=_embedded_session_config(
-                    bundle,
-                    destination,
-                    comfy_root,
-                    task_identity=task_identity,
-                    attempt_identity=attempt_identity,
-                ),
-            )
-        finally:
-            if previous_warm is None:
-                os.environ.pop("VIBECOMFY_WARM", None)
-            else:
-                os.environ["VIBECOMFY_WARM"] = previous_warm
-            if previous_warn_only is None:
-                os.environ.pop("VIBECOMFY_SCHEMA_WARN_ONLY", None)
-            else:
-                os.environ["VIBECOMFY_SCHEMA_WARN_ONLY"] = previous_warn_only
-            if previous_configuration is None:
-                os.environ.pop("VIBECOMFY_COMFY_CONFIGURATION", None)
-            else:
-                os.environ["VIBECOMFY_COMFY_CONFIGURATION"] = previous_configuration
-            if previous_comfyui_path is None:
-                os.environ.pop("COMFYUI_PATH", None)
-            else:
-                os.environ["COMFYUI_PATH"] = previous_comfyui_path
-            if previous_attention is None:
-                os.environ.pop("VIBECOMFY_ATTENTION_PROFILE", None)
-            else:
-                os.environ["VIBECOMFY_ATTENTION_PROFILE"] = previous_attention
-            if previous_astrid_attention is None:
-                os.environ.pop("ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE", None)
-            else:
-                os.environ["ASTRID_APP_VIBECOMFY_ATTENTION_PROFILE"] = previous_astrid_attention
-        raw_outputs = getattr(result, "outputs", None)
-        if not isinstance(raw_outputs, (list, tuple)) or not raw_outputs:
-            raise ProductionEngineError("VibeComfy produced no output artifacts")
-        outputs: list[Path] = []
-        for raw in raw_outputs:
-            outputs.append(Path(raw).resolve(strict=True))
-        return _result_from_runtime_result(result, tuple(outputs))
-
     if not isinstance(hc03_profile, Mapping):
         raise ProductionEngineError("checkout_server lacks its verified VibeComfy readiness profile")
     from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
@@ -987,7 +830,7 @@ def run_workflow_path(
     destination: str | Path,
     *,
     task_identity: str,
-    profile_id: str = "pip_embedded",
+    profile_id: str = "local_server",
     model_id: str = "vibecomfy",
     template_id: str = "vibecomfy.run",
     hc03_profile: Any = None,
@@ -1003,8 +846,8 @@ def run_workflow_path(
 
     The registered ``vibecomfy.run`` executor uses this adapter instead of
     importing VibeComfy's low-level runner directly.  Checkout-server callers
-    must supply the host-issued VibeComfy readiness profile; the default embedded profile is
-    intentionally the only implicit profile.
+    must supply the host-issued VibeComfy readiness profile; the implicit profile is local_server,
+    which needs a comfy_url.
     """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise ProductionEngineError("production engine task_identity is required")
@@ -1074,7 +917,7 @@ def run_workflow_result_path(
     destination: str | Path,
     *,
     task_identity: str,
-    profile_id: str = "pip_embedded",
+    profile_id: str = "local_server",
     model_id: str = "vibecomfy",
     template_id: str = "vibecomfy.run",
     hc03_profile: Any = None,

@@ -441,20 +441,24 @@ def test_canonical_run_uses_managed_production_engine_without_gpu(
     managed_run = Mock(return_value=(engine_result_path,))
     monkeypatch.setattr(production_engine, "run_workflow_path", managed_run)
 
-    manifest = run._run_and_settle(
-        python_path,
-        output_root,
-        task_identity="task-1",
-        execution_identity="execution-1",
-    )
+    from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
+
+    with local_engine_patch():
+        manifest = run._run_and_settle(
+            python_path,
+            output_root,
+            task_identity="task-1",
+            execution_identity="execution-1",
+        )
 
     managed_run.assert_called_once_with(
         python_path,
         output_root,
         task_identity="task-1",
         expected_execution_identity="execution-1",
-        profile_id="pip_embedded",
+        profile_id="local_server",
         hc03_profile=None,
+        comfy_url=LOCAL_ENGINE_URL,
     )
     assert manifest["outputs"][0]["path"].startswith("artifacts/")
 
@@ -1149,6 +1153,10 @@ def ordinary(workflow, destination, **kwargs):
     return production_engine.ProductionRunResult(outputs=(output,))
 
 production_engine.run_workflow_result_path = ordinary
+from types import SimpleNamespace
+from astrid.core.generation import engine_local_endpoint
+engine_local_endpoint.local_engine_endpoint = lambda *a, **k: SimpleNamespace(
+    endpoint=SimpleNamespace(url="http://127.0.0.1:8188"), comfy_output_dir="", model_root_binding=None)
 raise SystemExit(run.main(sys.argv[1:]))
 '''
 
@@ -1272,7 +1280,7 @@ def test_t9_absent_explicit_activation_preserves_production_dispatch(tmp_path: P
     result = _invoke_t9_child(case)
     assert result.returncode == 0, result.stdout + result.stderr
     call = json.loads((tmp_path / "ordinary-call.json").read_text())
-    assert call["profile_id"] == ("checkout_server" if session else "pip_embedded")
+    assert call["profile_id"] == "local_server"  # session or not, a local run is the engine run
     assert not list((tmp_path / "evidence").iterdir())
 
 

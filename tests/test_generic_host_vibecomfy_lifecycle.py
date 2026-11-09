@@ -265,7 +265,7 @@ def test_vibecomfy_child_receives_only_the_profile_model_root_binding(
         secrets.clear()
 
 
-def test_generic_host_pip_embedded_route_does_not_require_hc03(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generic_host_local_route_does_not_require_hc03(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     digest, data = _install_fixture(tmp_path)
     runtime = FakeRuntime()
     runtime.get_object = lambda requested: data  # type: ignore[method-assign]

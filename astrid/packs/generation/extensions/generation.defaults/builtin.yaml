@@ -1,0 +1,14 @@
+api: 1
+summary: The built-in default entry for each image, audio and video slot, highest priority first.
+example: astrid generate defaults
+effects: none
+defaults:
+  - {kind: image, mode: t2i, entry: qwen-image-2.1-turbo, priority: 30}
+  - {kind: image, mode: t2i, entry: z-image, priority: 20}
+  - {kind: image, mode: t2i, entry: qwen-image-2512, priority: 10}
+  - {kind: image, mode: edit, entry: qwen-image-2.1-turbo-edit, priority: 30}
+  - {kind: image, mode: edit, entry: z-image, priority: 20}
+  - {kind: image, mode: edit, entry: qwen-image-2512, priority: 10}
+  - {kind: audio, mode: tts, entry: audio/qwen3_tts_custom_voice, priority: 10}
+  - {kind: audio, mode: music, entry: audio/minimax_music_3, priority: 10}
+  - {kind: audio, mode: sfx, entry: audio/hunyuan_video_foley, priority: 10}

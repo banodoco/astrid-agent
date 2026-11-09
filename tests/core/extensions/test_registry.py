@@ -495,3 +495,36 @@ def test_workflow_contribution_hooks_are_optional_and_refs_stay_in_the_pack(root
     assert workflows.hooks(reg_, by_key["plain"]) == {}
     with pytest.raises(Exception, match="escapes"):
         workflows.ready_root(by_key["escape"])
+
+
+def test_h3_contribution_registers_build_and_finalize(roots, tmp_path):
+    """Plan 32 T6b-1: h3_av is one pack with one vibecomfy.workflows contribution."""
+    import yaml
+    from astrid.core.generation import workflows
+
+    repo = Path(__file__).resolve().parents[3] / "astrid/packs"
+    h3_pack = yaml.safe_load((repo / "h3_av/pack.yaml").read_text(encoding="utf-8"))
+    assert h3_pack["dependencies"]["packs"] == ["vibecomfy"]
+
+    packs = {}
+    for name in ("vibecomfy", "h3_av"):
+        packs[name] = _pack(roots["installed"].path, name)
+        src = repo / name / "extensions"
+        for path in src.rglob("*"):
+            if path.is_file() and "points" in path.parts or path.is_file() and name == "h3_av":
+                _write(packs[name] / path.relative_to(repo / name), path.read_text(encoding="utf-8"))
+    for trio in ("native_h3_continuation", "native_h3_continuation_refs", "lanpaint_h3_av_generalized"):
+        (packs["h3_av"] / "workflows" / trio).mkdir(parents=True)
+    reg_ = _registry(roots, tmp_path, _fake_discover(
+        _Record("vibecomfy", packs["vibecomfy"]), _Record("h3_av", packs["h3_av"]))).load()
+    assert reg_.problems() == []
+
+    (contribution,) = workflows.contributions(reg_)
+    assert contribution.id == "h3_av.h3"
+    assert workflows.ready_root(contribution) == (packs["h3_av"] / "workflows").resolve()
+    (entry,) = workflows.workflow_entries(reg_)
+    assert (entry["id"], entry["kind"]) == ("h3", "video")
+    assert entry["modes"] == ["i2v", "v2v", "video-edit"]
+    assert set(entry["hooks"]) == {"build", "finalize"}
+    assert entry["hooks"]["build"].__name__ == "build"
+    assert entry["hooks"]["finalize"].__name__ == "finalize"

@@ -69,6 +69,8 @@ class MachineProviderHTTP:
         self.events, self.commands, self.pods, self.files = [], [], [], {}
         self.agent_jobs, self.detached = {}, {}
         self.deploys = 0
+        self.pod_id = POD  # the current (latest) pod; each deploy gets a new id
+        self.killed = []
         self.mount_id, self.mount_path = 7, (volume or {}).get("mount_path")
         self.expect_entry = "cpu-image"  # None: any entry, or a shipped workflow
         self.generations = []  # job.json of every generation job the pod ran
@@ -149,7 +151,8 @@ class MachineProviderHTTP:
             assert 'gpuTypeId: "gpu-exact"' in query and record["request_name"] in query
             assert not self.pods, "a second pod was deployed while one exists"
             self.deploys += 1
-            self.pods.append({"id": POD, "name": record["request_name"],
+            self.pod_id = POD if self.deploys == 1 else f"{POD}{self.deploys}"
+            self.pods.append({"id": self.pod_id, "name": record["request_name"],
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0, "gpuCount": 1,
                 "imageName": record["worker_image"],
                 "networkVolumeId": self.volume["id"] if self.volume else None,
@@ -159,10 +162,10 @@ class MachineProviderHTTP:
             return {"podFindAndDeployOnDemand": self.pods[0]}
         if "podMounts" in query:
             # Typed mounts, as runpod_lifecycle.discovery.observe_pod_mounts reads them (f2948817).
-            assert f'podId: "{POD}"' in query
+            assert f'podId: "{self.pod_id}"' in query
             mounts = [] if self.volume is None else [{"volumeId": self.volume["id"], "volumeType": "NETWORK_VOLUME",
                                                       "mountPath": self.mount_path, "readOnly": False}]
-            return {"pod": {"id": POD, "volumeMounts": mounts}}
+            return {"pod": {"id": self.pod_id, "volumeMounts": mounts}}
         if "networkVolumes" in query:
             return {"myself": {"networkVolumes": self._volumes()}}
         if "myself" in query:
@@ -242,7 +245,7 @@ class MachineProviderHTTP:
     def _storage_probe(self, command):
         request = json.loads(base64.b64decode(shlex.split(command)[-1]))
         mapping = request.pop("provider_mapping")
-        assert mapping["schema"] == "runpod.provider-mounts.v1" and mapping["pod_id"] == POD
+        assert mapping["schema"] == "runpod.provider-mounts.v1" and mapping["pod_id"] == self.pod_id
         if not [e for e in self.events if e[0] == "storage_probe"]:
             # The first probe of a pod precedes every install write (a warm reuse re-probes later).
             assert not any(path.endswith("/.astrid-engine/install.json") for path in self.files), "probe after install"
@@ -311,6 +314,12 @@ class MachineProviderHTTP:
 
     listed = ()
 
+    def kill_pod(self):
+        """The provider terminates the pod between jobs (spot reclaim, user action)."""
+        self.killed.append(self.pod_id)
+        self.pods.clear()
+        self.files.clear()  # its container disk goes with it
+
     def output_for(self, job):
         """The pod's generated file for a job (an image unless a subclass knows the modality)."""
         return "cpu.png", self.image, "image/png"
@@ -336,23 +345,27 @@ class MachineProviderHTTP:
                 return reply(self._volumes())
             assert path.startswith("/v1/pods"), path
             if method == "DELETE":
-                assert path.endswith("/" + POD) and self.pods
+                if path.endswith("/" + self.pod_id) and self.pod_id in self.killed:
+                    # The provider already terminated this pod: an exact delete finds nothing.
+                    self.events.append(("pod-delete-gone", self.pod_id))
+                    return reply({}, 404)
+                assert path.endswith("/" + self.pod_id) and self.pods
                 record = json.loads(self.claim_path.read_text())
                 assert record["release_authorized"] is True
                 job = record["lease"].get("job")
                 assert job is None or job["state"] in {"exited", "cancelled"}, "pod deleted with a live job"
                 self.pods.clear()
-                self.events.append(("pod-delete", POD))
+                self.events.append(("pod-delete", self.pod_id))
                 return reply({}, 204)
             assert method == "GET"
             if path == "/v1/pods":
                 return reply(self.pods)
             if not self.pods:
-                self.events.append(("pod-404", POD))
+                self.events.append(("pod-404", self.pod_id))
             return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
         if host == "astrid-egress-preflight-8000.proxy.runpod.net":
             return reply({}, 404)
-        assert host == POD + "-8000.proxy.runpod.net", host
+        assert host == self.pod_id + "-8000.proxy.runpod.net", host
         assert "/engines/" not in path and path != "/engine-proxy", "the controller reached a pod engine"
         if path == "/health":
             return reply({"ok": True, "protocol": 1})
@@ -526,6 +539,14 @@ def _released(provider, record):
     assert not provider.pods
 
 
+def _machines_json(capsys):
+    from astrid.core.machines_cli import main as machines
+
+    capsys.readouterr()
+    assert machines(["--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
 def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     j = journey
     s = j.start()
@@ -547,6 +568,14 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert preparation["runtime_check"]["entry"] == "cpu-image" and preparation["runtime_check"]["ready"]
     custody = preparation["custody"]
     assert custody["gpu_type"] == "CPU fixture GPU" and custody["account"] == "cpu-fixture"
+    # T5c: the attempt records which machine ran it, and the task listing shows it.
+    shown = s["client"].tasks.show(first.task_id)
+    machine = shown.data["result"]["machine"]
+    assert (machine["placement"], machine["machine"], machine["id"]) == ("runpod", "runpod.runpod", POD)
+    assert machine["lease"] == record["operation_id"] and machine["device"] == "CPU fixture GPU"
+    from astrid.core.cli.list_narrow import machine_label, render_list_table
+    assert machine_label(shown.data) == f"runpod:{POD} (CPU fixture GPU)"
+    assert f"runpod:{POD}" in render_list_table([shown.data], total=1, noun="tasks")
     assert custody["digest"].startswith("sha256:")
     # Progress: each poll copied one phase into the controller's attempt file before the job ended.
     assert provider.seen_controller_progress and provider.seen_controller_progress[0]["phase"] in {"align", "submit"}
@@ -620,3 +649,41 @@ def test_a_bad_mount_mapping_fails_before_install_and_releases(journey):
     assert not provider.kinds("engines install"), "install ran on an unpinned volume"
     assert not [e for e in provider.events if e[0] == "storage_probe"]
     _released(provider, j.record())
+
+
+def test_a_killed_pod_ends_its_lease_and_the_next_default_job_claims_fresh(journey, capsys):
+    """T5d: liveness before reuse; provider_terminated; a pinned job is refused; astrid machines lists both."""
+    j = journey
+    s = j.start()
+    provider = s["provider"]
+    first = j.image()
+    assert first.ok, first.to_dict()
+    assert j.record()["lease"]["state"] == "idle" and provider.deploys == 1
+    assert [row["id"] for row in _machines_json(capsys) if row["live"]] == [POD]
+    provider.kill_pod()
+    second = j.image()
+    assert second.ok, second.to_dict()
+    assert provider.deploys == 2, "the dead machine was not replaced"
+    assert len(provider.kinds("pod_bootstrap.sh")) == 2, "the fresh machine skipped bootstrap"
+    machine = s["client"].tasks.show(second.task_id).data["result"]["machine"]
+    assert machine["id"] == f"{POD}2" and machine["warm"] is False
+    rows = {row["id"]: row for row in _machines_json(capsys)}
+    assert rows[f"{POD}2"]["live"] and rows[f"{POD}2"]["state"] == "idle"
+    assert rows[POD]["live"] is False and rows[POD]["ended"] == "provider_terminated"
+    # A job pinned to the dead machine is refused with the reason and the live leases.
+    with pytest.raises(Exception, match=rf"no live runpod lease for machine '{POD}' \(ended: provider_terminated\); live leases: {POD}2"):
+        GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": POD},
+            client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
+            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+            preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    # Pinned to the live one, it runs warm there.
+    pinned = GenerationFacade().image(entry="cpu-image", placement={"kind": "runpod", "machine": f"{POD}2"},
+        client=s["client"], project=s["project"], consent=("paid",), max_usd=1.5,
+        deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+        preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    assert pinned.ok and provider.deploys == 2
+    _released(provider, j.release())
+    rows = {row["id"]: row for row in _machines_json(capsys)}
+    assert rows[f"{POD}2"]["ended"] == "explicit" and rows[POD]["ended"] == "provider_terminated"

@@ -22,7 +22,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
-from astrid.core.generation.targets import read_config, update_config
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
@@ -177,16 +176,24 @@ class RunPodPreferences:
         }
 
 
-def read_runpod_preferences(*, path: Path | None = None) -> RunPodPreferences:
-    raw = read_config(path).get("runpod")
+def read_runpod_preferences(*, path: Path | None = None, client: Any = None) -> RunPodPreferences:
+    """RunPod placement policy: ``machines.runpod`` in the user's generation settings document.
+
+    ``path`` names an old VibeComfy TOML whose ``[runpod]`` is imported into the document once.
+    """
+    from astrid.core.generation import settings
+
+    raw = settings.machine_policy("runpod", client, legacy_path=path)
     if not isinstance(raw, Mapping):
         raise PaidSelectionError("save independent RunPod preferences before preparing a target")
     return RunPodPreferences.from_mapping(raw)
 
 
-def save_runpod_preferences(raw: Mapping[str, Any], *, path: Path | None = None) -> Path:
+def save_runpod_preferences(raw: Mapping[str, Any], *, path: Path | None = None, client: Any = None) -> str:
+    from astrid.core.generation import settings
+
     value = RunPodPreferences.from_mapping(raw).as_mapping()
-    return update_config(lambda document: document.update(runpod=value), path=path)
+    return settings.set_machine_policy("runpod", value, client, legacy_path=path).label
 
 
 def canonical_claim_path(account_ref: str, *, data_root: Path | None = None) -> Path:

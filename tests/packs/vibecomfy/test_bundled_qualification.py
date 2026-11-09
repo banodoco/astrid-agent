@@ -98,7 +98,7 @@ def test_central_typed_template_execute_refuses_before_dispatch(tmp_path, monkey
     request.write_text(json.dumps({
         'schema_version': 'astrid.vibecomfy.production-engine.v3',
         'workflow': {'template_id': 'video/wan22_animate_native_first_stage', 'bindings': {}},
-        'references': {}, 'profile': engine._PROFILE_CONFIGS['pip_embedded'], 'capability_id': 'fake',
+        'references': {}, 'profile': engine._PROFILE_CONFIGS['local_server'], 'capability_id': 'fake',
         'model_id': 'wan', 'template_id': 'video/wan22_animate_native_first_stage',
         'task_identity': 'fake-task'}))
     with pytest.raises(AstridError) as caught:

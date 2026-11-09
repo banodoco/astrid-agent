@@ -23,7 +23,7 @@ from astrid.core.execution.executor.registry import (
 
 LEDGER = Path("config/astrid-beta-capabilities.json")
 
-SIX_DEFAULT_ENTRIES = (
+SIX_SLOT_ENTRIES = (
     "qwen-image-2.1-turbo",
     "qwen-image-2.1-turbo-edit",
     "h3",
@@ -67,7 +67,7 @@ def test_core_only_generate_list_works() -> None:
     json.loads(result.stdout)
 
 
-@pytest.mark.parametrize("entry", SIX_DEFAULT_ENTRIES)
+@pytest.mark.parametrize("entry", SIX_SLOT_ENTRIES)
 def test_core_only_generate_describe_is_not_blocked(entry: str) -> None:
     result = _run("describe", "--entry", entry, "--json")
     assert "depends on unknown executor" not in result.stdout + result.stderr

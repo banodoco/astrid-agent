@@ -62,11 +62,17 @@ def resolve_machine(kind: str, registry: Any | None = None) -> Any:
 
 def run_on_machine(machine: Any, job: MachineJob, *, destination: Path,
                    cancelled: Callable[[], bool], poll_seconds: float = 15.0,
-                   sleep: Callable[[float], None] = time.sleep) -> Mapping[str, Any]:
-    """Claim, start, poll, fetch into ``destination``, then release (warm only on success)."""
+                   sleep: Callable[[float], None] = time.sleep,
+                   on_claim: Callable[[Any], None] | None = None) -> Mapping[str, Any]:
+    """Claim, start, poll, fetch into ``destination``, then release (warm only on success).
+
+    ``on_claim(lease)`` records which machine runs the job as soon as it is claimed.
+    """
     lease = machine.claim(job)
     success = False
     try:
+        if on_claim is not None:
+            on_claim(lease)
         if cancelled():
             raise MachineRunCancelled("generation cancelled before the remote job started")
         run = machine.start(lease, job)

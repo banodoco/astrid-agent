@@ -35,14 +35,8 @@ WorkflowFile = str | Path | Mapping[str, Any]
 
 # Accepted for explicit use while its default-route qualification is pending.
 _EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
-# Default slots: catalog priority per (modality, mode) for target routes.
-_DEFAULT_ENTRIES = {
-    ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
-    ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
-    ("audio", "tts"): ("audio/qwen3_tts_custom_voice",),
-    ("audio", "music"): ("audio/minimax_music_3",),
-    ("audio", "sfx"): ("audio/hunyuan_video_foley",),
-}
+# Default entries are data: packs declare them (generation.defaults, entries[].default_for) and the
+# user pins them in the generation settings document; see astrid.core.generation.defaults.
 
 # A CLI caller can retain the validated action's connection through delivery.
 # Acquisition stays inside the SDK, after the action's preconditions succeed.
@@ -301,8 +295,12 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _runpod_placement_policy(controls, *, engine):
-    """Snapshot the user's disclosed offer and preferences into the task."""
+def _runpod_placement_policy(controls, *, engine, machine=None):
+    """Snapshot the user's disclosed offer and preferences into the task.
+
+    ``machine`` pins the job to one live lease (its machine id); by default the
+    host reuses the warm machine with the same custody, or claims one.
+    """
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     paid = _runpod_paid_controls(controls)
@@ -310,7 +308,8 @@ def _runpod_placement_policy(controls, *, engine):
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
     return {"kind": "runpod", "engine": engine, "preferences": read_runpod_preferences().as_mapping(),
-            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"])}
+            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
+            **({"machine": machine} if machine else {})}
 
 
 def _runpod_operation(operation, *, client, wait, include_quote=False):
@@ -763,20 +762,21 @@ class GenerationFacade:
                                'provider_account_ref', 'credential_ref'}
                     if updates.keys() - allowed:
                         raise ValueError('unsupported RunPod preference: ' + ', '.join(sorted(updates.keys() - allowed)))
+                    from astrid.core.generation import settings as generation_settings
+
                     def write(document):
-                        preferences = document.setdefault('runpod', {})
-                        if not isinstance(preferences, dict):
-                            raise ValueError('runpod preferences must be a table')
+                        preferences = document['machines'].setdefault('runpod', {})
                         for name, value in updates.items():
                             if value is None:
                                 preferences.pop(name, None)
                             else:
                                 preferences[name] = value
-                    targets.update_config(write)
+                    generation_settings.update(write, client)
                 elif updates:
                     raise ValueError('provider inputs require --save')
                 payload = readiness_envelope()
-                payload['preferences'] = targets.read_config().get('runpod', {})
+                from astrid.core.generation import settings as generation_settings
+                payload['preferences'] = generation_settings.machine_policy('runpod', client) or {}
                 if not save and client is not None:
                     payload['target'] = _runpod_status(client=client, include_quote=False)
                 return payload
@@ -795,6 +795,26 @@ class GenerationFacade:
             return readiness_envelope(target=record)
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
+
+    @_generation_boundary
+    def defaults(self, *, client=None):
+        """Every ``(kind, mode)`` slot with its resolved entry, its source and the other candidates."""
+        from astrid.core.generation import defaults as generation_defaults
+        return generation_defaults.listing(client)
+
+    @_generation_boundary
+    def set_default(self, kind, mode, entry, *, pack=None, client=None):
+        """Pin ``entry`` as the default for ``kind``/``mode``; refuses an entry that cannot fill the slot."""
+        from astrid.core.generation import defaults as generation_defaults
+        generation_defaults.set_default(kind, mode, entry, pack=pack, client=client)
+        return generation_defaults.listing(client)
+
+    @_generation_boundary
+    def unset_default(self, kind, mode, *, client=None):
+        """Remove the user's pin for ``kind``/``mode``; the highest-priority pack default applies again."""
+        from astrid.core.generation import defaults as generation_defaults
+        generation_defaults.unset_default(kind, mode, client=client)
+        return generation_defaults.listing(client)
 
     @_generation_boundary
     def describe(self, entry: str | None = None, *, workflow=None, mode=None,
@@ -1053,12 +1073,13 @@ class GenerationFacade:
 
         # The one decision site: request -> user default -> built-in, then frozen.
         selector, placement = placement, placements.validate_placement(placements.resolve_placement(
-            placements.request_from_selector(placement)))
+            placements.request_from_selector(placement), client=controls.get('client')))
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
-        placement_policy = _runpod_placement_policy(controls, engine=None) if is_remote_target and not dry_run else None
+        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine)
+                            if is_remote_target and not dry_run else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
@@ -1084,7 +1105,12 @@ class GenerationFacade:
 
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
-        preferred = _DEFAULT_ENTRIES.get((modality, mode), ())
+        from astrid.core.generation import defaults as generation_defaults
+        from astrid.core.generation import settings as generation_settings
+        settings_snapshot = generation_settings.read(controls.get('client'))
+        pinned = (generation_defaults.pinned_entry(modality, mode, settings_snapshot)
+                  if model is None and workflow_entry is None else None)
+        preferred = generation_defaults.ordered_ids(modality, mode, settings_snapshot)
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
             return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
@@ -1110,6 +1136,11 @@ class GenerationFacade:
                            if entry["kind"] == modality and mode in entry["modes"]
                            and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
                            and not entry.get("registry_id")]
+            if pinned is not None and not any(
+                    (c[1].id if c[0] == "catalog" else c[1]["id"]) == pinned for c in candidates):
+                found = workflow_entries.find_entry(pinned)
+                if found is not None:
+                    candidates.append(("workflow", found))
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
             require_model_available, require_entry_available,
@@ -2031,3 +2062,19 @@ class GenerationFacade:
 
 
 generate = GenerationFacade()
+
+
+def defaults(*, client=None):
+    """Every ``(kind, mode)`` slot with its resolved entry, where it came from, and the other candidates."""
+    return generate.defaults(client=client)
+
+
+def set_default(kind, mode, entry, *, pack=None, client=None):
+    """Pin ``entry`` as the user's default for ``kind``/``mode``."""
+    return generate.set_default(kind, mode, entry, pack=pack, client=client)
+
+
+def unset_default(kind, mode, *, client=None):
+    """Remove the user's pin for ``kind``/``mode``."""
+    return generate.unset_default(kind, mode, client=client)
+

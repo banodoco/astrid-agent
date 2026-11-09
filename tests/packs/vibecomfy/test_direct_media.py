@@ -18,7 +18,7 @@ from astrid.packs.vibecomfy.media import (
 )
 
 
-@pytest.mark.parametrize("profile", ["pip_embedded", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
 def test_direct_wan_capabilities_are_typed_and_profile_bound(profile: str) -> None:
     t2i = compile_wan_2_2_t2i(
         WanT2IRequest(prompt="a red kite over a lake"), profile=profile
@@ -40,11 +40,11 @@ def test_direct_wan_capabilities_are_typed_and_profile_bound(profile: str) -> No
 
 
 def test_profile_semantics_are_explicit_and_distinct() -> None:
-    embedded = profile_semantics("pip_embedded")
+    embedded = profile_semantics("local_server")
     checkout = profile_semantics("checkout_server")
 
     assert embedded.engine_identity != checkout.engine_identity
-    assert embedded.lifecycle == "embedded_session"
+    assert embedded.lifecycle == "external_server"
     assert checkout.lifecycle == "managed_checkout_session"
     assert "runtime_instance_id" not in embedded.required_runtime_fields
     assert "runtime_instance_id" in checkout.required_runtime_fields
@@ -52,7 +52,7 @@ def test_profile_semantics_are_explicit_and_distinct() -> None:
 
 
 def _runtime_context(profile: str) -> dict[str, str | int]:
-    if profile == "pip_embedded":
+    if profile == "local_server":
         return {
             "profile_digest": "sha256:" + "a" * 64,
             "model_bytes_digest": "sha256:" + "b" * 64,
@@ -67,7 +67,7 @@ def _runtime_context(profile: str) -> dict[str, str | int]:
     }
 
 
-@pytest.mark.parametrize("profile", ["pip_embedded", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
 @pytest.mark.parametrize(
     "media_request",
     [
@@ -112,7 +112,7 @@ def test_video_enhance_unsupported_controls_fail_before_runner(
     assert seen == []
 
 
-@pytest.mark.parametrize("profile", ["pip_embedded", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
 def test_video_enhance_bounded_profile_binds_only_canonical_inputs(profile: str) -> None:
     seen: list[object] = []
 
@@ -137,7 +137,7 @@ def test_video_enhance_bounded_profile_binds_only_canonical_inputs(profile: str)
     }
 
 
-@pytest.mark.parametrize("profile", ["pip_embedded", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
 def test_character_animation_replacement_mode_fails_before_runner(profile: str) -> None:
     seen: list[object] = []
 
@@ -161,7 +161,7 @@ def test_character_animation_replacement_mode_fails_before_runner(profile: str) 
     assert seen == []
 
 
-@pytest.mark.parametrize("profile", ["pip_embedded", "checkout_server"])
+@pytest.mark.parametrize("profile", ["local_server", "checkout_server"])
 def test_character_animation_bounded_profile_binds_two_media_inputs(profile: str) -> None:
     seen: list[object] = []
 
@@ -222,7 +222,7 @@ def test_video_enhance_cli_defaults_upscale_on_and_removes_interpolation_option(
             "--capability", "vibecomfy.video_enhance",
             "--out", "/tmp/out",
             "--task-identity", "task-video",
-            "--profile", "pip_embedded",
+            "--profile", "local_server",
         ]
     )
     assert args.enable_upscale is True
@@ -233,7 +233,7 @@ def test_video_enhance_cli_defaults_upscale_on_and_removes_interpolation_option(
                 "--capability", "vibecomfy.video_enhance",
                 "--out", "/tmp/out",
                 "--task-identity", "task-video",
-                "--profile", "pip_embedded",
+                "--profile", "local_server",
                 "--enable-interpolation", "true",
             ]
         )
@@ -248,7 +248,7 @@ def test_media_command_rejects_before_profile_read_or_scratch_creation(tmp_path)
             capability="vibecomfy.video_enhance",
             request=VideoEnhanceRequest(video_ref="media://source", enable_interpolation=True),
             task_identity="task-video",
-            profile_id="pip_embedded",
+            profile_id="local_server",
             readiness_profile_path=str(tmp_path / "missing-profile.json"),
             readiness_profile_hash="sha256:" + "a" * 64,
             out=output,

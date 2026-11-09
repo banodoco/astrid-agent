@@ -244,6 +244,25 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--timeout', action=_Once, type=float, default=10.0,
                          help='Launch and health deadline in seconds (positive, at most 30).')
     command.add_argument('--json', action='store_true')
+    command = sub.add_parser('defaults', help='List, pin (set) or unpin (unset) the default entry of each kind/mode slot.')
+    command.add_argument('--json', action='store_true')
+    actions = command.add_subparsers(dest='defaults_action')
+    pin = actions.add_parser('set', help='Pin an entry as the default for a slot.')
+    pin.add_argument('kind', choices=('image', 'video', 'audio'))
+    pin.add_argument('mode')
+    pin.add_argument('entry')
+    pin.add_argument('--pack', help='Pack id, when several packs offer the entry.')
+    pin.add_argument('--json', action='store_true')
+    unpin = actions.add_parser('unset', help='Remove the pin for a slot.')
+    unpin.add_argument('kind', choices=('image', 'video', 'audio'))
+    unpin.add_argument('mode')
+    unpin.add_argument('--json', action='store_true')
+    command = sub.add_parser('settings', help='Edit the generation settings document as a file.')
+    actions = command.add_subparsers(dest='settings_action', required=True)
+    out = actions.add_parser('checkout', help='Write the settings document to a new file.')
+    out.add_argument('--file', required=True)
+    back = actions.add_parser('checkin', help='Save an edited checkout; a stale one is refused.')
+    back.add_argument('file')
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
     command.add_argument('--placement', required=True)
@@ -288,6 +307,41 @@ def _targets_command(parsed):
     payload = _generate_facade().targets(placement=parsed.placement, engine=parsed.engine,
         save=parsed.save, inputs=merge_input_values(assignments=parsed.input))
     print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def _defaults_text(payload):
+    settings = payload['settings']
+    lines = [f"Defaults ({settings['label']}); edit with: {payload['edit']}"]
+    for row in payload['slots']:
+        entry = f"{row['pack']}/{row['entry']}" if row['entry'] else '(none)'
+        lines.append(f"{row['slot']}: {entry}  [{row['source']}: {row['origin']}]")
+        for other in row['others']:
+            lines.append(f"    also: {other['pack']}/{other['entry']} (priority {other['priority']})")
+    return '\n'.join(lines)
+
+
+def _defaults_command(parsed):
+    generate = _generate_facade()
+    with _open_client() as client:
+        if parsed.defaults_action == 'set':
+            payload = generate.set_default(parsed.kind, parsed.mode, parsed.entry, pack=parsed.pack, client=client)
+        elif parsed.defaults_action == 'unset':
+            payload = generate.unset_default(parsed.kind, parsed.mode, client=client)
+        else:
+            payload = generate.defaults(client=client)
+    print(json.dumps(payload, indent=2, sort_keys=True) if getattr(parsed, 'json', False) else _defaults_text(payload))
+    return 0
+
+
+def _settings_command(parsed):
+    from astrid.core.generation import settings
+    with _open_client() as client:
+        if parsed.settings_action == 'checkout':
+            result = settings.checkout(parsed.file, client)
+        else:
+            result = settings.checkin(parsed.file, client)
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
@@ -386,6 +440,10 @@ def _main(argv: list[str]) -> int:
         return align_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
+    if parsed.modality == 'defaults':
+        return _defaults_command(parsed)
+    if parsed.modality == 'settings':
+        return _settings_command(parsed)
     if parsed.modality == 'launch':
         payload = _generate_facade().launch(placement=parsed.placement, engine=parsed.engine,
             consent=parsed.consent, timeout=parsed.timeout)
