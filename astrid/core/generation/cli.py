@@ -32,12 +32,14 @@ def _no_generation_target(target: str) -> bool:
     Anything it cannot settle is left to the facade's normal path.
     """
     try:
+        from astrid.core.generation import placement as placements
         from astrid.core.generation.engine_local_endpoint import recorded_engine_root
         from astrid.core.generation.preflight import _select_generation_target
 
         if recorded_engine_root('comfyui') is not None:
             return False
-        return _select_generation_target(target) is None
+        placement = placements.resolve_placement(placements.request_from_selector(target))
+        return _select_generation_target(placements.comfy_selector(placement)) is None
     except Exception:
         return False
 

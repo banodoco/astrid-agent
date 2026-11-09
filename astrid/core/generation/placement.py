@@ -161,13 +161,43 @@ def comfy_selector(placement: Placement) -> str:
 
 
 def _discovered_attachment(repo: str | Path | None = None) -> Placement | None:
-    """The one read of ComfyUI config that picks a placement: a bound human endpoint, else None."""
-    from astrid.core.generation import targets
+    """The one read of ComfyUI config that picks a placement; None means local.
 
-    selection = targets.resolve_target("auto", repo=repo)
+    A bound human endpoint (env, repo or global config) is attached as-is: the
+    attached probe reports it unreachable rather than switching. An unbound
+    discovery address is attached only when it answers, so an unconfigured user
+    with a running ComfyUI keeps the attached route, and an absent one stays local.
+    """
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import targets
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    try:
+        selection = targets.resolve_target("auto", repo=repo)
+    except targets.TargetConfigError as exc:
+        raise AstridError(
+            str(exc), code="COMFY_TARGET_INVALID", field="target",
+            fix="Repair the saved ComfyUI config or explicitly select a loopback URL or managed target",
+        ) from exc
     record = selection.record
-    if not selection.bound or record is None or record.owner == "astrid" or record.endpoint is None:
+    if record is None or record.owner == "astrid":
         return None
+    if record.endpoint is None:
+        if selection.bound:
+            raise AstridError(
+                "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
+                code="COMFY_TARGET_UNAVAILABLE", field="target",
+                fix="Launch the selected ComfyUI and explicitly select its loopback URL",
+            )
+        return None
+    if not selection.bound:
+        try:
+            facts = ComfyTargetClient(ComfyTarget(record.endpoint, "attached")).request_json(
+                "/system_stats", timeout=1.0)
+        except (OSError, ValueError, TimeoutError):
+            return None
+        if not isinstance(facts, dict) or not isinstance(facts.get("system"), dict):
+            return None
     return Placement(kind="attached", endpoint=record.endpoint)
 
 
