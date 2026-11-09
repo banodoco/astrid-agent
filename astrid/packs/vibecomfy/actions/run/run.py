@@ -442,6 +442,8 @@ def _materialize_managed_generation_result(
                 rebased_payload["warnings"].append(issue["message"])
     producer.setdefault("engine", {"id": "comfyui"})
     producer.setdefault("entry", {"id": None, "mode": None, "source": rebased_payload["inputs"].get("source")})
+    if isinstance(producer["entry"], dict) and context.get("requirements") is not None:
+        producer["entry"]["requirements"] = context["requirements"]
     producer.setdefault("models", [])
     producer.setdefault("versions", {
         "recorded": {"engine": None, "pack": None, "runtime": None},
@@ -875,6 +877,11 @@ def _run_and_settle(
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
     engine_local_run = not comfy_url
+    # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
+    # route (align still judges the manifest above, on the local route only).
+    admitted_requirements = None
+    if entry:
+        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs))
     if manifest is None and engine_local_run and entry:
         manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
@@ -962,6 +969,7 @@ def _run_and_settle(
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
                   or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
         "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
+        "requirements": admitted_requirements,
     }
     producer_run_id = f"astrid-{uuid4().hex}"
     try:

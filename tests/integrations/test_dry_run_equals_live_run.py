@@ -1,10 +1,14 @@
 """Plan 32 Completion 5: the dry run equals the live run.
 
-For every default slot and the h3_av entry, one CPU stand-in attached ComfyUI
-serves both calls: the dry run (``dry_run=True``) first, then the live run. The
-built graph and its bindings must be the same in both runs, the requirements manifest
-the live run's requirements step computes must equal the one for the entry the dry run
-resolved, and the graph the live run submitted to /prompt must be the graph it built.
+Placement scope: attached only. Every default slot and the h3_av entry run against one CPU
+stand-in attached ComfyUI, which is the only placement whose /prompt graph this harness can see.
+The dry run (``dry_run=True``) runs first, then the live run. The test compares the built graph,
+the bindings, the requirements manifest the live run recorded for its attempt, and the submitted
+/prompt graph. local-managed and RunPod placements are NOT compared here.
+
+Post-T8 follow-up: the attached live route never calls the requirements step, so its manifest is
+recorded from the entry the run resolved; a managed-local cell and a RunPod cell need their own
+comparison, and the wider call-site work (align and readiness receipts) is not covered here.
 """
 from __future__ import annotations
 
@@ -90,7 +94,8 @@ def _resolved_entry(entry_id: str) -> dict:
 def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     """The graph and bindings a run settled on: its last built workflow."""
     assert rows, "the run built no graph"
-    return rows[-1]
+    _, graph, bindings = rows[-1]
+    return graph, bindings
 
 
 @pytest.mark.parametrize("cell", CELLS, ids=lambda cell: "/".join(cell) if isinstance(cell, tuple) else "/".join(cell.values[0]))
@@ -136,16 +141,47 @@ def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tupl
         assert result.ok, json.dumps(result.to_dict(), default=str)[:2000]
         (dry, dry_rows), (live, live_rows) = runs["dry"], runs["live"]
         assert isinstance(dry, dict) and dry["status"] == "ready", dry
-        assert _built(dry_rows) == _built(live_rows), "built graph or bindings differ between dry and live"
-        built = json.loads(_built(live_rows)[1])
+        dry_graph, dry_bindings = _built(dry_rows)
+        live_graph, live_bindings = _built(live_rows)
+        # 1. The built graph is real, and a prompt cell binds its prompt.
+        built = json.loads(live_graph)
+        assert built, "the built graph is empty"
+        assert json.loads(dry_graph) == built, "built graph differs between dry and live"
+        assert json.loads(dry_bindings) == json.loads(live_bindings), "bindings differ between dry and live"
+        assert json.loads(dry_bindings) == dry["entry"]["bindings"], "dry result's bindings differ from its build"
+        if not h3:
+            assert json.loads(live_bindings), "a prompt cell bound no values"
+        # 3. The requirements manifest: the one the live run recorded for its attempt equals the one the dry
+        #    run's entry yields from the dry inputs, through the same requirements() call.
+        expected = workflow_entries.requirements(_resolved_entry(dry["entry"]["id"]), dict(dry["entry"]["bindings"]))
+        recorded = _recorded_requirements(live.to_dict())
+        assert expected and recorded is not None, "the live run recorded no requirements manifest"
+        assert json.loads(json.dumps(expected, sort_keys=True, default=str)) == recorded, (
+            "requirements manifest differs between dry and live")
+
+        # 2. Every submitted node is a built node with the same class and the same scalar values (links aside).
         submitted = provider.comfy.prompts[-1]["prompt"]
-        # The requirements manifest: the live run's requirements step (run._entry_manifest) on the live
-        # bindings must equal the requirements of the entry the dry run resolved, from the dry inputs.
-        from astrid.packs.vibecomfy.actions.run import run as run_action
-        dry_id = dry["entry"]["id"]
-        expected = workflow_entries.requirements(_resolved_entry(dry_id), dict(dry["entry"]["bindings"]))
-        actual = run_action._entry_manifest(dry_id, json.loads(_built(live_rows)[2]))
-        assert expected and actual == expected, "requirements manifest differs between dry and live"
-        # ComfyUI receives the output-reachable part of the built graph: every submitted class was built.
-        assert not Counter(node["class_type"] for node in submitted.values()) - Counter(
-            node["class_type"] for node in built.values()), "submitted graph is not part of the built graph"
+        assert submitted, "the live run submitted an empty graph"
+        for node_id, node in submitted.items():
+            assert node_id in built, f"submitted node {node_id} was not built"
+            assert node["class_type"] == built[node_id]["class_type"], node_id
+            for name, value in node["inputs"].items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    assert built[node_id]["inputs"].get(name) == value, (node_id, name)
+
+def _recorded_requirements(value):
+    """The requirements the live run recorded in its attempt's producer evidence (producer.entry.requirements)."""
+    if isinstance(value, dict):
+        producer = value.get("producer")
+        if isinstance(producer, dict) and isinstance(producer.get("entry"), dict) and "requirements" in producer["entry"]:
+            return producer["entry"]["requirements"]
+        for child in value.values():
+            found = _recorded_requirements(child)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _recorded_requirements(child)
+            if found is not None:
+                return found
+    return None
