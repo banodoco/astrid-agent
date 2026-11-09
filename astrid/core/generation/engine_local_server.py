@@ -25,14 +25,14 @@ def ensure_local_engine_server(
 
     The same probe/start ``_Runner.start`` does at install time: an owned server is reused
     untouched (same process), an absent one is started, an unowned one on the port is refused.
-    Nothing here ever stops the server; it outlives the task. Returns ``"reused"`` or
-    ``"started"``. An engine that was never installed is left to ``local_engine_endpoint``.
+    Nothing here ever stops the server; it outlives the task. Returns ``"reused"``, ``"started"`` or
+    ``"not_installed"``. An engine that was never installed is left to ``local_engine_endpoint``.
     """
     from .engine_recipe import load_recipe
 
     root = root or default_engine_root(engine)
     if not os.path.isfile(posixpath.join(root, RECEIPT_RELATIVE_PATH)):
-        return "reused"  # nothing installed: local_engine_endpoint raises EngineNotInstalled
+        return "not_installed"  # nothing to start: local_engine_endpoint raises EngineNotInstalled
     deadline = time.monotonic() + deadline_seconds
     if runner_factory is None:
         from .engine_execution import create_local_backend

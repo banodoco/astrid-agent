@@ -52,23 +52,19 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     attempt = job.get("attempt_identity") or "-"
     if job.get("entry") not in (None, entry) and entry != "workflow":
         raise JobFileError(f"job entry {job.get('entry')!r} differs from the requested {entry!r}")
-    extra: dict[str, Any] = {}
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
         if shipped is None:
             raise JobFileError("a workflow-file job must ship its workflow")
-        workflow = Path(str(shipped))
-        manifest = None
+        workflow, named = Path(str(shipped)), None
     else:
         described = entries.find_entry(entry)
         if described is None:
             raise JobFileError(f"entry {entry!r} is not available on this machine")
-        workflow = entries.bundle_path(described)
-        manifest = entries.requirements(described, inputs)
-    if manifest is not None:
-        extra["manifest"] = manifest
+        workflow, named = entries.bundle_path(described), entry
+    # File inputs ride the job directory; they reach the run as its own file arguments.
+    files = {name: str(inputs.pop(name)) for name in ("managed_assets", "source_video") if name in inputs}
     return run_action._run_and_settle(
         workflow, Path(out), task_identity=task, attempt_identity=attempt,
-        workflow_inputs=json.dumps({k: v for k, v in inputs.items() if k not in {"managed_assets", "source_video"}},
-                                   sort_keys=True),
-        align=align or job["align"], **extra)
+        workflow_inputs=json.dumps(inputs, sort_keys=True), entry=named,
+        align=align or job["align"], **files)

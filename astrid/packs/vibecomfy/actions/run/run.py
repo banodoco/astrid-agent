@@ -717,6 +717,16 @@ class _LocalEngineServer:
         return self.result
 
 
+def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """The entry's requirements manifest (what align() judges), or None for an unnamed workflow."""
+    if not entry or entry == "workflow":
+        return None
+    from astrid.core.generation import entries
+
+    described = entries.find_entry(entry)
+    return entries.requirements(described, inputs) if described is not None else None
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -736,6 +746,7 @@ def _run_and_settle(
     execution_request: Any = None,
     align: str = "check",
     manifest: dict[str, Any] | None = None,
+    entry: str | None = None,
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt.
 
@@ -779,6 +790,8 @@ def _run_and_settle(
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
     engine_local_run = not comfy_url
+    if manifest is None and engine_local_run and entry:
+        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))
     profile_id = "local_server" if (comfy_url or engine_local_run) else "checkout_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
@@ -1090,6 +1103,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
+                align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else "check",
+                entry=os.environ.get("ASTRID_GENERATION_ENTRY") or None,
             )
     except Exception as exc:
         sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))

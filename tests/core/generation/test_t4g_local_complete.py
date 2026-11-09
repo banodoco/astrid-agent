@@ -177,3 +177,110 @@ def test_the_local_run_ensures_the_server_before_it_reads_the_endpoint(comfy, tm
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
     assert order == ["ensure"] and len(comfy.prompts) == 1
+
+
+# -- review fixes ----------------------------------------------------------------------------------------
+
+
+def test_job_file_inputs_reach_the_run_as_file_arguments(tmp_path, monkeypatch):
+    """A reference video/asset shipped in the job is passed on, not silently dropped."""
+    from astrid.core.generation.local_job import run_job
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    seen = {}
+    monkeypatch.setattr(action, "_run_and_settle", lambda workflow, out, **kw: seen.update(kw) or {})
+    video, assets, workflow = tmp_path / "in" / "source_video.mp4", tmp_path / "in" / "managed_assets.zip", tmp_path / "wf.json"
+    video.parent.mkdir()
+    for path in (video, assets, workflow):
+        path.write_bytes(b"x")
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": None, "mode": None, "align": "check",
+                               "inputs": {"source": str(workflow), "source_video": str(video),
+                                          "managed_assets": str(assets), "prompt": "hi"}}))
+    run_job("workflow", job, tmp_path / "out")
+    assert seen["source_video"] == str(video) and seen["managed_assets"] == str(assets)
+    assert json.loads(seen["workflow_inputs"]) == {"prompt": "hi"}
+
+
+def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """host admission -> ASTRID_ALIGN / ASTRID_GENERATION_ENTRY -> run.main -> engine.align(manifest, mode)."""
+    _endpoint(comfy, monkeypatch)
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.core.generation import entries
+    manifest = {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}, "marker": "from-requirements"}
+    monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
+    seen = []
+    engine_cls = type(action._comfyui_engine())
+
+    class Spy(engine_cls):
+        def align(self, manifest, mode):
+            seen.append((mode, manifest))
+            return super().align(manifest, mode)
+
+    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy())
+    monkeypatch.setenv("ASTRID_ALIGN", "trust")
+    monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
+    out = tmp_path / "attempt" / "outputs"
+    assert action.main(["run", str(comfy.workflow), "--out", str(out), "--task-identity", "t"]) == 0
+    assert seen == [("trust", manifest)]
+
+
+def test_the_host_admits_the_requested_align_mode_and_entry():
+    from astrid.core.execution import generic_host
+    for mode, expected in (("align", "align"), ("trust", "trust"), ("check", None)):
+        task = {"generation_intent": {"metadata": {"model": "e1", "mode": "m", **({"align": mode} if mode != "check" else {})}}}
+        admitted = generic_host._align_admission(task)
+        assert admitted.get("align") == expected and admitted["entry"] == "e1"
+
+
+def test_nothing_installed_is_a_clear_value(tmp_path):
+    from astrid.core.generation.engine_local_server import ensure_local_engine_server
+    assert ensure_local_engine_server(root=str(tmp_path / "none")) == "not_installed"
+
+
+def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(installed_root):
+    """The real _Runner.start decides; only the target transport (service/helper/launch) is a CPU stand-in.
+
+    The real service bridge needs the engine supervisor, whose own tests (test_engine_custody) already fail
+    in this environment on the base commit, so the transport is the part replaced here.
+    """
+    import subprocess
+    import sys
+    from astrid.core.generation.engine_local_server import ensure_local_engine_server
+    from astrid.core.generation.engine_runner import _Runner
+
+    state = {"proc": None, "starts": 0, "ops": []}
+
+    def alive():
+        return state["proc"] is not None and state["proc"].poll() is None
+
+    def factory(**_kwargs):
+        runner = _Runner.__new__(_Runner)  # the real start(); no recipe/install needed for the probe logic
+        runner.step_id, runner.service_owner = None, None
+        runner.launch_spec = lambda: {"argv": ["server"], "cwd": "/", "env": {}}
+
+        def helper(operation, *args, **kw):
+            state["ops"].append(operation)
+            return {"valid": True} if operation == "models-config-check" else {"written": True}
+
+        def service(operation, *, launch=None, deadline=None):
+            state["ops"].append(operation)
+            if operation == "start":
+                state["proc"] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+                state["starts"] += 1
+            return {"state": "owned" if alive() else "absent"}
+
+        runner.helper, runner.service = helper, service
+        return runner
+
+    try:
+        assert ensure_local_engine_server(root=installed_root, runner_factory=factory) == "started"
+        pid = state["proc"].pid
+        assert ensure_local_engine_server(root=installed_root, runner_factory=factory) == "reused"
+        assert (state["proc"].pid, state["starts"]) == (pid, 1)
+        state["proc"].kill()
+        state["proc"].wait()
+        assert ensure_local_engine_server(root=installed_root, runner_factory=factory) == "started"
+        assert state["starts"] == 2 and "stop" not in state["ops"]  # a job never stops the server
+    finally:
+        state["proc"] and state["proc"].kill()

@@ -6431,6 +6431,20 @@ def _align_trust(task: Mapping[str, Any]) -> bool:
     return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
 
 
+def _align_admission(task: Mapping[str, Any]) -> dict[str, str]:
+    """The requested align mode (when not the default check) and the entry id, for the local run child."""
+    intent = _task_generation_intent(task)
+    metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        return {}
+    admitted = {}
+    if metadata.get("align") in ("align", "trust"):
+        admitted["align"] = metadata["align"]
+    if isinstance(metadata.get("model"), str) and metadata["model"]:
+        admitted["entry"] = metadata["model"]
+    return admitted
+
+
 class GenericPackHost:
     """Discover, register, preflight, and execute pack capabilities."""
 
@@ -9486,8 +9500,11 @@ class GenericPackHost:
         from astrid.core.generation.target_inventory import TRUST_ENV
 
         env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
-        if record.id == "vibecomfy.run" and align == "trust":
-            env[TRUST_ENV] = "trust"
+        if record.id == "vibecomfy.run" and align in ("align", "trust"):
+            env[TRUST_ENV] = align  # the child's align mode; local_server_engine reads only "trust"
+        env.pop("ASTRID_GENERATION_ENTRY", None)
+        if record.id == "vibecomfy.run" and generation_entry:
+            env["ASTRID_GENERATION_ENTRY"] = str(generation_entry)
         if record.id == "vibecomfy.run" and comfy_invocation is not None:
             env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
         if _record_may_render(record):
@@ -9860,6 +9877,7 @@ class GenericPackHost:
         command_admission = dict(admission or {})
         comfy_invocation = command_admission.pop("comfy_invocation", None)
         align = command_admission.pop("align", None)
+        generation_entry = command_admission.pop("entry", None)
         admission = command_admission if admission is not None else None
         command = record.definition.command
         if command is None:
@@ -12620,7 +12638,7 @@ class GenericPackHost:
                             else None
                         ),
                         admission={**network_admission, **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
-                            **({"align": "trust"} if align_trust else {})},
+                            **_align_admission(task_data)},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
