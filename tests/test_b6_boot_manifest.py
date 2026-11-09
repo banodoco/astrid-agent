@@ -47,6 +47,7 @@ def test_manifest_is_canonical_and_profile_order_is_frozen() -> None:
     assert first == second
     assert first["profile_order"] == list(VIBE_PROFILE_ORDER)
     assert set(first["fixture_digests"]) == set(FROZEN_FIXTURE_DIGESTS)
+    assert set(FROZEN_FIXTURE_DIGESTS) == {"portable-capability-fixture.json", "task-resource-fixture.json"}  # checkout_server's own two
     assert manifest_hash(first) == manifest_hash(second)
 
 
