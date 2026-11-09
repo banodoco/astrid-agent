@@ -69,7 +69,8 @@ Windows, in PowerShell:
 
 The command prints the bundle path and opens its folder. If Astrid has not
 finished installing or has already been removed, attach the install log
-instead.
+instead. The [setup skill](SKILL.md) uses this command as its fallback
+when an install does not finish with a success line.
 
 ## Uninstall Astrid
 
