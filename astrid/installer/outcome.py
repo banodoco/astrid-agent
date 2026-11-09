@@ -74,6 +74,7 @@ REASONS = {
     "other-runtime-running": "two copies of Astrid are running for the same workspace.",
     "windows-upgrade-unsupported": "upgrading from an earlier Windows version isn't supported yet.",
     "autostart-off": "start at sign-in is off, so this update has to run from a terminal.",
+    "unsupported-service-manager": "in-app updates need user systemd 254 or newer on this Linux computer.",
     "pinokio-managed": "this Astrid is managed by Pinokio; use Pinokio's Update button.",
     "source-checkout": "this Astrid runs from source checkouts; update those instead.",
     "consent-required": "setup needs your consent; run the exact rerun command shown above.",
@@ -192,6 +193,7 @@ NEXT_STEPS = {
                                    "to see what is installed.",
     "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
                      "and your choice stays off.",
+    "unsupported-service-manager": "Next: run the update command from a terminal instead.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "
