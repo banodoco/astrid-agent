@@ -41,7 +41,11 @@ PROMPTS = {("image", "t2i"): {"prompt": "A red cube on a white tabletop."},
            ("image", "edit"): {"prompt": "Make the cube blue."},
            ("audio", "tts"): {"text": "Hello from the pod."},
            ("audio", "music"): {"prompt": "A short upbeat chiptune."},
-           ("audio", "sfx"): {"prompt": "Footsteps on gravel."}}
+           ("audio", "sfx"): {"prompt": "Footsteps on gravel."},
+           ("video", "i2v"): {"prompt": "A boat drifting on a calm lake."}}
+# The i2v default has no facade slot mapping; its workflow is the entry the engine-selection test resolves.
+_CAPABILITY_ENTRIES = {("video", "i2v"): ("ltx-2.3",)}
+TARGET_KINDS = ("local-managed", "attached", "runpod")
 
 
 def _slot_classes(slot):
@@ -49,7 +53,7 @@ def _slot_classes(slot):
     from astrid.core.generation import entries
     ready = entries.ready_entries()
     classes = set()
-    for identifier in generation._DEFAULT_ENTRIES.get(slot, ()):
+    for identifier in generation._DEFAULT_ENTRIES.get(slot, _CAPABILITY_ENTRIES.get(slot, ())):
         for row in ready:
             if identifier in (row["id"], row.get("registry_id")):
                 workflow = entries._load_entry_workflow(row)
@@ -176,7 +180,71 @@ class SlotPod(ProviderHTTP):
 
 
 @contextlib.contextmanager
-def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None, machine_identity=False):
+def _attached_comfy(comfy):
+    """A human-attached ComfyUI on loopback: the stand-in pod's ComfyUI behind a real socket."""
+    import http.server
+    from urllib.parse import parse_qs, urlsplit
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, status, data, mime="application/json"):
+            body = data if isinstance(data, bytes) else json.dumps(data).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            url = urlsplit(self.path)
+            if url.path == "/object_info":
+                return self._send(200, comfy.object_info())
+            if url.path == "/system_stats":
+                return self._send(200, {"system": {"os": "linux"}})
+            if url.path == "/queue":
+                return self._send(200, {"queue_running": [], "queue_pending": []})
+            if url.path.startswith("/history"):
+                tail = url.path.partition("/history/")[2]
+                history = getattr(comfy, "history", {})
+                return self._send(200, {tail: history[tail]} if tail in history else {} if tail else history)
+            if url.path == "/view":
+                name = parse_qs(url.query)["filename"][0]
+                comfy.views.append(name)
+                data, mime = comfy.outputs[name]
+                return self._send(200, data, mime)
+            self._send(404, {})
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if self.path == "/prompt":
+                status, payload = comfy.submit(json.loads(body))
+                return self._send(status, payload)
+            if self.path in ("/queue", "/interrupt", "/free"):
+                return self._send(200, {})
+            if self.path == "/upload/image":
+                subfolder = re.search(rb'name="subfolder"\r\n\r\n([^\r]*)\r\n', body)
+                name = re.search(rb'name="image"; filename="([^"]+)"', body)
+                saved = name[1].decode()
+                comfy.uploads[saved] = body
+                comfy.input_files.add(f"{subfolder[1].decode()}/{saved}" if subfolder and subfolder[1] else saved)
+                return self._send(200, {"name": saved, "subfolder": subfolder[1].decode() if subfolder else "",
+                                        "type": "input"})
+            self._send(404, {})
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+
+
+@contextlib.contextmanager
+def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
+           machine_identity=False, target_kind="runpod"):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -269,17 +337,30 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     worker = threading.Thread(target=host.run, kwargs={"poll_seconds": 0.02}, daemon=True)
     worker.start()
     try:
-        setup = client.invoke_result("runpod.setup", kind="action", project=None,
-            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
-            wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
-        assert setup.ok
-        quote = GenerationFacade().describe(target="runpod", client=client)
-        controls = dict(target="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
-            deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-            offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=True)
-        result = call(GenerationFacade(), controls, tmp_path)
-        yield client, project_id, provider, result
+        with contextlib.ExitStack() as stack:
+            if target_kind == "runpod":
+                setup = client.invoke_result("runpod.setup", kind="action", project=None,
+                    inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
+                    wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
+                assert setup.ok
+                quote = GenerationFacade().describe(target="runpod", client=client)
+                controls = dict(target="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
+                    deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                    offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
+                    idle_seconds=1800, wait=True)
+            elif target_kind == "attached":
+                # A human's ComfyUI already holds the models its engines' install receipts list (as a
+                # provisioned pod does after its install); the RunPod setup never ran against it.
+                from astrid.core.generation import entries
+                files = [path for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
+                         for path in receipt_files(provider._receipt_for(engine))]
+                provider.comfy.installed_files = lambda: files
+                url = stack.enter_context(_attached_comfy(provider.comfy))
+                controls = dict(target=url, client=client, project=project_id, wait=True)
+            else:
+                controls = dict(target="managed", client=client, project=project_id, wait=True)
+            result = call(GenerationFacade(), controls, tmp_path)
+            yield client, project_id, provider, result
     finally:
         (tmp_path / "provider-http-events.json").write_text(json.dumps(
             {"events": provider.events, "commands": provider.commands,
@@ -291,7 +372,9 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
 
 
 # The sound-effects case needs real Foley weights (hunyuanvideo_foley_xl.pth,
-# vae_128d_48k.pth); the CPU harness keeps none, so it is gpu-marked (Plan 34).
+# vae_128d_48k.pth); the CPU harness keeps none, so it is gpu-marked (Plan 34). Plan 33's U3
+# removed the refusal: the case now reaches the pod and fails only on those missing weights.
+_WEIGHTS = "needs real model weights, which the CPU harness keeps none of (Plan 34)"
 _SLOT_PARAMS = [
     pytest.param(slot, marks=pytest.mark.gpu) if slot == ("audio", "sfx") else slot
     for slot in SLOTS
@@ -427,3 +510,83 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     assert comfy.views, "no output was retrieved over /view"
     manifest = json.loads((work / "outputs" / "manifest.json").read_text())
     assert manifest["managed_generation_result"]["outcomes"]["execution"]["status"] == "succeeded"
+
+
+# One case per generation capability, each on every target kind. The runpod cells
+# repeat the slot and h3 cases above through the same drive; the local-managed and
+# attached cells are the questions T3/T4 answer. The i2v default is absent from
+# _DEFAULT_ENTRIES and reaches RunPod only through its own engine lock.
+CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio", "music"),
+                ("audio", "sfx"), ("video", "i2v"), ("video", "h3")]
+# A cell is gpu-marked only where the CPU harness cannot run it by nature: a local ComfyUI needs a GPU
+# runtime, and sfx, tts and i2v need model weights the harness does not keep. Cells that fail for a
+# product reason (attached H3 routing, the RunPod LTX lock, the H3 child timing out) carry no mark.
+_GPU_CELLS = {(("audio", "sfx"), "attached"), (("audio", "tts"), "attached"), (("video", "i2v"), "attached"),
+              (("audio", "sfx"), "runpod")}
+_CELL_MARKS = {(c, "local-managed"): [pytest.mark.gpu] for c in CAPABILITIES}
+_CELL_MARKS.update({cell: [pytest.mark.gpu] for cell in _GPU_CELLS})
+
+
+def _video_source(path, size, duration=1):
+    import subprocess
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"color=c=blue:s={size}:r=24:d={duration}", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
+                   check=True, timeout=60)
+    return path
+
+
+def _capability_call(capability):
+    modality, mode = capability
+    def call(facade, controls, tmp):
+        inputs = dict(PROMPTS[capability])
+        if capability == ("image", "edit"):
+            from PIL import Image
+            source = tmp / "source.png"
+            Image.new("RGB", (64, 64), (200, 30, 30)).save(source)
+            inputs["image"] = str(source)
+        if capability == ("video", "i2v"):
+            from PIL import Image
+            source = tmp / "start.png"
+            Image.new("RGB", (64, 64), (30, 30, 200)).save(source)
+            inputs["image_ref"] = str(source)
+        if capability == ("audio", "sfx"):
+            inputs["video_ref"] = str(_video_source(tmp / "source.mp4", "256x144"))
+        if modality == "image":
+            return facade.image(mode=mode, **controls, **inputs)
+        if modality == "audio":
+            return facade.audio(mode=mode, **controls, **inputs)
+        return facade.video(**controls, **inputs)
+    return call
+
+
+@pytest.mark.parametrize(
+    "capability,target_kind",
+    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}", marks=_CELL_MARKS.get((c, t), []))
+     for t in TARGET_KINDS for c in CAPABILITIES])
+def test_capability_reaches_generation_on_each_target(capability, target_kind, tmp_path, monkeypatch,
+                                                      real_runtime, tuple_sources):
+    if capability == ("video", "h3"):
+        import subprocess
+        source = tmp_path / "source.mp4"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                        "-frames:v", "57", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                        str(source)], check=True, timeout=120)
+        request = json.loads(H3_REQUEST.read_text())
+        assets = tmp_path / "assets.json"
+        assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
+        h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
+                                     / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+        def call(facade, controls, tmp):
+            return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
+        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True)
+    else:
+        drive = dict(call=_capability_call(capability))
+    with _drive(capability, tmp_path, monkeypatch, real_runtime, tuple_sources, target_kind=target_kind,
+                **drive) as (client, project_id, provider, result):
+        assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
+        delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
+        assert delivered, "nothing was delivered"
+        assert provider.comfy.prompts and not provider.comfy.rejections
+        assert provider.comfy.views, "no output was retrieved over /view"
+        assert client.tasks.show(result.task_id).data["state"] == "succeeded"

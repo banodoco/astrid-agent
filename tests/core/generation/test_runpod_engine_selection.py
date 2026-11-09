@@ -24,7 +24,7 @@ LIVE = dict(PAID, offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
 # Explicit refusals a target route may answer with instead of resolving.
 REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
             'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
-TARGETS = ('auto', 'managed', 'runpod')
+TARGETS = ('auto', 'managed', 'runpod', 'attached')
 
 
 def _slot_kwargs(modality, mode, image):
@@ -46,6 +46,27 @@ def image(tmp_path):
     path = tmp_path / 'start.png'
     path.write_bytes(b'\x89PNG\r\n\x1a\n')
     return path
+
+
+@pytest.fixture
+def attached_url():
+    """A human-attached ComfyUI on loopback, provisioned like the stand-in pod: the default workflows'
+    real node schemas and the model files each engine's install receipt lists (no weights on CPU)."""
+    from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receipt_files
+    from tests.integrations.test_runpod_slot_path_cpu import SLOTS as CPU_SLOTS, SlotPod, _attached_comfy, _slot_classes
+    classes = set().union(*(_slot_classes(slot) for slot in CPU_SLOTS))
+    pod = SlotPod.__new__(SlotPod)  # receipts only: no provider HTTP
+    pod.receipts, pod.schema = {}, pin_object_info()
+    files = []
+    for engine in dict.fromkeys(("comfyui", *entries.runpod_engines())):
+        files += receipt_files(pod._receipt_for(engine))
+    with _attached_comfy(PodComfy(classes, lambda: files, extra=pin_object_info())) as url:
+        yield url
+
+
+def _target_value(target, request):
+    """The request's target: 'attached' is the loopback ComfyUI's address, others pass through."""
+    return request.getfixturevalue('attached_url') if target == 'attached' else target
 
 
 @pytest.fixture
@@ -93,15 +114,23 @@ def _call(modality, mode, image, **kwargs):
     return getattr(GenerationFacade(), modality)(**_slot_kwargs(modality, mode, image), **kwargs)
 
 
-@pytest.mark.parametrize('target', TARGETS)
-@pytest.mark.parametrize('slot', SLOTS, ids=lambda slot: '/'.join(slot))
-def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, image, monkeypatch):
+# An attached ComfyUI resolves sfx and tts only where their model weights are installed; the CPU
+# harness keeps none, so those two attached cells need a GPU host to resolve (readiness refuses with
+# missing_model / input_rejected on CPU, as it should).
+_NEEDS_WEIGHTS = {(('audio', 'sfx'), 'attached'), (('audio', 'tts'), 'attached')}
+_CELLS = [pytest.param(slot, target, id=f"{'/'.join(slot)}-{target}",
+                       marks=pytest.mark.gpu if (slot, target) in _NEEDS_WEIGHTS else ())
+          for target in TARGETS for slot in SLOTS]
+
+
+@pytest.mark.parametrize('slot,target', _CELLS)
+def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, image, monkeypatch, request):
     modality, mode = slot
     if target != 'runpod':
         monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: pytest.fail('RunPod engine chosen'))
         monkeypatch.setattr(generation, '_runpod_target_policy', lambda *a, **k: pytest.fail('RunPod policy'))
     try:
-        plan = _call(modality, mode, image, target=target, dry_run=True,
+        plan = _call(modality, mode, image, target=_target_value(target, request), dry_run=True,
                      **(PAID if target == 'runpod' else {}))
     except AstridError as exc:
         assert exc.code in REFUSALS, (slot, target, exc.code, str(exc))
