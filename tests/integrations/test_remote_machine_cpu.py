@@ -92,13 +92,13 @@ class MachineProviderHTTP:
             self.receipts[engine] = self._install_receipt(engine)
         return self.receipts[engine]
 
-    def _install_receipt(self, engine):
+    def _install_receipt(self, engine, root=None):
         from dataclasses import asdict
         from astrid.core.generation.engine_contracts import (
             DownloadResult, HealthEvidence, InstallReceipt, StepReceipt,
         )
         recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
-        root = f"/root/astrid/engines/{engine}"
+        root = root or f"/root/astrid/engines/{engine}"
         plan = engine_runner.plan_install(recipe, root=root, placement="local")
         lock = engine_recipe.load_model_lock(recipe.models_lock)
         stamp = datetime.now(timezone.utc).isoformat()
