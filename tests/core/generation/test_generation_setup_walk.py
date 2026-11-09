@@ -101,3 +101,28 @@ def test_as_entry_no_run_saves_and_queues_nothing(tmp_path: Path, monkeypatch, c
     assert [request for request in seen if request[1].startswith("/prompt")] == []
     assert seen == []
     assert entries_dir.exists() and any(entries_dir.iterdir())
+
+
+def test_setup_walk_defaults_pin_then_undo_restores_previous_state(monkeypatch, capsys, generation_settings_store):
+    from astrid.core.generation import cli, settings
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setattr(cli, "_open_client", lambda: Client())
+    monkeypatch.setattr(settings, "transport_of", lambda client: generation_settings_store)
+
+    def slots() -> dict:
+        assert cli.main(["defaults", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)["slots"]
+        # Compare what each slot resolves to and why; the document version in `origin` moves on every write.
+        return {row["slot"]: (row["entry"], row["source"]) for row in rows}
+
+    before = slots()
+    assert cli.main(["defaults", "set", "image", "t2i", "z-image", "--json"]) == 0
+    capsys.readouterr()
+    assert slots()["image.t2i"] == ("z-image", "user pin")
+    assert cli.main(["defaults", "unset", "image", "t2i", "--json"]) == 0
+    capsys.readouterr()
+    assert slots() == before
