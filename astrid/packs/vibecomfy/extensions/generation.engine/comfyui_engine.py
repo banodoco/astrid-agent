@@ -7,7 +7,10 @@ refuse until a later task wires them to the existing ComfyUI path.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+MODES = ("align", "check", "trust")
 
 
 _WORKFLOWS: dict[Any, list[Any]] = {}
@@ -47,8 +50,65 @@ def _pinned_locks() -> dict[tuple[str, str], Any]:
     return rows
 
 
+def _key(row: Any) -> str:
+    return f"{row.get('subdir') or ''}/{row['name']}".lstrip("/")
+
+
+def _present(models_root: Path, row: Any) -> bool:
+    path = models_root / _key(row)
+    if not path.is_file():
+        return False
+    return row.get("size") is None or path.stat().st_size == row["size"]
+
+
+class VibeComfyCommands:
+    """VibeComfy's own commands, the only place a model is fetched.
+
+    The argv shapes are checked against vibecomfy.cli.build_parser() in test_run_local.py.
+    Every command takes the workflow path; prepare runs with --no-models --no-packs so that
+    `vibecomfy fetch` is the only command that downloads a model, and `nodes restore` the only one
+    that installs node packs. fetch skips files already on disk, so it is not passed --force.
+    """
+
+    def __init__(self, workflow: str = "", lockfile: str | None = None) -> None:
+        self.workflow, self.lockfile = workflow, lockfile
+
+    def argv(self, step: str) -> list[str]:
+        if step == "doctor":
+            return ["doctor", self.workflow, "--non-interactive"]
+        if step == "prepare":
+            return ["prepare", self.workflow, "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"]
+        if step == "nodes_restore":
+            return ["nodes", "--non-interactive", "restore", *(["--lockfile", self.lockfile] if self.lockfile else [])]
+        if step == "fetch":
+            return ["fetch", self.workflow, "--non-interactive"]
+        raise ValueError(step)
+
+    def _run(self, step: str) -> None:
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, "-c", "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))",
+                        *self.argv(step)], check=True)
+
+    def doctor(self) -> None:
+        self._run("doctor")
+
+    def prepare_deps_sync(self) -> None:
+        self._run("prepare")
+
+    def nodes_restore(self, nodes: Any) -> None:
+        self._run("nodes_restore")
+
+    def fetch(self, rows: Any) -> None:
+        self._run("fetch")  # per workflow; VibeComfy skips the rows already present
+
+
 class ComfyUIEngine:
     name = "comfyui"
+
+    def __init__(self, commands: Any = None, models_root: Any = None) -> None:
+        self.commands = commands
+        self.models_root = models_root
 
     def requirements(self, entry: Any, inputs: Any) -> dict[str, Any]:
         models: dict[tuple[str, str], dict[str, Any]] = {}
@@ -88,7 +148,37 @@ class ComfyUIEngine:
             raise ValueError("comfyui extra must be {'nodes': [{'repo': str, 'commit': str}, ...]}")
 
     def align(self, manifest: Any, mode: str) -> Any:
-        raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
+        """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
+
+        align: doctor, prepare --deps sync, nodes restore, then fetch only the missing rows.
+        check: report the missing rows; touch nothing.
+        trust: accept the manifest as declared; the result is marked unverified.
+        """
+        if mode not in MODES:
+            raise ValueError(f"align mode must be one of {MODES}, not {mode!r}")
+        models_root = Path(manifest.get("models_root") or self.models_root or "")
+        missing = [row for row in manifest.get("models", []) if not _present(models_root, row)]
+        result = {"mode": mode, "missing": [_key(r) for r in missing], "fetched": [], "verified": mode != "trust"}
+        if mode == "trust":
+            result["status"] = "unverified"
+            return result
+        if mode == "check":
+            result["status"] = "ready" if not missing else "missing"
+            return result
+        commands = self.commands or VibeComfyCommands(manifest.get("workflow", ""), manifest.get("lockfile"))
+        commands.doctor()
+        commands.prepare_deps_sync()
+        commands.nodes_restore((manifest.get("extra") or {}).get("nodes", []))
+        if missing:
+            commands.fetch(missing)
+        result.update(fetched=[_key(r) for r in missing], status="ready")
+        return result
+
+    def run(self, job: Any, local: Any) -> Any:
+        """Align, start or reuse ComfyUI on this machine, and submit to localhost."""
+        self.align(job["manifest"], job.get("mode", "align"))
+        url = local.ensure_running()  # reuses a live server (attached) or starts one
+        return local.submit(url, job["workflow"])
 
     def execute(self, job: Any) -> Any:
         raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
