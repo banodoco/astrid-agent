@@ -17,7 +17,8 @@ from scripts import journey_fresh_update as fresh
 from scripts import journey_version_jumps as jumps
 
 
-def _leg(monkeypatch, tmp_path, *, update_exit=0, update_installs=True):
+def _leg(monkeypatch, tmp_path, *, update_exit=0, update_installs=True, receipt_kind="updated",
+         live=None):
     app, candidate_path, root = (tmp_path / name for name in ("app", "candidate.json", "program"))
     data = tmp_path / "data"
     app.mkdir()
@@ -58,6 +59,11 @@ def _leg(monkeypatch, tmp_path, *, update_exit=0, update_installs=True):
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_args: None)
     monkeypatch.setattr(jumps.journey, "bootstrap", handoff)
     monkeypatch.setattr(jumps, "candidate_update", candidate_update)
+    monkeypatch.setattr(jumps, "run_receipt", lambda _data: {
+        "format": "astrid-last-run/v1", "kind": receipt_kind, "exit_code": 0 if receipt_kind == "updated" else 3,
+        "start": 9, "still": 10 if receipt_kind == "updated" else 9, "target": 10})
+    monkeypatch.setattr(jumps, "live_runtime_owners", lambda _data: (
+        live if live is not None else [{"data_root": str(data), "pid": 1, "runtime_instance_id": "new"}]))
     monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
     monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_: None)
     monkeypatch.setattr(jumps.journey, "installation", installation)
@@ -192,3 +198,31 @@ def test_driver_requires_both_start_sources_for_the_handoff_leg(tmp_path, monkey
     with pytest.raises(SystemExit) as failure:
         journey.main(argv)
     assert failure.value.code == 2
+
+
+def test_update_whose_receipt_is_not_updated_fails_the_run_receipt_check(monkeypatch, tmp_path):
+    run, _, receipt = _leg(monkeypatch, tmp_path, receipt_kind="not-updated")
+    with pytest.raises(RuntimeError, match="run receipt is not updated to release 10"):
+        run()
+    recorded = json.loads(receipt.read_text())
+    assert recorded["checks"]["release"] == "not-run" and recorded["checks"]["run_receipt"] == "not-run"
+
+
+def test_a_second_live_runtime_after_the_update_fails_the_leg(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    run, _, receipt = _leg(monkeypatch, tmp_path, live=[
+        {"data_root": str(data), "pid": 1, "runtime_instance_id": "r0-era"},
+        {"data_root": str(data) + "-r1", "pid": 2, "runtime_instance_id": "new"}])
+    with pytest.raises(RuntimeError, match="Exactly one live Runtime"):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["one_runtime"] == "not-run"
+
+
+def test_run_receipt_is_read_beside_the_candidate_install_log(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    log_dir = (tmp_path / "home" / "Library" / "Logs" / "Astrid Runtime" if jumps.sys.platform == "darwin"
+               else tmp_path / "home" / ".local" / "state" / "astrid-runtime" / "logs")
+    log_dir.mkdir(parents=True)
+    assert jumps.run_receipt(data) is None
+    (log_dir / "last-run.json").write_text(json.dumps({"kind": "updated"}))
+    assert jumps.run_receipt(data) == {"kind": "updated"}

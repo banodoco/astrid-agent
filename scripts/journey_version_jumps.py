@@ -848,6 +848,39 @@ def handed_off_start(root: Path, data: Path) -> dict:
             "r0_data_root": str(recorded), "r1_data_root": str(active)}
 
 
+def run_receipt(data: Path) -> dict | None:
+    """The candidate installer's ``last-run.json``, beside its install.log under the run home."""
+    home = data.parent / "home"
+    log_dir = (home / "Library" / "Logs" / "Astrid Runtime" if sys.platform == "darwin"
+               else home / ".local" / "state" / "astrid-runtime" / "logs")
+    path = log_dir / "last-run.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    return journey.read_json(path)
+
+
+def live_runtime_owners(data: Path) -> list[dict]:
+    """Discovery owners whose process is alive, at the R0 root and the R1 copy."""
+    owners = []
+    for root in (data, Path(str(data) + "-r1")):
+        try:
+            discovery = json.loads((root / "runtime" / "discovery.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = discovery.get("pid") if isinstance(discovery, dict) else None
+        if type(pid) is not int or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        owners.append({"data_root": str(root), "pid": pid,
+                       "runtime_instance_id": discovery.get("runtime_instance_id")})
+    return owners
+
+
 def candidate_update(app: Path, manifest_path: Path, shell: str, evidence: Path,
                      root: Path, data: Path) -> dict:
     """Run the candidate's public ``install --update`` once and return what it reported.
@@ -893,7 +926,7 @@ def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path,
         "release0_fixture": None, "handoff_source": None, "handoff": None, "update": None,
         "release_transition": None, "semantic_data": None,
         "checks": {key: "not-run" for key in (
-            "handed_off_start", "update_exit", "release", "service", "health",
+            "handed_off_start", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
             "semantic_data", "task_settled", "unrelated_sentinel")},
     }
     result_path = evidence / "journey-result.json"
@@ -952,7 +985,7 @@ def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path,
         # 3. The candidate's public update command, from the handed-off state.
         update = result["update"] = candidate_update(app, candidate_path, args.shell, evidence / "update",
                                                      root, data)
-        # The run receipt (UR-15a) adds its headline and outcome here once it exists.
+        receipt = update["receipt"] = run_receipt(data)
         if update["exit_code"] != 0:
             raise RuntimeError(f"Candidate install --update exited {update['exit_code']} "
                                f"from the handed-off Release {R0_HANDOFF_RELEASE} install")
@@ -964,6 +997,11 @@ def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path,
                 f"still {installed_release(version)}, not the candidate release {target_release}")
         if version_path == old_path:
             raise RuntimeError("Candidate install --update did not activate a new version")
+        # The candidate's own receipt (UR-15a) must agree: updated, exit 0, the target live.
+        if (not isinstance(receipt, dict) or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+                or receipt.get("still") != target_release or receipt.get("target") != target_release):
+            raise RuntimeError(f"The candidate's run receipt is not updated to release {target_release}: {receipt}")
+        result["checks"]["run_receipt"] = "pass"
         selected = selected_candidate(manifest, version, old_tuple)
         active_data = selected_data_root(root, data)
         journey.wait_ready(active_data)
@@ -973,6 +1011,11 @@ def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path,
             raise RuntimeError(f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
             raise RuntimeError("Candidate update retained the handed-off Runtime instance")
+        live_owners = live_runtime_owners(data)
+        result["live_runtimes"] = live_owners
+        if [owner["data_root"] for owner in live_owners] != [str(active_data)]:
+            raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {live_owners}")
+        result["checks"]["one_runtime"] = "pass"
         result["release_transition"] = {"from": R0_HANDOFF_RELEASE, "to": target_release,
                                         "start_state": "r0-handoff-complete", "source": "candidate-install-update"}
         result["checks"]["release"] = "pass"
