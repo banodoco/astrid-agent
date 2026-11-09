@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.packs.vibecomfy.workflow_route import WorkflowRunner as VibeComfyWorkflowBackend
 from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from astrid.core.generation.producer_result import bind_executed_settings, stage_executed_settings
 

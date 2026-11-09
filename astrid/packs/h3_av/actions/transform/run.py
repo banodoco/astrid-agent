@@ -1295,9 +1295,7 @@ def _invoke_canonical_run_impl(
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
 
-    from astrid.core.generation.backends.registry import (
-        GenerationBackendRegistry, resolve_workflow_descriptor,
-    )
+    from astrid.core.generation.placement import resolve_workflow_placement
 
     # An unplaced call carrying a RunPod target is the legacy prepared route.
     if placement is None:
@@ -1306,11 +1304,7 @@ def _invoke_canonical_run_impl(
             placement = "runpod"
     # Resolve only inert placement metadata before touching admission or the
     # prepared client. The facade validates this same original target again.
-    descriptor = resolve_workflow_descriptor(
-        GenerationBackendRegistry(), placement=placement,
-        execution_request=execution_request,
-    )
-    workflow_placement = descriptor.placement.resolve(placement)
+    workflow_placement = resolve_workflow_placement(placement, execution_request=execution_request)
     workflow_route = f"generation.workflow.v1/{workflow_placement}"
 
     admission_payload = {
