@@ -1,5 +1,5 @@
 api: 1
-summary: Wan2GP's Windows engine recipe; declared, not yet called.
+summary: Wan2GP's Windows engine recipe; execution support is pending.
 example: astrid generation engines
 effects: edit
 entry: wan2gp_engine.py:ENGINE

@@ -3,8 +3,10 @@
 requirements(entry, inputs) -> {engine, base, models[name, subdir, url, sha256, size], extra}
 align(manifest, mode)       -> mode is "align" | "check" | "trust"
 execute(job)                -> files written under job.out
-cancel(job)
 probe(endpoint)             -> optional
+
+Cancellation belongs to the running machine or local ComfyUI target, which owns
+the process or submitted prompt identity; engines do not receive that handle.
 """
 
 from __future__ import annotations
@@ -20,7 +22,5 @@ class Engine(Protocol):
     def align(self, manifest: Any, mode: str) -> Any: ...
 
     def execute(self, job: Any) -> Any: ...
-
-    def cancel(self, job: Any) -> Any: ...
 
     def probe(self, endpoint: Any) -> Any: ...
