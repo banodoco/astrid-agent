@@ -13711,6 +13711,7 @@ class GenericPackHost:
         # aggregate evidence budget is deliberately shared and already locked.
         slot.capabilities = dict(self.capabilities)
         slot.source_epoch = self.source_epoch
+        slot._pack_source_roots = dict(getattr(self, "_pack_source_roots", {}))
         slot.runtime_state = dict(self.runtime_state)
         with self._handoff_condition:
             slot._remotion_full_preflight = copy.deepcopy(self._remotion_full_preflight)
