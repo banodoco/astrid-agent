@@ -435,11 +435,12 @@ def _job_command(argv: list[str]) -> int:
                         help="Override the job's align mode.")
     parser.add_argument('--json', action='store_true')
     parsed = parser.parse_args(argv)
+    from astrid.core.contracts.errors import AstridError
     from astrid.core.generation.local_job import JobFileError, run_job
     from astrid.core.generation.progress import write_progress
     try:
         result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
-    except JobFileError as exc:
+    except (JobFileError, AstridError, ValueError) as exc:
         parser.error(str(exc))
     write_progress('done')
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

@@ -322,7 +322,12 @@ def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_pa
 
 
 def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeypatch):
-    """Aliases and defaults of the entry's public inputs, not the bundle's own names, reach the run."""
+    """The job path validates the entry's public inputs; the names that reach the run come from the facade's binding.
+
+    T4i: binds and defaults are applied by ``entries.apply_workflow_inputs`` (the function the facade's
+    ``entries.prepare`` calls), proved against a real bound workflow in test_t4i_job_contract.py. This test
+    keeps the public-input validation and the entry identity; the binding is stubbed.
+    """
     from astrid.core.generation import entries
     from astrid.core.generation.local_job import JobFileError, run_job
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
@@ -337,6 +342,11 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
     monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id, "bundle": str(bundle)})
     seen = {}
     monkeypatch.setattr(action, "_run_and_settle", lambda workflow, out, **kw: seen.update(kw, workflow=workflow) or {})
+    monkeypatch.setattr("astrid.core.generation.preflight.require_generation_target_readiness", lambda *a: None)
+    monkeypatch.setattr(entries, "_load_entry_workflow", lambda entry: object())
+    monkeypatch.setattr(entries, "target_schema", lambda *a, **k: None)
+    monkeypatch.setattr(entries, "apply_workflow_inputs", lambda workflow, **kw: (
+        workflow, {"kind": "image", "bindings": {"bound": dict(kw["values"])}, "unbound": []}, {}))
 
     def write(inputs):
         job = tmp_path / "job.json"
@@ -345,7 +355,7 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
         return job
 
     run_job("named", write({"prompt": "x", "texture": 0.5}), tmp_path / "out")
-    assert json.loads(seen["workflow_inputs"]) == {"prompt": "x", "paint_strength": 0.5}
+    assert json.loads(seen["workflow_inputs"]) == {"bound": {"prompt": "x", "texture": 0.5}}
     assert seen["entry"] == "named" and seen["workflow"] == bundle
     with pytest.raises(JobFileError, match="not valid for entry"):
         run_job("named", write({"prompt": "x", "unknown_field": 1}), tmp_path / "out")
