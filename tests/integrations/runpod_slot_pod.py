@@ -18,7 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 
 SAVE_KEYS = {"SaveImage": "images", "PreviewImage": "images", "SaveAudio": "audio", "SaveAudioMP3": "audio",
-             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images"}
+             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images",
+             "MiniMaxH3StreamLiveExtensionAVToVHS": "gifs"}
 MODEL_EXT = (".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin", ".sft")
 # loader field -> models folder the stand-in pod keeps those files in
 FOLDERS = {"unet_name": "diffusion_models", "vae_name": "vae", "clip_name": "text_encoders",
@@ -130,7 +131,17 @@ def _link(value):
 def validate_prompt(graph: dict, info: dict) -> dict:
     """ComfyUI's /prompt validation: classes, required inputs, links and combo menus."""
     errors = {}
+    # ComfyUI validates only the nodes an output node reaches; the rest of the graph is never executed.
+    reached, stack = set(), [i for i, n in graph.items() if info.get(n.get("class_type"), {}).get("output_node")]
+    while stack:
+        current = str(stack.pop())
+        if current in reached or current not in graph:
+            continue
+        reached.add(current)
+        stack += [v[0] for v in graph[current].get("inputs", {}).values() if _link(v)]
     for node_id, node in graph.items():
+        if str(node_id) not in reached and any(info.get(n.get("class_type"), {}).get("output_node") for n in graph.values()):
+            continue
         cls = node.get("class_type")
         problems = []
         if cls not in info:
@@ -140,9 +151,12 @@ def validate_prompt(graph: dict, info: dict) -> dict:
         spec = info[cls]["input"]
         inputs = node.get("inputs", {})
         for field, field_spec in (spec.get("required") or {}).items():
-            if field not in inputs:
+            if field not in inputs and (not str(field_spec[0]).startswith("COMFY_AUTOGROW")
+                                        or not any(str(name).startswith(field + ".") for name in inputs)):
                 problems.append({"type": "required_input_missing", "message": f"Required input is missing: {field}"})
                 continue
+            if field not in inputs:
+                continue  # an autogrow input arrives as field.<name> keys
             value = inputs[field]
             if _link(value):
                 if str(value[0]) not in graph:
