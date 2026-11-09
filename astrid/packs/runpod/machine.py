@@ -662,7 +662,8 @@ def _active_pack_ids() -> set[str]:
     return {source.pack_id for source in _active_sources()}
 
 
-def unshipped_entry_reason(entry: str | None, *, registry: Any = None) -> str | None:
+def unshipped_entry_reason(entry: str | None, *, registry: Any = None,
+                           action_rows: Any = None) -> str | None:
     """Why ``entry`` cannot run on a rented machine, or None when its code ships.
 
     The pod receives the pinned source tuple (``remote_placement.SOURCE_DIRS``: the
@@ -694,6 +695,19 @@ def unshipped_entry_reason(entry: str | None, *, registry: Any = None) -> str | 
                 return (f"entry {entry!r} comes from {contribution.id} ({contribution.scope} pack at {path.parent}), "
                         "which is outside the active pack selection shipped to a rented machine; install it "
                         "with astrid packs (an active source), or run it locally")
+            return None
+    if action_rows is None:
+        try:
+            from astrid.core.generation.entries import action_entries
+            action_rows = action_entries()
+        except Exception:
+            action_rows = []
+    for row in action_rows:
+        if row.get("id") == entry and row.get("action"):
+            pack = str(row["action"]).split(".", 1)[0]
+            if not (packs / pack / "pack.yaml").is_file() and pack not in _active_pack_ids():
+                return (f"entry {entry!r} is an action of pack {pack!r}, which is outside the active pack "
+                        "selection shipped to a rented machine; run it locally")
             return None
     return None
 

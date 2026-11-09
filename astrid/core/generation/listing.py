@@ -67,7 +67,16 @@ def catalog_rows() -> list[dict[str, Any]]:
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
         if fixture:
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
-    from astrid.core.generation.entries import user_entries, ready_entries
+    from astrid.core.generation.entries import action_entries, user_entries, ready_entries
+    for entry in action_entries(discovery):
+        for mode in entry["modes"]:
+            record = actions.get(entry["action"], {})
+            unavailable = entry["action"] in actions and record.get("available") is not True
+            add(entry["id"], entry["kind"], mode, "action", entry["action"], "action-entry",
+                "unavailable" if unavailable else "available",
+                record.get("error", {}).get("message", "") if unavailable else "")
+            rows[-1]["requirements"] = entry["requirements"]
+            rows[-1]["isolation_requirements"] = entry["isolation_requirements"]
     for entry in user_entries():
         for mode in entry["modes"] or [""]:
             ambiguity = next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), "")
@@ -91,8 +100,8 @@ def catalog_rows() -> list[dict[str, Any]]:
         record = None
         if row['source'] in {'catalog', 'catalog-alias', 'direct-image'}:
             record = model_availability(row.get('registry_id', row['id']), row['mode'], row['backend'], declaration=declaration)
-        elif row['source'] == 'action':
-            record = actions.get(row['id'])
+        elif row['source'] in {'action', 'action-entry'}:
+            record = actions.get(row['id'] if row['source'] == 'action' else row['template'])
         elif row['source'] == 'ready-template':
             record = template_availability(row['id'], row['mode'], row['backend'], declaration=declaration)
             if record.get('available') is True and row.get('registry_id'):
@@ -202,6 +211,12 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
         base = dict(row)
         if row["availability"] != "available":
             output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": row.get("fix") or "Use an implemented generation route; see the availability declaration.", "models_present": []})
+        elif row["source"] == "action-entry":
+            output.append({**base, "target": "action", "ready": False,
+                           "readiness_scope": "requirements_unverified",
+                           "reason": "request-specific action requirements and tracked parent are not verified",
+                           "fix": "Inspect the action requirements and use a tracked Runtime parent when available.",
+                           "models_present": []})
         elif row["backend"] == "local":
             assert registry is not None
             for target, schema in targets or [(None, None)]:

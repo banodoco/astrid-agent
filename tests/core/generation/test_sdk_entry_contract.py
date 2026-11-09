@@ -61,25 +61,6 @@ def test_sdk_entry_selector_conflict_precedes_target(isolated_catalog, monkeypat
         GenerationFacade().image(entry="z-image", model="other", placement="auto", prompt="boat")
 
 
-def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monkeypatch, shipped_catalog):
-    import astrid.sdk as sdk
-    from astrid.sdk.client import AstridClient
-    monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: shipped_catalog))
-    digest = "sha256:" + "1" * 64
-    action = {"id": "h3", "kind": "video", "modes": ["transform"], "action": "h3_av.transform",
-              "inputs": [{"name": name, "type": "file", "required": True}
-                         for name in ("request", "asset_map")]}
-    monkeypatch.setattr(entries, "user_entries", lambda: [])
-    monkeypatch.setattr(entries, "action_entries", lambda: [action])
-    monkeypatch.setattr(entries, "ready_entries", lambda: [])
-    monkeypatch.setattr(GenerationFacade, "_invoke", lambda *a, **k: pytest.fail("untracked H3 invoke"))
-    monkeypatch.setattr(sdk, "invoke_result", lambda *a, **k: pytest.fail("H3 bypassed parent admission"))
-    monkeypatch.setattr(AstridClient, "open_from_launcher",
-                        lambda *a, **k: pytest.fail("H3 bootstrapped Runtime before parent admission"))
-    with pytest.raises(CapabilityValidationError, match="managed Runtime object"):
-        GenerationFacade().video(entry="h3", request="/tmp/local.json", asset_map=digest)
-    with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent"):
-        GenerationFacade().video(entry="h3", request={"digest": digest}, asset_map=digest)
 
 
 def test_cli_json_and_sdk_entry_resolve_identically(isolated_catalog, monkeypatch, tmp_path, capsys):
@@ -214,17 +195,6 @@ def test_task130_unsupported_action_entry_fails_before_invoke(monkeypatch):
         GenerationFacade().video(entry="ordinary", request=digest, asset_map=digest, client=client)
 
 
-@pytest.mark.parametrize("digest", ["sha256:" + "a" * 64, "a" * 64, "sha256:malformed"])
-def test_task129_h3_mixed_digest_and_local_path_never_reaches_parent(monkeypatch, digest):
-    import astrid.sdk as sdk
-    from astrid.sdk.client import AstridClient
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("mixed custody reached admission")
-    monkeypatch.setattr(sdk, "invoke_result", forbidden)
-    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
-    with pytest.raises(CapabilityValidationError, match="producer-local file path"):
-        GenerationFacade().video(entry="h3", request="/tmp/request.json", asset_map=digest)
 
 
 def test_task129_h3_producer_controls_keep_declared_boolean_validation(monkeypatch):

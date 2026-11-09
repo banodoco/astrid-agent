@@ -83,6 +83,7 @@ class SlotPod(MachineProviderHTTP):
         self.expect_entry = None
         from astrid.core.generation import entries
         self.listed = sorted({row["id"] for row in entries.ready_entries()}
+                             | {row["id"] for row in entries.contributed_entries()}  # the pod's built-in packs (h3)
                              | {value for values in SLOT_DEFAULTS.values() for value in values}
                              | {value for values in _CAPABILITY_ENTRIES.values() for value in values})
         # Each engine's own readiness gate needs its required nodes in /object_info, besides the workflow's classes.

@@ -689,7 +689,6 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     return frozen
 
 
-@dataclass(frozen=True)
 def _asset_map(value: Any) -> Any:
     """``asset_map`` is a ``file_map`` input ({id: path}); a path to its JSON document is read here.
 
@@ -708,6 +707,7 @@ def _asset_map(value: Any) -> Any:
                   else str((document.parent / item).resolve())) for key, item in raw.items()}
 
 
+@dataclass(frozen=True)
 class GenerationFacade:
     """Public typed entrypoint for generation executors."""
 
@@ -1232,6 +1232,8 @@ class GenerationFacade:
                         if not dry_run and source_ref is None:
                             retained = Path(built['bundle']) / 'source.json'
                             retain_source(retained.name, retained.read_bytes())
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
+                                                                pending_target=pending_target, align=align)
                     else:
                         with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                             if not dry_run and source_ref is None:
@@ -1411,6 +1413,11 @@ class GenerationFacade:
             raise GenerationInputError(str(exc), entry=locals().get('description')) from exc
         from astrid.core.generation.availability import require_entry_available
         require_entry_available(description, description['mode'])
+        if description.get("action"):
+            raise CapabilityPreconditionError(
+                "action-backed generation requires a Runtime-admitted parent; "
+                "the tracked parent interface is not yet available"
+            )
         return description, values
 
     def generate(self, entry: str | None = None, inputs: Mapping[str, Any] | None = None,

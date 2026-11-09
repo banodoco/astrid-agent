@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 POINT = "vibecomfy.workflows"
 HOOKS = ("build", "after_outputs")
-ASTRID_ENTRY_FIELDS = frozenset({"default_for", "inputs"})
+ASTRID_ENTRY_FIELDS = frozenset({"default_for", "inputs", "default_mode"})
 
 
 def contributions(registry: Any) -> list[Any]:
@@ -43,7 +43,7 @@ def entries(contribution: Any, *, with_inputs: bool = False) -> list[dict[str, A
         # id, kind, modes, bundle, needs, binds and defaults.
         row = {"needs": [], "binds": {}, "defaults": {},
                **{k: v for k, v in raw.items() if k not in ASTRID_ENTRY_FIELDS},
-               **({"inputs": raw["inputs"]} if with_inputs and "inputs" in raw else {})}
+               **{k: raw[k] for k in ("inputs", "default_mode") if with_inputs and k in raw}}
         bundle = Path(row["bundle"])
         row["bundle"] = str(bundle if bundle.is_absolute() else (root / bundle).resolve())
         rows.append(row)

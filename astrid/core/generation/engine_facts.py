@@ -24,6 +24,7 @@ class EngineFacts:
     write_json_atomic: Callable[[Any, Any], None]
     assert_no_unresolved_placeholders: Callable[[Any], None]
     measure_source_av: Callable[[Any], Mapping[str, Any]]
+    astrid_error: Callable[[Exception], Any]
 
 
 def comfyui_facts() -> EngineFacts:
@@ -63,5 +64,9 @@ def comfyui_facts() -> EngineFacts:
         from astrid.packs.vibecomfy.invocation_preflight import measure_h3_source_av
         return measure_h3_source_av(path).to_dict()
 
+    def astrid_error(error: Exception) -> Any:
+        from astrid.core.contracts.errors import coerce_astrid_error
+        return coerce_astrid_error(error)
+
     return EngineFacts(comfy_commit, locked_models, bind_model_root, build_asset_manifest, read_archive,
-                       write_json_atomic, assert_no_unresolved_placeholders, measure_source_av)
+                       write_json_atomic, assert_no_unresolved_placeholders, measure_source_av, astrid_error)

@@ -78,6 +78,8 @@ def known_entries(registry: Any = None) -> list[dict[str, Any]]:
 
         for row in [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]:
             rows.append({"pack": "vibecomfy", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
+        for row in workflow_entries.action_entries():
+            rows.append({"pack": "generation", "entry": row["id"], "kind": row["kind"], "modes": set(row["modes"])})
     except Exception:
         pass
     try:

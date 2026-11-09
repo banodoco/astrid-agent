@@ -149,6 +149,52 @@ def ready_entries() -> list[dict[str, Any]]:
     return _ready_entries_for()
 
 
+def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
+    """Project action entry declarations and their authoritative input ports."""
+    if discovery is None:
+        from astrid.core.pack.discovery import reuse_pack_projection
+        return reuse_pack_projection(_discover_action_entries)
+    rows = []
+    for capability in discovery.actions:
+        definition = getattr(capability, "definition", {})
+        metadata = definition.get("metadata", {}) if isinstance(definition, dict) else {}
+        declaration = metadata.get("generation_entry") if isinstance(metadata, dict) else None
+        if not isinstance(declaration, dict):
+            continue
+        names = declaration.get("inputs")
+        ports = {port.name: port for port in capability.inputs}
+        local_files = declaration.get("producer_local_inputs", [])
+        if (not isinstance(declaration.get("id"), str) or not declaration["id"]
+                or declaration.get("kind") not in {"image", "video", "audio"}
+                or not isinstance(declaration.get("modes"), list)
+                or not declaration["modes"]
+                or not all(isinstance(mode, str) and mode for mode in declaration["modes"])
+                or not isinstance(names, list) or not names
+                or any(not isinstance(name, str) or name not in ports for name in names)
+                or len(names) != len(set(names))
+                or not isinstance(local_files, list)
+                or any(not isinstance(name, str) or name not in names
+                       or _input_type(ports[name].type) != "file" for name in local_files)
+                or len(local_files) != len(set(local_files))):
+            raise ValueError(f"invalid generation entry declaration on {capability.id!r}")
+        rows.append({"id": declaration["id"], "kind": declaration["kind"],
+                     "modes": list(declaration["modes"]), "action": capability.id,
+                     "inputs": [{"name": ports[name].name, "type": ports[name].type,
+                                 "required": ports[name].required,
+                                 "description": ports[name].description,
+                                 **({"file_custody": "producer_local"} if name in local_files else {}),
+                                 **_declared_default({"type": ports[name].type,
+                                     "default": getattr(ports[name], "default", None)})} for name in names],
+                     "requirements": declaration.get("requirements"),
+                     "isolation_requirements": definition.get("isolation", {}).get("requirements", [])})
+    return rows
+
+
+def _discover_action_entries() -> list[dict[str, Any]]:
+    from astrid.sdk.invocation import discover
+    return action_entries(discover())
+
+
 def bundle_path(entry: dict[str, Any]) -> Path:
     path = Path(entry['bundle']).expanduser()
     return path / 'workflow.py' if path.is_dir() else path
@@ -156,6 +202,19 @@ def bundle_path(entry: dict[str, Any]) -> Path:
 
 def find_entry(entry_id: str) -> dict[str, Any] | None:
     matches = [entry for entry in user_entries() if entry['id'] == entry_id]
+    actions = [entry for entry in action_entries() if entry['id'] == entry_id]
+    if actions:
+        ready = _ready_entries_for(entry_id)
+        from astrid.core.model_catalog.registry import ModelRegistry
+        try:
+            ModelRegistry.load_default().get(entry_id)
+        except KeyError:
+            catalog_match = False
+        else:
+            catalog_match = True
+        if len(actions) != 1 or matches or ready or catalog_match:
+            raise ValueError(f'ambiguous generation entry {entry_id!r}')
+        return actions[0]
     if len(matches) > 1:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
@@ -420,9 +479,19 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     except KeyError:
         catalog = None
     users = [row for row in user_entries() if row['id'] == entry_id]
-    if len(users) > 1:
+    actions = [row for row in action_entries() if row['id'] == entry_id]
+    if len(users) > 1 or len(actions) > 1 or (actions and (users or catalog or entry_id in _ready_ids())):
         raise ValueError(f'ambiguous generation entry {entry_id!r}')
-    if users or catalog is None:
+    if actions:
+        entry = actions[0]
+        base = {key: entry[key] for key in ('id', 'kind', 'action', 'isolation_requirements') if key in entry}
+        base['requirements'] = None
+        base['source'] = 'action'
+        base['engine'] = None
+        modes = entry['modes']
+        schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
+                   for name in modes}
+    elif users or catalog is None:
         matches = users or _ready_entries_for(entry_id)
         if len(matches) != 1:
             raise ValueError(f'unknown generation entry {entry_id!r}')
@@ -431,6 +500,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
         base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
+                **({'default_mode': entry['default_mode']} if entry.get('default_mode') in modes else {}),
                 **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
         if entry.get('inputs'):
             # The entry declares its own inputs (a contribution whose build picks the graph): the
@@ -553,7 +623,25 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
         kind = _input_type(port.get('type'))
         if value is None:
             raise ValueError(f'entry input {name!r} must not be null')
-        if kind == 'file_map':
+        if (kind == 'file' and port.get('file_custody') != 'producer_local'
+                and (description.get('source') in {'action', 'action-entry'} or 'action' in description)):
+            from astrid.core.execution.managed_inputs import managed_file_digest
+            managed_file_digest(value, name)
+        elif kind == 'file' and port.get('file_custody') == 'producer_local':
+            if isinstance(value, Path):
+                value = str(value)
+            if not isinstance(value, str):
+                raise ValueError(f'entry input {name!r} requires a string producer-local file path')
+            from astrid.core.execution.managed_inputs import managed_file_digest
+            try:
+                managed_file_digest(value, name)
+            except ValueError:
+                managed = value.startswith('sha256:')
+            else:
+                managed = True
+            if managed:
+                raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
+        elif kind == 'file_map':
             # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
             if (not isinstance(value, Mapping) or not value
                     or any(not isinstance(key, str) or not key or '/' in key
@@ -614,6 +702,8 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         else:
             candidates = {'image': ['t2i'], 'video': ['t2v'], 'audio': ['music']}[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
+        if selected is None and description.get('default_mode') in supported:
+            selected = description['default_mode']  # the entry's graph does not depend on the mode (h3's build picks it)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
@@ -786,7 +876,7 @@ def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     import re
     manifest = requirements(entry)
     assets = manifest["models"]
-    built = bool(entry.get("hooks_declared"))
+    built = bool(entry.get("hooks_declared") or entry.get("action"))
     needs = [] if built else entry.get("needs", [])
     required: set[str] = set()
     pinned: set[str] = set()

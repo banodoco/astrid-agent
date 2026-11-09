@@ -27,8 +27,19 @@ class H3RequestError(ValueError):
         super().__init__(message)
         self.code, self.field, self.fix = code, field, fix
 
+    @property
+    def cause(self) -> str:
+        return str(self)
+
+    message = cause
+
     def astrid_error_fields(self) -> dict[str, str]:
         return {"code": self.code, "field": self.field, "fix": self.fix}
+
+    def to_envelope(self) -> dict[str, Any]:
+        """The canonical Astrid error envelope, built by the host's error type."""
+        from .engine_facts import facts
+        return facts().astrid_error(self).to_envelope()
 
 
 @dataclass(frozen=True)

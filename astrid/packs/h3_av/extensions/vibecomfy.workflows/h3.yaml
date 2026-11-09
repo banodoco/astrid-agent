@@ -8,6 +8,8 @@ entries:
     kind: video
     modes: [i2v, v2v, video-edit]
     bundle: native_h3_continuation
+    # build picks the graph from the request, so the mode does not change the run.
+    default_mode: v2v
     # No model needs are declared here: build's graph carries its own model rows (requirements()).
     needs: []
     inputs:
