@@ -198,6 +198,25 @@ def _capture_live_schemas(bundle: Any, provider: Any) -> None:
             node.metadata['schema'] = schema
 
 
+def run_scoped_overrides(workflow: Any, attempt_id: str) -> Any:
+    """Clone the built graph and namespace only its declared output prefixes for this attempt.
+
+    This is the sole run-scoped graph transform shared by every local-server placement.
+    Its attempt identity is assigned by the host, never generated during submission.
+    """
+    from astrid.core.generation.backends.vibecomfy_local_server import validate_identity
+
+    validate_identity(attempt_id)
+    workflow = workflow.clone()
+    for output in workflow.outputs:
+        node = workflow.nodes[output.node_id]
+        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
+        if isinstance(prefix, str) and prefix:
+            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
+            fields["filename_prefix"] = f"{prefix}_astrid_{attempt_id}"
+    return workflow
+
+
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
     """Derive attempt-owned image bindings and fresh output filenames.
 
@@ -230,13 +249,13 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
                     type=input_types.get("image", "STRING"), media_semantics="image",
                 )
                 changed = True
-    for output in workflow.outputs:
-        node = workflow.nodes[output.node_id]
-        prefix = node.inputs.get("filename_prefix", node.widgets.get("filename_prefix"))
-        if output_identity is not None and isinstance(prefix, str) and prefix:
-            fields = node.inputs if "filename_prefix" in node.inputs else node.widgets
-            fields["filename_prefix"] = f"{prefix}_astrid_{output_identity}"
-            changed = True
+    if output_identity is not None:
+        changed = changed or any(isinstance(workflow.nodes[output.node_id].inputs.get(
+            "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix")), str)
+            and workflow.nodes[output.node_id].inputs.get(
+                "filename_prefix", workflow.nodes[output.node_id].widgets.get("filename_prefix"))
+            for output in workflow.outputs)
+        workflow = run_scoped_overrides(workflow, output_identity)
     if not changed:
         return bundle
     root = destination / "local-server-workflow"
