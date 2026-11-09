@@ -57,6 +57,25 @@ def test_the_shipped_matrix_has_no_unexplained_row():
     assert _shipped_host().stale_matrix_entries == ()
 
 
+def test_the_host_names_a_missing_required_row_and_expects_an_external_one(tmp_path):
+    row = {"evidence_reason": "test fixture", "adapter_family": "cpu", "resource_keys": ["cpu"],
+           "required_env": [], "required_binaries": [], "required_packages": []}
+    matrix = tmp_path / "config" / "matrix.json"
+    matrix.parent.mkdir()
+    matrix.write_text(json.dumps({"schema_version": 1, "capabilities": [
+        {"id": "ghost.gone", "disposition": "required", **row},
+        {"id": "ghost.extra", "disposition": "optional", **row},
+        {"id": "moved.thing", "disposition": "optional", "external_pack": "moved", **row},
+    ]}), encoding="utf-8")
+    (tmp_path / "packs").mkdir()
+
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], capability_matrix=matrix)
+    host.discover()
+
+    assert host.stale_matrix_entries == ("ghost.extra", "ghost.gone")
+    assert host.missing_required_capabilities == ("ghost.gone",)
+
+
 def test_a_capability_whose_dependency_pack_is_absent_is_not_ready():
     host = _shipped_host()
     host.preflight()

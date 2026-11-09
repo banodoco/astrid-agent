@@ -220,36 +220,8 @@ def test_unapproved_capability_is_unavailable_without_stopping_host(tmp_path):
     assert records["goodpack.echo"].approval_reason is None
     assert "goodpack.extra" in records["goodpack.extra"].approval_reason
     assert host.stale_matrix_entries == ("ghost.gone",)
-    assert host.missing_required_capabilities == ()
     [extra] = host.preflight("goodpack.extra")
     assert extra.ready is False
-
-
-def test_missing_required_row_is_named_and_external_row_is_expected(tmp_path):
-    root = tmp_path / "packs"
-    _pack(root, "goodpack", GOOD)
-    _executor(root / "goodpack" / "executors" / "echo", "goodpack.echo")
-    matrix = tmp_path / "config" / "matrix.json"
-    matrix.parent.mkdir()
-    matrix.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "capabilities": [
-                _matrix_row("goodpack.echo"),
-                {**_matrix_row("ghost.gone"), "disposition": "required"},
-                {**_matrix_row("moved.thing"), "external_pack": "moved"},
-            ],
-        }),
-        encoding="utf-8",
-    )
-
-    host = GenericPackHost(pack_roots=[root], capability_matrix=matrix)
-    host.discover()
-
-    # A required row with no executor is named; a row for a pack installed
-    # separately is expected to be absent and is not reported.
-    assert host.stale_matrix_entries == ("ghost.gone",)
-    assert host.missing_required_capabilities == ("ghost.gone",)
     assert extra.preflight["approval"]["ok"] is False
     assert "no approved capability-matrix row" in _preflight_unavailable_reason(extra)
     with pytest.raises(HostError, match="no approved capability-matrix row"):
