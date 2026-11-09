@@ -295,8 +295,12 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _runpod_placement_policy(controls, *, engine):
-    """Snapshot the user's disclosed offer and preferences into the task."""
+def _runpod_placement_policy(controls, *, engine, machine=None):
+    """Snapshot the user's disclosed offer and preferences into the task.
+
+    ``machine`` pins the job to one live lease (its machine id); by default the
+    host reuses the warm machine with the same custody, or claims one.
+    """
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
     paid = _runpod_paid_controls(controls)
@@ -304,7 +308,8 @@ def _runpod_placement_policy(controls, *, engine):
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
     return {"kind": "runpod", "engine": engine, "preferences": read_runpod_preferences().as_mapping(),
-            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"])}
+            **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
+            **({"machine": machine} if machine else {})}
 
 
 def _runpod_operation(operation, *, client, wait, include_quote=False):
@@ -1073,7 +1078,8 @@ class GenerationFacade:
         if is_remote_target:
             _runpod_paid_controls(controls)
         # Validate paid bounds now; the engine follows the selected entry below.
-        placement_policy = _runpod_placement_policy(controls, engine=None) if is_remote_target and not dry_run else None
+        placement_policy = (_runpod_placement_policy(controls, engine=None, machine=placement.machine)
+                            if is_remote_target and not dry_run else None)
         runpod_engine = pending_target = None
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):

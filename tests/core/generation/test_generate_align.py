@@ -1,8 +1,8 @@
 """CPU proof for offline inspection and consent-gated managed reconciliation."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -106,16 +106,43 @@ def fake(tmp_path, monkeypatch):
     return SimpleNamespace(target=target, model=model, manifests=manifests, observed=observed, calls=calls)
 
 
+class FakeResponse:
+    def __init__(self, content, start, chunk, fail_at=None):
+        self.status_code = 206 if start else 200
+        self.headers = {'Content-Range': f'bytes {start}-{len(DATA) - 1}/{len(DATA)}'} if start else {}
+        self.url = 'https://models.invalid/immutable/fake'
+        self._body, self._chunk, self._fail_at, self._start = content[start:], chunk, fail_at, start
+
+    def iter_bytes(self):
+        for offset in range(0, len(self._body), self._chunk):
+            if self._fail_at is not None and self._start + offset >= self._fail_at:
+                raise OSError('fake interrupted connection')
+            yield self._body[offset:offset + self._chunk]
+
+
+class FakeClient:
+    """The httpx-style client seam of VibeComfy fetch; records (start, end) per request."""
+
+    def __init__(self, calls, content=DATA, chunk=len(DATA), fail_at=None, honor_range=True):
+        self.calls, self.content, self.chunk, self.fail_at, self.honor_range = calls, content, chunk, fail_at, honor_range
+
+    @contextlib.contextmanager
+    def stream(self, method, url, headers=None, **kwargs):
+        value = (headers or {}).get('Range', 'bytes=0-').removeprefix('bytes=')
+        start = int(value.split('-')[0]) if self.honor_range else 0
+        self.calls.append((start, len(DATA) - 1))
+        yield FakeResponse(self.content, start, self.chunk, self.fail_at)
+
+
 def request_bytes(calls, content=DATA):
-    def opener(request, timeout):
-        value = request.get_header('Range').removeprefix('bytes=')
-        start, end = map(int, value.split('-'))
-        calls.append((start, end))
-        response = io.BytesIO(content[start:end + 1])
-        response.status = 206
-        response.headers = {'Content-Range': f'bytes {start}-{end}/{len(DATA)}'}
-        return response
-    return opener
+    return FakeClient(calls, content)
+
+
+def no_download(message):
+    class Forbidden:
+        def stream(self, *args, **kwargs):
+            pytest.fail(message)
+    return Forbidden()
 
 
 def apply(fake, **kwargs):
@@ -125,7 +152,7 @@ def apply(fake, **kwargs):
 def test_inspection_has_exact_assets_bytes_and_remedy_without_side_effects(fake, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('read-only alignment attempted a network/download/install operation')
-    monkeypatch.setattr(alignment, 'download_model', forbidden)
+    monkeypatch.setattr(alignment, '_fetch_model', forbidden)
     monkeypatch.setattr(alignment, '_install_pack', forbidden)
     monkeypatch.setattr(alignment.ManagedAssetTarget, 'object_info', forbidden)
     monkeypatch.setattr('urllib.request.urlopen', forbidden)
@@ -170,11 +197,11 @@ def test_consent_without_apply_stays_read_only(fake):
 
 def test_apply_reprobes_same_target_and_is_idempotent(fake):
     calls = []
-    report = apply(fake, opener=request_bytes(calls))
+    report = apply(fake, client=request_bytes(calls))
     assert report['status'] == 'ready' and report['applied']
     assert calls == [(0, len(DATA) - 1)] and fake.calls == ['probe']
     assert (fake.target.models_root / fake.model.destination).read_bytes() == DATA
-    second = apply(fake, opener=lambda *a, **kw: pytest.fail('second download'))
+    second = apply(fake, client=no_download('second download'))
     assert second['status'] == 'ready' and second['actions'][0]['action'] == 'skipped'
     assert fake.calls == ['probe', 'probe']
 
@@ -182,7 +209,7 @@ def test_apply_reprobes_same_target_and_is_idempotent(fake):
 def test_hash_mismatch_refuses_publication(fake):
     calls = []
     with pytest.raises(alignment.AlignmentError, match='fake.safetensors.*SHA-256 mismatch'):
-        apply(fake, opener=request_bytes(calls, b'x' * len(DATA)))
+        apply(fake, client=request_bytes(calls, b'x' * len(DATA)))
     path = fake.target.models_root / fake.model.destination
     assert not path.exists() and not path.with_suffix('.safetensors.part').exists()
     assert fake.calls == []
@@ -194,7 +221,7 @@ def test_corrupt_existing_file_is_reported_and_never_overwritten(fake):
     path.write_bytes(b'x' * len(DATA))
     assert alignment.align()['entries'][0]['modes'][0]['models'][0]['status'] == 'mismatch'
     with pytest.raises(IntegrityError, match='differs from its lock'):
-        apply(fake, opener=lambda *a, **kw: pytest.fail('downloaded over corrupt file'))
+        apply(fake, client=no_download('downloaded over corrupt file'))
     assert path.read_bytes() == b'x' * len(DATA)
 
 
@@ -202,29 +229,40 @@ def test_insufficient_disk_refuses_before_download(fake, monkeypatch):
     monkeypatch.setattr('astrid.core.generation.engine_runner._disk_anchor', lambda _: ('', 0, 0, 0))
     assert alignment.align()['disk_check']['status'] == 'blocked'
     with pytest.raises(alignment.AlignmentError, match='Insufficient disk.*need.*free 0'):
-        apply(fake, opener=lambda *a, **kw: pytest.fail('download despite full disk'))
+        apply(fake, client=no_download('download despite full disk'))
     assert not fake.target.root.exists()
 
 
-def test_interrupted_download_resumes_verified_locked_bytes(fake, monkeypatch):
-    from astrid.core.generation import model_downloader
-    monkeypatch.setattr(model_downloader, '_RANGE_SIZE', 8)
-    monkeypatch.setattr(model_downloader.time, 'sleep', lambda _: None)
+def test_interrupted_download_resumes_verified_locked_bytes(fake):
     calls = []
-    good = request_bytes(calls)
-    def interrupted(request, timeout):
-        if request.get_header('Range').startswith('bytes=8-'):
-            raise OSError('fake interrupted connection')
-        return good(request, timeout)
     with pytest.raises(alignment.AlignmentError, match='prefix retained for resume'):
-        apply(fake, opener=interrupted)
+        apply(fake, client=FakeClient(calls, chunk=8, fail_at=8))
     path = fake.target.models_root / fake.model.destination
     assert not path.exists()
     assert path.with_name(path.name + '.part').read_bytes() == DATA[:8]
     calls.clear()
-    report = apply(fake, opener=request_bytes(calls))
+    report = apply(fake, client=request_bytes(calls))
     assert report['status'] == 'ready' and calls[0][0] == 8
     assert report['actions'][0]['resumed_from_bytes'] == 8 and path.read_bytes() == DATA
+
+
+def test_server_ignoring_range_restarts_without_claiming_resume(fake):
+    path = fake.target.models_root / fake.model.destination
+    part = path.with_name(path.name + '.part')
+    part.parent.mkdir(parents=True)
+    part.write_bytes(DATA[:8])
+    report = apply(fake, client=FakeClient([], honor_range=False))
+    assert report['actions'][0]['resumed_from_bytes'] == 0 and path.read_bytes() == DATA and not part.exists()
+
+
+def test_poisoned_prefix_is_refused_and_not_kept_for_resume(fake):
+    path = fake.target.models_root / fake.model.destination
+    part = path.with_name(path.name + '.part')
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b'y' * 8)
+    with pytest.raises(alignment.AlignmentError, match='SHA-256 mismatch'):
+        apply(fake, client=request_bytes([]))
+    assert not path.exists() and not part.exists()
 
 
 def test_symlink_and_hardlink_model_paths_are_refused(fake, tmp_path):
@@ -276,7 +314,7 @@ def test_apply_probe_failure_never_claims_ready(fake, monkeypatch):
     def unavailable(_):
         raise OSError('offline')
     monkeypatch.setattr(alignment.ManagedAssetTarget, 'object_info', unavailable)
-    report = apply(fake, opener=request_bytes([]))
+    report = apply(fake, client=request_bytes([]))
     assert report['status'] == 'not_ready' and report['object_info'] == 'unknown'
     assert report['probe_error']
 
@@ -290,9 +328,9 @@ def test_node_pack_apply_uses_locked_sha_and_is_idempotent(fake, monkeypatch):
     def installer(target, locked):
         assert target is fake.target and locked == pack
         installed.append(locked['revision'])
-    report = apply(fake, opener=request_bytes([]), installer=installer)
+    report = apply(fake, client=request_bytes([]), installer=installer)
     assert report['status'] == 'ready' and installed == ['a' * 40]
-    apply(fake, opener=lambda *a, **kw: pytest.fail('redownload'), installer=installer)
+    apply(fake, client=no_download('redownload'), installer=installer)
     assert installed == ['a' * 40]
 
 
@@ -452,7 +490,7 @@ def test_apply_keeps_installed_source_integrity_gate(fake, monkeypatch):
         raise IntegrityError('pinned source differs')
     monkeypatch.setattr(alignment.ManagedAssetTarget, 'verify_installation', invalid)
     with pytest.raises(IntegrityError, match='pinned source differs'):
-        apply(fake, opener=lambda *a, **kw: pytest.fail('downloaded before source verification'))
+        apply(fake, client=no_download('downloaded before source verification'))
     assert not fake.target.root.exists() and fake.calls == []
 
 
@@ -467,11 +505,12 @@ def test_apply_holds_existing_engine_lock_for_all_mutations(fake, monkeypatch):
         finally:
             locked.pop()
     monkeypatch.setattr(alignment.ManagedAssetTarget, 'install_lock', lock)
-    opener = request_bytes([])
-    def checked_opener(*args, **kwargs):
-        assert locked
-        return opener(*args, **kwargs)
-    assert apply(fake, opener=checked_opener)['status'] == 'ready'
+    inner = request_bytes([])
+    class Checked:
+        def stream(self, *args, **kwargs):
+            assert locked
+            return inner.stream(*args, **kwargs)
+    assert apply(fake, client=Checked())['status'] == 'ready'
     assert not locked
 
 
@@ -480,7 +519,7 @@ def test_ready_assets_do_not_bypass_managed_admission(fake, monkeypatch):
     def unready(self, **kwargs):
         raise EngineNotInstalled('comfyui', 'engine_unhealthy')
     monkeypatch.setattr(alignment.ManagedAssetTarget, 'verify_readiness', unready)
-    report = apply(fake, opener=request_bytes([]))
+    report = apply(fake, client=request_bytes([]))
     assert report['entries'][0]['status'] == 'ready'
     assert report['status'] == 'not_ready'
     assert report['managed_readiness_error'] == 'engine_not_installed'
@@ -556,7 +595,7 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
         'socket.socket.connect = denied\n')
     target = replace(fake.target, vibecomfy_root=selected_source)
     monkeypatch.setattr(alignment, 'selected_target', lambda: target)
-    report = apply(fake, opener=request_bytes([]))
+    report = apply(fake, client=request_bytes([]))
     assert report['status'] == 'ready'
     assert alignment._pack_state(target, pack) == 'verified'
     assert (target.custom_nodes_root / pack['name'] / 'node.py').read_text() == '# locked revision\n'
@@ -564,7 +603,7 @@ def test_real_node_installer_checks_out_locked_commit_on_cpu_without_network(fak
     recorded = read_lockfile(target.root / '.astrid-engine/aligned-custom-nodes.lock')
     assert [(entry.name, entry.url, entry.git_commit_sha) for entry in recorded] == [
         (pack['name'], pack['repository'], locked_sha)]
-    second = apply(fake, opener=lambda *args, **kwargs: pytest.fail('idempotent model download'))
+    second = apply(fake, client=no_download('idempotent model download'))
     assert second['status'] == 'ready'
 
 
@@ -605,7 +644,7 @@ def test_foley_alignment_projects_the_real_complete_declaration_without_download
         tmp_path / 'engine/nodes', sys.executable, 'http://127.0.0.1:8188', 'a' * 64,
         tmp_path / 'engine/cache.json')
     report = alignment.align(entry_id=entry_id, target=target,
-        opener=lambda *a, **k: pytest.fail('declaration inspection downloaded weights'))
+        client=no_download('declaration inspection downloaded weights'))
     assert report['entries'][0]['status'] == 'not_ready'
     assert report['total_missing_bytes'] == sum(asset['size_bytes'] for asset in assets)
     assert len(report['entries'][0]['modes'][0]['models']) == len(assets)

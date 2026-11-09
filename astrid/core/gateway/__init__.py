@@ -109,6 +109,10 @@ def _main_impl(raw: list[str]) -> int:
         from astrid.core.engine_cli import main as engines_main
 
         return engines_main(raw[1:])
+    if first_arg == "machines":
+        from astrid.core.machines_cli import main as machines_main
+
+        return machines_main(raw[1:])
     if first_arg == "action":
         from astrid.core.action_cli import main as action_main
 
