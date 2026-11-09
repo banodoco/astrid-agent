@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import shlex
-import shutil
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,9 +99,10 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, mo
     # Read the uploaded bytes without reconstructing or rewriting their file paths.
     assert job_path.read_bytes() == transport.uploads[str(job_path)]
     shipped = json.loads(job_path.read_bytes())
-    assert shipped['inputs']['seed'] == plan['bindings']['seed']
+    assert shipped['inputs']['seed'] == shipped['bindings']['seed'] == plan['bindings']['seed']
     assert shipped['align'] == 'trust' and shipped['mode'] == mode
-    assert set(shipped['execution']) >= {'python', 'companion', 'source', 'workflow_inputs'}
+    assert set(shipped['execution']) >= {'python', 'companion', 'source'}
+    assert 'workflow_inputs' not in shipped['execution']
     assert '--job ' + str(job_path) in started[0]
     assert owner.record['lease']['job']['state'] == 'running'
 
@@ -114,4 +114,4 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(tmp_path, mo
     assert provider.comfy.views, 'the real runner never retrieved an engine output'
     seeds = [node['inputs']['noise_seed'] for node in provider.comfy.prompts[-1]['prompt'].values()
              if node['class_type'] == 'RandomNoise']
-    assert seeds == [shipped['inputs']['seed']]
+    assert seeds == [shipped['bindings']['seed']]

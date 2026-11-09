@@ -58,7 +58,10 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     if job.get("entry") not in (None, entry) and entry != "workflow":
         raise JobFileError(f"job entry {job.get('entry')!r} differs from the requested {entry!r}")
     if execution is not None:
-        return _run_prepared_job(entry, inputs, execution, Path(out), task=task, attempt=attempt,
+        bindings = job.get("bindings", json.loads(execution.get("workflow_inputs") or "{}"))
+        if not isinstance(bindings, dict):
+            raise JobFileError("job entry bindings must be an object")
+        return _run_prepared_job(entry, inputs, execution, bindings, Path(out), task=task, attempt=attempt,
                                  mode=mode or job.get("mode"), align=align or job["align"])
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
@@ -81,7 +84,7 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
                             mode=mode or job.get("mode"), align=align or job["align"])
 
 
-def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], out: Path,
+def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], bindings: dict[str, Any], out: Path,
                       *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
     """Execute a controller-prepared bundle; public inputs never include transport controls."""
     from astrid.core.generation import entries
@@ -114,7 +117,7 @@ def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, A
             raise JobFileError(f"entry {entry!r} is not available on this machine")
         if entries.entry_hooks(described).get("build"):
             return _run_named_entry(described, entry, inputs, {}, out, task=task, attempt=attempt,
-                                    mode=mode, align=align)
+                                    mode=mode, align=align, bindings=bindings)
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
     from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
@@ -122,11 +125,12 @@ def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, A
                               companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
         return run_action._run_and_settle(
             workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
-            workflow_inputs=execution.get("workflow_inputs") or "{}", align=align, **files)
+            workflow_inputs=json.dumps(bindings, sort_keys=True), align=align, **files)
 
 
 def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
-                     out: Path, *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
+                     out: Path, *, task: str, attempt: str, mode: str | None, align: str,
+                     bindings: dict[str, Any] | None = None) -> dict[str, Any]:
     """A named entry through the contract the controller's facade applies (sdk/generation.py).
 
     * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
@@ -166,6 +170,14 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
             job_dir = Path(tempfile.mkdtemp(prefix="astrid-job-"))
             built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
             workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
+            if bindings:
+                # Native bindings belong to the chosen graph, never to the public
+                # entry schema. Replay the controller's resolved seed and controls.
+                for name, value in bindings.items():
+                    built["workflow"].set_input(name, value)
+                workflow_inputs.update(bindings)
+                from vibecomfy.workflow_bundle import emit_bundle
+                emit_bundle(built["workflow"], workflow, {"operation": "authored"})
             assets = dict(built.get("assets") or {})
             # The requirements of the graph build chose, not of the static bundle. Read from the built
             # folder, so build is not called a second time.

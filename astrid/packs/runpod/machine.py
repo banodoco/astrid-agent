@@ -569,10 +569,13 @@ class RunPodMachine:
                 placement._put_checked(state, local, remote)
                 return remote
             public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
+        bindings = json.loads(shipped.pop("workflow_inputs", "{}") or "{}")
+        if not isinstance(bindings, dict):
+            raise MachineError("job entry bindings must be an object")
         body = {"schema": "astrid.machine-job.v1", "entry": job.entry, "mode": job.mode, "align": job.align,
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",
-                "inputs": public_inputs, "execution": shipped}
+                "inputs": public_inputs, "bindings": bindings, "execution": shipped}
         local_job = staging / JOB_NAME
         local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
