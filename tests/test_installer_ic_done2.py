@@ -213,7 +213,15 @@ def test_done2_end_summary_matches_reality(installation, monkeypatch, capsys, al
     env = installation
     flags = ["--autostart", "off", "--command", "off", "--skills", "off"] if all_off else []
     assert cli.main(env.args + ["--yes", *flags]) == 0
-    output = capsys.readouterr().out.split("Astrid setup summary:")[-1]
+    terminal = capsys.readouterr().out
+    assert "Astrid setup summary:" not in terminal  # the summary is in install.log (card 2)
+    output = (env.tmp / "logs" / "install.log").read_text(encoding="utf-8").split("Astrid setup summary:")[-1]
+    if all_off:
+        for line in ("Your choice: start at sign-in is off.", "Your choice: the astrid command is off.",
+                     "Your choice: Astrid skills are off."):
+            assert line in terminal
+    else:
+        assert "Your choice:" not in terminal
     registered = (Path(os.environ["XDG_CONFIG_HOME"]) / "systemd/user/astrid.service").exists()
     assert registered is not all_off
     assert f"Sign-in autostart: {'registered' if registered else 'not registered'}." in output
