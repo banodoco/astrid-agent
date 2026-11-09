@@ -13,6 +13,7 @@ from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.vibecomfy.actions.run import run
 from astrid.packs.vibecomfy.actions.run.run import _stage_managed_assets
+from tests.local_engine_stub import local_engine_patch
 
 
 def test_compiler_archive_stages_to_comfy_input(tmp_path: Path) -> None:
@@ -77,19 +78,20 @@ def test_run_accepts_matching_workflow_and_managed_asset_binding(
         managed_run,
     )
 
-    run._run_and_settle(
-        workflow,
-        tmp_path / "run",
-        task_identity="task-1",
-        managed_assets=str(managed_assets),
-        workflow_inputs=json.dumps(
-            {
-                "source_video": source_member,
-                "seed": 17,
-                "prompt": "say the exact line",
-            }
-        ),
-    )
+    with local_engine_patch():
+        run._run_and_settle(
+            workflow,
+            tmp_path / "run",
+            task_identity="task-1",
+            managed_assets=str(managed_assets),
+            workflow_inputs=json.dumps(
+                {
+                    "source_video": source_member,
+                    "seed": 17,
+                    "prompt": "say the exact line",
+                }
+            ),
+        )
 
     assert managed_run.call_args.kwargs["workflow_input_bindings"] == {
         "source_video": source_member,
