@@ -166,13 +166,17 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
         def job_start(self, command, *, job_id):
             lease = c.read()["lease"]
             # Preparation jobs and the machine's generation job are each checkpointed before start.
-            custody = lease["job"] if " generate " in command else lease["preparation"]["job"]
+            # The release-time reset is checkpointed on the lease; the claim-time one on the preparation.
+            custody = (lease["job"] if " generate " in command or ("pod_reset" in command and "--run-dir" in command)
+                       else lease["preparation"]["job"])
             assert custody == {"id": job_id, "state": "starting"}
             old = super().job_start(command)
             self.jobs[job_id] = self.jobs.pop(old["id"])
             directory = "/workspace/.astrid-jobs/" + job_id
             for name in ("stdout", "stderr"):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
+            if self.active_job and self.active_job.get("job_dir") == old["dir"]:
+                self.active_job["job_dir"] = directory  # the agent folder under its checkpointed id
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:

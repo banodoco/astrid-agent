@@ -36,15 +36,12 @@ def _workflow_file() -> Path:
 # Expected-to-flip characterizations (T1 style, not xfail). Each asserts today's refusal and names
 # the task row that flips it. When that row lands, the cell's real assertion is the same one the
 # attached cell makes: the workflow file runs, reaches /prompt on the target, and delivers a result.
-#   local-managed -> T4f (local run path): the refusal above goes, and the cell asserts result.ok,
-#                    a /prompt on the managed ComfyUI, and delivery.
+#   local-managed -> flipped by T4f (local run path): the cell asserts result.ok, a /prompt on the
+#                    managed ComfyUI, and delivery.
 #   runpod        -> T5g, now merged: a workflow-file job runs on the pod with no named entry, so
 #                    this cell runs for real (see test_remote_machine_cpu::
 #                    test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry).
-_NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
-_RED = {
-    "local-managed": ("GenerationReadinessError", _NO_ENGINE, "T4f"),
-}
+_RED = {}  # local-managed flipped in T4f: the registered managed install (see _managed_local_engine) runs the file
 
 
 @pytest.mark.parametrize("target_kind", TARGET_KINDS)
