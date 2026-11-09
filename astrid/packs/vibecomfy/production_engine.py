@@ -12,8 +12,8 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Mapping
-from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +25,6 @@ _PROFILE_CONFIGS = {
         "session_kind": "external_server",
         "warm_policy": "never",
         "cancellation": "delete-owned-prompt-and-interrupt-if-running",
-    },
-    "checkout_server": {
-        "name": "checkout_server",
-        "dependency_lock": "vibecomfy-checkout-comfyui-0.26.0",
-        "session_kind": "server_session",
-        "warm_policy": "auto",
-        "cancellation": "interrupt-clear-free-then-owned_process_group",
     },
 }
 
@@ -627,20 +620,6 @@ def _workflow_comfy_configuration(bundle: Any) -> dict[str, Any]:
 
 
 @contextmanager
-def _checkout_cancellation(control: Any):
-    cancelled = False
-
-    def cancel(signum: int, _frame: Any) -> None:
-        nonlocal cancelled
-        cancelled = True
-        control.cancel()
-        raise SystemExit(128 + signum)
-
-    restore = platform.install_stop_handlers(cancel)
-    try:
-        yield lambda: cancelled
-    finally:
-        restore()
 
 
 def _result_from_runtime_result(
@@ -689,8 +668,8 @@ def _run_profile_result(
     workflow_conversion_object_info_sha256: str | None = None,
     endpoint_transport: Any = None,
 ) -> ProductionRunResult:
-    if endpoint_transport is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_transport requires checkout_server")
+    if endpoint_transport is not None:
+        raise ProductionEngineError("endpoint_transport was removed with the checkout route")
     if comfy_url and profile_id != "local_server":
         raise ProductionEngineError("comfy_url requires the local_server profile")
     from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -708,62 +687,7 @@ def _run_profile_result(
             task_identity=task_identity, attempt_identity=attempt_identity, run_inputs=run_inputs,
             workflow_conversion_object_info_sha256=workflow_conversion_object_info_sha256,
         )
-    if not isinstance(hc03_profile, Mapping):
-        raise ProductionEngineError("checkout_server lacks its verified VibeComfy readiness profile")
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-    workflow_comfyui_version = _workflow_comfyui_version_requirement(resolved)
-    profile_comfyui_version = _profile_comfyui_version_requirement(hc03_profile)
-    # Workflow versions are declarations. The adapter independently verifies
-    # the installed baseline and retains known workflow drift as a warning.
-    from astrid.core.generation.preflight import compare_versions, readiness_envelope
-
-    # The installed profile carries an exact baseline, often written as ==X.
-    # Compare its version against the workflow constraint without treating the
-    # profile as a live system_stats observation. Unknown versions stay silent.
-    baseline = profile_comfyui_version.removeprefix("==") if profile_comfyui_version else None
-    issues = compare_versions({"comfyui": workflow_comfyui_version}, {"comfyui": baseline})
-    for issue in issues:
-        issue["message"] = (
-            "workflow and worker profile ComfyUI version contracts disagree: "
-            f"workflow={workflow_comfyui_version!r} profile={profile_comfyui_version!r}"
-        )
-        issue["details"].update(workflow=workflow_comfyui_version, profile=profile_comfyui_version,
-                                observation_source="installed_profile")
-        import warnings
-
-        warnings.warn(issue["message"], UserWarning, stacklevel=2)
-    version_readiness = readiness_envelope(issues=issues)
-    if provenance is not None:
-        provenance.add_readiness_issues(issues)
-    factory = CheckoutServerAdapter.from_host_session
-    transport_kwargs = {} if endpoint_transport is None else {"endpoint_transport": endpoint_transport}
-    checkout = factory(
-        hc03_profile=hc03_profile,
-        model_id=model_id,
-        template_id=template_id,
-        invocation_identity=task_identity,
-        expected_comfyui_version=workflow_comfyui_version or profile_comfyui_version,
-        **transport_kwargs,
-    )
-    with nullcontext(checkout) as adapter, _checkout_cancellation(adapter) as was_cancelled:
-        try:
-            outputs = tuple(
-                adapter.run_compiled_workflow(
-                    resolved,
-                    destination,
-                    task_identity=task_identity,
-                    attempt_identity=attempt_identity,
-                    run_inputs=run_inputs,
-                )
-            )
-            return replace(_result_from_runtime_result(
-                getattr(adapter, "_last_run_result", None), outputs
-            ), readiness=version_readiness)
-        except BaseException:
-            if not was_cancelled():
-                adapter.release(reason="failed")
-            raise
+    raise ProductionEngineError(f"unsupported production profile {profile_id!r}; only local_server runs")
 
 
 def _run_profile(
@@ -837,8 +761,8 @@ def run_workflow_path(
     """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise ProductionEngineError("production engine task_identity is required")
-    if endpoint_transport is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_transport requires checkout_server")
+    if endpoint_transport is not None:
+        raise ProductionEngineError("endpoint_transport was removed with the checkout route")
     destination_path = Path(destination).expanduser().resolve()
     destination_path.mkdir(parents=True, exist_ok=True)
     loaded = load_workflow_path(
@@ -980,28 +904,11 @@ def execute(request_path: str | Path, out: str | Path, result_path: str | Path) 
     outputs: list[str] = []
     for index, raw in enumerate(raw_outputs):
         candidate = Path(raw)
-        if profile_id == "checkout_server" and candidate.is_symlink():
-            raise ProductionEngineError(
-                "checkout_server output is not a private staged artifact"
-            )
         source = candidate.resolve(strict=True)
-        if profile_id == "checkout_server":
-            try:
-                source.relative_to(destination)
-            except ValueError as exc:
-                raise ProductionEngineError(
-                    "checkout_server output escaped canonical adapter custody"
-                ) from exc
-            if not source.is_file() or source.stat().st_nlink != 1:
-                raise ProductionEngineError(
-                    "checkout_server output is not a private staged artifact"
-                )
-            target = source
-        else:
-            suffix = source.suffix or ".bin"
-            target = destination / f"engine-output-{index:04d}{suffix}"
-            if source != target:
-                shutil.copyfile(source, target)
+        suffix = source.suffix or ".bin"
+        target = destination / f"engine-output-{index:04d}{suffix}"
+        if source != target:
+            shutil.copyfile(source, target)
         outputs.append(str(target))
     Path(result_path).write_text(
         json.dumps({"outputs": outputs}, sort_keys=True, separators=(",", ":")),
