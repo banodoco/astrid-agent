@@ -1,6 +1,7 @@
 """CPU composition proof: selected target provisioning owns auxiliary custody."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -294,15 +295,25 @@ def _provisionable_managed_entry(tmp_path, monkeypatch):
         return copy.deepcopy(observed)
     monkeypatch.setattr(ComfyTargetClient, 'request_json', http)
     downloads = []
-    def opener(request, timeout):
-        data = contents[request.full_url]
-        start, end = map(int, request.get_header('Range').removeprefix('bytes=').split('-'))
-        downloads.append(request.full_url)
-        response = io.BytesIO(data[start:end + 1])
-        response.status = 206
-        response.headers = {'Content-Range': f'bytes {start}-{end}/{len(data)}'}
-        return response
-    return SimpleNamespace(root=root, entry=entry, workflow=workflow, opener=opener,
+    class Response:
+        def __init__(self, data, start):
+            self.status_code, self.url, self._body = (206 if start else 200), None, data[start:]
+            self.headers = {'Content-Range': f'bytes {start}-{len(data) - 1}/{len(data)}'} if start else {}
+
+        def iter_bytes(self):
+            yield self._body
+
+    class Client:
+        """The httpx-style client seam of VibeComfy fetch."""
+
+        @contextlib.contextmanager
+        def stream(self, method, url, headers=None, **kwargs):
+            data = contents[url]
+            start = int((headers or {}).get('Range', 'bytes=0-').removeprefix('bytes=').split('-')[0])
+            downloads.append(url)
+            yield Response(data, start)
+    client = Client()
+    return SimpleNamespace(root=root, entry=entry, workflow=workflow, client=client,
         downloads=downloads, events=events, receipt=receipt_path, alignment=alignment)
 
 
@@ -313,9 +324,9 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
     entry_id = fixture.entry['id']
     original_receipt = fixture.receipt.read_bytes()
     with pytest.raises(fixture.alignment.AlignmentError, match='explicit consent'):
-        align(entry_id=entry_id, apply=True, opener=fixture.opener)
+        align(entry_id=entry_id, apply=True, client=fixture.client)
     assert fixture.downloads == []
-    result = align(entry_id=entry_id, apply=True, consent=['user_env'], opener=fixture.opener)
+    result = align(entry_id=entry_id, apply=True, consent=['user_env'], client=fixture.client)
     assert result['status'] == 'ready'
     assert len(fixture.downloads) == len(fixture.workflow.metadata['model_assets'])
     client = preflight.select_generation_target('managed', entry_id=entry_id)
@@ -338,7 +349,7 @@ def test_declared_entry_alignment_reaches_real_managed_custody_and_approval(tmp_
         if change in {'hash', 'size'}:
             with pytest.raises(fixture.alignment.IntegrityError, match='differs from its lock'):
                 align(entry_id=entry_id, apply=True, consent=['user_env'],
-                      opener=lambda *a, **k: pytest.fail('download after corruption'))
+                      client=SimpleNamespace(stream=lambda *a, **k: pytest.fail('download after corruption')))
         if change == 'missing':
             with pytest.raises(preflight.GenerationReadinessError) as caught:
                 preflight.select_generation_target('managed', entry_id=entry_id)
