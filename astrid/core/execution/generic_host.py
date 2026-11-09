@@ -9382,6 +9382,7 @@ class GenericPackHost:
         allow_runtime_connection: bool = True,
         comfy_invocation: Mapping[str, Any] | None = None,
         align: str | None = None,
+        generation_entry: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -10005,6 +10006,7 @@ class GenericPackHost:
             network_broker=network_broker,
             comfy_invocation=comfy_invocation,
             align=align,
+            generation_entry=generation_entry,
             network_policy=(
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -12159,7 +12161,6 @@ class GenericPackHost:
         child_bridge = None
         session_hold = None
         target_context = machine_policy = None
-        align_trust = False
         target_operation_result = None
         try:
             session_hold = self._hold_session_slot()
@@ -12269,7 +12270,6 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
-                align_trust = _align_trust(task_data)
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
