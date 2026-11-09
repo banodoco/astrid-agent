@@ -17,8 +17,6 @@ class Wan2GPEngine:
     def execute(self, job: Any) -> Any:
         raise NotImplementedError("generation.engine wan2gp is not wired to a caller yet")
 
-    def cancel(self, job: Any) -> Any:
-        raise NotImplementedError("generation.engine wan2gp is not wired to a caller yet")
 
 
 ENGINE = Wan2GPEngine()

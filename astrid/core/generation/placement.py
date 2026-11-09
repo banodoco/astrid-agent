@@ -22,8 +22,7 @@ from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 
 BUILTIN_KINDS = ("local", "attached")
 MACHINE_POINT = "generation.machine"
-# Until the generation.machine point (Plan 32 T5) ships, the one machine
-# provider that exists is the RunPod pack; T5 replaces this with its contribution.
+# Keep the built-in machine kind discoverable when no extension registry is supplied.
 _PROVIDER_FALLBACK = ("runpod",)
 
 LiveLeases = Callable[[str], list[Mapping[str, Any]]]

@@ -1,8 +1,7 @@
 """ComfyUI contribution to generation.engine (Plan 32 T2a).
 
-requirements() is wired (Plan 32 T2): the manifest comes from VibeComfy's per-workflow
-ReadyMetadata, which already holds the model rows and custom-node pins. The other methods
-refuse until a later task wires them to the existing ComfyUI path.
+Requirements come from VibeComfy's per-workflow ReadyMetadata. Alignment and
+execution use the same local run path on managed local engines and pods.
 """
 
 from __future__ import annotations
@@ -274,8 +273,6 @@ class ComfyUIEngine:
             Path(job["workflow"]), Path(job["out"]), task_identity=job.get("task_identity"),
             **{key: job[key] for key in keys if job.get(key) is not None})
 
-    def cancel(self, job: Any) -> Any:
-        raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
 
 
 ENGINE = ComfyUIEngine()
