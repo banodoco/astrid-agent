@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 
 # Integration: the H3 workflow is compiled by the pinned VibeComfy checkout. ffmpeg writes the clip.

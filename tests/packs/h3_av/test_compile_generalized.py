@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.transform.run import _generation_intent
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.stages import _generation_intent
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.vibecomfy.invocation_preflight import InvocationPreflightError, preflight_invocation
 

@@ -445,8 +445,8 @@ def test_pack_shaped_points_cannot_claim_a_reserved_owner(roots, tmp_path):
     assert any("reserved namespace" in q.error for q in reserved)
 
 
-def test_workflow_contribution_registers_ready_root_entries_build_and_finalize(roots, tmp_path):
-    """Plan 32 T6: the vibecomfy.workflows point carries a ready root, thin entries, build and finalize."""
+def test_workflow_contribution_registers_ready_root_entries_build_and_after_outputs(roots, tmp_path):
+    """Plan 32 T6: the vibecomfy.workflows point carries a ready root, thin entries, build and after_outputs."""
     from astrid.core.generation import workflows
 
     source = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/extensions/points"
@@ -458,10 +458,10 @@ def test_workflow_contribution_registers_ready_root_entries_build_and_finalize(r
            _contribution() + "ready_root: ../../ready\n"
            "entries:\n"
            "  - {id: minimax-h3, kind: video, modes: [t2v], bundle: minimax, needs: [], binds: {}, defaults: {}}\n"
-           "build: hooks.py:build\nfinalize: hooks.py:finalize\n")
+           "build: hooks.py:build\nafter_outputs: hooks.py:after_outputs\n")
     _write(vibe / "extensions" / "vibecomfy.workflows" / "hooks.py",
            "def build(inputs, files, out):\n    return {'workflow': 'W', 'bindings': {}, 'plan': 'p'}\n"
-           "def finalize(job_dir, inputs, files, outputs):\n    return outputs\n")
+           "def after_outputs(job_dir, inputs, files, outputs):\n    return outputs\n")
     reg_ = _registry(roots, tmp_path, _fake_discover(_Record("vibecomfy", vibe))).load()
     assert reg_.problems() == []
 
@@ -474,9 +474,9 @@ def test_workflow_contribution_registers_ready_root_entries_build_and_finalize(r
     (entry,) = workflows.workflow_entries(reg_)
     assert (entry["id"], entry["kind"], entry["modes"]) == ("minimax-h3", "video", ["t2v"])
     assert entry["bundle"] == str((vibe / "ready" / "minimax").resolve())
-    assert set(entry["hooks"]) == {"build", "finalize"}
+    assert set(entry["hooks"]) == {"build", "after_outputs"}
     assert entry["hooks"]["build"]({}, {}, None)["plan"] == "p"
-    assert entry["hooks"]["finalize"](None, {}, {}, ["o"]) == ["o"]
+    assert entry["hooks"]["after_outputs"](None, {}, {}, ["o"]) == ["o"]
     assert workflows.hook(reg_, contribution, "build") is not None
 
 
@@ -497,7 +497,7 @@ def test_workflow_contribution_hooks_are_optional_and_refs_stay_in_the_pack(root
         workflows.ready_root(by_key["escape"])
 
 
-def test_h3_contribution_registers_build_and_finalize(roots, tmp_path):
+def test_h3_contribution_registers_build_and_after_outputs(roots, tmp_path):
     """Plan 32 T6b-1: h3_av is one pack with one vibecomfy.workflows contribution."""
     import yaml
     from astrid.core.generation import workflows
@@ -525,6 +525,6 @@ def test_h3_contribution_registers_build_and_finalize(roots, tmp_path):
     (entry,) = workflows.workflow_entries(reg_)
     assert (entry["id"], entry["kind"]) == ("h3", "video")
     assert entry["modes"] == ["i2v", "v2v", "video-edit"]
-    assert set(entry["hooks"]) == {"build", "finalize"}
+    assert set(entry["hooks"]) == {"build", "after_outputs"}
     assert entry["hooks"]["build"].__name__ == "build"
-    assert entry["hooks"]["finalize"].__name__ == "finalize"
+    assert entry["hooks"]["after_outputs"].__name__ == "after_outputs"

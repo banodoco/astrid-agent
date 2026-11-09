@@ -91,16 +91,13 @@ def test_edit_rejects_invalid_v1_container_without_writing(tmp_path, capsys, con
 
 
 def test_plan_verb_equals_handwritten_and_does_not_call_execution(tmp_path, monkeypatch, capsys) -> None:
-    from astrid.packs.h3_av.actions.transform import run as transform
+    from astrid.core.generation import cli as generation_cli
 
     def forbidden(*args, **kwargs):
         raise AssertionError("planning reached execution")
 
     monkeypatch.setattr(action_cli, "main", forbidden)
-    for name in ("_resolve_local_engine", "_invoke_stage", "_invoke_canonical_run",
-                 "ensure_runpod_worker", "load_worker_qualification", "generate"):
-        monkeypatch.setattr(transform, name, forbidden)
-    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", forbidden)
+    monkeypatch.setattr(generation_cli, "main", forbidden)
     from PIL import Image
 
     image_path = tmp_path / "look.png"
@@ -130,17 +127,11 @@ def test_unavailable_capability_never_invokes_action(tmp_path, monkeypatch, caps
     assert not (tmp_path / "out").exists()
 
 
-def test_ops_routes_to_existing_entrypoints(monkeypatch) -> None:
-    from astrid.packs.h3_av.actions.transform import run as transform
-
-    seen = []
-    monkeypatch.setattr(transform, "main", lambda args: seen.append(args) or 9)
-    assert gateway.main(["h3", "ops", "transform", "--help"]) == 9
-    assert seen == [["--help"]]
 
 
 @pytest.mark.parametrize("command", ["run", "compose"])
-def test_available_capability_delegates_to_transform_action(tmp_path, monkeypatch, command) -> None:
+def test_available_capability_delegates_to_the_generate_path(tmp_path, monkeypatch, command) -> None:
+    from astrid.core.generation import cli as generation_cli
     from astrid.packs.h3_av.shared.spec import H3Spec
 
     monkeypatch.setattr(H3Spec, "capabilities", property(lambda self: {
@@ -148,12 +139,13 @@ def test_available_capability_delegates_to_transform_action(tmp_path, monkeypatc
     }))
     calls = []
 
-    def action(args):
+    def generate(args):
         calls.append(args)
-        assert json.loads(Path(args[args.index("--request") + 1]).read_text()) == _document()
-        assert json.loads(Path(args[args.index("--asset-map") + 1]).read_text()) == {}
+        inputs = json.loads(Path(args[args.index("--inputs-json") + 1]).read_text())
+        assert json.loads(Path(inputs["request"]).read_text()) == _document()
+        assert inputs["asset_map"] == {}
         return 7
 
-    monkeypatch.setattr(action_cli, "main", action)
+    monkeypatch.setattr(generation_cli, "main", generate)
     assert gateway.main(["h3", command, "--prompt", "A quiet cafe.", "--duration", "5", "--reference", "look.png", "--out", str(tmp_path / "out")]) == 7
-    assert calls[0][:2] == ["run", "h3_av.transform"]
+    assert calls[0][:4] == ["video", "--entry", "h3", "--inputs-json"]

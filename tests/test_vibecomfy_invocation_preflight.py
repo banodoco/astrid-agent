@@ -84,7 +84,7 @@ def test_remote_admission_uses_bundled_manifest_for_media_and_task_inputs(monkey
         "workflow.vibe.json": b"{}",
         "source.json": b"{}",
     }
-    from astrid.packs.h3_av.actions.compile.compile import _write_asset_bundle
+    from astrid.packs.h3_av.shared.compile import _write_asset_bundle
 
     managed_path = tmp_path / "managed-assets.zip"
     _write_asset_bundle(

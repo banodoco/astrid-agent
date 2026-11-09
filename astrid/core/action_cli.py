@@ -1,7 +1,6 @@
 """``astrid action run``: invoke a public action in a connected or ephemeral Runtime.
 
-    astrid action run h3_av.transform --request request.json --asset-map asset-map.json \\
-        --placement local --out OUT
+    astrid action run ACTION --FLAG FILE ... --placement local --out OUT
 
 Without ``--project``, the verb creates a throw-away workspace under a private temporary directory, starts a
 Runtime and pack host for it, invokes the public action through the SDK
@@ -31,9 +30,8 @@ PROJECT_SLUG = "action-run"
 RECEIPT_NAME = "08-final-receipt.json"
 
 # Public actions this verb knows how to feed.  Each maps CLI file flags to action input ports.
-ACTIONS: Mapping[str, Mapping[str, str]] = {
-    "h3_av.transform": {"request": "request", "asset_map": "asset_map"},
-}
+# h3_av.transform, the only one, is retired: h3 runs as the ``h3`` entry of ``astrid generate``.
+ACTIONS: Mapping[str, Mapping[str, str]] = {}
 PLACEMENTS = ("local",)
 LOCAL_ENGINE = "comfyui"
 _LIFECYCLE_TIMEOUT = 300.0
@@ -177,7 +175,7 @@ def _local_engine_environment() -> Mapping[str, str]:
     No readiness profile exists for an ephemeral host.  The host calls ``local_model_root_binding`` (the
     install receipt's verified model lock plus the engine root) the first time a VibeComfy task needs the
     binding (the client starts that host from this process's environment).  A missing or unverified install
-    is refused there, naming ``astrid engines install``, after ``h3_av.transform`` has already refused an
+    is refused there, naming ``astrid engines install``, after the action has already refused an
     engine that is not installed and healthy.
     """
     from astrid.core.generation.engine_local_endpoint import LOCAL_ENGINE_HOST_ENV

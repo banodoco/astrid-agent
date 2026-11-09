@@ -64,13 +64,103 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
         workflow, named = entries.bundle_path(described), entry
     # File inputs ride the job directory; they reach the run as its own file arguments.
     files = {name: str(inputs.pop(name)) for name in ("managed_assets", "source_video") if name in inputs}
-    if named is not None:
-        # The CLI's own validation: aliases, defaults and binds of the entry's public inputs, no Runtime.
-        try:
-            _, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode or job.get("mode"))
-        except (ValueError, KeyError, TypeError) as exc:
-            raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
-    return run_action._run_and_settle(
-        workflow, Path(out), task_identity=task, attempt_identity=attempt,
-        workflow_inputs=json.dumps(inputs, sort_keys=True), entry=named,
-        align=align or job["align"], **files)
+    if named is None:
+        return run_action._run_and_settle(
+            workflow, Path(out), task_identity=task, attempt_identity=attempt,
+            workflow_inputs=json.dumps(inputs, sort_keys=True), entry=None,
+            align=align or job["align"], **files)
+    return _run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
+                            mode=mode or job.get("mode"), align=align or job["align"])
+
+
+def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
+                     out: Path, *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
+    """A named entry through the contract the controller's facade applies (sdk/generation.py).
+
+    * the CLI's own validation of the entry's public inputs; the resolved values (aliases to public
+      names) are what every later step reads;
+    * readiness and ``target_schema`` of the entry, as the facade's local path checks them;
+    * a contribution's ``build`` once, before the run, and its ``after_outputs`` once, after it
+      (``entries.build_entry``; ``after_outputs`` runs inside ``_run_and_settle`` through its
+      ``after_outputs_job`` seam, before the outputs are sealed);
+    * otherwise the entry's ``binds`` and ``defaults`` applied to the workflow
+      (``entries.apply_workflow_inputs``, the same function ``entries.prepare`` calls).
+    """
+    import shutil
+    import tempfile
+    from types import SimpleNamespace
+
+    from astrid.core.generation import entries
+    from astrid.core.generation.preflight import require_generation_target_readiness
+    from astrid.packs.vibecomfy.actions.run import run as run_action
+
+    try:
+        description, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
+    mode = description.get("mode") or mode
+    # (c) readiness and target schema, on the machine that runs the job. The pod has no attached
+    # target client, which is the controller's managed-placement case (client None).
+    prerequisite = SimpleNamespace(id=named, modes={mode: SimpleNamespace(
+        backends={"local": SimpleNamespace(template=str(described["bundle"]))})})
+    require_generation_target_readiness(prerequisite, mode, None)
+    # A contribution's build and after_outputs come from its vibecomfy.workflows entry.
+    hooks = entries.entry_hooks(described)
+    run_files = dict(files)
+    job_dir = None
+    manifest = None
+    try:
+        if "build" in hooks:
+            job_dir = Path(tempfile.mkdtemp(prefix="astrid-job-"))
+            built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
+            workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
+            assets = dict(built.get("assets") or {})
+            # The requirements of the graph build chose, not of the static bundle. Read from the built
+            # folder, so build is not called a second time.
+            chosen = {k: v for k, v in described.items() if k not in ("hooks", "hooks_declared", "requirements")}
+            manifest = entries.requirements({**chosen, "bundle": built["bundle"]}, inputs)
+            entries.target_schema(described, built["workflow"], None, align=align)
+            if assets:
+                import zipfile
+                from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
+                asset_manifest = build_asset_manifest(assets)
+                archive = job_dir / "assets.zip"
+                with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+                    zipped.writestr("manifest.json", json.dumps(asset_manifest))
+                    for record in asset_manifest["assets"]:
+                        zipped.write(assets[record["binding"]], record["member"])
+                run_files["managed_assets"] = str(archive)
+                workflow_inputs = {k: v for k, v in workflow_inputs.items() if k not in assets}
+        else:
+            # (a) the facade's entries.prepare, on the controller's own arguments: values are the
+            # caller's inputs, binds and defaults the entry's.
+            loaded = entries._load_entry_workflow(described)
+            try:
+                _, plan, assets = entries.apply_workflow_inputs(
+                    loaded, mode=mode, values=inputs, binds=described.get("binds"),
+                    defaults=described.get("defaults"))
+            except (ValueError, KeyError) as exc:
+                raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
+            if plan["unbound"]:
+                raise JobFileError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
+            entries.target_schema(described, loaded, None, align=align)
+            workflow, workflow_inputs = entries.bundle_path(described), dict(plan["bindings"])
+            if assets:
+                # Media bindings are file paths on this machine; they ride as plain bindings.
+                workflow_inputs.update({name: str(path) for name, path in assets.items()})
+        hook_job = {}
+        if "after_outputs" in hooks:
+            # (b) after_outputs once, inside the run, on the managed outputs before they are sealed;
+            # a raise fails the job. It reads the state build left in this job directory.
+            job = entries.entry_job(described, inputs, job_dir, hooks={})
+            hook_job = {"after_outputs_job": json.dumps(
+                {"entry": named, "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
+                sort_keys=True, default=str)}
+        result = run_action._run_and_settle(
+            workflow, out, task_identity=task, attempt_identity=attempt,
+            workflow_inputs=json.dumps(workflow_inputs, sort_keys=True, default=str), entry=named,
+            align=align, manifest=manifest, **hook_job, **run_files)
+        return result
+    finally:
+        if job_dir is not None:
+            shutil.rmtree(job_dir, ignore_errors=True)

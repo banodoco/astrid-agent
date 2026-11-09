@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON object of scalar public workflow inputs; managed assets supply media basenames.",
     )
     parser.add_argument(
+        "--after-outputs-job",
+        default="{}",
+        help="JSON {entry, job_dir, inputs, files}: run that entry's after_outputs hook before sealing outputs.",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         help="Host-assigned output spool (required for run; optional for validate).",
@@ -284,8 +289,13 @@ def _materialize_managed_generation_result(
     workflow_path: Path,
     source_snapshot: dict[str, Any] | None = None,
     producer_context: dict[str, Any] | None = None,
+    after_outputs: Any = None,
 ) -> dict[str, Any]:
-    """Rebase one producer envelope into the host-owned output spool."""
+    """Rebase one producer envelope into the host-owned output spool.
+
+    ``after_outputs`` (a vibecomfy.workflows hook, see ``_after_outputs``) sees the copied output
+    files before their digests are recorded here, and may replace them (h3's composed candidate).
+    """
     output_root = output_root.expanduser().resolve()
     envelope_path = Path(production_result.managed_generation_result_path).expanduser()
     if not envelope_path.is_file():
@@ -341,6 +351,17 @@ def _materialize_managed_generation_result(
         rebased["path"] = destination.relative_to(managed_root).as_posix()
         rebased["output_port"] = "vibecomfy_run"
         rebased_outputs.append(rebased)
+    if after_outputs is not None and rebased_outputs:
+        produced = [Path(item) for item in after_outputs([managed_root / row["path"] for row in rebased_outputs])]
+        if len(produced) != len(rebased_outputs):
+            raise AstridValueError("after_outputs must return one file per output")
+        for row, replacement in zip(rebased_outputs, produced):
+            target = managed_root / row["path"]
+            if replacement.resolve() != target.resolve():
+                shutil.copyfile(replacement, target)
+            data = target.read_bytes()
+            row.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+            row.pop("hash_check", None)  # compared the producer's bytes, not the hook's
     rebased_payload["outputs"] = rebased_outputs
     if source_snapshot is None and "source" not in result.inputs and workflow_path.is_file():
         original = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -593,7 +614,11 @@ def _t9_child_dispatch(
     if (profile_hash != "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
             or json.loads(profile_bytes) != readiness_profile):
         raise AstridValueError("T9 child readiness profile differs from the paired Worker bytes")
-    from astrid.packs.h3_av.shared import generation
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts, generation
+
+    # h3_av imports nothing from Astrid; this child is its host, so it installs the engine facts.
+    engine_facts.install(comfyui_facts())
 
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.
@@ -680,6 +705,61 @@ def _engine_for(manifest: dict[str, Any]) -> Any:
     return engine
 
 
+def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
+    """The engine's own requirements for this workflow, rooted at the installed local engine's models.
+
+    Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
+    lists nothing (the target's own preflight still checks what it needs).
+    """
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import default_engine_root
+
+    try:
+        manifest = engine.requirements({"bundle": str(workflow_path)}, {})
+    except Exception as exc:
+        if isinstance(exc, (EngineError, AstridError)):
+            raise
+        if getattr(exc, "unpinned", False):  # validate_extra: a custom node ref without its repo or commit
+            raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
+        # The bundle loader could not read this file (not a canonical bundle, or it does not execute on its own):
+        # it declares nothing here, and the run's own loader reports the real error. Limit: a loader that cannot
+        # run the bundle standalone means no pre-queue model check for that file.
+        return {"models": [], "extra": {"nodes": []}}
+    try:
+        root = default_engine_root("comfyui")
+    except EngineError:
+        root = None
+    # An engine that is not installed has no models directory to check; ensure_running names that failure.
+    return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
+
+
+def _refuse_unsealed_hook(spec: Any) -> None:
+    """An after_outputs hook runs only where outputs are sealed from a managed result; never skip it silently."""
+    if _after_outputs(spec) is not None:
+        raise AstridValueError("after_outputs requires a managed generation result")
+
+
+def _after_outputs(spec: Any) -> Any:
+    """The after_outputs callable for ``--after-outputs-job``, or None.
+
+    The entry's hook runs through the engine's ``finish``, on this machine, with the job
+    directory build already wrote into.
+    """
+    job = json.loads(spec) if isinstance(spec, str) else dict(spec or {})
+    if not job or not job.get("entry"):
+        return None
+    from astrid.core.generation import entries
+
+    row = next((r for r in entries.user_entries() if r["id"] == job["entry"] and r.get("hooks_declared")), None)
+    hooks = entries.entry_hooks(row) if row else {}
+    if "after_outputs" not in hooks:
+        raise AstridValueError(f"entry {job['entry']!r} declares no after_outputs hook")
+    engine = _engine_for({"engine": "comfyui"})
+    run_job = {"hooks": hooks, "inputs": job.get("inputs", {}), "files": job.get("files", {}),
+               "job_dir": job.get("job_dir")}
+    return lambda outputs: engine.finish(run_job, outputs)
+
+
 class _LocalEngineServer:
     """The ``local`` that ComfyUIEngine.run drives: the installed local ComfyUI, and one production submit."""
 
@@ -761,6 +841,7 @@ def _run_and_settle(
     align: str | None = None,
     manifest: dict[str, Any] | None = None,
     entry: str | None = None,
+    after_outputs_job: Any = "{}",
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt.
 
@@ -898,10 +979,18 @@ def _run_and_settle(
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
                 write_progress("align")
-                manifest = manifest if manifest is not None else {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
-                _engine_for(manifest).run(
-                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "check"},
-                    local)
+                engine = _engine_for(manifest or {"engine": "comfyui"})
+                if manifest is None:
+                    manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
+                mode = align or "check"
+                job = {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": mode,
+                       "refuse_missing": bool(manifest.get("models_root"))}  # a declared model absent: refuse before /prompt
+                try:
+                    engine.run(job, local)
+                except ValueError as exc:
+                    if getattr(exc, "missing", None):
+                        raise AstridValueError(str(exc)) from exc
+                    raise
                 write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
@@ -974,6 +1063,7 @@ def _run_and_settle(
             workflow_path=workflow_path,
             source_snapshot=source_snapshot,
             producer_context=producer_context,
+            after_outputs=_after_outputs(after_outputs_job),
         )
         execution = manifest["managed_generation_result"]["outcomes"]["execution"]
         if execution["status"] != "succeeded":
@@ -983,6 +1073,7 @@ def _run_and_settle(
             )
         return manifest
 
+    _refuse_unsealed_hook(after_outputs_job)
     inventory = production_result.outputs
     if comfy_url:
         raise AstridValueError("local_server requires VibeComfy managed_generation_result_path")
@@ -1124,6 +1215,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_video_widget=args.source_video_widget,
                 managed_assets=args.managed_assets,
                 workflow_inputs=args.workflow_inputs,
+                after_outputs_job=args.after_outputs_job,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
                 align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else None,

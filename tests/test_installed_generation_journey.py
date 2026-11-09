@@ -221,6 +221,14 @@ class Result:
     def to_dict(self):
         return self.raw_result
 class Client:
+    # RunPod preferences are saved in the Runtime's generation settings document (machines.runpod),
+    # so describing the runpod placement reads them from this connection. The refusal without
+    # saved preferences is the intended T6d behaviour, not a regression.
+    def get_user_app_state(self, key):
+        assert key == 'generation'
+        return {'content': {'machines': {'runpod': {
+            'provider_account_ref': 'fixture-account', 'gpu_types': ['NVIDIA A40'],
+            'image': 'registry.example/worker@sha256:' + '0' * 64}}}, 'version': 1}
     def invoke_result(self, capability_id, *, kind, inputs, wait, **kwargs):
         events.append([capability_id, kind, wait])
         if capability_id == 'runpod.status':

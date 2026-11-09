@@ -207,10 +207,15 @@ def _fetch_model(model: ModelSpec, models_root: Path, *, deadline: float, client
         fetch.download(entry, root=models_root, client=resuming, quiet=True)
     except Exception as exc:  # fetch raises after publishing when size/SHA differ
         error = exc
-    if path.exists() and not _matches(path, model, deadline=deadline):
-        path.unlink()
-        part.unlink(missing_ok=True)
-        raise IntegrityError(f'{model.destination}: SHA-256 mismatch against the lock; refused to publish')
+    if path.exists():
+        try:
+            # fetch published first and left its source receipt over the verification sidecar
+            # model_root reads; force-verifying checks size and SHA-256 and rewrites that sidecar.
+            fetch.verify(entry, path, root=models_root, force=True)
+        except Exception as exc:
+            path.unlink()
+            part.unlink(missing_ok=True)
+            raise IntegrityError(f'{model.destination}: SHA-256 mismatch against the lock ({exc}); refused to publish') from exc
     if not path.exists():
         kept = '; prefix retained for resume' if part.exists() else ''
         if isinstance(error, DownloadError):

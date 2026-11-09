@@ -62,6 +62,14 @@ def _slot_classes(slot):
     return classes
 
 
+def _h3_built_classes(request_path, asset_map, tmp):
+    """Node classes of the graph h3's build picks for this request (the stand-in ComfyUI must know them)."""
+    from astrid.core.generation import entries
+    built = entries.build_entry(entries.find_entry("h3"), {"request": str(request_path), "asset_map": asset_map},
+                                Path(tmp) / "classes-job")
+    return {node.class_type for node in built["workflow"].runtime_nodes().values()}
+
+
 def _media(kind, tmp):
     """A small real media file, so delivery and thumbnails probe real bytes."""
     import subprocess
@@ -83,6 +91,7 @@ class SlotPod(MachineProviderHTTP):
         self.expect_entry = None
         from astrid.core.generation import entries
         self.listed = sorted({row["id"] for row in entries.ready_entries()}
+                             | {row["id"] for row in entries.contributed_entries()}  # the pod's built-in packs (h3)
                              | {value for values in SLOT_DEFAULTS.values() for value in values}
                              | {value for values in _CAPABILITY_ENTRIES.values() for value in values})
         # Each engine's own readiness gate needs its required nodes in /object_info, besides the workflow's classes.
@@ -221,7 +230,7 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
 
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod"):
+           machine_identity=False, target_kind="runpod", h3_output=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -243,6 +252,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
     monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
     provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
+    provider.comfy.h3_output = h3_output
     send, send_requests, connect = httpx.Client.send, requests.Session.send, socket.socket.connect
     local = {"127.0.0.1", "localhost", "::1"}
     def respond(request):
@@ -407,6 +417,7 @@ def test_h3_av_through_the_runpod_machine(tmp_path, monkeypatch, real_runtime, t
     assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
     h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                  / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+    h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
     def call(facade, controls, tmp):
         return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
     with _drive(("video", "h3"), tmp_path, monkeypatch, real_runtime, tuple_sources,
@@ -506,13 +517,14 @@ _RED = {
     (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("video", "h3"), "local-managed"): ("result", "capability 'h3_av.transform' child exited 1", "T6b"),
+    # h3 builds its graph and reaches vibecomfy.run on the stand-in; the packaged node schemas disagree with the
+    # graph's native ports (ComfyMathExpression 3 outputs vs 2), so the canonical UI materialization is refused.
+    (("video", "h3"), "local-managed"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
+    (("video", "h3"), "attached"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
     (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
-    (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
 }
 
 
@@ -565,9 +577,10 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         assets.write_text(json.dumps({request["media"][0]["asset"]["id"]: str(source), "source": str(source)}))
         h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
                                      / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+        h3_classes |= _h3_built_classes(H3_REQUEST, json.loads(assets.read_text()), tmp_path)
         def call(facade, controls, tmp):
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets), **controls)
-        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True)
+        drive = dict(extra_classes=h3_classes, call=call, machine_identity=True, h3_output=True)
     else:
         drive = dict(call=_capability_call(capability))
     red = _RED.get((capability, target_kind))
@@ -593,3 +606,61 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
             assert provider.comfy.prompts and not provider.comfy.rejections
             assert provider.comfy.views, "no output was retrieved over /view"
         assert client.tasks.show(result.task_id).data["state"] == "succeeded"
+
+
+def test_h3_facade_passes_its_after_outputs_job_and_the_hook_composes_the_candidate(tmp_path, monkeypatch, real_runtime, tuple_sources):
+    """Facade level: generate --entry h3 builds, hands vibecomfy.run its after_outputs job, and that job's hook
+    turns the generated video into the composed and verified candidate (not the raw output)."""
+    import hashlib
+    import importlib
+    request = json.loads(H3_REQUEST.read_text())
+    source = _video_source_av(tmp_path / "source.mp4")
+    assets = {request["media"][0]["asset"]["id"]: str(source), "source": str(source)}
+    assets_path = tmp_path / "assets.json"
+    assets_path.write_text(json.dumps(assets))
+    h3_classes = set(json.loads((Path(__file__).resolve().parents[1]
+                                 / "fixtures/h3_cpu/object_info_h3_runpod_graph_closure.json").read_text()))
+    h3_classes |= _h3_built_classes(H3_REQUEST, assets, tmp_path)
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    def workflow(self, **kwargs):
+        # Where vibecomfy.run would run: the job directory build wrote still exists during the call.
+        captured.update(kwargs)
+        spec = json.loads(kwargs["after_outputs_job"])
+        assert Path(spec["job_dir"], "h3", "build-state.json").is_file()
+        run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+        generated = _video_source_av(tmp_path / "generated.mp4", seconds=4.5, size="1024x576")
+        captured["generated"] = generated
+        captured["composed"] = Path(run._after_outputs(spec)([generated])[0])
+        captured["composed_bytes"] = captured["composed"].read_bytes()
+        raise Stop
+
+    monkeypatch.setattr(GenerationFacade, "workflow", workflow)
+
+    def call(facade, controls, tmp):
+        try:
+            facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(assets_path), **controls)
+        except Stop:
+            return None
+    with _drive(("video", "h3"), tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=h3_classes,
+                call=call, machine_identity=True, target_kind="attached", h3_output=True):
+        pass
+    spec = json.loads(captured["after_outputs_job"])
+    assert spec["entry"] == "h3" and spec["files"]["asset_map"] == assets
+    generated = captured["generated"]
+    assert hashlib.sha256(captured["composed_bytes"]).hexdigest() != hashlib.sha256(generated.read_bytes()).hexdigest()
+    assert captured["composed_bytes"]
+
+
+def _video_source_av(path, seconds=2.4, size="1024x576"):
+    import subprocess
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=24",
+               "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]
+    if seconds == 2.4:
+        command += ["-frames:v", "57"]
+    subprocess.run([*command, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)],
+                   check=True, timeout=120)
+    return path
