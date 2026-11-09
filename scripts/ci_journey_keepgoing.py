@@ -295,7 +295,7 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
         path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
         if gate.validate_tuple(candidate, app, path) != manifest:
-            raise RuntimeError("release0-to-release1 requires a frozen candidate manifest")
+            raise RuntimeError("release9-then-install requires a frozen candidate manifest")
         jumps.candidate_release(manifest)
         if not journey.sentinel_observation(sentinel, birth)["alive"]:
             raise RuntimeError("Unrelated sentinel exited before release-0 bootstrap")

@@ -39,8 +39,9 @@ RELEASE0_REFS = {
 RELEASE0_REQUIRED = frozenset({
     "provenance.json", "served/install", "served/install.ps1", "served/install-manifest.json",
 })
-# The published Release 9 is the starting install of the release0-to-release1
-# legs. Its bootstrap and manifest come from the App commit that pinned it.
+# The published Release 9 is the starting install of the release9-then-install
+# leg and the installer that performs the R0 handoff in r0-handoff-then-update.
+# Its bootstrap and manifest come from the App commit that pinned it.
 RELEASE9_APP_COMMIT = "546c91b7aaf90835445136eb6e93459385ffe21c"
 RELEASE9_RELEASE = 9
 RELEASE9_IDENTITY = {
@@ -231,7 +232,7 @@ def write_diagnostic_release0_preconditions(args, root: Path, data: Path, *, fix
 def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -> tuple[dict, dict]:
     """Validate the exact retained state without invoking a lifecycle command."""
     if (getattr(args, "diagnostic_start_at", None) != DIAGNOSTIC_START_STAGE
-            or args.leg != "release0-to-release1" or args.mode != "direct"
+            or args.leg != "release9-then-install" or args.mode != "direct"
             or getattr(args, "job_id", None) or getattr(args, "source_override", False)):
         raise ValueError("Diagnostic start is only admitted for the direct release-0 seed stage")
     source, release9_manifest, fixture_receipt = release9_admission(args, root.parent / "release9-source")
@@ -612,21 +613,21 @@ def release0_admission(args) -> tuple[Path, Path, dict]:
     if (getattr(args, "mode", None) != "direct" or (not getattr(args, "job_id", None) and not diagnostic)
             or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
             or getattr(args, "release0_fixture", None) is None):
-        raise ValueError("release0-to-release1 requires its scoped frozen-fixture direct admission")
+        raise ValueError("the release-0 start requires its scoped frozen-fixture direct admission")
     if getattr(args, "source_override", False):
-        raise ValueError("release0-to-release1 never admits a source override")
+        raise ValueError("the release-0 start never admits a source override")
     return verified_release0_fixture(args.release0_fixture)
 
 
 def release9_admission(args, output: Path) -> tuple[Path, Path, dict]:
-    """Admit the pinned, published Release 9 as the release0-to-release1 start."""
+    """Admit the pinned, published Release 9 as the release9-then-install start."""
     diagnostic = getattr(args, "diagnostic_start_at", None) == DIAGNOSTIC_START_STAGE
     if (getattr(args, "mode", None) != "direct" or (not getattr(args, "job_id", None) and not diagnostic)
             or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
             or getattr(args, "release9_app_checkout", None) is None):
-        raise ValueError("release0-to-release1 requires its scoped pinned Release-9 direct admission")
+        raise ValueError("release9-then-install requires its scoped pinned Release-9 direct admission")
     if getattr(args, "source_override", False):
-        raise ValueError("release0-to-release1 never admits a source override")
+        raise ValueError("release9-then-install never admits a source override")
     return verified_release9_source(args.release9_app_checkout, output)
 
 
@@ -685,11 +686,11 @@ def candidate_release(manifest: dict) -> int:
     """
     release = manifest.get("release")
     if type(release) is not int or release <= RELEASE9_RELEASE:
-        raise RuntimeError("release0-to-release1 requires a frozen candidate newer than Release 9")
+        raise RuntimeError("release9-then-install requires a frozen candidate newer than Release 9")
     return release
 
 
-def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+def execute_release9_then_install(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
     """Pinned Release 9 direct install, API seed, and plain install upgrade to the candidate."""
     evidence.mkdir(parents=True, exist_ok=True)
     result = {
@@ -716,7 +717,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
         if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
-            raise RuntimeError("release0-to-release1 requires a frozen candidate manifest")
+            raise RuntimeError("release9-then-install requires a frozen candidate manifest")
         target_release = candidate_release(manifest)
         result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
                                          "artifacts": candidate["artifacts"]}
@@ -796,6 +797,260 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["sentinel"]["at_settlement"] = settled_sentinel
         if not settled_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel did not survive the direct release-1 update")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
+R0_HANDOFF_LEG = "r0-handoff-then-update"
+# The handoff is performed by the published Release 9 installer, so the start
+# state is a completed R0 to R1 storage handoff that landed on Release 9.
+R0_HANDOFF_RELEASE = RELEASE9_RELEASE
+
+
+def r0_handoff_admission(args, output: Path) -> tuple[tuple[Path, Path, dict], tuple[Path, Path, dict]]:
+    """Admit the frozen R0 fixture and the pinned Release 9 installer that hands it off."""
+    if getattr(args, "job_id", None) is None or getattr(args, "diagnostic_start_at", None):
+        raise ValueError(f"{R0_HANDOFF_LEG} is admitted only for a disposable direct qualification job")
+    return release0_admission(args), release9_admission(args, output)
+
+
+def handoff_journal() -> dict:
+    """The completed handoff journal, read from beside the installer's selection record."""
+    path = journey.selection_path().with_name("astrid-r1-handoff.json")
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("R0 handoff journal is absent")
+    return journey.read_json(path)
+
+
+def handed_off_start(root: Path, data: Path) -> dict:
+    """Prove the install is in the field state: R0 handed off, R0 data retained, R1 active."""
+    if __package__:
+        from . import journey_fresh_update as fresh
+    else:
+        import journey_fresh_update as fresh
+    boundary = fresh.boundary_state(root, data)
+    if not fresh.is_handed_off(boundary, data):
+        raise RuntimeError(f"R0 handoff did not leave the handed-off start state: {boundary}")
+    journal = handoff_journal()
+    if (journal.get("phase") != "complete" or journal.get("r0_data_root") != str(data)
+            or journal.get("r1_data_root") != str(Path(str(data) + "-r1")) or not journal.get("receipt")):
+        raise RuntimeError("R0 handoff journal is not a completed handoff of this journey's data root")
+    recorded, active = journey_data_roots.selection(root, data)
+    if recorded != data or active != Path(str(data) + "-r1") or not data.is_dir() or not active.is_dir():
+        raise RuntimeError("R0 handoff did not retain R0's data and select the R1 copy")
+    return {"boundary": boundary, "phase": journal["phase"],
+            "r0_data_root": str(recorded), "r1_data_root": str(active)}
+
+
+def run_receipt(data: Path) -> dict | None:
+    """The candidate installer's ``last-run.json``, beside its install.log under the run home."""
+    home = data.parent / "home"
+    log_dir = (home / "Library" / "Logs" / "Astrid Runtime" if sys.platform == "darwin"
+               else home / ".local" / "state" / "astrid-runtime" / "logs")
+    path = log_dir / "last-run.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    return journey.read_json(path)
+
+
+def live_runtime_owners(data: Path) -> list[dict]:
+    """Discovery owners whose process is alive, at the R0 root and the R1 copy."""
+    owners = []
+    for root in (data, Path(str(data) + "-r1")):
+        try:
+            discovery = json.loads((root / "runtime" / "discovery.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = discovery.get("pid") if isinstance(discovery, dict) else None
+        if type(pid) is not int or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        owners.append({"data_root": str(root), "pid": pid,
+                       "runtime_instance_id": discovery.get("runtime_instance_id")})
+    return owners
+
+
+def candidate_update(app: Path, manifest_path: Path, shell: str, evidence: Path,
+                     root: Path, data: Path) -> dict:
+    """Run the candidate's public ``install --update`` once and return what it reported.
+
+    The exit code is returned, not raised, so the leg can assert it beside the
+    installed release: an update that exits 0 and installs nothing is the
+    failure this leg exists to catch.
+    """
+    if sys.platform == "win32":
+        raise RuntimeError(f"{R0_HANDOFF_LEG} is not admitted on Windows")
+    env = dict(os.environ)
+    env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+    log = evidence / "update-bootstrap.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    argv = [shell, str(app / "public" / "install"), "--manifest", str(manifest_path),
+            "--root", str(root), "--data-root", str(data), "--update"]
+    with log.open("w", encoding="utf-8") as stream:
+        process = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                 timeout=3600, check=False)
+    lines = [line for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
+    return {"command": "install --update", "exit_code": process.returncode,
+            "log": str(log), "last_lines": lines[-8:]}
+
+
+def execute_r0_handoff_then_update(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Frozen R0, seeded, handed off by the published Release 9, then the candidate's ``install --update``.
+
+    This is the start state of real pre-R1 installs in the field: a completed
+    R0 to R1 storage handoff, with R0's data kept under the R0 root and the
+    active copy beside it. The candidate's ``--update`` must install the
+    candidate release and exit 0.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1, "receipt_kind": "r0-handoff-then-update",
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "release0_fixture": None, "handoff_source": None, "handoff": None, "update": None,
+        "release_transition": None, "semantic_data": None,
+        "checks": {key: "not-run" for key in (
+            "handed_off_start", "update_exit", "run_receipt", "release", "one_runtime", "service", "health",
+            "semantic_data", "task_settled", "unrelated_sentinel")},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        (fixture, r0_manifest, fixture_receipt), (handoff_app, handoff_manifest, handoff_receipt) = (
+            r0_handoff_admission(args, root.parent / "release9-source"))
+        result["release0_fixture"] = fixture_receipt
+        result["handoff_source"] = handoff_receipt
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError(f"{R0_HANDOFF_LEG} requires a frozen candidate manifest")
+        target_release = candidate_release(manifest)
+        result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
+                                         "artifacts": candidate["artifacts"]}
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
+
+        # 1. The frozen R0 install, seeded through its live Runtime.
+        bootstrap_release0(fixture, r0_manifest, args.shell, evidence / "release0", root, data)
+        journey.wait_ready(data)
+        r0_path, r0_data, r0 = journey.installation(root, data)
+        if r0_data != data or installed_release(r0) != 0:
+            raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
+        journey.selected_tuple(journey.read_json(r0_manifest), r0)
+        journey.assert_direct_service_ownership(root, data)
+        baseline = evidence / "release0-api-seed"
+        journey.verify("observe", r0_path, data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = live_workspace(root, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(r0, baseline / "release0-task", project)
+        before = live_workspace(root, data, baseline, "snapshot", keys)
+
+        # 2. The published Release 9 installer hands R0 off, as it did on real installs.
+        journey.bootstrap(handoff_app, handoff_manifest, args.shell, "update", evidence / "handoff", root, data)
+        handoff_data = selected_data_root(root, data)
+        journey.wait_ready(handoff_data)
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or old_path == r0_path or installed_release(old) != R0_HANDOFF_RELEASE:
+            raise RuntimeError(f"R0 handoff did not select release {R0_HANDOFF_RELEASE}")
+        old_tuple = journey.selected_tuple(journey.read_json(handoff_manifest), old)
+        old_service = journey.assert_direct_service_ownership(root, data, release=1)
+        result["handoff"] = {**handed_off_start(root, data), "release": R0_HANDOFF_RELEASE,
+                             "service": old_service}
+        result["checks"]["handed_off_start"] = "pass"
+        old_health = journey.healthy(handoff_data)
+
+        # 3. The candidate's public update command, from the handed-off state.
+        update = result["update"] = candidate_update(app, candidate_path, args.shell, evidence / "update",
+                                                     root, data)
+        receipt = update["receipt"] = run_receipt(data)
+        if update["exit_code"] != 0:
+            raise RuntimeError(f"Candidate install --update exited {update['exit_code']} "
+                               f"from the handed-off Release {R0_HANDOFF_RELEASE} install")
+        result["checks"]["update_exit"] = "pass"
+        version_path, selected_data, version = journey.installation(root, data)
+        if installed_release(version) != target_release:
+            raise RuntimeError(
+                f"Candidate install --update exited 0 but installed nothing: the selected release is "
+                f"still {installed_release(version)}, not the candidate release {target_release}")
+        if version_path == old_path:
+            raise RuntimeError("Candidate install --update did not activate a new version")
+        # The candidate's own receipt (UR-15a) must agree: updated, exit 0, the target live.
+        if (not isinstance(receipt, dict) or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+                or receipt.get("still") != target_release or receipt.get("target") != target_release):
+            raise RuntimeError(f"The candidate's run receipt is not updated to release {target_release}: {receipt}")
+        result["checks"]["run_receipt"] = "pass"
+        selected = selected_candidate(manifest, version, old_tuple)
+        active_data = selected_data_root(root, data)
+        journey.wait_ready(active_data)
+        new_health = journey.healthy(active_data)
+        live_release = (new_health.get("identity") or {}).get("release")
+        if live_release != target_release:
+            raise RuntimeError(f"The live Runtime reports release {live_release}, not the candidate release {target_release}")
+        if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
+            raise RuntimeError("Candidate update retained the handed-off Runtime instance")
+        live_owners = live_runtime_owners(data)
+        result["live_runtimes"] = live_owners
+        if [owner["data_root"] for owner in live_owners] != [str(active_data)]:
+            raise RuntimeError(f"Exactly one live Runtime (at {active_data}) is required after the update: {live_owners}")
+        result["checks"]["one_runtime"] = "pass"
+        result["release_transition"] = {"from": R0_HANDOFF_RELEASE, "to": target_release,
+                                        "start_state": "r0-handoff-complete", "source": "candidate-install-update"}
+        result["checks"]["release"] = "pass"
+        r1_service = (data.parent / "home/.config/systemd/user/astrid-r1.service" if sys.platform == "linux"
+                      else data.parent / "home/Library/LaunchAgents/haus.astrid.runtime.r1.plist")
+        new_service = journey.assert_direct_service_ownership(root, selected_data,
+                                                              release=1 if r1_service.exists() else 0)
+        result["service_transition"] = {"handed_off": old_service, "candidate": new_service}
+        result["service_manager"] = new_service
+        result["health_transition"] = {
+            "handed_off_runtime_instance_id": old_health["runtime_instance_id"],
+            "candidate_runtime_instance_id": new_health["runtime_instance_id"],
+            "candidate_live_release": live_release,
+        }
+        result["checks"].update(service="pass", health="pass")
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("install", version_path, active_data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys,
+                               release=1 if r1_service.exists() else 0)
+        assert_preserved(before, after)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        before_sha = semantic_digest({k: before[k] for k in semantic_keys})
+        after_sha = semantic_digest({k: after[k] for k in semantic_keys})
+        if before_sha != after_sha:
+            raise RuntimeError("Semantic snapshot digest differs after the handoff and the update")
+        result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
+        result["checks"]["semantic_data"] = "pass"
+        task_after_update(version, evidence / "candidate-working-task", project)
+        result["checks"]["task_settled"] = "pass"
+        settled_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled_sentinel
+        if not settled_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the handoff and the update")
         result["checks"]["unrelated_sentinel"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
@@ -893,10 +1148,14 @@ def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentin
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
     if args.leg == "windows-upgrade-refusal":
         return execute_windows_refusal(args, root, data, evidence, sentinel, birth)
-    if args.leg == "release0-to-release1":
+    if args.leg == R0_HANDOFF_LEG:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
-        return execute_release0_to_release1(args, root, data, evidence, sentinel, birth)
+        return execute_r0_handoff_then_update(args, root, data, evidence, sentinel, birth)
+    if args.leg == "release9-then-install":
+        if sys.platform == "win32":
+            raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
+        return execute_release9_then_install(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
     result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",
               "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
