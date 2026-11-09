@@ -114,8 +114,10 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
             built = entries.build_entry(described, inputs, job_dir)  # (b) build, once
             workflow, workflow_inputs = Path(built["bundle"]) / "workflow.py", dict(built["bindings"])
             assets = dict(built.get("assets") or {})
-            # The requirements of the graph build chose, not of the static bundle.
-            manifest = entries.requirements(entries.attach_hooks(described, inputs, job_dir), inputs)
+            # The requirements of the graph build chose, not of the static bundle. Read from the built
+            # folder, so build is not called a second time.
+            chosen = {k: v for k, v in described.items() if k not in ("hooks", "hooks_declared", "requirements")}
+            manifest = entries.requirements({**chosen, "bundle": built["bundle"]}, inputs)
             entries.target_schema(described, built["workflow"], None, align=align)
             if assets:
                 import zipfile

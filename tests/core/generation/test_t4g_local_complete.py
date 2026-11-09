@@ -31,14 +31,14 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
     _endpoint(comfy, monkeypatch)
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     seen = []
-    engine_cls = type(action._comfyui_engine())
+    engine_cls = type(action._engine_for({}))
 
     class Spy(engine_cls):
         def align(self, manifest, mode):
             seen.append((mode, manifest))
             return super().align(manifest, mode)
 
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy())
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     manifest = {"models": [], "extra": {"nodes": []}, "engine": "comfyui", "base": None}
     for mode in ("trust", "check"):
         action._run_and_settle(comfy.workflow, tmp_path / mode / "outputs", task_identity="t", attempt_identity="a",
@@ -211,14 +211,14 @@ def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align
     monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
     monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
     seen = []
-    engine_cls = type(action._comfyui_engine())
+    engine_cls = type(action._engine_for({}))
 
     class Spy(engine_cls):
         def align(self, manifest, mode):
             seen.append((mode, manifest))
             return super().align(manifest, mode)
 
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy())
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     monkeypatch.setenv("ASTRID_ALIGN", "trust")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
@@ -311,8 +311,8 @@ def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_pa
         def nodes_restore(self, nodes): calls.append(("nodes", nodes))
         def fetch(self, rows): calls.append(("fetch", [row["name"] for row in rows]))
 
-    engine_cls = type(action._comfyui_engine())
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: engine_cls(commands=Commands()))
+    engine_cls = type(action._engine_for({}))
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: engine_cls(commands=Commands()))
     monkeypatch.setenv("ASTRID_ALIGN", "align")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
