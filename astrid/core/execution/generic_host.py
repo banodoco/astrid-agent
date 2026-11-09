@@ -12399,12 +12399,12 @@ class GenericPackHost:
                     else None
                 )
                 if not isinstance(vibe_session, Mapping):
-                    # pip_embedded is a valid local, non-persistent route. It
+                    # The engine local run is a valid local, non-persistent route. It
                     # has no VibeComfy session binding, so bind reuse to the
                     # admitted workflow's resident requirements plus the
                     # pinned dependency/source identity instead.
                     session_identity_fields = {
-                        "profile": "pip_embedded",
+                        "profile": "local_server",
                         "source_digest": record.source_digest,
                         "dependency_digest": record.dependency_digest,
                         "workflow_resident_requirements": workflow_session_requirements,

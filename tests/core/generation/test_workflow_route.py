@@ -18,6 +18,7 @@ from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
 from astrid.core.generation.engine_contracts import UnsupportedPlacement
 from astrid.core.pack.entrypoint import canonical_runtime_entrypoint
 from astrid.packs.vibecomfy import production_engine as engine
+from tests.local_engine_stub import LOCAL_ENGINE_URL, local_engine_patch
 
 
 RUNPOD = {"target": {"kind": "runpod", "pod_id": "original-pod", "provider_account_ref": "account",
@@ -78,7 +79,7 @@ def test_local_workflow_optional_api_preserves_result_and_legacy_defaults(monkey
     assert isinstance(backend, WorkflowBackendAdapter)
     assert backend.workflow(tmp_path / "workflow.py", tmp_path, task_identity="task-1") is result
     produce.assert_called_once_with(tmp_path / "workflow.py", tmp_path, task_identity="task-1",
-                                    profile_id="pip_embedded", hc03_profile=None,
+                                    profile_id="local_server", hc03_profile=None,
                                     expected_execution_identity=None)
     assert VibeComfyWorkflowBackend.generate is VibeComfyBackend.generate
     assert BackendAdapter.__abstractmethods__ == frozenset({"generate"})
@@ -161,8 +162,8 @@ def test_action_registry_production_and_existing_manifestv2(action, canonical_ca
     original = Mock(return_value=Checkout())
     monkeypatch.setattr("astrid.core.generation.backends.vibecomfy.CheckoutServerAdapter.from_host_session", original)
     workflow_calls = []
-    # Local placement reaches the base workflow through the H3 workflow backend.
-    backend_class = VibeComfyWorkflowBackend if route == "runpod" else VibeComfyBackend
+    # Both placements reach production through the engine's WorkflowRunner.
+    backend_class = VibeComfyWorkflowBackend
     original_workflow = backend_class.workflow
     def tracked_workflow(self, *args, **kwargs):
         workflow_calls.append((args, kwargs))
@@ -175,15 +176,26 @@ def test_action_registry_production_and_existing_manifestv2(action, canonical_ca
     )
     if route == "runpod":
         kwargs.update(placement="runpod", execution_request=RUNPOD, endpoint_checkout=endpoint)
-    manifest = action._run_and_settle(case.workflow, case.out, **kwargs)
-    assert len(workflow_calls) == len(calls) == 1
-    assert calls[0][2] == {"task_identity": "task-1", "attempt_identity": "attempt-1", "run_inputs": {"value": 8}}
+    produce = Mock(return_value=produced)
+    if route == "local":
+        # A local run is the engine's run: no host-session checkout; the production submit is local_server.
+        monkeypatch.setattr(engine, "run_workflow_result_path", produce)
+        with local_engine_patch():
+            manifest = action._run_and_settle(case.workflow, case.out, **kwargs)
+    else:
+        manifest = action._run_and_settle(case.workflow, case.out, **kwargs)
     if route == "runpod":
+        assert len(workflow_calls) == len(calls) == 1
+        assert calls[0][2] == {"task_identity": "task-1", "attempt_identity": "attempt-1", "run_inputs": {"value": 8}}
         endpoint.assert_called_once()
         original.assert_not_called()
         assert closed == [True]
     else:
-        original.assert_called_once()
+        assert len(workflow_calls) == 1 and produce.call_count == 1
+        assert produce.call_args.kwargs["profile_id"] == "local_server"
+        assert produce.call_args.kwargs["comfy_url"] == LOCAL_ENGINE_URL
+        assert produce.call_args.kwargs["workflow_input_bindings"] == {"value": 8}
+        original.assert_not_called()
         endpoint.assert_not_called()
         assert closed == []
     assert manifest["schema_version"] == 2
