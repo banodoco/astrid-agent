@@ -6,13 +6,16 @@ import shutil
 import tempfile
 import unittest
 
+import pytest
+
 from astrid.pack_build import build_pack_assets
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = Path(os.environ.get('ASTRID_BUILD_TEST_NODE', '/opt/node22/bin/node'))
-_ESBUILD_ENV = os.environ.get('ASTRID_BUILD_TEST_ESBUILD')
-ESBUILD = Path(_ESBUILD_ENV) if _ESBUILD_ENV else None
-_TOOLS_PRESENT = bool(ESBUILD and ESBUILD.is_file() and NODE.is_file())
+# Wholly in the default-off ``pack_build_tools`` lane (tests/lanes.py): not collected unless the run selects it,
+# and then a missing tool is a failure, never a skip.
+pytestmark = pytest.mark.pack_build_tools
+ESBUILD = Path(os.environ.get('ASTRID_BUILD_TEST_ESBUILD', ''))
 SINGLETONS = ('react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom/client', 'remotion', '@astrid/editor-sdk')
 
 
@@ -28,10 +31,6 @@ def toolchain():
                 for i, s in enumerate(SINGLETONS)}}
 
 
-@unittest.skipUnless(
-    _TOOLS_PRESENT,
-    'pack build tests need node (ASTRID_BUILD_TEST_NODE) and esbuild (ASTRID_BUILD_TEST_ESBUILD); neither is provisioned here',
-)
 class PackBuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))

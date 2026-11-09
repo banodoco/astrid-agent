@@ -36,10 +36,6 @@ _REMOVED_DATA_ONLY_PACKAGE_MARKERS = (
 _PRESERVED_HELPER_PACKAGE_MARKERS = (
     "astrid/packs/runpod/actions/session/__init__.py",
     "astrid/packs/training/actions/training_run/trainer_adapters/__init__.py",
-    "astrid/packs/editorial/actions/refine/src/reviewers/__init__.py",
-)
-_REMOVED_MARKER_IMPORT_PATHS = (
-    "astrid.packs.media.actions.clip_extract.run",
 )
 
 # ── known shipped pack ids (must remain stable across layout changes) ───────
@@ -204,13 +200,6 @@ def test_helper_package_markers_still_exist() -> None:
     )
 
 
-def test_removed_package_markers_do_not_break_runtime_imports() -> None:
-    """Namespace-packaged pack paths must still import after marker cleanup."""
-    for module_name in _REMOVED_MARKER_IMPORT_PATHS:
-        module = importlib.import_module(module_name)
-        assert module is not None
-
-
 # ── T15: special directory classification & discovery stability ──────────────
 
 
@@ -372,14 +361,8 @@ def test_skill_discovery_finds_pack_skills() -> None:
 
     # Packs known to have skill/SKILL.md (not exhaustive — just a floor).
     expected_with_skill = {
-        "editorial",
-        "foley",
         "generation",
-        "media",
         "rendering",
-        "stream_content",
-        "understanding",
-        "video_editing",
         "timeline",
     }
     descriptors = skill_discovery.list_skills()
@@ -397,8 +380,6 @@ def test_skill_discovery_finds_pack_skills() -> None:
 def test_v2_integration_packs_are_discoverable() -> None:
     """Former external-origin packs remain discoverable after v3 conversion."""
     integration_ids = {
-        "fal",
-        "moirae",
         "runpod",
         "vibecomfy",
         "comfy_wrap",

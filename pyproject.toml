@@ -306,7 +306,7 @@ timeout = 600
 # Lanes (testing plan R-2): the default run leaves out the default_off lanes of tests/lanes.py (a Runtime checkout,
 # macOS, the Remotion install, credentials, a GPU, the owner's workstation files); each is run by the CI job named in the registry or by hand.
 # --strict-markers: a lane marker must be one the registry declares.
-addopts = "--strict-markers -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not app_checkout'"
+addopts = "--strict-markers -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not pack_build_tools and not app_checkout'"
 # Scope collection to Astrid's own tests; exclude vendored upstream test trees
 # (e.g. any pack's `ai_toolkit/upstream` submodule, which targets the upstream
 # project, needs heavy deps like torch, and is not part of Astrid's suite).
