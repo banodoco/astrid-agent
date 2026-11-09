@@ -502,7 +502,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
                 **({'default_mode': entry['default_mode']} if entry.get('default_mode') in modes else {}),
                 **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
-        if entry.get('inputs'):
+        if entry.get('inputs') and entry.get('contribution'):
             # The entry declares its own inputs (a contribution whose build picks the graph): the
             # bundle's widgets are not its interface.
             schemas = {name: _declared_inputs(entry) for name in modes}

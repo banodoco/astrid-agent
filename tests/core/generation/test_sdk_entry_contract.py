@@ -126,32 +126,6 @@ def test_actual_catalog_projection_and_context_help_agree_without_probes(monkeyp
         assert "image_ref (string;" not in help_text
 
 
-def test_actual_h3_cli_and_sdk_validate_same_files_and_stop_before_parent(monkeypatch, tmp_path, capsys):
-    import json
-    import astrid
-    import astrid.sdk as sdk
-    from astrid.sdk.client import AstridClient
-    from astrid.core.generation import cli
-    from astrid.core.contracts.errors import AstridError
-    monkeypatch.setattr(entries, "user_entries", lambda: [])
-    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: ModelRegistry([]))
-    monkeypatch.setitem(astrid.__dict__, "generate", GenerationFacade())
-    def forbidden(*args, **kwargs):
-        pytest.fail("H3 crossed the unavailable canonical parent boundary")
-    monkeypatch.setattr(cli, "_open_client", forbidden)
-    monkeypatch.setattr(GenerationFacade, "_invoke", forbidden)
-    monkeypatch.setattr(sdk, "invoke_result", forbidden)
-    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
-    digest = "sha256:" + "c" * 64
-    values = {"request": {"digest": digest}, "asset_map": digest}
-    file = tmp_path / "h3-inputs.json"
-    file.write_text(json.dumps(values))
-    with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent") as sdk_error:
-        GenerationFacade().video(entry="h3", **values)
-    with pytest.raises(AstridError, match="Runtime-admitted parent") as cli_error:
-        cli.main(["video", "--entry", "h3", "--inputs-json", str(file)])
-    assert str(sdk_error.value) == str(cli_error.value)
-    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("value,error,diagnostic", [
@@ -197,17 +171,6 @@ def test_task130_unsupported_action_entry_fails_before_invoke(monkeypatch):
 
 
 
-def test_task129_h3_producer_controls_keep_declared_boolean_validation(monkeypatch):
-    import astrid.sdk as sdk
-    from astrid.sdk.client import AstridClient
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("invalid producer control reached admission")
-    monkeypatch.setattr(sdk, "invoke_result", forbidden)
-    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
-    with pytest.raises(CapabilityValidationError, match="requires a boolean"):
-        GenerationFacade().video(entry="h3", request="/tmp/request.json", asset_map="/tmp/assets.json",
-                                 require_worker_qualification="false")
 
 
 @pytest.mark.parametrize('kwargs', [

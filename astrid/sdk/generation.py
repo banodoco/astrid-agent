@@ -694,8 +694,8 @@ def _asset_map(value: Any) -> Any:
 
     Relative paths in the document are taken relative to the document.
     """
-    if not isinstance(value, (str, Path)):
-        return value
+    if not isinstance(value, (str, Path)) or not Path(str(value)).expanduser().is_file():
+        return value  # a map, a managed digest, or a missing path (validation names it)
     document = Path(value).expanduser()
     try:
         raw = json.loads(document.read_text(encoding="utf-8"))

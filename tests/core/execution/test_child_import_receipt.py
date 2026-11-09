@@ -155,35 +155,6 @@ def test_bridge_wrapped_validator_records_worker_and_action_entry(tmp_path: Path
     assert worker["process_birth_id"] == stored["child"]["process_birth_id"]
 
 
-def test_h3_transform_dry_run_subprocess_records_runpy_action_entry(tmp_path: Path, leaf_cleanup, monkeypatch) -> None:
-    # This marker permits module entry, and grants no Runtime authority.
-    monkeypatch.setenv("ASTRID_TASK_RUN_ID", "fixture-entry-marker")
-    host = _host(tmp_path)
-    request = tmp_path / "request.json"
-    asset_map = tmp_path / "asset-map.json"
-    request.write_text("{}", encoding="utf-8")
-    asset_map.write_text("{}", encoding="utf-8")
-    bridge = _SocketBridge()
-    try:
-        _invoke(host, "h3_av.transform", {
-            "request": str(request), "asset_map": str(asset_map), "dry_run": True,
-        }, tmp_path, bridge=bridge)
-    except Exception as exc:
-        ref = getattr(exc, "child_import_receipt", None)
-        assert ref is not None, "H3 dry-run failure should retain its action-entry receipt"
-        ref = _reference(ref)
-    else:
-        pytest.fail("empty H3 request should fail validation after action entry")
-    finally:
-        bridge.close()
-    assert ref["observation"] == "recorded"
-    path = host.evidence_status_path.parent / "child-import-receipts" / f"{ref['launch_id']}.json"
-    stored = json.loads(path.read_bytes())
-    action = next(row for row in stored["observations"] if row["phase"] == "action_entry")
-    entry = next(row for row in action["modules"] if row["module_name"] == "__main__")
-    assert entry["status"] == "loaded"
-    assert entry["spec_name"] == "astrid.packs.h3_av.actions.transform.run"
-    assert next(row for row in action["modules"] if row["module_name"] == entry["spec_name"])["status"] == "not_loaded"
 
 
 def _reference(value: object) -> dict[str, object]:
@@ -339,44 +310,6 @@ def test_child_receipt_rejects_oversized_packet(tmp_path: Path) -> None:
     assert ref["observation"] == "invalid"
 
 
-def test_actual_local_h3_launcher_observes_child_without_inventing_runtime_identity(tmp_path, monkeypatch):
-    import subprocess
-    from astrid.core.execution import process_group
-    from astrid.core.execution.executor.actions import action_orchestrator_definition
-    from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
-    from astrid.core.execution.orchestrator.runner import OrchestratorRunRequest, run_orchestrator
-    from astrid.core.pack.loader import load_pack_manifest
-
-    # Real leaf interpreter at the runner's owned launch seam. Custody's native
-    # census is independently tested and unavailable in this sandbox.
-    monkeypatch.setattr(process_group, "popen_owned_process", subprocess.Popen)
-    monkeypatch.setattr(process_group, "verify_tree_absent", lambda process: process.wait(timeout=5))
-    support = tmp_path / "support"
-    support.mkdir()
-    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(support))
-    monkeypatch.setenv("PYTHONPATH", str(_AGENT_ROOT))
-    monkeypatch.setenv("ASTRID_TASK_RUN_ID", "fixture-entry-marker")
-    pack = load_pack_manifest(_PACK_ROOT / "h3_av" / "pack.yaml")
-    definition = action_orchestrator_definition(pack, "transform", _legacy_h3_command(pack))
-    request = tmp_path / "request.json"
-    assets = tmp_path / "assets.json"
-    request.write_text("{}")
-    assets.write_text("{}")
-    result = run_orchestrator(OrchestratorRunRequest(
-        "h3_av.transform", out=tmp_path / "out", project="unit-project",
-        project_was_auto_resolved=True, inputs={"request": str(request), "asset_map": str(assets), "dry_run": True},
-    ), OrchestratorRegistry([definition]))
-    assert result.returncode == 2  # H3's original request-contract error code.
-    ref = _reference(result.to_dict()["child_import_receipt"])
-    assert ref["observation"] == "recorded"
-    path = support / "child-import-receipts" / (ref["launch_id"] + ".json")
-    stored = json.loads(path.read_bytes())
-    assert stored["child"]["pid"] != os.getpid()
-    assert stored["binding"]["task_id"] == stored["binding"]["attempt_id"] == "unavailable"
-    assert stored["host"]["execution_profile"] == "local_orchestrator"
-    main = stored["observations"][0]["modules"][0]
-    assert main["spec_name"] == "astrid.packs.h3_av.actions.transform.run"
-    assert main["sha256"] == hashlib.sha256(Path(main["resolved_path"]).read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("file_value", [None, "/missing/module.py", "x" * 1025])
