@@ -210,3 +210,25 @@ def test_safe_refusal_of_update_with_a_second_live_copy_is_refused_with_next_and
     lines = replace(out, log="/logs/install.log").headline()
     assert lines[-2] == "Next: stop the other Astrid, then run the same command again."
     assert lines[-1] == "Details: /logs/install.log"
+
+
+# --- A safe --update refusal keeps the Runtime's own reason (busy): it is never relabelled.
+
+BUSY_NEXT = ("Next: quit the other Astrid window (or let the other installer finish), "
+             "then run the same command again.")
+BUSY_REFUSAL = {"safe": False, "kind": "busy"}
+
+
+def test_update_safe_refusal_with_an_unselected_live_runtime_keeps_busy_and_names_no_second_copy():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "busy"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == BUSY_NEXT
+    assert lines[-1] == "Details: /logs/install.log"
+    assert "two copies" not in " ".join(lines)
