@@ -572,14 +572,6 @@ def _main(argv: list[str]) -> int:
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
-        elif description is not None and description["source"] == "action" and parsed.placement != 'runpod':
-            from astrid.sdk.generation import _action_client_scope
-            with _action_client_scope(_open_client) as current_client:
-                result = generate(**kwargs)
-                client = current_client()
-                if client is not None and not parsed.no_wait:
-                    from .delivery import deliver_generation
-                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
         else:
             try:
                 client_scope = _open_client()

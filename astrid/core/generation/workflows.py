@@ -1,11 +1,11 @@
-"""The ``vibecomfy.workflows`` point: ready roots, thin entries, and the optional build and finalize hooks.
+"""The ``vibecomfy.workflows`` point: ready roots, thin entries, and the optional build and after_outputs hooks.
 
 A contribution declares a ready root, a list of VibeComfy thin entries, and optionally
-``build: file.py:fn`` and ``finalize: file.py:fn``. This module only reads that data and
+``build: file.py:fn`` and ``after_outputs: file.py:fn``. This module only reads that data and
 hands the hooks to the engine; it never calls them. The comfyui engine's run site is the
 one place that does (``comfyui_engine.ComfyUIEngine.prepare`` and ``.finish``).
 
-``finalize`` here is not VibeComfy's template finalize (templates.py:1381). It runs once, on
+``after_outputs`` is not VibeComfy's template finalize (templates.py:1381). It runs once, on
 the machine that executed the job, after execute and before copy-back.
 """
 from __future__ import annotations
@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 POINT = "vibecomfy.workflows"
-HOOKS = ("build", "finalize")
+HOOKS = ("build", "after_outputs")
+ASTRID_ENTRY_FIELDS = frozenset({"default_for", "inputs", "default_mode"})
 
 
 def contributions(registry: Any) -> list[Any]:
@@ -29,13 +30,20 @@ def ready_root(contribution: Any) -> Path:
                            pack_root=pack_root, what="ready_root")
 
 
-def entries(contribution: Any) -> list[dict[str, Any]]:
-    """The thin entries, in VibeComfy's shape, with ``bundle`` made absolute against the ready root."""
+def entries(contribution: Any, *, with_inputs: bool = False) -> list[dict[str, Any]]:
+    """The thin entries, in VibeComfy's shape, with ``bundle`` made absolute against the ready root.
+
+    ``with_inputs`` keeps the entry's declared ``inputs``, which are Astrid's and not VibeComfy's.
+    """
     root = ready_root(contribution)
     rows = []
     for raw in contribution.fields.get("entries", []):
-        # default_for is Astrid's slot-default declaration, not part of VibeComfy's thin entry.
-        row = {"needs": [], "binds": {}, "defaults": {}, **{k: v for k, v in raw.items() if k != "default_for"}}
+        # default_for (slot defaults) and inputs (the entry's declared interface) are Astrid's, not
+        # part of VibeComfy's thin entry, whose validator (vibecomfy/entries.py) takes exactly
+        # id, kind, modes, bundle, needs, binds and defaults.
+        row = {"needs": [], "binds": {}, "defaults": {},
+               **{k: v for k, v in raw.items() if k not in ASTRID_ENTRY_FIELDS},
+               **{k: raw[k] for k in ("inputs", "default_mode") if with_inputs and k in raw}}
         bundle = Path(row["bundle"])
         row["bundle"] = str(bundle if bundle.is_absolute() else (root / bundle).resolve())
         rows.append(row)
@@ -75,7 +83,7 @@ def workflow_entries(registry: Any) -> list[dict[str, Any]]:
     rows = []
     for contribution in contributions(registry):
         declared = hooks(registry, contribution)
-        for row in entries(contribution):
+        for row in entries(contribution, with_inputs=True):
             rows.append({**row, "source": "workflow-contribution", "contribution": contribution.id,
                          **({"hooks": declared} if declared else {})})
     return rows

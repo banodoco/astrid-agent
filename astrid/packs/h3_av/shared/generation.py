@@ -12,8 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from astrid.core.generation.engine_recipe import engine_source_revision, load_recipe_model_lock
-
+from .engine_facts import facts
 from .timing import frame_index, smallest_h3_run_at_least
 
 IMAGE_REFERENCE_CAPACITY = 9
@@ -113,7 +112,7 @@ def character_swap_asset_sha256() -> str:
 
     for relative in (
         "astrid/packs/h3_av/shared/generation.py",
-        "astrid/packs/h3_av/actions/compile/compile.py",
+        "astrid/packs/h3_av/shared/compile.py",
     ):
         path = astrid_root / relative
         if path.is_symlink() or not path.is_file():
@@ -139,11 +138,9 @@ def character_swap_asset_sha256() -> str:
     model_root = launch.get("model_root") if isinstance(launch, Mapping) else None
     if not isinstance(model_root, Mapping):
         raise ValueError("T9 profile has no digest-bound model root")
-    from astrid.core.generation.model_root import ModelRootBindingError, validate_model_root_binding
-
     try:
-        bound_model_root = validate_model_root_binding(model_root, verify_files=True)
-    except ModelRootBindingError as exc:
+        bound_model_root = facts().bind_model_root(model_root)
+    except ValueError as exc:
         raise ValueError("T9 model-root inventory is not an exact file binding") from exc
     if bound_model_root.qualification_identity is not None:
         raise ValueError("T9 synthetic model root must not claim a deployment qualification identity")
@@ -171,8 +168,7 @@ def character_swap_asset_sha256() -> str:
 
 
 def _h3_locked_urls() -> dict[str, Any]:
-    lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
-    return {model.destination: model for model in lock.models}
+    return dict(facts().locked_models())
 
 
 def _locked_asset(models: Mapping[str, Any], destination: str, **kwargs: Any) -> Any:
@@ -268,7 +264,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         models=model_assets,
         requirements={
             "runtime": {
-                "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
+                "comfy_commit": facts().comfy_commit(),
                 "comfy_version": "==0.36.0",
                 "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],

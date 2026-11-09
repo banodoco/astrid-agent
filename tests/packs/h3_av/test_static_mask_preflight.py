@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.compile.compile import compile_preparation
+from astrid.packs.h3_av.shared.compile import compile_preparation
 from astrid.packs.vibecomfy import local_server_engine, production_engine
 from astrid.packs.vibecomfy.asset_manifest import resolve_inputs
 from tests.packs.h3_av.test_native_masked_edit import WATERMARK, _prepare
