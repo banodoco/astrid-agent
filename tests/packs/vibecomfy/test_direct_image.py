@@ -41,7 +41,7 @@ def test_every_direct_capability_compiles_on_both_profiles() -> None:
             )
             for field in spec.required
         }
-        for profile in ("local_server", "checkout_server"):
+        for profile in ("local_server",):
             compiled = compile_image_request(capability_id, params, profile=profile)
             assert compiled.capability_id == capability_id
             assert compiled.profile.name == profile
@@ -68,16 +68,13 @@ def test_qwen_variants_and_flux_keep_model_identity() -> None:
     assert klein.template_id != qwen.template_id
 
 
-def test_profiles_share_request_schema_but_have_distinct_portable_identity() -> None:
+def test_local_profile_has_portable_identity_and_rejects_checkout() -> None:
     params = {"prompt": "a blue room", "seed": 4}
     embedded = compile_image_request("z_image_turbo", params, profile="local_server")
-    checkout = compile_image_request("z_image_turbo", params, profile="checkout_server")
     assert embedded.profile.warm_policy == "never"
-    assert checkout.profile.warm_policy == "auto"
-    assert embedded.profile.session_kind != checkout.profile.session_kind
-    assert embedded.execution_digest != checkout.execution_digest
     assert portable_execution_digest(embedded) == embedded.execution_digest
-    assert portable_execution_digest(checkout) == checkout.execution_digest
+    with pytest.raises(ImageCompileError):
+        compile_image_request("z_image_turbo", params, profile="checkout_server")
 
 
 def test_machine_local_values_do_not_change_portable_digest() -> None:
@@ -215,7 +212,7 @@ def test_executor_rejects_output_escape(tmp_path: Path) -> None:
         DirectImageExecutor().execute(
             "image-upscale",
             {"image_ref": "cas/source.png", "upscale_factor": 2},
-            profile="checkout_server",
+            profile="local_server",
             engine=EscapingEngine(),
             out_dir=tmp_path,
         )
