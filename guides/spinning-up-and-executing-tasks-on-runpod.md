@@ -477,8 +477,6 @@ Do not restore the earlier manual serial-host/token-swap launch instructions.
 `scripts/activate_runpod_worker_claim.py` has been retired; its shared enabled
 credential rotation path is removed. Use the claim handle, prepared-worker
 selection and Runtime-owned task activation described above.
-`watch_h3_5090_storage.py` is not an alternative launcher for this procedure;
-the local-only watcher below is the supported observation tool.
 
 ### Read-only claim-to-H3 watch
 

@@ -233,7 +233,7 @@ def test_run_executor_verifies_checkout_readiness_pair_and_selects_profile(
     engine_output.parent.mkdir(parents=True)
     engine_output.write_bytes(b"image")
     readiness = tmp_path / "readiness.json"
-    readiness_bytes = json.dumps({"vibecomfy_session": {}}).encode("utf-8")
+    readiness_bytes = json.dumps({"engine_identity": {}}).encode("utf-8")
     readiness.write_bytes(readiness_bytes)
     readiness_hash = "sha256:" + hashlib.sha256(readiness_bytes).hexdigest()
     managed_run = Mock(return_value=(engine_output,))

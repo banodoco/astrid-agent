@@ -116,25 +116,8 @@ def _source_video_input_directory(
     output_root: Path,
 ) -> Path:
     """Resolve the worker-owned Comfy input directory for source media."""
-    if isinstance(readiness_profile, dict) and isinstance(
-        readiness_profile.get("vibecomfy_session"), dict
-    ):
-        session = readiness_profile["vibecomfy_session"]
-        raw_session_dir = session.get("session_dir")
-        if not isinstance(raw_session_dir, str) or not raw_session_dir.strip():
-            raise AstridValueError("checkout_server readiness profile lacks session_dir")
-        session_dir = Path(raw_session_dir).expanduser()
-        config_path = session_dir / "config.json"
-        try:
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AstridValueError("checkout_server session config is unreadable") from exc
-        raw_input_directory = config.get("input_directory") if isinstance(config, dict) else None
-        if not isinstance(raw_input_directory, str) or not raw_input_directory.strip():
-            raise AstridValueError("checkout_server session config lacks input_directory")
-        input_directory = Path(raw_input_directory).expanduser()
-    else:
-        input_directory = output_root.expanduser().resolve() / "engine-input"
+    # The engine-local run stages source media in its own engine-input directory.
+    input_directory = output_root.expanduser().resolve() / "engine-input"
     if not input_directory.is_absolute():
         raise AstridValueError("Comfy input_directory must be absolute")
     if input_directory.is_symlink():
@@ -201,22 +184,20 @@ def _stage_managed_asset_manifest(
             raise AstridValueError(f"managed asset destination collision: {destination.name}")
         if not destination.exists():
             destination.write_bytes(data)
-    if not (isinstance(readiness_profile, dict)
-            and isinstance(readiness_profile.get("vibecomfy_session"), dict)):
-        # Local placements upload from engine-input later; record the digests
-        # verified above so video/audio uploads can be checked against them.
-        ledger = input_directory / ".managed-asset-digests.json"
-        if ledger.is_symlink():
-            raise AstridValueError("managed asset digest ledger must not be a symlink")
-        try:
-            digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            digests = {}
-        digests.update({
-            Path(str(record["member"])).name: str(record["sha256"])
-            for record in resolved.manifest["assets"]
-        })
-        ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
+    # Local placements upload from engine-input later; record the digests
+    # verified above so video/audio uploads can be checked against them.
+    ledger = input_directory / ".managed-asset-digests.json"
+    if ledger.is_symlink():
+        raise AstridValueError("managed asset digest ledger must not be a symlink")
+    try:
+        digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        digests = {}
+    digests.update({
+        Path(str(record["member"])).name: str(record["sha256"])
+        for record in resolved.manifest["assets"]
+    })
+    ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
     return resolved
 
 
@@ -892,7 +873,7 @@ def _run_and_settle(
         # only the rows this job lacks there.
         from astrid.core.generation.engine_local_endpoint import default_engine_root
         manifest = {**manifest, "models_root": os.path.join(default_engine_root("comfyui"), "models")}
-    profile_id = "local_server" if (comfy_url or engine_local_run) else "checkout_server"
+    profile_id = "local_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
         resolved_assets = _stage_managed_asset_manifest(

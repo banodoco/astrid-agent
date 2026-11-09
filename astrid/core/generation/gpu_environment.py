@@ -104,7 +104,8 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
     directory = _PACKS / pack
     description = json.loads((directory / "environment.windows-nvidia.json").read_text(encoding="utf-8"))
     platform = "windows-x86_64-cu130" if pack == "vibecomfy" else "windows-x86_64-cu128"
-    recipe = load_recipe(pack, platform)
+    # The only registered engine for the VibeComfy pack is "comfyui" (R1.6).
+    recipe = load_recipe("comfyui" if pack == "vibecomfy" else pack, platform)
     sources = {source.name: source.pin for source in recipe.sources}
     if pack == "vibecomfy":
         comfy = sources["comfyui"]

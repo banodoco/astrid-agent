@@ -1276,7 +1276,7 @@ def test_t9_actual_child_mismatch_fails_before_activation_or_production(tmp_path
 def test_t9_absent_explicit_activation_preserves_production_dispatch(tmp_path: Path, session: bool):
     case = _t9_child_case(tmp_path)
     case[6].pop("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE")
-    if session: case[2]["vibecomfy_session"] = {}
+    if session: case[2]["engine_identity"] = {}
     result = _invoke_t9_child(case)
     assert result.returncode == 0, result.stdout + result.stderr
     call = json.loads((tmp_path / "ordinary-call.json").read_text())

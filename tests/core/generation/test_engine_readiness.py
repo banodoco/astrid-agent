@@ -141,27 +141,8 @@ try:
     result=engine_readiness.run_readiness(root=cfg['root'],release_root=cfg['release'],profile_path=cfg['profile'],
                                           deadline=time.monotonic()+60,status=status,hardware=hardware,
                                           engine=cfg['tiny']['engine'])
-    # Consumer validation must use this same selected checkout, even when H3
-    # and plain ComfyUI select different client pins in the parent process.
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-    adapter=CheckoutServerAdapter.from_host_session(
-        hc03_profile=result.profile,model_id='vibecomfy.run',template_id='vibecomfy.run',
-        invocation_identity='readiness-producer-test')
-    # Check both A04 source-mismatch refusals in the same selected checkout.
-    import pytest
-    from astrid.core.generation.backends import vibecomfy as backend
-    profile = result.profile
-    source = profile["vibecomfy_session"]
-    for revision, digest in (("0" * 40, source["source_content_digest"]),
-                             (source["source_revision"], "sha256:" + "0" * 64)):
-        with pytest.MonkeyPatch.context() as mismatch:
-            mismatch.setattr(backend, "_observed_source_identity", lambda *_: (revision, digest))
-            with pytest.raises(ValueError, match="source revision does not match the live VibeComfy checkout"):
-                CheckoutServerAdapter.from_host_session(
-                    hc03_profile=profile, model_id="vibecomfy.run", template_id="vibecomfy.run",
-                    invocation_identity="readiness-source-mismatch", expected_comfyui_version="==0.25.0")
     out={'ok':True,'path':result.path,'sha256':result.sha256,'size':result.size,
-         'adapter_session':adapter._host_session}
+         }
 except engine_readiness.ReadinessError as exc:
     out={'ok':False,'reason':str(exc)}
 module=sys.modules.get('vibecomfy')
@@ -427,15 +408,10 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     assert "vibecomfy_candidate" not in profile
     assert profile["runtime"] == {"runtime_instance_id": str(__import__("uuid").UUID(marker["launch_token"])),
                                   "comfyui_version": "==" + installation["version"]}
-    assert profile["vibecomfy_session"] == {
-        "session_dir": str(installation["registry"]), "server_url": marker["url"],
-        "pid": marker["pid"], "process_birth_id": marker["process_start_identity"],
-        "comfy_pid": marker["comfy_pid"], "comfy_process_birth_id": marker["comfy_process_start_identity"],
-        "launch_token": marker["launch_token"],
-        "config_digest": "sha256:" + hashlib.sha256(before["config.json"]).hexdigest(),
-        "source_revision": before["source_revision"].decode().strip(),
-        "source_content_digest": before["source_content_digest"].decode().strip(),
-    }
+    # The engine identity is the attested install receipt under the engine root.
+    receipt = Path(root) / ".astrid-engine" / "install.json"
+    assert profile["engine_identity"] == {"engine": "comfyui", "root": str(root),
+                                          "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     assert profile["launch"]["output_root"] == json.loads(before["config.json"])["output_directory"]
 
     # Existing GenericHost reader (hash fence) + normalizer accept the exact bytes.
