@@ -2204,6 +2204,37 @@ def test_strict_app_update_reports_skill_process_failure_after_successful_restar
     assert read_json(env.root / "update-transaction.json")["step"] == "complete"
 
 
+@pytest.mark.parametrize("skills_fail", [True, False], ids=["skill-sync-failed", "skill-sync-ok"])
+def test_strict_app_update_receipt_names_release_and_skill_warning(
+        tmp_path, monkeypatch, capsys, skills_fail):
+    from astrid.installer import cli
+
+    env = _skill_app_update(tmp_path, monkeypatch)
+    execute = env.backend.run
+
+    def maybe_fail_skills(argv, **kwargs):
+        if skills_fail and "astrid.skills" in argv:
+            raise subprocess.CalledProcessError(1, [str(argv[0])], output="skill failure")
+        return execute(argv, **kwargs)
+
+    monkeypatch.setattr(env.backend, "run", maybe_fail_skills)
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _: {})
+    manifest = tmp_path / "manifest.json"
+    write_json(manifest, {})
+    assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
+                     "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # The receipt is the block of lines from its headline up to the setup summary.
+    start = lines.index("Astrid updated: Release 11 → Release 12." if not skills_fail else
+                        "Astrid updated: Release 11 → Release 12, but its skills couldn't be refreshed.")
+    receipt = lines[start:lines.index("Astrid setup summary:")]
+    assert not any("did NOT update" in line for line in receipt)
+    next_lines = [line for line in receipt if line.startswith("Next: to refresh Astrid's skills")]
+    assert len(next_lines) == (1 if skills_fail else 0)
+    assert current(env.root) == env.candidate
+
+
 def test_strict_app_recovery_keeps_saved_policy_without_applying_new_request(tmp_path, monkeypatch):
     from astrid.skills import state
 

@@ -35,6 +35,16 @@ SUCCESS = ("updated", "already-current", "repaired")
 EXIT_CODES = {"updated": 0, "already-current": 0, "repaired": 0,
               "not-updated": 3, "failed": 1, "rolled-back": 1}
 
+# A success whose target was reached, but where something the run also did did
+# not finish. The exit code stays 0; the headline, its Next line and last-run.json
+# (warnings) carry the same copy in the terminal and the App.
+WARNINGS = {
+    "skills-not-refreshed": {
+        "phrase": "but its skills couldn't be refreshed",
+        "next": "Next: to refresh Astrid's skills, rerun the install line with --skills on (replace this flag in the Way back line).",
+    },
+}
+
 # One line of copy for each reason. The terminal, diagnostics and App render these.
 REASONS = {
     "self-update-too-old": "releases before 10 can't update from the App, so this one update needs the command.",
@@ -72,6 +82,7 @@ class Outcome:
     target: int | None = None
     reason: str | None = None
     mode: str = "install"
+    warnings: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -80,17 +91,25 @@ class Outcome:
         return EXIT_CODES[self.kind]
 
     def headline(self) -> list[str]:
+        lines = self._lines()
+        if self.kind in SUCCESS:
+            lines += [WARNINGS[name]["next"] for name in self.warnings]
+        return lines
+
+    def _lines(self) -> list[str]:
         def release(value):
             return "an unknown release" if value is None else f"Release {value}"
         why = REASONS.get(self.reason or "installer-bug", REASONS["installer-bug"])
+        # Only a success carries warnings; each one adds its phrase to the first line.
+        notes = "".join(f", {WARNINGS[name]['phrase']}" for name in self.warnings) if self.kind in SUCCESS else ""
         if self.kind == "updated":
             if self.start is None:
-                return [f"Astrid installed: {release(self.target)}."]
-            return [f"Astrid updated: {release(self.start)} → {release(self.target)}."]
+                return [f"Astrid installed: {release(self.target)}{notes}."]
+            return [f"Astrid updated: {release(self.start)} → {release(self.target)}{notes}."]
         if self.kind == "already-current":
-            return [f"Astrid is already up to date ({release(self.still)}). Nothing was changed."]
+            return [f"Astrid is already up to date ({release(self.still)}){notes}. Nothing was changed."]
         if self.kind == "repaired":
-            lines = [f"Astrid is installed and running ({release(self.still)})."]
+            lines = [f"Astrid is installed and running ({release(self.still)}){notes}."]
             if self.reason == "recovered-previous-version":
                 lines.append("An earlier update was interrupted; Astrid restored the version before it. "
                              "Run the command with --update to update.")
@@ -149,8 +168,16 @@ def _live(state) -> int | None:
     return state.live_release
 
 
+def receipt_warnings(outcomes: dict | None) -> tuple[str, ...]:
+    """The warnings a settled run's own steps raised; they never change the exit code."""
+    skills = (outcomes or {}).get("skills")
+    if isinstance(skills, dict) and not skills.get("ok"):
+        return ("skills-not-refreshed",)
+    return ()
+
+
 def settle(request: Request, before, resolver, *, failure: BaseException | None = None,
-           rolled_back: bool = False) -> Outcome:
+           rolled_back: bool = False, warnings: tuple[str, ...] = ()) -> Outcome:
     """Observe the world after a run and classify it against the request."""
     try:
         after = resolver()
@@ -173,13 +200,13 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         # --update: the target is the manifest release.
         if live is not None and target is not None and live == target:
             kind = "updated" if start != target else "already-current"
-            return Outcome(kind, live, start, target, None, request.mode)
+            return Outcome(kind, live, start, target, None, request.mode, warnings=warnings)
     elif live is not None and after is not None and live == after.selected_release:
         # A plain install or repair (including Pinokio finishing an interrupted
         # update): the target is "the selected version is live and healthy".
         # A recovery that ends healthy is repaired; its reason stays as detail.
         kind = "repaired" if start == live else "updated"
-        return Outcome(kind, live, start, live, request.reason, request.mode)
+        return Outcome(kind, live, start, live, request.reason, request.mode, warnings=warnings)
     reason = request.reason
     if reason is None:
         # The selected version advanced but the live Runtime did not follow it.

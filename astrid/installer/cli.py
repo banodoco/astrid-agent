@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from . import update_job
 from .backend import Backend
 from .installation import Installation
-from .outcome import RECORD, Request, clear_record, settle, write_record
+from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .choices import (
     CHOICE_NAMES,
     RECOMMENDED_CHOICES,
@@ -375,7 +375,8 @@ class _Run:
         outcome = settle(Request(request_mode, self.target, self.reason, self.refused), self.before,
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
-                         failure=failure, rolled_back=rolled_back)
+                         failure=failure, rolled_back=rolled_back,
+                         warnings=receipt_warnings(getattr(self.installer, "outcomes", None)))
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
@@ -554,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
                 outcomes = (update_app(root, backend, manifest) if args.update_app
                             else update_pinokio(root, backend, manifest, force=args.update))
                 run.installer = SimpleNamespace(outcomes=outcomes)
+                # The receipt compares the release this run activated with its own target.
+                run.target = outcomes.get("release", run.target)
                 return run.finish()
         lock_path = installer_lock_path(Path.home(), sys.platform)
         _check_installer_state(lock_path, *_provisional_roots(root, args.data_root, backend.service, mode))
