@@ -24,7 +24,7 @@ def _open_client() -> Any:
     return AstridClient.open_from_launcher()
 
 
-def _no_generation_target(target: str) -> bool:
+def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
     """Whether a local request has no engine and no ComfyUI to run on.
 
     Read-only: it never starts a recorded engine (it stops at the install
@@ -32,12 +32,15 @@ def _no_generation_target(target: str) -> bool:
     Anything it cannot settle is left to the facade's normal path.
     """
     try:
+        from astrid.core.generation import placement as placements
         from astrid.core.generation.engine_local_endpoint import recorded_engine_root
         from astrid.core.generation.preflight import _select_generation_target
 
         if recorded_engine_root('comfyui') is not None:
             return False
-        return _select_generation_target(target) is None
+        # Same inputs as the facade's own decision: the request, the repo and the client it would get.
+        placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
+        return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
     except Exception:
         return False
 
@@ -557,7 +560,7 @@ def _main(argv: list[str]) -> int:
             try:
                 client_scope = _open_client()
             except AstridSDKError:
-                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement):
+                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
                     # No workspace and no engine or ComfyUI: the target guidance
                     # (the refusal a dry run gives) is the actionable answer.
                     generate(**{**kwargs, "dry_run": True})
