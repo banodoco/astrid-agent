@@ -22,7 +22,7 @@ PAID = dict(consent=('paid',), max_usd=2.0, deadline='2099-01-01T00:00:00Z')
 LIVE = dict(PAID, offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
             execution_seconds=60, idle_seconds=1800)
 # Explicit refusals a target route may answer with instead of resolving.
-REFUSALS = {'runpod_engine_unavailable', 'foley_runpod_unsupported', 'missing_dependency',
+REFUSALS = {'runpod_engine_unavailable', 'missing_dependency',
             'engine_not_found', 'COMFY_TARGET_NO_MODEL'}
 TARGETS = ('auto', 'managed', 'runpod')
 

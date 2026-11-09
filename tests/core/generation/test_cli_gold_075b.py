@@ -118,12 +118,6 @@ SLOTS: tuple[Slot, ...] = (
 SLOT_IDS = [slot.name for slot in SLOTS]
 DEFAULT_ENTRY_IDS = frozenset(slot.entry for slot in SLOTS)
 
-# The existing Foley RunPod refusal (arrives with PINS:
-# astrid/sdk/generation.py:1608dbbf:183-186; donor :211-216). The CLI asks the SDK
-# for it before entry/input resolution (cli.py:9d3bb248:382-384).
-FOLEY_REFUSAL_CODE = "foley_runpod_unsupported"
-FOLEY_REFUSAL_MESSAGE = "Foley is not supported on RunPod."
-
 # No-engine guidance (astrid/core/generation/preflight.py:9d3bb248:311-316).
 GPU_GUIDANCE = "needs a local GPU or --target runpod"
 EDGE_TTS = "Edge TTS"
@@ -610,14 +604,6 @@ def test_runpod_dry_run_resolves_the_slot_default(slot, tmp_path):
     """Asserted as D1b leaves `--target runpod --dry-run` (tasks.md D1b, D2). No credential, no pod."""
     cli = _cli(tmp_path)
     result = cli.run(*slot_argv(slot, _inputs(tmp_path), target="runpod"))
-    if slot.name == "sound-effects":
-        assert result.returncode != 0, _describe(result)
-        payload = _payload(result)
-        text = result.stdout + result.stderr
-        assert FOLEY_REFUSAL_CODE in text and FOLEY_REFUSAL_MESSAGE in text, _describe(result)
-        assert not _task_ids(payload), f"the Foley refusal admitted a task: {_task_ids(payload)}"
-        _assert_cwd_untouched(cli)
-        return
     assert result.returncode == 0, _describe(result)
     payload = _payload(result)
     _assert_entry_named(payload, slot)

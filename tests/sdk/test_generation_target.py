@@ -589,25 +589,29 @@ def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit
     assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
 
 
-@pytest.mark.parametrize('selector', [{'mode': 'sfx'}, {'mode': 'sfx', 'model': 'hunyuan-video-foley'},
-                                      {'mode': 'sfx', 'entry': 'hunyuan-video-foley'}])
-def test_foley_runpod_refuses_before_policy_registry_or_admission(monkeypatch, selector):
-    import astrid.sdk as sdk
-    import astrid.sdk.generation as generation
-    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: pytest.fail('registry accessed'))
-    monkeypatch.setattr(generation, '_runpod_target_policy', lambda *args, **kwargs: pytest.fail('policy accessed'))
-    client = SimpleNamespace(invoke_result=Mock(side_effect=AssertionError('task admitted')),
-                             runpod_generation_owner=Mock())
-    with pytest.raises(AstridError) as raised:
-        GenerationFacade().audio(target='runpod', client=client, **selector)
-    envelope = raised.value.to_envelope()
-    assert envelope['task_id'] is None and envelope['status'] == 'blocked'
-    assert envelope['issues'][0]['code'] == 'foley_runpod_unsupported'
-    assert 'Fal' not in envelope['issues'][0]['message']
-    assert 'Foley is not supported on RunPod' in envelope['issues'][0]['message']
-    assert envelope['fixes'][0]['argv'] == ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley']
-    client.invoke_result.assert_not_called()
-    assert not client.runpod_generation_owner.mock_calls
+@pytest.mark.parametrize('explicit', [False, True])
+def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypatch, explicit):
+    """Sound effects is an ordinary slot: resolves, then admits one task with a RunPod target policy."""
+    import json
+    _installed_audio_entry(tmp_path, monkeypatch, 'sfx')
+    client, _ = storage_client()
+    calls = []
+    def invoke(capability, **kwargs):
+        calls.append((capability, kwargs))
+        return InvocationResult(capability, 'executor', 'command', True,
+                                kernel_task_id='task-a', raw_result={'state': 'queued'})
+    client.invoke_result = invoke
+    result = GenerationFacade().audio(mode='sfx', target='runpod', client=client, project='demo',
+        **({'entry': '00-audio-test'} if explicit else {}),
+        filename_prefix='test', wait=False, consent=('paid',), max_usd=2,
+        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+    assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
+    assert len(calls) == 1
+    capability, kwargs = calls[0]
+    assert capability == 'vibecomfy.run' and not kwargs['wait']
+    assert json.loads(kwargs['inputs']['target_policy'])['kind'] == 'runpod'
+
 
 @pytest.mark.parametrize('mode', ['music', 'tts'])
 def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, monkeypatch, real_runtime):
@@ -841,3 +845,25 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
         server.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(('given', 'forwarded'), [({}, 'check'), ({'align': 'trust'}, 'trust')])
+def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, monkeypatch, tmp_path):
+    """workflow(target=...) takes align like image/video/audio and hands it to the target route."""
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    emit_bundle(workflow_from_ready('image/z_image_turbo'), tmp_path / 'workflow.py', {'operation': 'authored'})
+    seen = []
+    monkeypatch.setattr(GenerationFacade, '_generate_on_target',
+                        lambda self, **kwargs: seen.append(kwargs) or 'routed')
+    assert GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+                                       dry_run=True, **given) == 'routed'
+    assert seen[0]['align'] == forwarded
+
+
+def test_workflow_target_rejects_an_unknown_align(tmp_path):
+    from astrid.sdk.generation import GenerationInputError
+    with pytest.raises(GenerationInputError, match='align must be one of'):
+        GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+                                    align='maybe')

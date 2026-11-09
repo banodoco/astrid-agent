@@ -313,14 +313,6 @@ def _runpod_target_policy(controls, *, engine):
             **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"])}
 
 
-def _refuse_runpod_foley():
-    from astrid.core.generation.preflight import generation_error
-    raise generation_error(ValueError('Foley is not supported on RunPod.'),
-        code='foley_runpod_unsupported', details={'field': 'target'}, fixes=[{
-            'argv': ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley'],
-            'scope': 'read_only'}])
-
-
 def _runpod_operation(operation, *, client, wait, include_quote=False):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
@@ -345,36 +337,6 @@ def _runpod_status(*, client, include_quote):
     if not isinstance(status, Mapping):
         raise CapabilityInvocationError('target status task omitted its owner evidence')
     return dict(status)
-
-
-def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id, h3_endpoint=None):
-    from astrid.core.generation.preflight import generation_error
-    from .invocation import retain_prepared_owner
-    if not prepared.selection_path or not callable(prepared.endpoint_checkout):
-        raise generation_error(ValueError('RunPod preparation omitted attested endpoint custody'),
-                               code='missing_dependency')
-    request = prepared.selection.execution_request(None)
-    if request.get('target', {}).get('kind') != 'runpod' or request.get('remote_activation_required') is not True:
-        raise generation_error(ValueError('RunPod preparation omitted its exact activation request'),
-                               code='input_rejected')
-    if h3_endpoint is not None:
-        from astrid.core.generation.preflight import freeze_h3_endpoint
-        selected = h3_endpoint['target']
-        if prepared.h3_warm_lease_seconds != 1800:
-            raise generation_error(ValueError('H3 endpoint owner must retain one 1800 second warm lease'),
-                                   code='input_rejected')
-        if (freeze_h3_endpoint(prepared.h3_target) != selected
-                or any(request['target'].get(key) != selected[key]
-                       for key in ('pod_id', 'provider_account_ref'))):
-            raise generation_error(ValueError('H3 prepared endpoint substituted the selected endpoint'),
-                                   code='input_rejected')
-    retain_prepared_owner(client, recovery_path=recovery_path, capability_id=capability_id,
-                          monitor=prepared.owner_tick, owner=owner,
-                          endpoint_checkout=prepared.endpoint_checkout,
-                          execution_request=request if capability_id == 'vibecomfy.run' else None,
-                          h3_target=prepared.h3_target if h3_endpoint is not None else None,
-                          h3_endpoint=h3_endpoint)
-    return request
 
 
 def _generation_boundary(method):
@@ -952,6 +914,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
+        align: str = 'check',
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
@@ -1091,8 +1054,6 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
-        if model == 'hunyuan-video-foley' and target == 'runpod':
-            _refuse_runpod_foley()
         is_remote_target = target == 'runpod'
         if is_remote_target:
             _runpod_paid_controls(controls)
@@ -1890,8 +1851,6 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         """Generate audio through the typed action or a selected workflow target."""
-        if target == 'runpod' and mode == 'sfx':
-            _refuse_runpod_foley()
         _reject_retired_generation_inputs(inputs)
         inputs = _public_input_values(inputs)
         controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
@@ -1905,8 +1864,6 @@ class GenerationFacade:
             description, inputs = self._resolve_public_entry(entry=entry, model=model, mode=mode,
                 modality='audio', inputs=inputs, registry=registry)
             model, mode = entry, description['mode']
-            if target == 'runpod' and mode == 'sfx':
-                _refuse_runpod_foley()
             if description['source'] == 'workflow' and target is None:
                 target = 'auto'
         if engine is not None and target is None:

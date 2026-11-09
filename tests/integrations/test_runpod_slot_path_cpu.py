@@ -290,7 +290,15 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         daemon.stop()
 
 
-@pytest.mark.parametrize("slot", SLOTS, ids=lambda slot: "/".join(slot))
+# The sound-effects case needs real Foley weights (hunyuanvideo_foley_xl.pth,
+# vae_128d_48k.pth); the CPU harness keeps none, so it is gpu-marked (Plan 34).
+_SLOT_PARAMS = [
+    pytest.param(slot, marks=pytest.mark.gpu) if slot == ("audio", "sfx") else slot
+    for slot in SLOTS
+]
+
+
+@pytest.mark.parametrize("slot", _SLOT_PARAMS, ids=lambda slot: "/".join(slot))
 def test_default_slot_through_the_runpod_bind(slot, tmp_path, monkeypatch, real_runtime, tuple_sources):
     modality, mode = slot
     def call(facade, controls, tmp):
@@ -306,7 +314,7 @@ def test_default_slot_through_the_runpod_bind(slot, tmp_path, monkeypatch, real_
             subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                             "color=c=blue:s=256x144:r=24:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
                            check=True, timeout=60)
-            inputs["video"] = str(video)
+            inputs["video_ref"] = str(video)
         method = facade.image if modality == "image" else facade.audio
         return method(mode=mode, **controls, **inputs)
     with _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, call=call) as (client, project_id, provider, result):

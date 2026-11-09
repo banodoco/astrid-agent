@@ -405,9 +405,6 @@ def _main(argv: list[str]) -> int:
         return 0
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
-    if parsed.modality == 'audio' and parsed.mode == 'sfx' and parsed.target == 'runpod':
-        # Ask the SDK for its canonical refusal before entry or input resolution.
-        _generate_facade().audio(mode='sfx', target='runpod')
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
