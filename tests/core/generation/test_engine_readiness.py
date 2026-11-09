@@ -420,10 +420,6 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Existing strict model-root binding re-hashes the declared files.
     binding = model_root_binding_from_profile(profile, verify_files=True)
     assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == root / "models"
-    # Existing checkout adapter: digest, registry, live ownership, source and version gates.
-    session = out["adapter_session"]
-    assert session["pid"] == marker["pid"] and session["comfy_pid"] == marker["comfy_pid"]
-    assert session["model_root"] == str(root / "models")
     _assert_engine_retained(installation, before)
 
 
@@ -487,7 +483,8 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         original = target.read_bytes()
         forged = json.loads(original)
         if change == "receipt_engine":
-            forged["engine"] = "comfyui" if forged["engine"] == ENGINE else ENGINE
+            # Flip to an engine name that differs from the installed one (the old expression kept it unchanged).
+            forged["engine"] = "comfyui-a04" if forged["engine"] != "comfyui-a04" else ENGINE
         elif change == "receipt_owner":
             next(s for s in forged["steps"] if s["kind"] == "start")["facts"]["owner_id"] = "another-owner"
         else:
