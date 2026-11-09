@@ -13,6 +13,7 @@ from pathlib import Path
 if __package__:
     from .journey_matrix import (
         GPU_MATRIX,
+        HOSTED_BUTTON_JOB_IDS,
         END_STATE_INVENTORY,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
@@ -33,6 +34,7 @@ else:
     try:
         from journey_matrix import (
             GPU_MATRIX,
+            HOSTED_BUTTON_JOB_IDS,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
@@ -52,6 +54,7 @@ else:
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
             GPU_MATRIX,
+            HOSTED_BUTTON_JOB_IDS,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
@@ -73,6 +76,12 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
 RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+RELEASE9_APP_COMMIT = "546c91b7aaf90835445136eb6e93459385ffe21c"
+RELEASE9_IDENTITY = {
+    "agent": "709492fa5f4850b9caf0cea4a4c543023b73fa0a",
+    "runtime": "f4c7a4623c84da077daac3e3a9366fc2e6a55051",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
 RELEASE0_BOOTSTRAP_SHA256 = {
     "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
     "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
@@ -216,12 +225,66 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
+def _release_step_errors(job_id, label, release_from, release_to):
+    """The row lands on exactly published + 1; the published release is whatever the row installed."""
+    if (any(type(value) is not int or value < 0 for value in (release_from, release_to))
+            or release_to != release_from + 1):
+        return [f"{job_id}: {label} release transition is invalid"]
+    return []
+
+
+def _hosted_update_errors(job_id, update, release_to):
+    """The update was the hosted page's request, served from the intercepted stand-in release."""
+    hosted = update.get("hosted")
+    if not isinstance(hosted, dict):
+        return [f"{job_id}: hosted Update request receipt is absent"]
+    request = hosted.get("request") if isinstance(hosted.get("request"), dict) else {}
+    served = hosted.get("served") if isinstance(hosted.get("served"), dict) else {}
+    final = hosted.get("final") if isinstance(hosted.get("final"), dict) else {}
+    errors = []
+    if (hosted.get("route") != "hosted-button" or request.get("method") != "POST"
+            or request.get("path") != "/api/runtime/v1/update"
+            or request.get("origin") != "https://astrid.haus" or request.get("content_length") != 0
+            or request.get("authorization") is not False or request.get("cookie") is not False
+            or request.get("status") != 202):
+        errors.append(f"{job_id}: hosted Update request was not the page's credential-free POST")
+    if (served.get("/install-manifest.json", 0) < 1
+            or served.get("/install", 0) + served.get("/install.ps1", 0) < 1):
+        errors.append(f"{job_id}: hosted Update did not fetch the stand-in release")
+    if final.get("outcome") != "updated" or final.get("target_release") != release_to:
+        errors.append(f"{job_id}: hosted Update did not end as updated at the stand-in release")
+    if hosted.get("intercept_reverted") is not True:
+        errors.append(f"{job_id}: hosted Update intercept was not reverted")
+    if job_id in HOSTED_BUTTON_JOB_IDS:
+        errors.extend(_hosted_button_errors(job_id, hosted))
+    return errors
+
+
+def _hosted_button_errors(job_id, hosted):
+    """The request came from a browser clicking the hosted App build's own Update now."""
+    page = hosted.get("page") if isinstance(hosted.get("page"), dict) else {}
+    request = hosted.get("request") if isinstance(hosted.get("request"), dict) else {}
+    headers = request.get("headers")
+    errors = []
+    if hosted.get("driver") != "app-button" or page.get("offered") is not True or page.get("clicked") is not True:
+        errors.append(f"{job_id}: hosted Update was not the page's Update now clicked in a browser")
+    if type(page.get("served_manifest")) is not int or page["served_manifest"] < 1:
+        errors.append(f"{job_id}: the page did not read the stand-in release it offered")
+    if not DIGEST.fullmatch(str(page.get("build_sha256", ""))):
+        errors.append(f"{job_id}: the hosted App build identity is absent")
+    if (not isinstance(headers, list) or "origin" not in headers
+            or {"authorization", "cookie"} & set(headers)):
+        errors.append(f"{job_id}: the page's Update request headers are absent or carry a credential")
+    return errors
+
+
 def _windows_fresh_update_errors(update, job_id):
     errors = []
     if not isinstance(update, dict):
         return [f"{job_id}: Windows fresh update receipt is absent"]
-    if (update.get("from_release") != 1 or update.get("to_release") != 2
-            or update.get("marker") != "M-RT UPDATE TEST STAND-IN"
+    errors.extend(_release_step_errors(job_id, "Windows update", update.get("from_release"), update.get("to_release")))
+    errors.extend(_hosted_update_errors(job_id, update, update.get("to_release")))
+    if (update.get("marker") != "M-RT UPDATE TEST STAND-IN"
             or not isinstance(update.get("manifest_sha256"), str)
             or not DIGEST.fullmatch(update["manifest_sha256"])):
         errors.append(f"{job_id}: Windows update stand-in identity is invalid")
@@ -281,10 +344,9 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: OS build does not match the required matrix")
     if row.get("source_override_test_mode") is not False:
         errors.append(f"{job_id}: source override is not admissible")
-    expected_cleanup = ("retained-after-upgrade-refusal"
-                        if job_id in {"direct-linux", "direct-macos"} else "pass")
-    if row.get("final_cleanup") != expected_cleanup:
-        errors.append(f"{job_id}: final cleanup is not {expected_cleanup}")
+    # Every row, including the Release-9 to candidate upgrade, ends in an ordinary uninstall.
+    if row.get("final_cleanup") != "pass":
+        errors.append(f"{job_id}: final cleanup is not pass")
     observed = row.get("candidate_checkouts")
     if not isinstance(observed, dict):
         errors.append(f"{job_id}: exact candidate checkout receipt is absent")
@@ -356,40 +418,26 @@ def _release1_row_errors(candidate, contract, row):
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
         elif not fresh:
             if row.get("scenario") != "release0-to-release1":
-                errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
+                errors.append(f"{job_id}: direct receipt did not run the release0-to-release1 leg")
             transition = row.get("release_transition")
-            if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
-                    or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
-                errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
-            fixture = row.get("release0_fixture")
-            if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
-                    or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
-                    isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
-                    for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
-                    or fixture.get("sources") != {
-                        "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
-                        "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
-                    }):
-                errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
+            if (not isinstance(transition, dict) or transition.get("from") != 9
+                    or type(transition.get("to")) is not int or transition["to"] <= 9
+                    or transition.get("source") != "pinned-release9-plain-install"):
+                errors.append(f"{job_id}: release-9 to candidate transition is absent or wrong")
+            source = row.get("release9_source")
+            bootstrap = source.get("bootstrap_sha256") if isinstance(source, dict) else None
+            if (not isinstance(source, dict) or source.get("app_commit") != RELEASE9_APP_COMMIT
+                    or source.get("identity") != RELEASE9_IDENTITY
+                    or not DIGEST.fullmatch(str(source.get("manifest_sha256", "")))
+                    or not isinstance(bootstrap, dict) or set(bootstrap) != set(ARTIFACTS)
+                    or not all(isinstance(value, str) and DIGEST.fullmatch(value) for value in bootstrap.values())):
+                errors.append(f"{job_id}: pinned release-9 source provenance is absent or wrong")
             semantic = row.get("semantic_data")
             if (not isinstance(semantic, dict) or semantic.get("identical") is not True
                     or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
                                for name in ("before_sha256", "after_sha256"))
                     or semantic.get("before_sha256") != semantic.get("after_sha256")):
                 errors.append(f"{job_id}: semantic data preservation is absent or unequal")
-            refusal = row.get("upgrade_uninstall_refusal")
-            if (not isinstance(refusal, dict) or type(refusal.get("exit_code")) is not int
-                    or refusal.get("exit_code") == 0
-                    or refusal.get("message") != (
-                        "Astrid was upgraded from an earlier version; automatic uninstall after an upgrade "
-                        "isn't supported yet. Both data folders were kept.")
-                    or refusal.get("r0_data_root") != (row.get("run_roots") or {}).get("data")
-                    or not isinstance(refusal.get("r1_data_root"), str)
-                    or refusal.get("r1_data_root") == refusal.get("r0_data_root")
-                    or not isinstance(refusal.get("service_manager"), dict)
-                    or refusal["service_manager"].get("foreground_fallback") is not False
-                    or refusal["service_manager"].get("manager") != (row.get("service_manager") or {}).get("manager")):
-                errors.append(f"{job_id}: required preserved-state uninstall refusal is absent or invalid")
             for check in ("release", "service", "health", "semantic_data", "task_settled",
                           "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
@@ -406,8 +454,8 @@ def fresh_update_errors(job_id, update):
     errors = []
     if not isinstance(update, dict) or update.get("status") != "pass":
         return [f"{job_id}: fresh update receipt is absent or did not pass"]
-    if update.get("release_from") != 1 or update.get("release_to") != 2:
-        errors.append(f"{job_id}: fresh update release transition is invalid")
+    errors.extend(_release_step_errors(job_id, "fresh update", update.get("release_from"), update.get("release_to")))
+    errors.extend(_hosted_update_errors(job_id, update, update.get("release_to")))
     old, new = update.get("old_version"), update.get("new_version")
     if (not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
                 for value in (old, new)) or old == new):

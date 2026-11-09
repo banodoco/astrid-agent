@@ -90,49 +90,56 @@ def test_seeded_release0_leg_is_not_admitted_on_windows(monkeypatch, tmp_path):
                             argparse.Namespace(pid=1), "birth")
 
 
-def test_release0_to_release1_receipt_exposes_release1_service_manager(monkeypatch, tmp_path):
+def test_release9_to_candidate_receipt_keeps_default_service_identity(monkeypatch, tmp_path):
     app, candidate_path, root, data = (tmp_path / name for name in ("app", "candidate.json", "program", "data"))
     app.mkdir()
     candidate_path.write_text("{}", encoding="utf-8")
     evidence = tmp_path / "evidence"
-    manifest = {"release": 1, "agent": {"sha": "agent-r1"}, "runtime": {"sha": "runtime-r1"}}
-    old_service = {"manager": "systemd-user", "foreground_fallback": False, "release": 0}
-    new_service = {"manager": "systemd-user", "foreground_fallback": False, "release": 1}
-    state = {"release": 0}
-    old_version = {"root": str(root / "versions/r0")}
-    new_version = {"root": str(root / "versions/r1")}
+    manifest = {"release": 10, "agent": {"sha": "agent-r10"}, "runtime": {"sha": "runtime-r10"}}
+    old_service = {"manager": "systemd-user", "foreground_fallback": False, "phase": "release9"}
+    new_service = {"manager": "systemd-user", "foreground_fallback": False, "phase": "candidate"}
+    services = [old_service, new_service]
+    upgraded = {"done": False}
+    old_version = {"root": str(root / "versions/r9")}
+    new_version = {"root": str(root / "versions/r10")}
     args = argparse.Namespace(job_id="direct-linux", mode="direct", leg="release0-to-release1",
                               shell="sh", candidate_checkouts={}, service_manager_prerequisite={},
                               app_checkout=app, candidate=candidate_path)
 
-    monkeypatch.setattr(jumps, "release0_admission", lambda *_: (tmp_path / "fixture", tmp_path / "r0.json", {}))
+    def current_version(*_args):
+        version = new_version if upgraded["done"] else old_version
+        return Path(version["root"]) / "version.json", data, version
+
+    def plain_install(*_args, **_kwargs):
+        assert _args[3] == "install"
+        upgraded["done"] = True
+
+    monkeypatch.setattr(jumps, "release9_admission", lambda *_: (tmp_path / "source", tmp_path / "r9.json",
+                                                                 {"app_commit": jumps.RELEASE9_APP_COMMIT}))
     monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *_args, **_kwargs: (app / "manifest.json", manifest))
     monkeypatch.setattr(jumps.journey, "read_json", lambda path: {"manifest_sha256": "candidate", "artifacts": {}}
                         if Path(path) == candidate_path else {})
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
-    monkeypatch.setattr(jumps.journey, "git_source", lambda *_: {"sha": "app-r1"})
+    monkeypatch.setattr(jumps.journey, "git_source", lambda *_: {"sha": "app-r10"})
     monkeypatch.setattr(jumps.journey, "sentinel_observation", lambda *_: {"alive": True})
-    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
-    monkeypatch.setattr(jumps.journey, "bootstrap", lambda *_args, **_kwargs: state.update(release=1))
+    monkeypatch.setattr(jumps, "bootstrap_release9", lambda *_args: None)
+    monkeypatch.setattr(jumps.journey, "bootstrap", plain_install)
     monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected_data: selected_data)
     monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_: None)
-    monkeypatch.setattr(jumps.journey, "installation", lambda *_: (
-        Path((new_version if state["release"] else old_version)["root"]) / "version.json", data,
-        new_version if state["release"] else old_version))
-    monkeypatch.setattr(jumps, "installed_release", lambda _version: state["release"])
+    monkeypatch.setattr(jumps.journey, "installation", current_version)
+    monkeypatch.setattr(jumps, "installed_release", lambda version: 10 if version is new_version else 9)
     monkeypatch.setattr(jumps.journey, "selected_tuple", lambda *_: {"agent": "old-agent", "runtime": "old-runtime"})
-    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership",
-                        lambda *_args, release=0: new_service if release == 1 else old_service)
+    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", lambda *_args, **_kwargs: services.pop(0))
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(jumps.journey, "verify", lambda mode, *_args, **_kwargs: (
-        state.update(release=1) if mode == "install" else None))
+    monkeypatch.setattr(jumps.journey, "verify", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(jumps, "live_workspace", lambda *_args, **_kwargs: (
         {"project": "film"} if _args[3] == "seed" else {
             "project": "film", "timeline": "kept", "preferences": "kept", "task": "settled",
             "cas_sha256": "abc"}))
-    monkeypatch.setattr(jumps.journey, "healthy", lambda *_: {"runtime_instance_id": str(state["release"])})
-    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "agent-r1", "runtime": "runtime-r1"})
+    monkeypatch.setattr(jumps.journey, "healthy", lambda *_: {
+        "runtime_instance_id": "new" if upgraded["done"] else "old"})
+    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "agent-r10", "runtime": "runtime-r10"})
     monkeypatch.setattr(jumps, "task_after_update", lambda *_args: "task-id")
     monkeypatch.setattr(jumps, "assert_preserved", lambda *_: None)
     monkeypatch.setattr(jumps, "semantic_digest", lambda *_: "same-content")
@@ -141,8 +148,46 @@ def test_release0_to_release1_receipt_exposes_release1_service_manager(monkeypat
                                                argparse.Namespace(pid=123), "sentinel-birth")
 
     assert result["status"] == "pass"
-    assert result["service_transition"]["release1"] == new_service
+    assert result["release_transition"] == {"from": 9, "to": 10, "source": "pinned-release9-plain-install"}
+    assert result["service_transition"] == {"release9": old_service, "candidate": new_service}
     assert result["service_manager"] == new_service
+
+
+@pytest.mark.parametrize("manifest", [
+    {"release": 9}, {"release": 1}, {"release": "10"}, {},
+])
+def test_candidate_must_be_newer_than_release_nine(manifest):
+    with pytest.raises(RuntimeError, match="newer than Release 9"):
+        jumps.candidate_release(manifest)
+    assert jumps.candidate_release({"release": 10}) == 10
+
+
+@pytest.mark.parametrize(("changes", "message"), [
+    ({"mode": "pinokio-backend"}, "pinned Release-9"),
+    ({"release9_app_checkout": None}, "pinned Release-9"),
+    ({"allow_release0_to_release1": False}, "pinned Release-9"),
+    ({"source_override": True}, "source override"),
+])
+def test_release9_admission_is_narrow(tmp_path, changes, message):
+    values = {"mode": "direct", "job_id": "direct-linux", "candidate": tmp_path / "candidate.json",
+              "allow_release0_to_release1": True, "release9_app_checkout": tmp_path,
+              "source_override": False, **changes}
+    with pytest.raises(ValueError, match=message):
+        jumps.release9_admission(argparse.Namespace(**values), tmp_path / "source")
+
+
+def test_release9_source_must_resolve_to_the_pinned_identity(monkeypatch, tmp_path):
+    def resolved(identity, commit=jumps.RELEASE9_APP_COMMIT):
+        return lambda *_args, **_kwargs: {
+            "status": "verified", "app_manifest_commit": commit, "identity": identity,
+            "manifest_sha256": "a" * 64, "bootstrap": [], "local_candidate_used": False,
+        }
+    monkeypatch.setattr(jumps.upgrade_release, "resolve", resolved(jumps.RELEASE9_IDENTITY, commit="b" * 40))
+    with pytest.raises(RuntimeError, match="pinned App commit"):
+        jumps.verified_release9_source(tmp_path, tmp_path / "source")
+    monkeypatch.setattr(jumps.upgrade_release, "resolve", resolved({**jumps.RELEASE9_IDENTITY, "agent": "e" * 40}))
+    with pytest.raises(RuntimeError, match="identity differs"):
+        jumps.verified_release9_source(tmp_path, tmp_path / "source")
 
 
 def test_semantic_snapshot_requires_every_seeded_data_class():

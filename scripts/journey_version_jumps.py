@@ -39,6 +39,15 @@ RELEASE0_REFS = {
 RELEASE0_REQUIRED = frozenset({
     "provenance.json", "served/install", "served/install.ps1", "served/install-manifest.json",
 })
+# The published Release 9 is the starting install of the release0-to-release1
+# legs. Its bootstrap and manifest come from the App commit that pinned it.
+RELEASE9_APP_COMMIT = "546c91b7aaf90835445136eb6e93459385ffe21c"
+RELEASE9_RELEASE = 9
+RELEASE9_IDENTITY = {
+    "agent": "709492fa5f4850b9caf0cea4a4c543023b73fa0a",
+    "runtime": "f4c7a4623c84da077daac3e3a9366fc2e6a55051",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 DIAGNOSTIC_START_STAGE = "release0-api-seed"
 DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
@@ -225,22 +234,22 @@ def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -
             or args.leg != "release0-to-release1" or args.mode != "direct"
             or getattr(args, "job_id", None) or getattr(args, "source_override", False)):
         raise ValueError("Diagnostic start is only admitted for the direct release-0 seed stage")
-    fixture, release0_manifest, fixture_receipt = release0_admission(args)
-    del fixture  # Fixture bytes were authenticated by release0_admission above.
+    source, release9_manifest, fixture_receipt = release9_admission(args, root.parent / "release9-source")
+    del source  # Bootstrap bytes were authenticated by release9_admission above.
     app = args.app_checkout.resolve(strict=True)
     candidate_path, target_manifest = journey.selected_manifest(
         app, source_override=False, agent=None, runtime=None, evidence=evidence)
     candidate = journey.read_json(args.candidate)
-    if (evidence_gate.validate_tuple(candidate, app, candidate_path) != target_manifest
-            or target_manifest.get("release") != 1):
-        raise RuntimeError("Diagnostic start requires a frozen release-1 candidate manifest")
+    if evidence_gate.validate_tuple(candidate, app, candidate_path) != target_manifest:
+        raise RuntimeError("Diagnostic start requires a frozen candidate manifest")
+    candidate_release(target_manifest)
     checkouts = journey.candidate_checkouts(args)
     version_path, selected_data, version = journey.installation(root, data)
-    if selected_data != data or installed_release(version) != 0:
-        raise RuntimeError("Diagnostic start requires the retained release-0 installation")
+    if selected_data != data or installed_release(version) != RELEASE9_RELEASE:
+        raise RuntimeError("Diagnostic start requires the retained pinned Release-9 installation")
     identity = diagnostic_release0_identity(
         args, root, data, fixture_receipt=fixture_receipt,
-        release0_manifest=release0_manifest, target_manifest=target_manifest,
+        release0_manifest=release9_manifest, target_manifest=target_manifest,
         candidate=candidate, candidate_checkouts=checkouts, version_path=version_path, version=version,
     )
     state_path = _diagnostic_state_path(args, root)
@@ -464,7 +473,7 @@ def verified_release0_fixture(fixture: Path) -> tuple[Path, Path, dict]:
         raise ValueError("release-0 fixture must be a non-symlink directory")
     root = fixture.resolve(strict=True)
     if root != RELEASE0_FIXTURE.resolve(strict=True):
-        raise ValueError("release0-to-release1 requires the checked-in frozen release-0 fixture")
+        raise ValueError("the Windows refusal requires the checked-in frozen release-0 fixture")
     sums = root / "SHA256SUMS"
     if sums.is_symlink() or not sums.is_file() or fixture_digest(sums) != RELEASE0_SUMS_SHA256:
         raise ValueError("Frozen release-0 checksum manifest differs from the approved M4-2 bytes")
@@ -609,8 +618,79 @@ def release0_admission(args) -> tuple[Path, Path, dict]:
     return verified_release0_fixture(args.release0_fixture)
 
 
+def release9_admission(args, output: Path) -> tuple[Path, Path, dict]:
+    """Admit the pinned, published Release 9 as the release0-to-release1 start."""
+    diagnostic = getattr(args, "diagnostic_start_at", None) == DIAGNOSTIC_START_STAGE
+    if (getattr(args, "mode", None) != "direct" or (not getattr(args, "job_id", None) and not diagnostic)
+            or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
+            or getattr(args, "release9_app_checkout", None) is None):
+        raise ValueError("release0-to-release1 requires its scoped pinned Release-9 direct admission")
+    if getattr(args, "source_override", False):
+        raise ValueError("release0-to-release1 never admits a source override")
+    return verified_release9_source(args.release9_app_checkout, output)
+
+
+def verified_release9_source(app: Path, output: Path) -> tuple[Path, Path, dict]:
+    """Export Release 9's manifest and bootstrap from the pinned App commit.
+
+    The bytes are the git blobs at RELEASE9_APP_COMMIT, not whatever the live
+    endpoint serves now. The export is then run by the plain install command.
+    """
+    if app.is_symlink() or not app.is_dir():
+        raise ValueError("Release-9 App checkout must be a non-symlink directory")
+    resolved = upgrade_release.resolve("release9", output, app_repo=app.resolve(strict=True))
+    if resolved.get("status") != "verified" or resolved.get("app_manifest_commit") != RELEASE9_APP_COMMIT:
+        raise RuntimeError("Release 9 could not be resolved from its pinned App commit")
+    if resolved.get("identity") != RELEASE9_IDENTITY:
+        raise RuntimeError("Pinned Release 9 identity differs from the published release")
+    manifest_path = output / "install-manifest.json"
+    manifest = journey.read_json(manifest_path)
+    if manifest.get("release") != RELEASE9_RELEASE:
+        raise RuntimeError("Pinned Release 9 manifest does not declare release 9")
+    receipt = {
+        "app_commit": resolved["app_manifest_commit"],
+        "manifest_sha256": resolved["manifest_sha256"],
+        "bootstrap_sha256": {row["path"]: row["sha256"] for row in resolved["bootstrap"]},
+        "identity": resolved["identity"],
+    }
+    return output, manifest_path, receipt
+
+
+def release9_consent_agent(args) -> Path | None:
+    """The Agent checkout whose history holds the pinned Release 9 Agent.
+
+    The CI leg passes ``--candidate-agent-checkout`` (a partial clone with full history,
+    so the pinned Release 9 CLI can be read on demand); ``--agent-checkout`` is unset there.
+    """
+    return getattr(args, "candidate_agent_checkout", None) or getattr(args, "agent_checkout", None)
+
+
+def bootstrap_release9(source: Path, manifest: Path, shell: str, evidence: Path,
+                       root: Path, data: Path, agent: Path | None = None) -> None:
+    """Install the exported Release 9 with the plain install command, no --update.
+
+    ``agent`` is the checkout whose history holds the pinned Release 9 Agent. Without it
+    the consent probe cannot read that Agent's CLI, so a fresh install that needs setup
+    consent would stop with no terminal (exit 2).
+    """
+    journey.bootstrap(source, manifest, shell, "install", evidence, root, data, agent=agent)
+
+
+def candidate_release(manifest: dict) -> int:
+    """Return the candidate release, which the plain install must upgrade to.
+
+    The installer's plain install only updates an existing install when the
+    manifest's release is newer than the installed one, so the candidate must
+    be strictly newer than Release 9.
+    """
+    release = manifest.get("release")
+    if type(release) is not int or release <= RELEASE9_RELEASE:
+        raise RuntimeError("release0-to-release1 requires a frozen candidate newer than Release 9")
+    return release
+
+
 def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
-    """Authentic release-0 direct install, API seed, and frozen release-1 update."""
+    """Pinned Release 9 direct install, API seed, and plain install upgrade to the candidate."""
     evidence.mkdir(parents=True, exist_ok=True)
     result = {
         "schema_version": 3, "receipt_kind": "release1-installed-lifecycle",
@@ -621,7 +701,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         "sources": None, "installed_tuple": None, "import_origins": None,
         "run_roots": {"program": str(root), "data": str(data)},
         "sentinel": {"pid": sentinel.pid, "birth": birth},
-        "release0_fixture": None, "release_transition": None, "semantic_data": None,
+        "release9_source": None, "release_transition": None, "semantic_data": None,
         "checks": {key: "not-run" for key in (
             "release", "service", "health", "semantic_data", "task_settled",
             "unrelated_sentinel")},
@@ -629,14 +709,15 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
     result_path = evidence / "journey-result.json"
     journey.write_json(result_path, result)
     try:
-        fixture, release0_manifest, fixture_receipt = release0_admission(args)
-        result["release0_fixture"] = fixture_receipt
+        source, release9_manifest, source_receipt = release9_admission(args, root.parent / "release9-source")
+        result["release9_source"] = source_receipt
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
-        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
-            raise RuntimeError("release0-to-release1 requires a frozen release-1 manifest")
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError("release0-to-release1 requires a frozen candidate manifest")
+        target_release = candidate_release(manifest)
         result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
                                          "artifacts": candidate["artifacts"]}
         result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
@@ -645,22 +726,22 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["sentinel"]["before_lifecycle"] = before_sentinel
         if not before_sentinel["alive"]:
             raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
-        bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
-        start_direct_runtime(evidence / "release0")
+        bootstrap_release9(source, release9_manifest, args.shell, evidence / "release9", root, data,
+                           agent=release9_consent_agent(args))
+        start_direct_runtime(evidence / "release9")
         journey.wait_ready(selected_data_root(root, data))
         old_path, old_data, old = journey.installation(root, data)
-        if old_data != data or installed_release(old) != 0:
-            # Release 0 predates identity-bearing version records; only its
-            # frozen manifest can attest the old release identity.
-            raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
-        old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
+        if old_data != data or installed_release(old) != RELEASE9_RELEASE:
+            # Only the pinned Release 9 manifest attests this starting identity.
+            raise RuntimeError("Pinned Release-9 bootstrap did not select release 9")
+        old_tuple = journey.selected_tuple(journey.read_json(release9_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
-        # release-0 and release-1 tuple binding.
+        # release-9 and candidate tuple binding.
         write_diagnostic_release0_preconditions(
-            args, root, data, fixture_receipt=fixture_receipt,
-            release0_manifest=release0_manifest, target_manifest=manifest,
+            args, root, data, fixture_receipt=source_receipt,
+            release0_manifest=release9_manifest, target_manifest=manifest,
             candidate=candidate, version_path=old_path, version=old,
         )
         baseline = evidence / "release0-api-seed"
@@ -671,35 +752,36 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
         before = live_workspace(root, data, baseline, "snapshot", keys)
         old_health = journey.healthy(data)
-        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
-        start_direct_runtime(evidence / "release1", task_name="Astrid Runtime R1")
+        # The plain install (no --update) upgrades the pinned Release 9 install
+        # because the candidate is newer. It keeps the default service identity.
+        journey.bootstrap(app, candidate_path, args.shell, "install", evidence / "release1", root, data)
+        start_direct_runtime(evidence / "release1")
         active_data = selected_data_root(root, data)
         journey.wait_ready(active_data)
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
-            raise RuntimeError("Release-1 update did not retain data and activate a new version")
+            raise RuntimeError("Candidate upgrade did not retain data and activate a new version")
         selected = selected_candidate(manifest, version, old_tuple)
-        if installed_release(version) != 1:
-            raise RuntimeError("Release-1 update did not select release 1")
-        new_service = journey.assert_direct_service_ownership(root, data, release=1)
+        if installed_release(version) != target_release:
+            raise RuntimeError("Candidate upgrade did not select the candidate release")
+        new_service = journey.assert_direct_service_ownership(root, data)
         new_health = journey.healthy(active_data)
         if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
-            raise RuntimeError("Release-1 update retained the release-0 Runtime instance")
-        result["release_transition"] = {"from": 0, "to": 1,
-                                        "harness_override": "frozen-release0-direct-to-release1"}
-        result["service_transition"] = {"release0": old_service, "release1": new_service}
+            raise RuntimeError("Candidate upgrade retained the release-9 Runtime instance")
+        result["release_transition"] = {"from": RELEASE9_RELEASE, "to": target_release,
+                                        "source": "pinned-release9-plain-install"}
+        result["service_transition"] = {"release9": old_service, "candidate": new_service}
         result["service_manager"] = new_service
         result["health_transition"] = {
-            "release0_runtime_instance_id": old_health["runtime_instance_id"],
-            "release1_runtime_instance_id": new_health["runtime_instance_id"],
+            "release9_runtime_instance_id": old_health["runtime_instance_id"],
+            "candidate_runtime_instance_id": new_health["runtime_instance_id"],
         }
         result["checks"].update(release="pass", service="pass", health="pass")
         result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
         journey.verify("update", version_path, active_data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, active_data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys,
-                               release=1)
+        after = live_workspace(root, active_data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
         semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
         before_sha = semantic_digest({k: before[k] for k in semantic_keys})
@@ -753,8 +835,11 @@ def execute_windows_refusal(args, root: Path, data: Path, evidence: Path, sentin
         app = args.app_checkout.resolve(strict=True)
         candidate_path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
-        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
-            raise RuntimeError("Refusal requires the frozen release-1 candidate")
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError("Refusal requires the frozen candidate")
+        # The refusal is evidence about the earlier Windows version, whatever release the candidate is.
+        if type(manifest.get("release")) is not int or manifest["release"] < 0:
+            raise RuntimeError("Refusal requires a frozen candidate with an integer release")
         bootstrap_release0(fixture, r0_manifest, args.shell, evidence / "release0", root, data)
         old_path, old_data, old = journey.installation(root, data)
         if old_data != data or installed_release(old) != 0:

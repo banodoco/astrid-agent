@@ -1,0 +1,58 @@
+gui/501/haus.astrid.runtime = {
+	active count = 1
+	path = /Users/runner/work/_temp/astrid-r1-direct-macos-fresh/home/Library/LaunchAgents/haus.astrid.runtime.plist
+	type = LaunchAgent
+	state = running
+
+	program = /Users/runner/work/_temp/astrid-r1-direct-macos-fresh/program/versions/5cf342a0-941ac44f-bfa2429a/py/bin/python
+	arguments = {
+		(trimmed)
+	}
+
+	stdout path = /Users/runner/work/_temp/astrid-r1-direct-macos-fresh/home/Library/Logs/Astrid Runtime/runtime-service.log
+	stderr path = /Users/runner/work/_temp/astrid-r1-direct-macos-fresh/home/Library/Logs/Astrid Runtime/runtime-service.log
+	inherited environment = {
+		(trimmed)
+	}
+
+	default environment = {
+		(trimmed)
+	}
+
+	environment = {
+		(trimmed)
+	}
+
+	domain = gui/501 [100002]
+	asid = 100002
+	minimum runtime = 10
+	exit timeout = 90
+	runs = 1
+	pid = 8168
+	immediate reason = speculative
+	forks = 25
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	last exit code = (never exited)
+
+	semaphores = {
+		successful exit => 0
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	probabilistic guard malloc policy = {
+		activation rate = 1/1000
+		sample rate = 1/0
+	}
+
+	properties = runatload | inferred program | system service | tle system
+}
