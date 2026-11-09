@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -18,12 +17,14 @@ from typing import Any
 import yaml
 
 from astrid.core.contracts.errors import AstridError
-from astrid.core.env_vars import ASTRID_PACKS_PATH
 from astrid.core.pack import (
     PackDefinition,
+    PackValidationError,
     discover_packs,
     packs_root,
 )
+from astrid.core.pack.loader import scan_packs
+from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.core.pack.validate import (
     is_first_party_packs_root_candidate,
     validate_first_party_packs_root,
@@ -436,10 +437,13 @@ def cmd_validate(argv: list[str]) -> int:
     pack_root = _validate_pack_path(Path(args.path))
 
     report = _validation_report(pack_root)
-    errors, warnings = report.errors, report.warnings
+    errors, warnings = _validation_errors(pack_root, report.errors), report.warnings
 
     if args.json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if errors != report.errors:
+            payload["errors"] = errors
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if not errors else 1
 
     if errors:
@@ -460,6 +464,30 @@ def cmd_validate(argv: list[str]) -> int:
     else:
         print(f"valid: {resolved} (context={report.context})")
     return 0
+
+
+def _validation_errors(pack_root: Path, schema_errors: list[str]) -> list[str]:
+    """Combine structural validation with the shared pack compatibility result."""
+    errors = list(schema_errors)
+    if is_first_party_packs_root_candidate(pack_root.resolve()):
+        return errors
+    from astrid.core.pack.loader import scan_configured_packs
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    inventory = active_source_inventory()
+    managed_roots = {source.pack_root.resolve() for source in inventory.sources}
+    # A managed checkout may contain other, unselected packs. An ordinary
+    # authoring directory keeps the existing sibling dependency context.
+    # (g2 c3c6680cd; scan_configured_packs also covers g4's default roots.)
+    candidate = pack_root if pack_root.resolve() in managed_roots else pack_root.parent
+    compatibility_scan = scan_configured_packs((candidate,), include_hidden=True)
+    incompatible = next(
+        (record for record in compatibility_scan.quarantined if record.pack_dir.resolve() == pack_root.resolve()),
+        None,
+    )
+    if incompatible is not None and incompatible.error not in errors:
+        errors.append(incompatible.error)
+    return errors
 
 
 def _pack_category(pack: PackDefinition) -> str:
@@ -494,20 +522,18 @@ def _filtered_packs(
     args: argparse.Namespace, *, include_hidden: bool | None = None
 ) -> list[PackDefinition]:
     show_hidden = bool(getattr(args, "show_hidden", False))
-    roots = [packs_root()]
-    raw_roots = [
-        *tuple(getattr(args, "pack_roots", None) or ()),
-        *(item for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep) if item),
-    ]
-    roots.extend(Path(item).expanduser() for item in raw_roots)
-    packs_by_id: dict[str, PackDefinition] = {}
-    for root in roots:
-        for pack in discover_packs(
-            root,
-            include_hidden=show_hidden if include_hidden is None else include_hidden,
-        ):
-            packs_by_id.setdefault(pack.id, pack)
-    packs = list(packs_by_id.values())
+    personal_root = resolve_personal_packs_root()
+    raw_roots = list(getattr(args, "pack_roots", None) or ())
+    if personal_root is not None:
+        raw_roots.append(str(personal_root))
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    inventory = discover_pack_metadata(
+        extra_pack_roots=tuple(raw_roots),
+        include_hidden=show_hidden if include_hidden is None else include_hidden,
+        personal_packs_root=personal_root,
+    )
+    packs = [record.pack for record in inventory]
     category = getattr(args, "category", None)
     status = getattr(args, "status", None)
     visibility = getattr(args, "visibility", None)
@@ -732,7 +758,8 @@ def _format_list_row(row: dict[str, Any]) -> None:
     taxonomy = row.get("taxonomy", {})
     print(
         f"{row['id']}\t{row['name']}\t{row['version']}\t"
-        f"origin={taxonomy.get('origin', '')}\t"
+        f"origin={row.get('origin', taxonomy.get('origin', ''))}\t"
+        f"modified={'unknown' if row.get('modified') is None else str(row['modified']).lower()}\t"
         f"tier={taxonomy.get('install_tier', '')}\t"
         f"type={taxonomy.get('pack_type', '')}\t"
         f"stability={taxonomy.get('stability', '')}\t"
@@ -772,10 +799,13 @@ def _handle_validate(args: argparse.Namespace) -> int:
     """Handler for ``packs validate``."""
     pack_root = _validate_pack_path(Path(args.path))
     report = _validation_report(pack_root)
-    errors, warnings = report.errors, report.warnings
+    errors, warnings = _validation_errors(pack_root, report.errors), report.warnings
 
     if getattr(args, "json", False):
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if errors != report.errors:
+            payload["errors"] = errors
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if not errors else 1
 
     if errors:
@@ -812,8 +842,18 @@ def _handle_new(args: argparse.Namespace) -> int:
 
 def _handle_list(args: argparse.Namespace) -> int:
     """Handler for ``packs list``."""
-    packs = _filtered_packs(args)
-    rows = [_pack_payload(pack) for pack in packs]
+    try:
+        packs = _filtered_packs(args)
+    except PackValidationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    from .cli_manage import origin_and_modified
+
+    rows = []
+    for pack in packs:
+        row = _pack_payload(pack)
+        row["origin"], row["modified"] = origin_and_modified(pack)
+        rows.append(row)
     if args.json:
         print(json.dumps(_with_grouped_payload(rows), indent=2, sort_keys=True))
         return 0

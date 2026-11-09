@@ -332,7 +332,7 @@ def _emit_check_report(report: dict[str, Any], args: argparse.Namespace) -> int:
         detected = ", ".join(report["detected"]) or "(none)"
         print(f"detected harnesses: {detected}")
         if report["registry_stale"]:
-            print("  [drift] registry block in _core/docs/creative-work/references/packs.md is out of date")
+            print("  [drift] registry block in core/resources/skills/creative-work/references/packs.md is out of date")
         for entry in report["missing"]:
             print(f"  [drift] {entry['harness']:<7} {entry['pack']:<14} not linked")
         for entry in report["stale_links"]:
@@ -381,7 +381,7 @@ def _emit_report(report: dict[str, Any], args: argparse.Namespace) -> int:
     registry = report.get("registry")
     if registry is not None:
         state = "updated" if registry["changed"] else "ok"
-        print(f"[registry] _core/docs/creative-work/references/packs.md pack block {state}")
+        print(f"[registry] core/resources/skills/creative-work/references/packs.md pack block {state}")
     if not report["actions"]:
         if registry is None:
             print("no detected harnesses; nothing to do")

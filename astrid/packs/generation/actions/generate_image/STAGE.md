@@ -110,50 +110,104 @@ result = sdk.invoke(
 )
 ```
 
-## Internal runner command (not a public entrypoint)
+## Equivalent SDK calls
 
-The following module command is reserved for Astrid's internal runner and is
-shown only for implementation debugging. Direct invocation is rejected by the
-canonical-entrypoint guard; use the SDK example above.
+Direct module invocation is rejected by the canonical-entrypoint guard; use
+the public SDK action path shown here and in the SDK quick-start above.
 
-```bash
-# Cloud text-to-image
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model flux-dev --mode t2i --execution cloud \
-  --prompt "a serene mountain lake at dawn" --out ./out
-
-# Local text-to-image (requires vibecomfy + ComfyUI)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model z-image --mode t2i --execution local \
-  --prompt "a serene mountain lake at dawn" --out ./out
-
-# Image-to-image (cloud)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model flux-dev --mode i2i --execution cloud \
-  --prompt "turn this into a watercolor painting" \
-  --image-ref ./input.png --out ./out
-
-# Image-to-image (local)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model z-image --mode i2i --execution local \
-  --prompt "turn this into a watercolor painting" \
-  --image-ref ./input.png --out ./out
-
-# Instruction-guided edit
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model qwen-image-edit --mode edit --execution cloud \
-  --prompt "replace the background with a forest" \
-  --image-ref ./input.png --out ./out
-
-# Multiple images with seed
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model flux-schnell --mode t2i --execution cloud \
-  --prompt "cyberpunk city" --count 3 --seed 42 --out ./out
-
-# Codex text-to-image (no OpenAI API key)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_image.run \
-  --model flux-dev --mode t2i --execution codex \
-  --prompt "a tiny blue teapot" --size 1024x1024 --quality low --out ./out
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'flux-dev',
+        "mode": 't2i',
+        "execution": 'cloud',
+        "prompt": 'a serene mountain lake at dawn',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'z-image',
+        "mode": 't2i',
+        "execution": 'local',
+        "prompt": 'a serene mountain lake at dawn',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'flux-dev',
+        "mode": 'i2i',
+        "execution": 'cloud',
+        "prompt": 'turn this into a watercolor painting',
+        "image_ref": './input.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'z-image',
+        "mode": 'i2i',
+        "execution": 'local',
+        "prompt": 'turn this into a watercolor painting',
+        "image_ref": './input.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'qwen-image-edit',
+        "mode": 'edit',
+        "execution": 'cloud',
+        "prompt": 'replace the background with a forest',
+        "image_ref": './input.png',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'flux-schnell',
+        "mode": 't2i',
+        "execution": 'cloud',
+        "prompt": 'cyberpunk city',
+        "count": 3,
+        "seed": 42,
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_image",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'flux-dev',
+        "mode": 't2i',
+        "execution": 'codex',
+        "prompt": 'a tiny blue teapot',
+        "size": '1024x1024',
+        "quality": 'low',
+    },
+    dry_run=True,
+)
 ```
 
 ## Prompts file (JSONL)

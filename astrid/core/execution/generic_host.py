@@ -5,6 +5,17 @@ pack-side process: discovery and execution happen here, while admission,
 leases, reservations, and settlement remain protocol operations on the daemon.
 """
 
+# Module map (symbol anchors keep this useful as the file evolves):
+# - Startup and process/source identity: _emit_startup_phase, source helpers,
+#   and the task-scope/process-control helpers.
+# - Adapter contracts and session lifecycle: AdapterSpec, AdapterRegistry,
+#   CapabilityRecord, and the engine/session adapters.
+# - Runtime protocol boundary: RuntimeProtocolClient and wire/error handling.
+# - Host lifecycle: GenericPackHost discovery/admission, invocation, output
+#   settlement, cancellation, handoff, and supervision.
+# - Local execution and entry points: LocalExecutionPreparation, publication
+#   and activation helpers, then _cli/module shutdown.
+
 from __future__ import annotations
 
 import argparse
@@ -34,10 +45,12 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote, urlsplit
 
@@ -152,16 +165,10 @@ from astrid.core.execution.process_group import (
     write_cleanup_latch,
 )
 from astrid.core.execution.process_group import (
-    group_exists as _owned_group_exists,
-)
-from astrid.core.execution.process_group import (
     process_birth_identity as _process_birth_identity,
 )
 from astrid.core.execution.process_group import (
     release_group as _release_owned_group,
-)
-from astrid.core.execution.process_group import (
-    signal_group as _signal_owned_group,
 )
 from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
@@ -282,7 +289,8 @@ class _RuntimeSourceCustody:
                     or set(value["scope"]) != {"operation_id", "channel_id", "owner_epoch", "custody_scope"}
                     or any(not isinstance(v, str) or not v for v in value["scope"].values())
                     or not re.fullmatch(r"[0-9a-f]{64}", value["selected_profile_digest"])
-                    or not isinstance(value["sources"], list) or not value["sources"]):
+                    or not isinstance(value["sources"], list)):
+                # An empty granted set is valid: the host then boots built-ins only.
                 raise ValueError("invalid external source inventory")
             grants = []
             for source in value["sources"]:
@@ -307,9 +315,13 @@ class _RuntimeSourceCustody:
         if ({key: preparation.get(key) for key in value["scope"]} != value["scope"]
                 or raw_digest(preparation.get("profile")) != value["selected_profile_digest"]):
             raise HostError("external source custody differs from retained preparation")
+        # The Runtime's granted set is the whole retained custody: every granted pack
+        # (selected or discovered) is a launch root. Each selected root must be one of
+        # the granted sources; a selected root outside the grant is refused by name.
+        granted = [{"path": source["root"], "files": source["files"]} for source in value["sources"]]
         extras = preparation["profile"].get("host_launch", {}).get("additional_pack_roots", [])
-        if extras != [{"path": source["root"], "files": source["files"]} for source in value["sources"]]:
-            raise HostError("external selected roots differ from retained preparation")
+        if any(extra not in granted for extra in extras):
+            raise HostError("selected pack root is not granted by retained Runtime custody")
         self._owner_support_root = Path(preparation["profile"]["support_root"])
         self._workspace_uuid = preparation["profile"]["workspace_uuid"]
         self._launch_roots = [preparation["profile"].get("host_launch", {}).get("pack_root"),
@@ -1007,9 +1019,11 @@ class _ManagedWanChildAdapter:
             self._owner_lock = None
             raise HostError("Wan child ownership is occupied; reconcile the prior host") from exc
         self._diagnostic = (owner_dir / f"wan-{self.binding.process_birth_id}.stderr").open("xb")
+        from astrid.core.generation._engine_python_bootstrap import engine_process_env
+
         environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if key in os.environ}
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+        environment = engine_process_env(environment, str(owner_dir))
         self.process = popen_owned_group(
             [self.spec["python"], "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", "--wan-session"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._diagnostic,
@@ -1555,13 +1569,11 @@ def _bind_host_owned_command_values(
         else:
             values["readiness_profile_json"] = "{}"
     if "readiness_profile_path" in declared:
-        values["readiness_profile_path"] = os.environ.get(
-            "ASTRID_HOST_READINESS_PROFILE_PATH"
-        ) or "-"
+        values["readiness_profile_path"] = ("-" if (admission or {}).get("host_target_bound") else
+            os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-")
     if "readiness_profile_hash" in declared:
-        values["readiness_profile_hash"] = os.environ.get(
-            "ASTRID_HOST_READINESS_PROFILE_HASH"
-        ) or "-"
+        values["readiness_profile_hash"] = ("-" if (admission or {}).get("host_target_bound") else
+            os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-")
     return values
 
 
@@ -1617,7 +1629,15 @@ def _prepare_vibecomfy_execution_identity(
 
 def _dependency_pythonpath() -> tuple[str, ...]:
     """Keep only approved dependency roots across children."""
-    return dependency_pythonpath()
+    roots = dependency_pythonpath()
+    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+        return roots
+    # Source-mode workers need the Runtime already selected by this host.
+    # Carry its actual origin, without inheriting the caller's PYTHONPATH.
+    runtime_root = str(Path(sys.modules["runtime_protocol"].__file__).resolve().parent.parent)
+    selected_roots = tuple(root for root in roots
+                           if Path(root).name not in {"site-packages", "dist-packages"})
+    return tuple(dict.fromkeys((runtime_root, *selected_roots)))
 
 
 def _host_product_import_origins() -> dict[str, str | None]:
@@ -1765,7 +1785,7 @@ class AdapterRegistry:
             family = explicit
         elif definition.id.startswith("rendering.") or "render" in definition.id:
             family = "render"
-        elif definition.id.startswith(("vibecomfy.", "comfy_wrap.")) or metadata.get("vibecomfy_command"):
+        elif definition.id.startswith("vibecomfy.") or metadata.get("vibecomfy_command"):
             family = "local_generation"
         elif metadata.get("api_provider") or metadata.get("env") or metadata.get("secrets_required") or definition.isolation.network:
             family = "provider"
@@ -1834,15 +1854,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
-
-
-def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
-    _signal_owned_group(process, sig)
-    return
-
-
-def _process_group_exists(process: subprocess.Popen) -> bool:
-    return _owned_group_exists(process)
 
 
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -2062,6 +2073,12 @@ def _required_secret_names(record: "CapabilityRecord") -> tuple[str, ...]:
     process injection.  In particular, an ambient ``OPENAI_API_KEY`` cannot
     cross the boundary merely because the parent happens to have one.
     """
+    if record.definition.metadata.get("action_invocation"):
+        # Canonical action manifests are the authority for action-scoped
+        # secrets. Do not widen these declarations from the capability matrix
+        # or legacy metadata fields.
+        names = record.definition.metadata.get("declared_secrets") or ()
+        return tuple(dict.fromkeys(str(name) for name in names if str(name)))
     matrix_secret_names = tuple(
         str(name) for name in (record.matrix.get("required_env") or ())
         if str(name).upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))
@@ -2264,13 +2281,15 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
 
 
 def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str:
+    if record.definition.metadata.get("action_invocation"):
+        return existing
     source_pack = str(record.definition.metadata.get('source_pack') or '')
     raw = record.definition.metadata.get('pack_root')
     if source_pack and isinstance(raw, str) and raw:
         pack_root = Path(raw).expanduser().resolve()
-        builtin_root = (Path(__file__).resolve().parents[3] / 'astrid/packs' / source_pack).resolve()
+        builtin_root = (Path(__file__).resolve().parents[2] / 'packs' / source_pack).resolve()
         if pack_root != builtin_root:
-            return os.pathsep.join((str(pack_root), str(pack_root.parent), existing))
+            return os.pathsep.join((str(pack_root), existing))
     return existing
 
 
@@ -2445,7 +2464,8 @@ runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
 """
 
 
-def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool) -> list[str]:
+def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool,
+                          admitted_module: str | None = None) -> list[str]:
     """Host-selected strict startup, independent of action environment flags."""
     arguments = list(argv[1:])
     flags = []
@@ -2457,7 +2477,12 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
             del arguments[:2]
         else:
             break
-    if len(arguments) < 2 or arguments[0] != "-m" or arguments[1] != "astrid.core.execution.generic_host_worker":
+    worker = len(arguments) >= 2 and arguments[:2] == ["-m", "astrid.core.execution.generic_host_worker"]
+    direct = (len(arguments) >= 2 and arguments[0] == "-m" and isinstance(admitted_module, str)
+              and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", admitted_module)
+              and arguments[1] == admitted_module and argv
+              and Path(argv[0]).resolve() == Path(sys.executable).resolve())
+    if not worker and not direct:
         raise HostError("strict network startup requires the host Python worker")
     policy_path = Path(__file__).with_name("network_policy.py").resolve()
     config = {
@@ -2468,7 +2493,7 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
         "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
         "module": arguments[1],
         "broker_required": broker_required,
-        "captured": "--external-source-fd" in arguments,
+        "captured": "--external-source-fd" in arguments or bool(direct),
     }
     return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
             json.dumps(config, sort_keys=True), *arguments[2:]]
@@ -2552,56 +2577,6 @@ def _enforceable_network_gateway(policy: Mapping[str, Any] | None) -> bool:
         if isinstance(value, Mapping) and bool(value.get("enforced")) and bool(value.get("observable")):
             return True
     return bool(policy.get("proxy_enforced")) and bool(policy.get("proxy_observable")) and bool(policy.get("proxy"))
-
-
-def _hivemind_source_preflight(record: "CapabilityRecord") -> dict[str, Any] | None:
-    """Require Hivemind to come from a clean, revision-pinned checkout.
-
-    Hivemind is an external provider pack.  Its public read key must not turn
-    an arbitrary dirty install into an advertised capability.  The managed
-    source inventory performs the immutable revision/digest admission; this
-    boundary rechecks checkout cleanliness immediately before readiness.
-    """
-    if str(record.definition.metadata.get("source_pack") or "") != "hivemind":
-        return None
-    raw_root = record.definition.metadata.get("pack_root")
-    pack_root = Path(str(raw_root)).expanduser().resolve() if raw_root else None
-    if pack_root is None or not pack_root.is_dir():
-        return {"ok": False, "reason": "hivemind source root is unavailable"}
-    checkout = next((candidate for candidate in (pack_root, *pack_root.parents) if (candidate / ".git").exists()), None)
-    if checkout is None:
-        return {"ok": False, "reason": "hivemind source is not a Git checkout"}
-    try:
-        status = subprocess.run(
-            ["git", "-C", str(checkout), "status", "--porcelain=v1"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-            timeout=5,
-        )
-        revision = subprocess.run(
-            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-            timeout=5,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return {"ok": False, "reason": "hivemind source pin could not be verified"}
-    if status.stdout.strip():
-        return {"ok": False, "reason": "hivemind source checkout is dirty"}
-    if not revision:
-        return {"ok": False, "reason": "hivemind source checkout has no pinned revision"}
-    expected_revision = str(record.definition.metadata.get("commit_sha") or "")
-    if expected_revision and revision != expected_revision:
-        return {"ok": False, "reason": "hivemind source revision does not match pinned commit", "revision": revision, "expected_revision": expected_revision}
-    return {"ok": True, "checkout": str(checkout), "revision": revision}
 
 
 _TASK_OUTPUT_TAIL_BYTES = 64 * 1024
@@ -4669,17 +4644,236 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
     pack_root = _pack_root_for_executor(root)
     if pack_root is None or str(getattr(definition, "kind", "")) != "external":
         return ()
-    builtin_packs = (Path(__file__).resolve().parents[3] / "astrid" / "packs").resolve()
+    builtin_packs = (Path(__file__).resolve().parents[2] / "packs").resolve()
     if pack_root == builtin_packs or pack_root.is_relative_to(builtin_packs):
         return ()
     return (pack_root.resolve(),)
 
 
 def _source_digest_for_roots(roots: tuple[Path, ...] | list[Path]) -> str:
-    return _canonical_digest([
-        {"root": str(root.resolve()), "digest": _source_digest(root.resolve())}
-        for root in roots
-    ])
+    from astrid.core.pack.identity import pack_digest
+
+    measured = [{"root": str(root.resolve()), "digest": pack_digest(root.resolve())} for root in roots]
+    return measured[0]["digest"] if len(measured) == 1 else _canonical_digest(measured)
+
+
+def _run_source_digest(record: "CapabilityRecord") -> str:
+    """Observe an action's live source and validate its declared import route."""
+    if not record.definition.metadata.get("action_invocation"):
+        return record.source_digest
+    root = Path(str(record.definition.metadata["pack_root"])).resolve()
+    command = record.definition.command
+    if (command is not None and command.argv and command.argv[0] in {"{python_exec}", sys.executable}
+            and not root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")):
+        from astrid.core.pack.imports import pack_command_args
+
+        try:
+            pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), root)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
+    return _source_digest_for_roots(_admitted_source_roots(record.source_root, record.definition))
+
+
+def _pack_stat_identity(path: Path) -> tuple[int, ...] | None:
+    """Return an entry's generation token without following the selected path."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise HostError(f"cannot inspect selected pack entry: {path}") from exc
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _pack_capture_inventory(root: Path) -> dict[Path, tuple[int, ...]]:
+    """Inventory the digest's entries, including the separately associated PIN."""
+    from astrid.core.pack.identity import _EXCLUDED_DIRS
+
+    entries: dict[Path, tuple[int, ...]] = {}
+
+    def walk(path: Path) -> None:
+        identity = _pack_stat_identity(path)
+        if identity is None:
+            raise HostError("selected pack disappeared during capture")
+        mode = identity[2]
+        if stat.S_ISDIR(mode):
+            if path != root and path.name in _EXCLUDED_DIRS:
+                return
+            entries[path] = identity
+            for child in sorted(path.iterdir()):
+                walk(child)
+        elif stat.S_ISREG(mode):
+            if path.name != ".git" and not path.name.endswith((".pyc", ".pyo")):
+                entries[path] = identity
+        else:
+            raise HostError("selected pack capture requires real directories and regular files")
+
+    walk(root)
+    return entries
+
+
+@contextmanager
+def _unavailable_pack_capture(generation):
+    if generation is not None:
+        raise HostError("stable selected pack capture requires Linux file lease support")
+    yield
+
+
+def _select_pack_capture():
+    """Select the capture mechanism once for its owning host."""
+    if sys.platform.startswith("linux"):
+        try:
+            import fcntl
+        except ImportError:
+            pass
+        else:
+            return partial(_selected_pack_capture, lease_api=fcntl)
+    return _unavailable_pack_capture
+
+
+@contextmanager
+def _selected_pack_capture(generation, *, lease_api):
+    """Fence byte acquisition; unsupported or contested sources fail closed.
+
+    A second hash is not a mutation fence: an already-read file can be changed,
+    including through a writable mmap. Linux read leases exclude existing
+    writers/mappings and hold off new writers. Directory identities cover name
+    changes, which leases do not prevent. No lease survives this capture scope.
+    """
+    if generation is None:
+        yield
+        return
+    # Use a default-ignored signal on these private descriptors, without
+    # installing a process-wide handler (captures also run on host threads).
+    # Breaks are handled synchronously below: F_GETLEASE reports the pending
+    # target F_UNLCK immediately, even before a blocked writer is released.
+    if signal.getsignal(signal.SIGURG) not in (signal.SIG_DFL, signal.SIG_IGN):
+        raise HostError("selected pack capture cannot reserve its lease notification")
+    descriptors: list[int] = []
+    root = generation[2]
+    try:
+        inventory = _pack_capture_inventory(root)
+        for path, identity in inventory.items():
+            if not stat.S_ISREG(identity[2]):
+                continue
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            opened_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns)
+            if opened_identity != identity:
+                raise HostError("selected pack entry changed before capture")
+            lease_api.fcntl(descriptor, lease_api.F_SETSIG, signal.SIGURG)
+            lease_api.fcntl(descriptor, lease_api.F_SETLEASE, lease_api.F_RDLCK)
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed before capture")
+        yield
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed during capture")
+        if any(lease_api.fcntl(fd, lease_api.F_GETLEASE) != lease_api.F_RDLCK for fd in descriptors):
+            raise HostError("selected pack write attempted during capture")
+    except OSError as exc:
+        raise HostError("cannot establish stable selected pack capture") from exc
+    finally:
+        # Closing the last reference releases even a breaking lease, promptly
+        # unblocking writers on success, admission refusal, and read errors.
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _selected_pack_generation(
+    record: Any,
+) -> tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None:
+    """Hold the declared pack path and its root/PIN identities for one capture."""
+    metadata = record.definition.metadata
+    pack_id = metadata.get("source_pack")
+    raw_root = metadata.get("pack_root")
+    if (not isinstance(pack_id, str) or not pack_id
+            or not isinstance(raw_root, str) or not raw_root):
+        return None
+    declared_root = Path(raw_root).expanduser().absolute()
+    pack_root = declared_root.resolve()
+    root_identity = _pack_stat_identity(pack_root)
+    if root_identity is None or not stat.S_ISDIR(root_identity[2]):
+        raise HostError("selected pack root disappeared or is not a directory")
+    pin_identity = _pack_stat_identity(pack_root / "PIN")
+    if pin_identity is not None and not stat.S_ISREG(pin_identity[2]):
+        raise HostError("selected pack PIN is not a regular file")
+    return pack_id, declared_root, pack_root, root_identity, pin_identity
+
+
+_UNSET_PACK_GENERATION = object()
+# Standalone receipt callers have no host owner; bind their policy once too.
+_standalone_pack_capture = _select_pack_capture()
+
+
+def _run_pack_provenance(
+    record: Any,
+    observed_digest: str | None,
+    selected_generation: tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None | object = _UNSET_PACK_GENERATION,
+) -> list[dict[str, Any]] | None:
+    """Capture identity, PIN and observed digest from one stable selected generation."""
+    if selected_generation is _UNSET_PACK_GENERATION:
+        generation = _selected_pack_generation(record)
+        with _standalone_pack_capture(generation):
+            provenance = _run_pack_provenance(record, observed_digest, generation)
+        return provenance
+    generation = selected_generation
+    if generation is None:
+        return None
+    pack_id, declared_root, pack_root, root_identity, pin_identity = generation
+    metadata = record.definition.metadata
+    from astrid.core.pack.identity import pack_digest
+
+    if not isinstance(metadata.get("action_invocation"), Mapping):
+        # Legacy executor roots have an admission digest which also covers the
+        # executor directory. Receipts identify the selected pack itself.
+        observed_digest = pack_digest(pack_root)
+    if not isinstance(observed_digest, str):
+        return None
+
+    pin_path = pack_root / "PIN"
+    current_pin_identity = _pack_stat_identity(pin_path)
+    if current_pin_identity != pin_identity:
+        raise HostError("selected pack changed during provenance capture")
+    if current_pin_identity is not None:
+        from astrid.core.pack.identity import read_pin
+
+        pin = read_pin(pin_path)
+        origin = pin["origin"]
+        installed_digest = pin["digest"]
+    else:
+        # Folder-selected packs remain visibly unpinned while recording their
+        # observed source tree.
+        origin = "folder"
+        installed_digest = None
+
+    # Rehash after PIN acquisition while the caller holds the byte fence.
+    # Root/PIN checks additionally reject a changed selected association.
+    verified_digest = pack_digest(pack_root)
+    try:
+        final_declared_root = declared_root.resolve()
+    except OSError as exc:
+        raise HostError("selected pack path changed during provenance capture") from exc
+    final_root_identity = _pack_stat_identity(pack_root)
+    final_pin_identity = _pack_stat_identity(pin_path)
+    if (final_declared_root != pack_root
+            or root_identity != final_root_identity
+            or pin_identity != current_pin_identity
+            or current_pin_identity != final_pin_identity
+            or observed_digest != verified_digest):
+        raise HostError("selected pack changed during provenance capture")
+
+    return [{
+        "pack_id": pack_id,
+        "origin": origin,
+        "installed_digest": installed_digest,
+        "observed_digest": observed_digest,
+        "modified": installed_digest != observed_digest if installed_digest is not None else None,
+    }]
 
 
 def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[str, Any]) -> None:
@@ -4695,17 +4889,35 @@ def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[s
     roots = tuple(Path(str(value)).expanduser().resolve() for value in admission.get("source_roots", ()))
     if (not root.is_dir() or roots != (root,)
             or Path(str(admission.get("source_root") or "")).expanduser().resolve() != root):
-        raise HostError("Python action pack root does not match the admission source fence")
+        raise HostError("Python action pack root does not match the admitted source selection")
     if (not admission.get("source_digest") or not admission.get("capability_digest")
             or _capability_digest(definition) != admission["capability_digest"]):
         raise HostError("Python action requires a matching admitted definition digest")
     if admission.get("python_path_roots"):
-        raise HostError("Python action pack imports must use the contained namespace")
+        raise HostError("Python action pack imports must use the selected canonical namespace")
+    selected = admission.get("selected_pack_map")
+    if selected is not None:
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        try:
+            selected = validate_selected_pack_map(selected, verify_digests=False)
+        except (OSError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+        if selected.get(str(metadata.get("source_pack") or root.name)) != {
+                "root": str(root), "source_digest": admission["source_digest"]}:
+            raise HostError("Python action differs from the admitted pack map")
 
 
 
 def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
-    """Revalidate the source fence immediately before command/provider execution."""
+    """Validate a single run's observed source; never compare an install PIN."""
+    if admission.get("selected_pack_map"):
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        try:
+            validate_selected_pack_map(admission["selected_pack_map"])
+        except (OSError, ValueError) as exc:
+            raise HostError(f"admitted capability source digest changed: {exc}") from exc
     expected = str(admission.get("source_digest") or "")
     if not expected:
         return
@@ -4716,7 +4928,11 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
         roots = (Path(str(admission["source_root"])).expanduser().resolve(),)
     else:
         return
-    if _source_digest_for_roots(roots) != expected:
+    try:
+        observed = _source_digest_for_roots(roots)
+    except (OSError, ValueError) as exc:
+        raise HostError(f"admitted capability source digest changed: {exc}") from exc
+    if observed != expected:
         raise HostError("admitted capability source digest changed")
 
 
@@ -5324,7 +5540,8 @@ class RuntimeProtocolClient:
                     generation_intent: Mapping[str, Any] | None = None,
                     stage_execution_request: Mapping[str, Any] | None = None,
                     storage_estimate: Mapping[str, int] | None = None,
-                    execution_request: Mapping[str, Any] | None = None):
+                    execution_request: Mapping[str, Any] | None = None,
+                    admitted_source_digest: str | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
         Stages and managed input refs are explicit trusted-host arguments. The
@@ -5354,6 +5571,8 @@ class RuntimeProtocolClient:
             staged_task = _staged_child_task(
                 child=child, inputs=inputs, ordered_inputs=ordered_inputs,
                 stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
+            if admitted_source_digest is not None:
+                staged_task["spec"]["admitted_source_digest"] = admitted_source_digest
         if generation_intent is not None:
             if not isinstance(generation_intent, Mapping):
                 raise ChildBridgeError("generation_intent must be an object")
@@ -5415,6 +5634,9 @@ class RuntimeProtocolClient:
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
                     "spec": {"capability_id": child["capability_id"], "kind": "action",
                              "params" if openai_request else "inputs": child_inputs}}
+            if admitted_source_digest is not None:
+                # The child host refuses to launch source other than this digest.
+                task["spec"]["admitted_source_digest"] = admitted_source_digest
             if openai_request:
                 task["storage_estimate"] = dict(storage_estimate)
             if request is not None and request.get("inputs"):
@@ -5810,7 +6032,7 @@ class RuntimeProtocolClient:
 
 
 _LOGGER = logging.getLogger(__name__)
-_OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "hivemind.", "seedance_local.")
+_OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "seedance_local.")
 
 
 def _unapproved_reason(capability_id: str, matrix_path: Path | None) -> str:
@@ -5827,14 +6049,13 @@ def _quarantine_scope(pack_roots: Any) -> tuple[tuple[Path, ...], frozenset[str]
     Uses the same per-pack admission as discovery (``astrid.core.pack.loader``):
     fail-closed packs still raise here, every other invalid pack is excluded.
     """
-    from astrid.core.pack.loader import scan_packs
+    from astrid.core.pack.loader import scan_pack_roots
 
     dirs: list[Path] = []
     ids: set[str] = set()
-    for root in pack_roots:
-        for record in scan_packs(root).quarantined:
-            dirs.append(record.pack_dir.resolve())
-            ids.add(record.pack_id)
+    for record in scan_pack_roots(tuple(pack_roots)).quarantined:
+        dirs.append(record.pack_dir.resolve())
+        ids.add(record.pack_id)
     return tuple(dirs), frozenset(ids)
 
 
@@ -6198,6 +6419,25 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
 
+def _align_trust(task: Mapping[str, Any]) -> bool:
+    intent = _task_generation_intent(task)
+    metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
+    return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
+
+
+def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any], *, trust: bool = False) -> str:
+    """The one host-owned inventory document, built only after the bound install is checked."""
+    from astrid.core.generation.target_inventory import build_document
+
+    installed = invocation.get("installed") if isinstance(invocation, Mapping) else None
+    if (not isinstance(installed, Mapping) or not installed.get("receipt_sha256")
+            or installed["receipt_sha256"] != evidence.get("installed_receipt_sha256")):
+        raise HostError("bound endpoint receipt differs from the prepared installation")
+    if trust:
+        return build_document("trust", evidence["loopback_url"])
+    return build_document("inventory", evidence["loopback_url"], invocation.get("models", ()))
+
+
 class GenericPackHost:
     """Discover, register, preflight, and execute pack capabilities."""
 
@@ -6216,7 +6456,10 @@ class GenericPackHost:
         boot_manifest_path: str | Path | None = None,
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
+        pack_capture: Callable[[Any], Any] | None = None,
+        personal_collection: bool = False,
     ):
+        self._pack_capture = _select_pack_capture() if pack_capture is None else pack_capture
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
         # directory. Keep it in the same admitted root set so env-only packs
@@ -6224,6 +6467,17 @@ class GenericPackHost:
         for raw_root in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep):
             if raw_root:
                 configured_roots.append(Path(raw_root).expanduser().resolve())
+        self._explicit_pack_roots = tuple(dict.fromkeys(configured_roots))
+        # Under retained Runtime custody the Runtime owns the installed collection:
+        # it passes the installed root in pack_roots and derives its grants, so the
+        # host uses exactly the roots it was given. Outside custody, only the default
+        # `run --register` host resolves the personal collection (where `astrid packs
+        # add` installs) itself; every other construction gets no implicit root.
+        if _runtime_external_sources is None and personal_collection:
+            from astrid.personal_packs_root import resolve_personal_packs_root
+            personal_root = resolve_personal_packs_root()
+            if personal_root is not None:
+                configured_roots.append(personal_root)
         if _runtime_external_sources is not None:
             _runtime_external_sources.verify()
             if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
@@ -6257,8 +6511,8 @@ class GenericPackHost:
         # process environment fallback available so shared astrid.env still
         # wins over stale process values and fills an empty mapping.
         self._credential_source_is_explicit = credential_source is not None
-        self.ledger = load_capability_ledger(self.capability_matrix_path) if self.capability_matrix_path else {"capabilities": [], "sources": {}}
-        self.matrix: dict[str, dict[str, Any]] = self._load_matrix(self.capability_matrix_path)
+        self.ledger = load_capability_ledger(self.capability_matrix_path, pack_roots=self.pack_roots) if self.capability_matrix_path else {"capabilities": [], "sources": {}}
+        self.matrix: dict[str, dict[str, Any]] = self._load_matrix(self.capability_matrix_path, ledger=self.ledger)
         self.source_epoch = "uninitialized"
         self.source_inventory_identity = str(source_inventory_identity or "")
         self.runtime_state: dict[str, Any] = {}
@@ -6316,6 +6570,9 @@ class GenericPackHost:
         # Idle release for everything this host keeps warm between tasks: the
         # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
+        self._target_bindings = None
+        self._target_bindings_kind = None
+        self._target_bindings_lock = threading.RLock()
         # A request's lifecycle.idle_timeout_seconds, for the task in flight.
         self._requested_idle_seconds: float | None = None
         # Queued tasks already reported as unclaimable, as (task_id, reason).
@@ -6869,9 +7126,35 @@ class GenericPackHost:
                 graph.abort()
             except BaseException as exc:
                 errors.append(exc)
+        if self._handoff_accounting_owner is self and self._target_bindings is not None:
+            try:
+                self._target_bindings.close()
+            except BaseException as exc:
+                errors.append(exc)
         if errors:
             self._latch_cleanup_uncertainty("; ".join(str(error) for error in errors))
             raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
+
+    def _host_target_bindings(self, kind):
+        """Lazily share selected target custody across this host's claim slots."""
+        owner = self._handoff_accounting_owner
+        with owner._target_bindings_lock:
+            if owner._target_bindings is None:
+                from astrid.core.execution.target_provider import resolve_target_provider
+
+                module = resolve_target_provider(kind, owner.pack_roots)
+                factory = getattr(module, "TargetProviderBindings", None)
+                if not callable(factory):
+                    raise HostError("target provider has no retained host binding")
+                owner._target_bindings = factory(
+                    pack_roots=owner.pack_roots, holds=owner.warm_holds, environ=os.environ,
+                    credentials=lambda name: _resolve_credential_value(
+                        owner.credential_source, name, explicit=owner._credential_source_is_explicit),
+                )
+                owner._target_bindings_kind = kind
+            elif owner._target_bindings_kind != kind:
+                raise HostError("host already retains a different target provider")
+            return owner._target_bindings
 
     def boot_manifest_provenance(self) -> dict[str, str] | None:
         """Return completion provenance for the root-owned manifest stamp."""
@@ -6917,11 +7200,11 @@ class GenericPackHost:
             raise HostError("Astrid capability matrix is missing; reinstall or update Astrid") from exc
 
     @staticmethod
-    def _load_matrix(path: Path | None) -> dict[str, dict[str, Any]]:
+    def _load_matrix(path: Path | None, *, ledger: Mapping[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         if path is None:
             return {}
         try:
-            payload = load_capability_ledger(path)
+            payload = ledger if ledger is not None else load_capability_ledger(path)
         except ValueError as exc:
             raise HostError(
                 "capability matrix could not be loaded",
@@ -6992,20 +7275,48 @@ class GenericPackHost:
                 records[record.id] = record
         # Use the SDK's exact static projection, preserving host-configured
         # source authority even when shared discovery also sees managed/env roots.
+        from astrid.core.foundation.paths import PACKAGE_ROOT, REPO_ROOT
         from astrid.core.pack.discovery import discover_pack_metadata
         from astrid.sdk.actions import action_executor_definition
 
+        core_hivemind_root = (PACKAGE_ROOT / "core" / "hivemind").resolve()
         discovered_packs = discover_pack_metadata(
-            project_root=self.pack_roots[0] if self.pack_roots else Path.cwd(),
+            project_root=self.pack_roots[0] if self.pack_roots else REPO_ROOT,
             extra_pack_roots=tuple(str(root) for root in self.pack_roots),
         )
+        self._pack_source_roots = {item.pack.id: item.pack.root.resolve() for item in discovered_packs}
         from astrid.core.execution.executor.actions import action_is_local_orchestrator
 
+        # An explicitly configured pack with the same ID is a complete
+        # override of the bundled core pack, preserving the caller's source
+        # authority without mixing capabilities from different implementations.
+        explicit_pack_ids = {
+            record.id.split(".", 1)[0]
+            for record in records.values()
+            if any(
+                record.source_root.resolve() == root
+                or record.source_root.resolve().is_relative_to(root)
+                for root in self.pack_roots
+            )
+        }
+
+        # Core Hivemind joins the core selection (no explicit roots, or roots
+        # that include the bundled core packs). A host given only explicit
+        # selected roots admits exactly those roots (g2/g5 selected sources).
+        bundled_core_root = (PACKAGE_ROOT / "packs").resolve()
+        core_selected = not self._explicit_pack_roots or any(
+            bundled_core_root == root or bundled_core_root.is_relative_to(root) for root in self._explicit_pack_roots
+        )
         local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
-            if not any(pack_root == root or pack_root.is_relative_to(root) for root in self.pack_roots):
+            if pack_root == core_hivemind_root and (pack.id in explicit_pack_ids or not core_selected):
+                continue
+            if pack_root != core_hivemind_root and not any(
+                pack_root == root or pack_root.is_relative_to(root)
+                for root in self.pack_roots
+            ):
                 continue
             for local_id, declaration in pack.actions.items():
                 try:
@@ -7026,7 +7337,9 @@ class GenericPackHost:
                     )
                 except (ExecutorValidationError, OSError, ValueError):
                     continue
-                records[record.id] = record
+                existing = records.get(record.id)
+                if existing is None or existing.source_root.resolve() != core_hivemind_root:
+                    records[record.id] = record
         if self.matrix:
             discovered = set(records)
             expected = set(self.matrix)
@@ -7075,7 +7388,41 @@ class GenericPackHost:
         })
         return tuple(records[key] for key in sorted(records))
 
-    def admit(self, capability_kind: str, capability_id: str) -> tuple[Mapping[str, Any], Mapping[str, str]]:
+    def _selected_pack_map(self, record: CapabilityRecord) -> dict[str, dict[str, str]]:
+        """M2-05 resource-selection seam: live roots for the selected dependency closure.
+
+        Discovery owns inventory and compatibility. This construction reads only
+        manifests and source trees reached by dependencies.packs from that inventory.
+        Packs without actions remain eligible dependencies.
+        """
+        from astrid.core.pack.identity import pack_digest
+        from astrid.core.pack.loader import _load_manifest_payload
+        from astrid.core.pack.imports import validate_selected_pack_map
+
+        if not record.definition.metadata.get("action_invocation"):
+            return {}
+        root = Path(str(record.definition.metadata["pack_root"])).resolve()
+        inventory = getattr(self, "_pack_source_roots", {})
+        selected: dict[str, dict[str, str]] = {}
+
+        def visit(pack_id: str, pack_root: Path) -> None:
+            if pack_id in selected:
+                return
+            selected[pack_id] = {"root": str(pack_root), "source_digest": pack_digest(pack_root)}
+            payload = _load_manifest_payload(pack_root / "pack.yaml")
+            for dependency in sorted(payload.get("dependencies", {}).get("packs", ())):
+                dependency_root = inventory.get(dependency)
+                if dependency_root is None:
+                    raise HostError(f"selected pack dependency {dependency!r} is unavailable")
+                visit(dependency, dependency_root)
+
+        visit(str(record.definition.metadata.get("source_pack") or root.name), root)
+        try:
+            return validate_selected_pack_map(selected, verify_digests=False)
+        except (OSError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+
+    def admit(self, capability_kind: str, capability_id: str) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         """Capture the exact definition and source epoch used by a task child."""
         if capability_kind == "executor":
             if not self.capabilities:
@@ -7102,7 +7449,8 @@ class GenericPackHost:
                 raise HostError(f"capability {capability_id!r} is unavailable: network:reason={exc}") from exc
             return record.definition.to_dict(), {
                 "capability_digest": record.capability_digest,
-                "source_digest": record.source_digest,
+                "source_digest": _run_source_digest(record),
+                "selected_pack_map": self._selected_pack_map(record),
                 "dependency_digest": record.dependency_digest,
                 "version": record.definition.version,
                 "source_root": str(record.source_root),
@@ -7398,9 +7746,6 @@ class GenericPackHost:
                     "ok": sandbox_available,
                     **({} if sandbox_available else {"reason": "host-managed provider broker requires macOS sandbox-exec"}),
                 }
-            pack_source = _hivemind_source_preflight(record)
-            if pack_source is not None:
-                checks["pack_source"] = pack_source
             if _is_withdrawn(record):
                 checks["disposition"] = {
                     "ok": False,
@@ -7625,6 +7970,29 @@ class GenericPackHost:
                 digest=prior.get("capability_digest", ""),
                 reason=reason,
             )
+
+    def acknowledge_pack_refresh(self) -> bool:
+        """Register a committed personal-collection change and acknowledge its outbox entry.
+
+        `astrid packs add` commits to the personal collection and leaves a
+        refresh entry pending. This host is the one registrar: it rediscovers,
+        re-registers through the normal renewal path, and only then
+        acknowledges. Returns True when an entry was acknowledged.
+        """
+        from astrid.core.pack.transaction import refresh_pending, retry_refresh
+        from astrid.personal_packs_root import resolve_personal_packs_root
+
+        root = resolve_personal_packs_root()
+        if root is None or not refresh_pending(packs_root=root):
+            return False
+
+        def renew(*, transaction_id: str, committed_revision: int, changed_ids: tuple[str, ...]) -> dict[str, Any]:
+            self.discover()
+            self._renew_executor_registration(idle=True)
+            return {"version": 1, "accepted": True, "revision": committed_revision,
+                    "reason": "registered by the running generic host"}
+
+        return not retry_refresh(packs_root=root, refresh=renew)
 
     def refresh(self) -> tuple[CapabilityRecord, ...]:
         """Re-scan source and report digest changes; callers must register again."""
@@ -8946,6 +9314,7 @@ class GenericPackHost:
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
         comfy_invocation: Mapping[str, Any] | None = None,
+        target_model_assets: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -8966,6 +9335,11 @@ class GenericPackHost:
             )
         }
         explicit = dict(explicit_env or {})
+        if record.definition.metadata.get("action_invocation"):
+            explicit["ASTRID_ACTION_ID"] = record.id
+            explicit["ASTRID_ACTION_ENV_ALLOWLIST"] = json.dumps(
+                list(declared), separators=(",", ":")
+            )
         explicit.pop("ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON", None)
         # A worker may deliberately execute a qualified, local VibeComfy
         # snapshot rather than the normal published dependency pin.  The
@@ -8977,7 +9351,7 @@ class GenericPackHost:
             # host-side preflight headless too; the actual Comfy daemon keeps
             # its normal route-registration environment in its own process.
             explicit["VIBECOMFY_HEADLESS"] = "1"
-            profile = _read_readiness_profile_document()
+            profile = None if (admission or {}).get("host_target_bound") else _read_readiness_profile_document()
             session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
             if isinstance(session, Mapping):
                 explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
@@ -9000,7 +9374,7 @@ class GenericPackHost:
                 receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
                 if receipt_dir:
                     explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
-            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
+            elif os.environ.get(LOCAL_ENGINE_HOST_ENV) and not (admission or {}).get("host_target_bound"):
                 # Local placement without a readiness profile: the binding is attested by
                 # the installed engine's own receipt, never by a profile or the ambient env.
                 explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
@@ -9058,6 +9432,9 @@ class GenericPackHost:
         from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
         env.pop(EXECUTION_REQUEST_ENV, None)
         env.pop("ASTRID_COMFY_INVOCATION", None)
+        env.pop("ASTRID_TARGET_MODEL_ASSETS", None)  # only the host's own document reaches a child
+        if record.id == "vibecomfy.run" and target_model_assets is not None:
+            env["ASTRID_TARGET_MODEL_ASSETS"] = target_model_assets
         if record.id == "vibecomfy.run" and comfy_invocation is not None:
             env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
         if record.id == "vibecomfy.run" and workflow_execution_request is not None:
@@ -9435,11 +9812,12 @@ class GenericPackHost:
         command_admission = dict(admission or {})
         workflow_request = command_admission.pop("workflow_execution_request", None)
         comfy_invocation = command_admission.pop("comfy_invocation", None)
+        target_model_assets = command_admission.pop("target_model_assets", None)
         admission = command_admission if admission is not None else None
         workflow_policy = None
         if record.id == "vibecomfy.run":
             from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
-            profile = _read_readiness_profile_document()
+            profile = None if command_admission.get("host_target_bound") else _read_readiness_profile_document()
             runpod = isinstance(workflow_request, Mapping) and workflow_request.get("target", {}).get("kind") == "runpod"
             if runpod:
                 if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
@@ -9454,6 +9832,25 @@ class GenericPackHost:
         command = record.definition.command
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
+        pack_root = Path(str(record.definition.metadata.get("pack_root") or record.source_root)).resolve()
+        selected_command = (bool(record.definition.metadata.get("action_invocation"))
+                            and not pack_root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")
+                            and bool(command.argv) and command.argv[0] in {"{python_exec}", sys.executable})
+        if selected_command:
+            from astrid.core.pack.imports import pack_command_args
+
+            # Refuse unsupported routes before environment/credential setup or launch.
+            try:
+                pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), pack_root)
+            except ValueError as exc:
+                raise HostError(str(exc)) from exc
+            # A selected pack command launches through the isolated (-I) worker
+            # with a replaced import path, so the PYTHONPATH sitecustomize hook
+            # can never load there. Its network policy is installed only by the
+            # host's strict network startup, which requires a leaf child that
+            # carries no Runtime connection.
+            if network_broker is not None or _network_policy(record) is not None:
+                allow_runtime_connection = False
         attempt_output_root = (attempt / "outputs").resolve()
         if admission is not None:
             _verify_admitted_source(admission)
@@ -9558,6 +9955,7 @@ class GenericPackHost:
             network_broker=network_broker,
             workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
             comfy_invocation=comfy_invocation,
+            target_model_assets=target_model_assets,
             network_policy=workflow_policy or (
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -9602,6 +10000,7 @@ class GenericPackHost:
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
         inherited_fds: tuple[int, ...] = ()
+        selected_arguments = list(argv[1:])
         if child_bridge is not None:
             # Bootstrap in the action interpreter before pack code. Private
             # launch arguments contain a descriptor and command, no authority.
@@ -9635,12 +10034,43 @@ class GenericPackHost:
                 raise HostError("captured external commands require the admitted Python interpreter")
             inherited_fds += (source_channel.fileno(),)
             if child_bridge is None:
+                from astrid.core.pack.identity import pack_digest
+
+                captured_root = Path(record.source_root)
                 argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
-                        "--captured-command", json.dumps(argv[1:])]
+                        "--pack-command", json.dumps({
+                            "pack_id": captured_root.name, "root": str(captured_root),
+                            "source_digest": pack_digest(captured_root), "argv": argv[1:]})]
             worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
-            # External code is loaded from the descriptor, never PYTHONPATH.
+            # The descriptor proves Runtime selection/custody; execution reads raw source.
             env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+        if selected_command:
+            control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
+                       "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
+                       "argv": selected_arguments,
+                       "map": (admission or {}).get("selected_pack_map") or self._selected_pack_map(record)}
+            from astrid.core.pack.imports import selected_pack_environment
+
+            env.update(selected_pack_environment(control["map"]))
+            # pack_command_args accepts a leading -u; only the interpreter can
+            # apply it (the worker re-applies -B itself), so carry it over.
+            leading = list(selected_arguments)
+            unbuffered = False
+            while leading and (leading[0] in {"-u", "-B"} or leading[:2] == ["-X", "utf8"]):
+                unbuffered = unbuffered or leading[0] == "-u"
+                del leading[:2 if leading[0] == "-X" else 1]
+            argv = [sys.executable, "-X", "utf8", *(["-u"] if unbuffered else []), "-m",
+                    "astrid.core.execution.generic_host_worker", "--pack-command", json.dumps(control)]
+            if child_bridge is not None:
+                argv.extend(("--child-bridge", str(child_bridge.inherited_fd())))
+            if source_channel is not None:
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+            # Keep the host-created network hook visible to strict startup, as
+            # invoke_capability does; arbitrary child PYTHONPATH stays excluded.
+            network_hook_roots = (str(attempt / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
+            env["PYTHONPATH"] = os.pathsep.join((*network_hook_roots, package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
@@ -9666,8 +10096,12 @@ class GenericPackHost:
                         raise HostError("private network commands require the admitted Python interpreter")
                     argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                             "--python-command", json.dumps(argv[1:])]
-                argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
-            if source_channel is not None:
+                admitted_module = (record.definition.metadata.get("runtime_module")
+                                   if command_admission.get("host_target_bound")
+                                   and record.definition.metadata.get("action_invocation") else None)
+                argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None,
+                                             admitted_module=admitted_module)
+            if source_channel is not None or selected_command:
                 argv = _captured_worker_argv(argv)
             # Rendering can create native descendants that change groups.
             # Retain their incarnation-bound custody while the leader runs;
@@ -9958,6 +10392,10 @@ class GenericPackHost:
                 dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
             )
             env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+        if isinstance(admission, Mapping) and admission.get("selected_pack_map"):
+            from astrid.core.pack.imports import selected_pack_environment
+
+            env.update(selected_pack_environment(admission["selected_pack_map"]))
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
@@ -10459,9 +10897,12 @@ class GenericPackHost:
             resolved_options=options, cost=cost, warnings=warnings,
             settled=terminal.get("settled"), settlement=terminal.get("settlement"),
             effect=terminal.get("effect"),
+            pack_provenance=terminal.get("pack_provenance"),
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
+        if terminal.get("target_binding") is not None:
+            receipt["target_binding"] = dict(terminal["target_binding"])
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -11162,6 +11603,7 @@ class GenericPackHost:
             raise HostError(f"capability not discovered: {capability_id}")
 
         _terminal["record"] = record
+        run_source_digest: str | None = None
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
@@ -11209,6 +11651,35 @@ class GenericPackHost:
                     "deterministic admission failure was not recorded by Runtime"
                 ) from runtime_exc
             raise HostError(str(error)) from error
+
+        try:
+            selected_generation = _selected_pack_generation(record)
+            with self._pack_capture(selected_generation):
+                run_source_digest = _run_source_digest(record)
+                # A delegated child carries the digest its parent bridge admitted.
+                # Admission observes live source, so an edit after that must
+                # not reach execution under the admitted identity.
+                raw_spec = task_data.get("spec")
+                admitted_source = (_admitted_spec_envelope(raw_spec).get("admitted_source_digest")
+                                   if isinstance(raw_spec, Mapping) else None)
+                # Fail closed: a delegated child with no admitted digest has no
+                # proof of which source was admitted, so it never launches.
+                if isinstance(raw_spec, Mapping) and "delegated_parent" in raw_spec and not admitted_source:
+                    raise HostError("delegated child spec lacks admitted_source_digest; refusing before launch")
+                if admitted_source is not None and admitted_source != run_source_digest:
+                    raise HostError("admitted capability source digest changed")
+                # Capture the selected identity, PIN and observed tree together
+                # before execution. Publish only after the fence validates.
+                provenance = _run_pack_provenance(
+                    record, run_source_digest, selected_generation,
+                )
+            _terminal["run_source_digest"] = run_source_digest
+            _terminal["pack_provenance"] = (
+                tuple(MappingProxyType(dict(row)) for row in provenance)
+                if provenance is not None else None
+            )
+        except Exception as exc:
+            fail_admission(exc)
 
         registration_error = self._registration_admission_reason()
         if registration_error:
@@ -11359,8 +11830,9 @@ class GenericPackHost:
             "attempt_id": attempt_id,
             "fence": fence,
             "capability_digest": record.capability_digest,
-            "source_digest": record.source_digest,
+            "source_digest": run_source_digest,
             "dependency_digest": record.dependency_digest,
+            "selected_pack_map": self._selected_pack_map(record),
             "version": record.definition.version,
             "source_root": str(record.source_root),
             "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)],
@@ -11656,6 +12128,9 @@ class GenericPackHost:
                 raise
         child_bridge = None
         session_hold = None
+        target_context = target_provider = target_invocation = None
+        target_model_assets = None
+        target_operation_result = None
         try:
             session_hold = self._hold_session_slot()
             # Admission readback is bounded transport work under the lease pump.
@@ -11719,6 +12194,41 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            target_policy = inputs.get("target_policy")
+            if record.definition.metadata.get("host_target_operation") and not target_policy:
+                raise HostError("host target operation requires a target policy")
+            if target_policy:
+                target_operation = record.definition.metadata.get("host_target_operation")
+                if not target_operation and not record.definition.metadata.get("host_target_policy"):
+                    raise HostError("capability does not admit a host target policy")
+                if not isinstance(target_policy, str) or len(target_policy.encode("utf-8")) > 16384:
+                    raise HostError("host target policy must be bounded JSON")
+                try:
+                    policy = json.loads(target_policy)
+                except ValueError as exc:
+                    raise HostError("host target policy is not valid JSON") from exc
+                if not isinstance(policy, dict):
+                    raise HostError("host target policy must be an object")
+                if cancelled():
+                    raise HostCancelled("task cancelled before target acquisition")
+                target_context = self._host_target_bindings(policy.get("kind"))
+                if target_operation:
+                    include_quote = inputs.get("include_quote", False)
+                    if type(include_quote) is not bool:
+                        raise HostError("target quote selection must be boolean")
+                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
+                    inputs.pop("include_quote", None)
+                else:
+                    target_provider, target_invocation, evidence = target_context.bind(
+                        policy, inputs, invocation_id=f"{task_id}:{attempt_id}:{fence}",
+                        scratch=root, cancel=cancel_signal)
+                    _terminal["target_binding"] = evidence
+                    inputs["comfy_url"] = evidence["loopback_url"]
+                    target_model_assets = _target_inventory_document(
+                        target_invocation, evidence, trust=_align_trust(task_data))
+                    readiness_profile = None
+                    vibe_session = None
+                inputs.pop("target_policy", None)
             if capability_id == "h3_av.transform":
                 if "host_output_root" in inputs or child_bridge is None:
                     raise HostError("H3 parent requires host-owned output custody and delegated admission")
@@ -11733,6 +12243,9 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
+                if target_model_assets is None and _align_trust(task_data):
+                    from astrid.core.generation.target_inventory import build_document
+                    target_model_assets = build_document("trust", inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
@@ -12112,7 +12625,9 @@ class GenericPackHost:
                         admission={**network_admission, **(
                             {"workflow_execution_request": execution_contract}
                             if capability_id == "vibecomfy.run" and execution_contract is not None else {}
-                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {})},
+                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
+                            **({"target_model_assets": target_model_assets} if target_model_assets is not None else {}),
+                            **({"host_target_bound": True} if target_invocation is not None else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -12334,6 +12849,8 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            if target_operation_result is not None:
+                payload["target_operation"] = target_operation_result
             producer_manifest = next((row for row in outputs
                                       if row.get("output_port", row.get("name")) == "result_manifest"
                                       and row.get("role") == "manifest"), None)
@@ -12373,6 +12890,8 @@ class GenericPackHost:
             provenance = self.boot_manifest_provenance()
             if provenance is not None:
                 payload["provenance"] = provenance
+            if _terminal.get("target_binding") is not None:
+                payload["target_binding"] = dict(_terminal["target_binding"])
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -12627,6 +13146,15 @@ class GenericPackHost:
                 not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
             ):
                 endpoint_transport.close()
+            if target_invocation is not None:
+                if cleanup_errors or retain_for_unresolved_scope or self._active_processes:
+                    cleanup_errors.append("target invocation drain remains unresolved")
+                else:
+                    try:
+                        target_context.finish(target_provider, target_invocation,
+                                              success=bool(settled and managed_settled))
+                    except Exception as exc:
+                        cleanup_errors.append(f"target release or retention: {exc}")
             if capability_id == "vibecomfy.run" and not settled:
                 self._vibecomfy_warmth_hint = None
                 self._vibecomfy_current_warmth_hint = None
@@ -13187,7 +13715,9 @@ class GenericPackHost:
         slot._evidence_observation_binding = dict(self._evidence_observation_binding)
         slot._child_import_host_context = dict(self._child_import_host_context)
         slot._evidence_observation_lock = self._evidence_observation_lock
-        slot._handoff_accounting_owner = self
+        # Delegated children may create another slot from an existing slot.
+        # All levels must share the coordinating host's retained resources.
+        slot._handoff_accounting_owner = self._handoff_accounting_owner
         # Parallel slots own private attempts, but claim/handoff accounting
         # must remain visible on the coordinating host without a false zero.
         for name in ("_handoff_enter_claim_rpc", "_handoff_leave_claim_rpc",
@@ -13215,6 +13745,7 @@ class GenericPackHost:
         retry_at: dict[int, float] = {}
         refresh_retry_at = 0.0
         refresh_failures = 0
+        pack_ack_at = 0.0
         slots: tuple[GenericPackHost, ...] = ()
         poll_delay = max(0.01, float(poll_seconds))
 
@@ -13260,6 +13791,12 @@ class GenericPackHost:
                         retry_at[index] = now if result is not None else now + poll_delay
                 if max_tasks is not None and len(results) >= max_tasks:
                     break
+                if now >= pack_ack_at and not active:
+                    pack_ack_at = now + 2.0
+                    try:
+                        self.acknowledge_pack_refresh()
+                    except Exception as exc:  # noqa: BLE001 - the outbox stays pending and is retried
+                        report_failure(exc, 1)
                 if now >= max(self._registration_refresh_deadline, refresh_retry_at):
                     try:
                         self._renew_executor_registration(idle=not active)
@@ -16835,6 +17372,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     _install_host_vibecomfy_import_root()
     host = GenericPackHost(
         pack_roots=args.pack_root,
+        personal_collection=bool(args.register),
         client=client,
         executor_id=args.executor_id,
         max_concurrency=args.max_concurrency,

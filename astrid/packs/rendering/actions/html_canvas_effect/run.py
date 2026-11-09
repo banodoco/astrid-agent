@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
+from astrid.pack_api import AstridError, AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("rendering.html_canvas_effect")
 import argparse
@@ -21,15 +25,16 @@ from typing import Any
 
 import yaml
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.pack.personal import ensure_personal_pack, personal_pack_custody, resolve_personal_packs_root
 
 _EFFECT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates" / "card"
-_LOCAL_PACK_MANIFEST: dict[str, Any] = {
+_PERSONAL_PACK_MANIFEST: dict[str, Any] = {
     "schema_version": 3,
-    "id": "local",
-    "name": "Local Elements Pack",
+    "id": "personal",
+    "name": "Personal",
     "version": "0.1.0",
     "status": "active",
     "domain": "media",
@@ -71,7 +76,7 @@ def _element_manifest(effect_id: str, label: str, description: str) -> dict:
         "schema_version": 1,
         "id": effect_id,
         "kind": "effect",
-        "pack_id": "local",
+        "pack_id": "personal",
         "short_description": "DOM-to-canvas Remotion effect for post-processed cards.",
         "description": description,
         "keywords": ["html", "canvas", "remotion", "effect", "card"],
@@ -121,30 +126,30 @@ def _element_manifest(effect_id: str, label: str, description: str) -> dict:
     }
 
 
-def _load_or_bootstrap_local_manifest(local_pack: Path) -> tuple[Path, dict[str, Any]]:
-    """Load a v3 Local manifest or return the minimal v3 bootstrap payload."""
+def _load_or_bootstrap_personal_manifest(personal_pack: Path) -> tuple[Path, dict[str, Any]]:
+    """Load a v3 Personal manifest or return the minimal v3 bootstrap payload."""
 
-    manifest_path = local_pack / "pack.yaml"
+    manifest_path = personal_pack / "pack.yaml"
     if not manifest_path.exists():
-        return manifest_path, dict(_LOCAL_PACK_MANIFEST)
+        return manifest_path, dict(_PERSONAL_PACK_MANIFEST)
     if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise AstridValueError(f"local pack manifest is not a regular file: {manifest_path}")
+        raise AstridValueError(f"personal pack manifest is not a regular file: {manifest_path}")
     try:
         payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise AstridValueError(f"invalid local pack manifest: {manifest_path}") from exc
+        raise AstridValueError(f"invalid personal pack manifest: {manifest_path}") from exc
     if not isinstance(payload, dict):
-        raise AstridValueError(f"local pack manifest must contain an object: {manifest_path}")
-    if payload.get("schema_version") != 3 or payload.get("id") != "local":
+        raise AstridValueError(f"personal pack manifest must contain an object: {manifest_path}")
+    if payload.get("schema_version") != 3 or payload.get("id") != "personal":
         raise AstridValueError(
-            f"local pack manifest must be a v3 manifest for pack 'local': {manifest_path}"
+            f"personal pack manifest must be a v3 manifest for pack 'personal': {manifest_path}"
         )
     if not isinstance(payload.get("rendering", {}), dict):
-        raise AstridValueError(f"local pack rendering declarations must be an object: {manifest_path}")
+        raise AstridValueError(f"personal pack rendering declarations must be an object: {manifest_path}")
     return manifest_path, payload
 
 
-def _write_local_manifest(path: Path, payload: dict[str, Any]) -> None:
+def _write_personal_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -173,52 +178,59 @@ def scaffold(
     resolved_description = description or (
         f"{resolved_label} uses Remotion HtmlInCanvas to capture DOM content and post-process it as a canvas texture."
     )
-    local_pack = project_root / "astrid" / "packs" / "local"
-    element_root = local_pack / "rendering" / "elements" / "effects" / effect_id
-    local_pack_manifest, pack_payload = _load_or_bootstrap_local_manifest(local_pack)
-    declaration_key = f"effects/{effect_id}"
-    expected_manifest_path = f"rendering/elements/effects/{effect_id}/element.yaml"
-    expected_component_path = f"rendering/elements/effects/{effect_id}/component.tsx"
-    rendering = pack_payload.setdefault("rendering", {})
-    existing_declaration = rendering.get(declaration_key)
-    if existing_declaration is not None:
-        if not isinstance(existing_declaration, dict) or existing_declaration.get("type") != "element":
-            raise AstridValueError(f"local pack declaration is not an element: {declaration_key}")
-        if existing_declaration.get("path") not in {None, expected_manifest_path}:
-            raise AstridValueError(
-                f"refusing to move an existing declaration outside its selected closure: {declaration_key}"
-            )
-    element_exists = element_root.exists() or element_root.is_symlink()
-    if element_exists:
-        if not force:
-            raise FileExistsError(
-                f"local effect already exists: {element_root}; pass --force to overwrite"
-            )
-        if element_root.is_symlink() or not element_root.is_dir():
-            raise OSError(f"refusing to force-overwrite non-directory local effect: {element_root}")
-        shutil.rmtree(element_root)
+    packs_root = resolve_personal_packs_root()
+    if packs_root is None:
+        raise AstridValueError("no absolute personal packs root is configured")
+    # The personal pack is in the transaction-managed collection: write it only
+    # under exclusive collection custody so a concurrent pack install, update
+    # or rollback can never retire these bytes (LB-TXN r1 finding 1).
+    with personal_pack_custody(packs_root):
+        personal_pack = ensure_personal_pack(packs_root)
+        element_root = personal_pack / "rendering" / "elements" / "effects" / effect_id
+        personal_pack_manifest, pack_payload = _load_or_bootstrap_personal_manifest(personal_pack)
+        declaration_key = f"effects/{effect_id}"
+        expected_manifest_path = f"rendering/elements/effects/{effect_id}/element.yaml"
+        expected_component_path = f"rendering/elements/effects/{effect_id}/component.tsx"
+        rendering = pack_payload.setdefault("rendering", {})
+        existing_declaration = rendering.get(declaration_key)
+        if existing_declaration is not None:
+            if not isinstance(existing_declaration, dict) or existing_declaration.get("type") != "element":
+                raise AstridValueError(f"personal pack declaration is not an element: {declaration_key}")
+            if existing_declaration.get("path") not in {None, expected_manifest_path}:
+                raise AstridValueError(
+                    f"refusing to move an existing declaration outside its selected closure: {declaration_key}"
+                )
+        element_exists = element_root.exists() or element_root.is_symlink()
+        if element_exists:
+            if not force:
+                raise FileExistsError(
+                    f"personal effect already exists: {element_root}; pass --force to overwrite"
+                )
+            if element_root.is_symlink() or not element_root.is_dir():
+                raise OSError(f"refusing to force-overwrite non-directory personal effect: {element_root}")
+            shutil.rmtree(element_root)
 
-    element_root.mkdir(parents=True, exist_ok=False)
-    component_path = element_root / "component.tsx"
-    manifest_path = element_root / "element.yaml"
-    component_path.write_text(_component_source(), encoding="utf-8")
-    manifest_path.write_text(
-        json.dumps(
-            _element_manifest(effect_id, resolved_label, resolved_description),
-            indent=2,
-            sort_keys=True,
+        element_root.mkdir(parents=True, exist_ok=False)
+        component_path = element_root / "component.tsx"
+        manifest_path = element_root / "element.yaml"
+        component_path.write_text(_component_source(), encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(
+                _element_manifest(effect_id, resolved_label, resolved_description),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    rendering[declaration_key] = {
-        "type": "element",
-        "path": expected_manifest_path,
-        "resources": [
-            {"kind": "implementation", "path": expected_component_path},
-        ],
-    }
-    _write_local_manifest(local_pack_manifest, pack_payload)
+        rendering[declaration_key] = {
+            "type": "element",
+            "path": expected_manifest_path,
+            "resources": [
+                {"kind": "implementation", "path": expected_component_path},
+            ],
+        }
+        _write_personal_manifest(personal_pack_manifest, pack_payload)
 
     timeline_clip = {
         "id": f"{effect_id}-sample",
@@ -260,7 +272,7 @@ def scaffold(
         "element_root": str(element_root),
         "component": str(component_path),
         "manifest": str(manifest_path),
-        "local_pack_manifest": str(local_pack_manifest),
+        "personal_pack_manifest": str(personal_pack_manifest),
         "declaration": declaration_key,
         "timeline_clip": timeline_clip,
         "preview_timeline": str(resolved_timeline_path),
@@ -288,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--label", help="Human-readable effect label.")
     parser.add_argument("--description", help="Short effect description.")
-    parser.add_argument("--project-root", type=Path, default=REPO_ROOT, help="Astrid project root.")
+    parser.add_argument("--project-root", type=Path, default=CHECKOUT_ROOT, help="Astrid project root.")
     parser.add_argument("--out", type=Path, required=True, help="Report JSON output path.")
     parser.add_argument("--timeline", type=Path, help="Preview timeline JSON output path.")
     parser.add_argument("--assets", type=Path, help="Preview assets JSON output path.")

@@ -28,10 +28,10 @@ import uuid
 from runtime_protocol import platform as native
 
 from . import engine_recipe as recipes
-from ._engine_python_bootstrap import engine_child_env
+from ._engine_python_bootstrap import engine_child_env, engine_process_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
-    EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
+    EndpointHealthError, EndpointOwnershipError, EngineError, EngineReinstallRequired, IntegrityError,
     RecipeValidationError, UnsafePathError, UnsupportedPlatform,
 )
 from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
@@ -216,6 +216,40 @@ class LinuxEngineServiceClient:
     def _connect(self, fd, deadline, *, start):
         while True:
             _remaining(deadline)
+            # The marker is a refusal fence only, never authority to adopt or
+            # stop an owner. In particular, do not send a current-identity
+            # request to a supervisor published under different helper bytes.
+            marker_info = _exists(fd, "session.json")
+            if marker_info is not None:
+                _private(marker_info, stat.S_ISREG)
+                marker_fd = os.open("session.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=fd)
+                try:
+                    info = os.fstat(marker_fd)
+                    _private(info, stat.S_ISREG)
+                    if info.st_nlink != 1 or info.st_size > 16384:
+                        raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+                    data = os.read(marker_fd, 16385)
+                    if len(data) != info.st_size or (info.st_dev, info.st_ino) != (marker_info.st_dev, marker_info.st_ino):
+                        raise CustodyUnresolved("supervisor marker changed; explicit recovery required")
+                    try:
+                        marker = _decode(data)
+                    except (ValueError, UnicodeError):
+                        raise CustodyUnresolved("invalid supervisor marker; explicit recovery required") from None
+                finally:
+                    os.close(marker_fd)
+                if not isinstance(marker, dict) or set(marker) != {"identity", "owner_id"} or not isinstance(marker["identity"], dict):
+                    raise CustodyUnresolved("invalid supervisor marker; explicit recovery required")
+                identity = marker["identity"]
+                if identity != self.identity:
+                    if (set(identity) == set(self.identity)
+                            and all(identity[k] == self.identity[k] for k in ("root", "engine", "platform", "recipe_sha256"))
+                            and isinstance(identity["helper_sha256"], str)
+                            and re.fullmatch(r"[0-9a-f]{64}", identity["helper_sha256"])):
+                        recipe = recipes.load_recipe(self.identity["engine"], self.identity["platform"])
+                        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
+                            root=self.identity["root"], environment=recipe.primary_environment)
+                    raise EndpointOwnershipError("supervisor installation identity differs")
             info = _exists(fd, "control.sock")
             if info is not None:
                 _private(info, stat.S_ISSOCK)
@@ -268,6 +302,7 @@ class LinuxEngineServiceClient:
                     _supervisor_argv(self.identity, lock, token), pass_fds=(lock,),
                     cwd=self.identity["root"], stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                    env=engine_process_env(dict(os.environ), self.identity["root"]),
                 )
             except BaseException as exc:
                 if isinstance(exc, EngineError):
@@ -915,12 +950,20 @@ def _serve(identity, recipe, lock_fd, token):
     clean = False
     with _directory(owner.control, create=False) as fd:
         with socket.socket(socket.AF_UNIX) as listener:
+            pending = "." + uuid.uuid4().hex + ".sock"
             previous_umask = os.umask(0o177)
             try:
-                listener.bind(_socket_path(fd))  # Private from its first visible instant.
+                listener.bind(f"/proc/self/fd/{fd}/{pending}")
             finally:
                 os.umask(previous_umask)
-            listener.listen(8)
+            try:
+                listener.listen(8)
+                # Clients may connect as soon as control.sock is visible.
+                # Publish only a listening socket under the retained owner lock.
+                os.link(pending, "control.sock", src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            finally:
+                if _exists(fd, pending) is not None:
+                    os.unlink(pending, dir_fd=fd)
             listener.settimeout(0.2)
             try:
                 while not owner.finished.is_set():

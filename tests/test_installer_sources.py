@@ -134,43 +134,54 @@ def test_manifest_accepts_local_source_overrides_and_preserves_pins(tmp_path, na
                                   "vibecomfy": VIBECOMFY_ENGINE_REVISION}[name]
 
 
-def test_manifest_accepts_immutable_runpod_sibling_sources():
-    value = manifest()
-    value.update({
-        "lifecycle": {
-            "repo": "https://github.com/banodoco/runpod-lifecycle.git",
-            "sha": "96360a27a53c4608f780f7b370f747a2aa3c7ca8",
-            "version": "0.3.1.dev0",
-        },
-        "runpod": {
-            "repo": "https://github.com/runpod/runpod-python.git",
-            "sha": "0786b3d51855a66176fea1e7443b92e7ef2d01b5",
-            "version": "1.12.1.dev4",
-        },
-    })
+LIFECYCLE_PIN = {"repo": "https://github.com/banodoco/runpod-lifecycle.git",
+                 "sha": "96360a27a53c4608f780f7b370f747a2aa3c7ca8", "version": "0.3.1.dev0"}
 
+
+def test_manifest_accepts_lifecycle_sibling_without_runpod():
+    value = manifest()
+    value["lifecycle"] = dict(LIFECYCLE_PIN)
+    assert "runpod" not in value
     assert tools.validate_manifest(value) is value
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda value: value.pop("runpod"),
-    lambda value: value["lifecycle"].update(sha="main"),
-    lambda value: value["runpod"].update(version="latest"),
-    lambda value: value["runpod"].update(repo="git@github.com:runpod/runpod-python.git"),
-    lambda value: value["runpod"].update(unreviewed=True),
-])
-def test_manifest_rejects_partial_or_ambiguous_runpod_sibling_sources(mutation):
+def test_manifest_refuses_runpod_sdk_source():
     value = manifest()
-    value.update({
-        "lifecycle": {"repo": "https://github.com/banodoco/runpod-lifecycle.git",
-                      "sha": "9" * 40, "version": "0.3.1.dev0"},
-        "runpod": {"repo": "https://github.com/runpod/runpod-python.git",
-                   "sha": "8" * 40, "version": "1.12.1.dev4"},
-    })
-    mutation(value)
+    value["lifecycle"] = dict(LIFECYCLE_PIN)
+    value["runpod"] = {"repo": "https://github.com/runpod/runpod-python.git",
+                       "sha": "8" * 40, "version": "1.12.1.dev4"}
+    with pytest.raises(ValueError, match="runpod"):
+        tools.validate_manifest(value)
+    alone = manifest()
+    alone["runpod"] = value["runpod"]
+    with pytest.raises(ValueError, match="runpod"):
+        tools.validate_manifest(alone)
 
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value["lifecycle"].update(sha="main"),
+    lambda value: value["lifecycle"].update(version="latest"),
+    lambda value: value["lifecycle"].update(repo="git@github.com:banodoco/runpod-lifecycle.git"),
+    lambda value: value["lifecycle"].update(unreviewed=True),
+])
+def test_manifest_rejects_ambiguous_lifecycle_source(mutation):
+    value = manifest()
+    value["lifecycle"] = dict(LIFECYCLE_PIN)
+    mutation(value)
     with pytest.raises(ValueError, match="manifest|source"):
         tools.validate_manifest(value)
+
+
+def test_lifecycle_pin_has_one_source():
+    root = Path(__file__).resolve().parents[1]
+    pin = json.loads((root / "astrid/packs/runpod/pins.json").read_text(encoding="utf-8"))["sources"]["lifecycle"]
+    assert pin["repository"] == tools.MANIFEST_SOURCE_REPOSITORIES["lifecycle"]
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'"runpod-lifecycle @ git+{pin["repository"]}@{pin["revision"]}"' in text
+    core = text.split("[project.optional-dependencies]")[0]
+    assert "runpod-lifecycle @" not in core
+    assert 'runpod>=1.10.1,<1.11; sys_platform == \'darwin\' and platform_machine == \'x86_64\'' in core
+    assert 'runpod>=1.12,<2; sys_platform != \'darwin\' or platform_machine != \'x86_64\'' in core
 
 
 def test_full_clone_source_keeps_tags_and_checks_out_only_the_manifest_commit(repository, tmp_path):
@@ -651,3 +662,19 @@ def test_installed_vibecomfy_is_visible_to_pack_host_without_checkout(tmp_path, 
     record, = host.preflight("vibecomfy.run")
     assert record.preflight["packages"] == {"ok": True, "missing": []}
     assert record.ready
+
+
+def test_manifest_lifecycle_version_satisfies_pack_declaration():
+    """A manifest-installed lifecycle is visible to the pack dependency check under its normalized name."""
+    from packaging.requirements import Requirement
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "astrid/packs/runpod/pack.yaml").read_text(encoding="utf-8")
+    declared = {line.strip()[2:] for line in text.splitlines() if line.strip().startswith("- runpod-lifecycle")}
+    assert declared
+    # The loader keys installed distributions by lower-cased, dash-normalized Name.
+    name = "runpod_lifecycle".lower().replace("_", "-").replace(".", "-")
+    for spec in declared:
+        requirement = Requirement(spec)
+        assert requirement.name == name
+        assert requirement.specifier.contains(tools.LIFECYCLE_VERSION, prereleases=True)
+    assert LIFECYCLE_PIN["version"] == tools.LIFECYCLE_VERSION

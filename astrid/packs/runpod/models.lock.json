@@ -50,6 +50,276 @@
       "destination": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
       "bytes": 1956193000,
       "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e"
+    },
+    {
+      "name": "foley-hunyuan-foley-hunyuanvideo-foley-xl",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "hunyuanvideo_foley_xl.pth",
+      "url": null,
+      "destination": "hunyuan_foley/hunyuanvideo_foley_xl.pth",
+      "bytes": 5854140970,
+      "sha256": "cf7e93dca93063942bc22b53d4fe888e9d9d5a1ad7977873b7b2c6b126cf00ca"
+    },
+    {
+      "name": "foley-hunyuan-foley-synchformer-state-dict",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "synchformer_state_dict.pth",
+      "url": null,
+      "destination": "hunyuan_foley/synchformer_state_dict.pth",
+      "bytes": 950058171,
+      "sha256": "8aff082f2df5c3bc52759db0c865c7ee772ae6400b860d1b7e90413f2defb67c"
+    },
+    {
+      "name": "foley-hunyuan-foley-vae-128d-48k",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "vae_128d_48k.pth",
+      "url": null,
+      "destination": "hunyuan_foley/vae_128d_48k.pth",
+      "bytes": 1486465965,
+      "sha256": "07e6139ff33bd21ba8a7a7f40ed24aab13ac0d100cd686f8a9f3e03dc5251cb1"
+    },
+    {
+      "name": "foley-hunyuan-foley-siglip2-model",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "model.safetensors",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/model.safetensors",
+      "bytes": 1503344520,
+      "sha256": "fe0e601c625e69eed8e73500d39e9b6164403fe03db8048e87913c3cefbbb3fe"
+    },
+    {
+      "name": "foley-hunyuan-foley-siglip2-config",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "config.json",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/config.json",
+      "bytes": 276,
+      "sha256": "a15bc39fbcd92498dea6d5d3cb2b0d8b9ba389d6a3f2b565ea66128a2d141934"
+    },
+    {
+      "name": "foley-hunyuan-foley-siglip2-preprocessor-config",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "preprocessor_config.json",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/preprocessor_config.json",
+      "bytes": 394,
+      "sha256": "63ff380d3e424f93e6fbca5cc8e74eeed882e96fd6be2b7728aed308f3ad1513"
+    },
+    {
+      "name": "foley-hunyuan-foley-clap-model",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "model.safetensors",
+      "url": null,
+      "destination": "hunyuan_foley/clap/model.safetensors",
+      "bytes": 776327440,
+      "sha256": "c3d0e564a97cb5eccea412f11d5c51c8a1ccceb80c51e3c6957bb5a796b423b6"
+    },
+    {
+      "name": "foley-hunyuan-foley-clap-config",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "config.json",
+      "url": null,
+      "destination": "hunyuan_foley/clap/config.json",
+      "bytes": 643,
+      "sha256": "6268f76a067e3104bf9001e97d7dcc0fcfb16f3086cfb478ee72d95900d7fc1d"
+    },
+    {
+      "name": "foley-hunyuan-foley-clap-merges",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "merges.txt",
+      "url": null,
+      "destination": "hunyuan_foley/clap/merges.txt",
+      "bytes": 456318,
+      "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+    },
+    {
+      "name": "foley-hunyuan-foley-clap-vocab",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "vocab.json",
+      "url": null,
+      "destination": "hunyuan_foley/clap/vocab.json",
+      "bytes": 798293,
+      "sha256": "ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/config.json",
+      "bytes": 4908,
+      "sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-generation-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "generation_config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/generation_config.json",
+      "bytes": 245,
+      "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-merges",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "merges.txt",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/merges.txt",
+      "bytes": 1671839,
+      "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-model",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "model.safetensors",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/model.safetensors",
+      "bytes": 1811626576,
+      "sha256": "bc3c7e785eb961179c25450d1acff03f839e0002f2f3a5aeb67b5735c0fa2adb"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-preprocessor-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "preprocessor_config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/preprocessor_config.json",
+      "bytes": 127,
+      "sha256": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-tokenizer-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "tokenizer_config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/tokenizer_config.json",
+      "bytes": 7344,
+      "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-vocab",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "vocab.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/vocab.json",
+      "bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-speech-tokenizer-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "speech_tokenizer/config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/speech_tokenizer/config.json",
+      "bytes": 2336,
+      "sha256": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-speech-tokenizer-configuration",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "speech_tokenizer/configuration.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/speech_tokenizer/configuration.json",
+      "bytes": 76,
+      "sha256": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-speech-tokenizer-model",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "speech_tokenizer/model.safetensors",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/speech_tokenizer/model.safetensors",
+      "bytes": 682293092,
+      "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+    },
+    {
+      "name": "qwen-tts-tts-qwen3-tts-qwen3-tts-12hz-0-6b-customvoice-speech-tokenizer-preprocessor-config",
+      "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "path": "speech_tokenizer/preprocessor_config.json",
+      "url": null,
+      "destination": "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-0.6B-CustomVoice/speech_tokenizer/preprocessor_config.json",
+      "bytes": 234,
+      "sha256": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb"
+    },
+    {
+      "name": "music-3-diffusion-models-minimax-music3-dit-int8-convrot",
+      "repository": "Comfy-Org/MiniMax-Music-3",
+      "revision": "9e364ccd290a401561091fb441ed19cd7de92550",
+      "path": "diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+      "url": null,
+      "destination": "diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+      "bytes": 2502161682,
+      "sha256": "d6b959633e69899f99f3a92d6741c0fe79f26958a30811e50e372ef978b24d5f"
+    },
+    {
+      "name": "music-3-text-encoders-minimax-music3-text-encoder-pruned-int8-convrot",
+      "repository": "Comfy-Org/MiniMax-Music-3",
+      "revision": "9e364ccd290a401561091fb441ed19cd7de92550",
+      "path": "text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+      "url": null,
+      "destination": "text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+      "bytes": 9196611886,
+      "sha256": "010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014"
+    },
+    {
+      "name": "music-3-vae-minimax-music3-dav",
+      "repository": "Comfy-Org/MiniMax-Music-3",
+      "revision": "9e364ccd290a401561091fb441ed19cd7de92550",
+      "path": "vae/minimax_music3_dav.safetensors",
+      "url": null,
+      "destination": "vae/minimax_music3_dav.safetensors",
+      "bytes": 216696128,
+      "sha256": "2a32155b769be01445fcc2a8663b910fc9e1751e18dc1c3ec528064512d9ef0c"
+    },
+    {
+      "name": "qwen-image-edit-diffusion-models-qwen-image-2-1-turbo-int8-convrot",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+      "url": null,
+      "destination": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+      "bytes": 7256787829,
+      "sha256": "8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c"
+    },
+    {
+      "name": "qwen-image-edit-text-encoders-qwen3vl-8b-int8-convrot",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "url": null,
+      "destination": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "bytes": 9350798360,
+      "sha256": "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f"
+    },
+    {
+      "name": "qwen-image-edit-vae-qwen-image-2-1-vae-bf16",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+      "url": null,
+      "destination": "vae/qwen_image_2.1_vae_bf16.safetensors",
+      "bytes": 675509688,
+      "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"
     }
   ]
 }

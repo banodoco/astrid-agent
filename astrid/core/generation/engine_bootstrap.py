@@ -31,6 +31,7 @@ _FILES = (
     'astrid/core/generation/engine_recipe.py', 'astrid/core/generation/engine_runner.py',
     'astrid/core/generation/engine_local_endpoint.py',
     'astrid/core/generation/engine_runner_target.py', 'astrid/core/generation/model_downloader.py',
+    'astrid/core/generation/_engine_python_bootstrap.py',
     'astrid/packs/engine-index.json',
     'astrid/packs/runpod/recipe.linux-cu130.json', 'astrid/packs/runpod/pins.json',
     'astrid/packs/runpod/models.lock.json',

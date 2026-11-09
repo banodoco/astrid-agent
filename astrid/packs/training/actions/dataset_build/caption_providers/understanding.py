@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import hashlib
 import json
 import mimetypes
@@ -15,7 +19,6 @@ from string import Formatter
 from typing import Any
 
 from astrid import sdk
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ..artifacts import (
     load_valid_cached_sidecar,
@@ -42,7 +45,7 @@ class _BaseUnderstandingCaptionProvider:
     module_name = ""
     default_model = ""
 
-    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = REPO_ROOT, **_: Any) -> None:
+    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = PACK_ROOT, **_: Any) -> None:
         self._runner = runner
         self._repo_root = repo_root
 
@@ -429,7 +432,7 @@ def caption_candidate(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.run,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = PACK_ROOT,
 ) -> tuple[CaptionResult, Path]:
     provider_id = str(config.get("provider") or "visual_understand")
     if provider_id == "visual_understand":
@@ -442,7 +445,7 @@ def caption_candidate(
     return result, caption_sidecar_path(item, config, repo_root=repo_root)
 
 
-def caption_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, repo_root: Path = REPO_ROOT) -> Path:
+def caption_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, repo_root: Path = PACK_ROOT) -> Path:
     out_dir = config.get("out_dir")
     if out_dir is None:
         out_dir = _media_path(item, repo_root=repo_root).parent
@@ -585,5 +588,5 @@ def _sample_time(item: Mapping[str, Any]) -> str:
     return "0.000"
 
 
-def sidecar_repo_path(path: Path, *, repo_root: Path = REPO_ROOT) -> str:
+def sidecar_repo_path(path: Path, *, repo_root: Path = PACK_ROOT) -> str:
     return repo_relative_path(path, repo_root=repo_root)

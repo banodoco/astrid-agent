@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.product_resources import product_resource
 from astrid.core._shared.boot_manifest import load_boot_manifest_hash
 from astrid.core.execution import generic_host
 from astrid.core.execution.generic_host import (
@@ -19,7 +21,9 @@ from astrid.core.execution.generic_host import (
     source_checkout_digest,
 )
 from astrid.sdk import host_bootstrap
-from tests.sdk.test_host_bootstrap_source_identity import _materialize_source_closure
+from tests.sdk.test_host_bootstrap_source_identity import (
+    _materialize_source_closure as _materialize_host_closure,
+)
 
 FAKE_PID = 4242
 MODULE_ARGS = ["-m", "astrid.core.execution.generic_host", "run", "--support-root"]
@@ -28,6 +32,13 @@ LEADER = ("import subprocess,sys,time;"
           "c=subprocess.Popen([sys.executable,'-c','import sys;sys.stdin.buffer.read()'],stdin=sys.stdin,start_new_session=sys.argv[1]=='task') if sys.argv[1] in ('child','task') else None;"
           "open(sys.argv[2],'w').write(str(c.pid if c else 0));"
           "time.sleep(300 if sys.argv[3]=='stay' else 0)")
+
+
+def _materialize_source_closure(root: Path) -> None:
+    _materialize_host_closure(root)
+    fixture_matrix = root / "astrid" / "resources" / "astrid-beta-capabilities.json"
+    fixture_matrix.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(product_resource("astrid-beta-capabilities.json"), fixture_matrix)
 
 
 class Harness:
@@ -1134,6 +1145,60 @@ def test_stop_registered_host_refuses_superseded_registration(monkeypatch, tmp_p
 
     assert json.loads(registration.read_text(encoding="utf-8")) == successor
     assert readiness.read_bytes() == b"successor readiness"
+
+
+def test_runtime_shutdown_retires_the_registered_host_synchronously(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid)
+    state = h.marker()
+    stop = prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                     runtime_instance_id=state["runtime_instance_id"])
+    stop()
+    assert process.poll() is not None
+    assert not (h.support / "generic-host.json").exists()
+    assert not (h.support / "generic-host.ready.json").exists()
+
+
+def test_runtime_shutdown_preserves_replacement_registration(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid)
+    state = h.marker()
+    stop = prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                     runtime_instance_id=state["runtime_instance_id"])
+    replacement = {**state, "runtime_instance_id": "replacement-owner"}
+    (h.support / "generic-host.json").write_text(json.dumps(replacement))
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="registration changed"):
+        stop()
+    assert process.poll() is None and h.marker() == replacement
+
+
+@pytest.mark.parametrize("field,value", [("runtime_instance_id", "foreign-owner"), ("source_checkout", "foreign-source")])
+def test_runtime_shutdown_refuses_foreign_owner_before_effects(harness, field, value):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid, **{field: value})
+    state = h.marker()
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="selected Runtime owner"):
+        prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                   runtime_instance_id="instance-1")
+    assert process.poll() is None and h.marker() == state
+
+
+def test_runtime_shutdown_preserves_unscoped_absence(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.kill_leader(process)
+    state = h.marker()
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="process scope is unverified"):
+        prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                   runtime_instance_id=state["runtime_instance_id"])
+    assert h.marker() == state
 
 
 def _supervise(h) -> None:

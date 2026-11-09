@@ -6,16 +6,18 @@ The source and GPU checks remain fail closed in the relocated pack helpers.
 """
 
 SCRIPT = r'''#!/usr/bin/env bash
-# On-pod bootstrap (once per pod). Run from the directory that holds the five
-# uploaded source dirs: src/runpod-python src/astrid-runtime src/runpod-lifecycle
-# src/astrid-agent src/VibeComfy. Idempotent. Takes no auth input.
+# On-pod bootstrap (once per pod). Run from the directory that holds the four
+# uploaded source dirs: src/astrid-runtime src/runpod-lifecycle src/astrid-agent
+# src/VibeComfy. The runpod SDK is installed from PyPI at the pin in the Agent lock
+# (src/astrid-agent/requirements/runtime.lock), never from a source dir. Idempotent.
+# Takes no auth input.
 # Job budget: every job start and execute is one agent job record (cap 128); poll with `job poll` (GET state, no record).
 set -euo pipefail
 
 PY_VERSION="3.12.10"
 VENV="${ASTRID_VENV:-/opt/astrid}"
-RUNPOD_PRETEND_VERSION="1.12.0+astrid.2"
-SRC_DIRS=(src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)
+AGENT_LOCK="src/astrid-agent/requirements/runtime.lock"
+SRC_DIRS=(src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)
 PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
 # Build backends can write metadata into their source directories. Stage only the
 # requested sources on writable storage; the mounted originals stay untouched.
@@ -32,15 +34,31 @@ staged_uv_install() (
   tar --exclude=.git -cf - "$@" | tar -xf - -C "$stage" || exit $?
   chmod -R u+w "$stage" || exit $?
   for source in "$@"; do install_args+=("$stage/$source"); done
-  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
-    uv pip install "${install_args[@]}" || exit $?
+  uv pip install "${install_args[@]}" || exit $?
 )
+
+# The one runpod route: the SDK comes from PyPI at the Agent lock's pin (version, markers and
+# hashes), the same lock file the local installer installs from. Nothing here names a version.
+install_runpod_from_lock() {
+  local req
+  [ -f "$AGENT_LOCK" ] || { echo "pod_bootstrap: missing Agent lock $AGENT_LOCK" >&2; return 1; }
+  req="$(mktemp "$BOOTSTRAP_ROOT/.runpod-req.XXXXXXXX")" || return $?
+  # A lock entry is its "runpod==" line plus the continuation lines that carry its hashes.
+  awk '/^runpod==/ { keep = 1 } keep { print } keep && !/\\$/ { keep = 0 }' "$AGENT_LOCK" > "$req"
+  if ! grep -q '^runpod==' "$req"; then
+    rm -f "$req"
+    echo "pod_bootstrap: no runpod pin in $AGENT_LOCK" >&2
+    return 1
+  fi
+  uv pip install --python "$VENV" -r "$req" || { rm -f "$req"; return 1; }
+  rm -f "$req"
+}
 
 # Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
-REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
-BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}"
-ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/workspace/astrid/engines/vibecomfy-h3}"
+REALM_ROOT="${ASTRID_REALM_ROOT:-/root/astrid/realm}"
+BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/root/astrid/bootstrap}"
+ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/root/astrid/engines/vibecomfy-h3}"
 # uv caches and managed Pythons live under the data root unless the caller set them.
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}"
@@ -202,6 +220,7 @@ else
     uv python install "$PY_VERSION"
     uv venv --python "$PY_VERSION" "$VENV"
   fi
+  install_runpod_from_lock || exit $?
   staged_uv_install "$mode" "${SRC_DIRS[@]}" || exit $?
 fi
 

@@ -40,6 +40,11 @@ def _redact_credentials(text: str) -> str:
     return re.sub(r"(?i)(\bbearer\s+)[^\s,;\"\'&}]+", r"\1<redacted>", text)
 
 
+def redact_credentials(text: str) -> str:
+    """Return text with credential-shaped values replaced by a marker."""
+    return _redact_credentials(text)
+
+
 _CREDENTIAL_KEY = re.compile(r"(?i)(?:api[_-]?key|(?:^|[_-])key$|token|secret|password|authorization|credential)")
 
 
@@ -50,6 +55,11 @@ def _redact_credential_data(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_credential_data(item) for item in value]
     return _redact_credentials(value) if isinstance(value, str) else value
+
+
+def redact_credential_data(value: Any) -> Any:
+    """Return JSON-like data with credential keys and values redacted."""
+    return _redact_credential_data(value)
 
 
 def _json_safe(value: Any) -> Any:

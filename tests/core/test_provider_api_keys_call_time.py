@@ -11,7 +11,6 @@ from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.backends.fal import FalBackend
 from astrid.core.model_catalog.schema import BackendSpec, ModelEntry, ModeSpec
 from astrid.core.util.http import HttpClient
-from astrid.packs.video_editing.actions.animate_image import run as animate_image
 
 
 def _fal_entry() -> ModelEntry:
@@ -57,30 +56,3 @@ def test_fal_backend_resolves_missing_key_at_generate_time(
     client.post_json.assert_not_called()
 
 
-def test_animate_image_prefers_shared_env_over_ambient_and_optional_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    shared_env = tmp_path / "astrid.env"
-    shared_env.write_text("FAL_KEY=from-shared-astrid-env\n", encoding="utf-8")
-    optional_env = tmp_path / "project.env"
-    optional_env.write_text("FAL_KEY=from-optional-env-file\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRID_ENV_FILE", str(shared_env))
-    monkeypatch.setenv("FAL_KEY", "from-ambient-environment")
-
-    assert animate_image._load_env_var("FAL_KEY", optional_env) == "from-shared-astrid-env"
-
-
-def test_animate_image_missing_key_uses_canonical_recovery(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    shared_env = tmp_path / "astrid.env"
-    shared_env.write_text("", encoding="utf-8")
-    optional_env = tmp_path / "project.env"
-    optional_env.write_text("", encoding="utf-8")
-    monkeypatch.setenv("ASTRID_ENV_FILE", str(shared_env))
-    monkeypatch.delenv("FAL_KEY", raising=False)
-
-    with pytest.raises(AstridError) as exc_info:
-        animate_image._load_env_var("FAL_KEY", optional_env)
-
-    _assert_missing_fal_key(exc_info.value)

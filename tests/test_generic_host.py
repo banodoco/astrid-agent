@@ -223,29 +223,48 @@ def test_admitted_definition_and_source_are_fenced_before_child_dispatch(tmp_pat
         )
 
 
+def _write_v3_pack(pack_root: Path, pack_id: str, name: str, actions: dict, **header) -> None:
+    """Write a schema v3 fixture pack; ``kind: command`` actions project to external executors.
+
+    Pack schema v1/v2 manifests are quarantined by discovery ("needs an explicit schema upgrade").
+    """
+    from astrid.pack_api import VERSION as PACK_API_VERSION
+
+    pack_root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 3, "id": pack_id, "name": name, "version": "1.0.0",
+        "pack_api": "%d.%d" % PACK_API_VERSION,
+        "status": "experimental", "domain": "integration", "stability": "experimental",
+        "support": "community", "visibility": "visible",
+        "description": f"{name} test fixture pack.",
+        "permissions": [{"id": "subprocess", "reason": "Fixture actions run as command subprocesses."}],
+        **header,
+        "actions": {
+            local_id: {"description": f"{local_id} fixture action.", "inputs": [], **action}
+            for local_id, action in actions.items()
+        },
+    }
+    # JSON is a YAML subset: the loader parses this pack.yaml unchanged.
+    (pack_root / "pack.yaml").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
 def test_external_pack_import_root_is_fenced_before_direct_command(tmp_path):
     """A mutation in an imported external-pack module blocks command launch."""
     pack_root = tmp_path / "fixture_provider"
-    executor_root = pack_root / "executors" / "echo"
-    executor_root.mkdir(parents=True)
-    (pack_root / "pack.yaml").write_text(
-        "schema_version: 1\nid: fixture_provider\nname: Fixture\nversion: 1.0\n"
-        "capabilities: [echo]\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
+    pack_root.mkdir()
+    (pack_root / "__init__.py").write_text("\n", encoding="utf-8")
     (pack_root / "helper.py").write_text("VALUE = 'before'\n", encoding="utf-8")
-    (executor_root / "executor.yaml").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "id": "fixture_provider.echo",
+    _write_v3_pack(pack_root, "fixture_provider", "Fixture", {
+        "echo": {
             "name": "Echo",
-            "kind": "external",
             "version": "1.0",
-            "command": {"argv": [sys.executable, "-c", "from fixture_provider import helper; from pathlib import Path; Path('{out}/answer').write_text(helper.VALUE)"]},
+            "invocation": {"kind": "command", "command": {"argv": [
+                "{python_exec}", "-c",
+                "from astrid.packs.fixture_provider import helper; from pathlib import Path; Path('{out}/answer').write_text(helper.VALUE)",
+            ]}},
             "outputs": [],
-        }),
-        encoding="utf-8",
-    )
+        },
+    }, capabilities=["echo"])
     host = GenericPackHost(pack_roots=[pack_root])
     host.discover()
     record = host.capabilities["fixture_provider.echo"]
@@ -282,46 +301,31 @@ def test_child_environment_carries_explicit_runtime_connection(tmp_path):
 
 
 def _write_credential_manifest(root: Path) -> None:
-    (root / "pack.yaml").write_text(
-        "schema_version: 1\nid: credential_test\nname: Credential Test\n"
-        "version: 1.0\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
-    executor_root = root / "executors" / "credential_echo"
-    executor_root.mkdir(parents=True)
-    (executor_root / "executor.yaml").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "id": "credential_test.echo",
-                "name": "Credential Echo",
-                "kind": "external",
-                "version": "1.0",
-                "command": {"argv": ["{python_exec}", "-c", "pass"]},
-                "outputs": [],
-                "isolation": {
-                    "mode": "subprocess",
-                    "network": False,
-                    "secrets_required": ["FAL_KEY"],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_v3_pack(root, "credential_test", "Credential Test", {
+        "echo": {
+            "name": "Credential Echo",
+            "version": "1.0",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
+            "outputs": [],
+            "secrets": ["FAL_KEY"],
+            "isolation": {"mode": "subprocess", "network": False},
+        },
+    }, capabilities=["echo"])
 
 
 def test_manifest_credentials_use_shared_precedence_at_host_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Readiness and injection agree on shared-file precedence and scope."""
-    _write_credential_manifest(tmp_path)
+    pack_root = tmp_path / "credential_test"
+    _write_credential_manifest(pack_root)
     shared = tmp_path / "astrid.env"
     shared.write_text("FAL_KEY=from-shared\nUNRELATED_SECRET=must-not-cross\n", encoding="utf-8")
     monkeypatch.setenv("ASTRID_ENV_FILE", str(shared))
     monkeypatch.setenv("FAL_KEY", "stale-process")
     monkeypatch.setenv("OPENAI_API_KEY", "unrelated-process")
 
-    host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+    host = GenericPackHost(pack_roots=[pack_root], credential_source={})
     record = host.discover()[0]
     host.preflight(record.id)
     record = host.capabilities[record.id]
@@ -337,7 +341,7 @@ def test_manifest_credentials_use_shared_precedence_at_host_boundary(
         secrets.clear()
 
     explicit_host = GenericPackHost(
-        pack_roots=[tmp_path], credential_source={"FAL_KEY": "from-explicit"}
+        pack_roots=[pack_root], credential_source={"FAL_KEY": "from-explicit"}
     )
     explicit_record = explicit_host.discover()[0]
     explicit_host.preflight(explicit_record.id)
@@ -355,10 +359,11 @@ def test_manifest_credentials_use_shared_precedence_at_host_boundary(
 def test_manifest_credential_missing_from_all_sources_does_not_block_readiness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_credential_manifest(tmp_path)
+    pack_root = tmp_path / "credential_test"
+    _write_credential_manifest(pack_root)
     monkeypatch.setenv("ASTRID_ENV_FILE", str(tmp_path / "missing.env"))
     monkeypatch.delenv("FAL_KEY", raising=False)
-    host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+    host = GenericPackHost(pack_roots=[pack_root], credential_source={})
     record = host.discover()[0]
     host.preflight(record.id)
     record = host.capabilities[record.id]
@@ -2095,7 +2100,7 @@ def test_run_accepts_at_free_disk_floor_without_task_estimate(tmp_path, monkeypa
 
 
 def test_structure_pack_members_survive_harvest_cleanup_and_reopen(tmp_path):
-    root = tmp_path / "timeline"
+    root = tmp_path / "structure_fixture"
     root.mkdir()
     (root / "executor.yaml").write_text(
         json.dumps(
@@ -5049,3 +5054,157 @@ def test_wan_qualification_refuses_before_host_preflight(tmp_path, monkeypatch):
         host.run_task(task, lease_token='lease')
     assert runtime.failures[0][3]['structured_error']['code'] == 'generation_route_unqualified'
     assert not runtime.settlements
+
+
+def test_nested_claim_slots_share_the_coordinating_host(idle_remotion_host):
+    host = idle_remotion_host.host
+    first = host._new_claim_slot()
+    nested = first._new_claim_slot()
+    try:
+        assert first._handoff_accounting_owner is host
+        assert nested._handoff_accounting_owner is host
+    finally:
+        nested.shutdown()
+        first.shutdown()
+
+
+def test_host_without_explicit_roots_discovers_the_personal_collection(tmp_path, monkeypatch):
+    """`astrid packs add` installs under ~/Astrid/packs; the host must discover it unaided."""
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    host = GenericPackHost(pack_roots=[])
+    assert host.pack_roots == (personal.resolve(),)
+    host.discover()
+
+    assert "personal.echo" in host.capabilities
+
+
+def _pending_personal_outbox(personal: Path, *, revision: int = 1) -> None:
+    """A committed `packs add` whose host acknowledgment never happened."""
+    personal.mkdir(parents=True)
+    (personal.parent / ".packs.transaction.lock").touch()  # created by every real transaction writer
+    transaction_id = "a" * 32
+    (personal / ".group.json").write_text(json.dumps({
+        "version": 1, "revision": revision, "transaction_id": transaction_id, "removals": [], "admissions": {},
+        "refresh": {"transaction_id": transaction_id, "revision": revision, "changed_ids": ["personal"]},
+    }), encoding="utf-8")
+
+
+def test_host_acknowledges_a_pending_packs_add_through_its_one_registrar(tmp_path, monkeypatch):
+    """Running host and cold start both register, then acknowledge, the committed outbox."""
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _pending_personal_outbox(personal)
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    host = GenericPackHost(pack_roots=[])
+    registrations: list[bool] = []
+    monkeypatch.setattr(host, "_renew_executor_registration",
+                        lambda *, idle=True: registrations.append("personal.echo" in host.capabilities))
+    assert refresh_pending(packs_root=personal)
+
+    assert host.acknowledge_pack_refresh() is True
+    assert registrations == [True]  # rediscovered before it registered, once
+    assert not refresh_pending(packs_root=personal)
+    assert host.acknowledge_pack_refresh() is False  # nothing left to acknowledge
+    assert registrations == [True]
+
+
+def test_failed_registration_leaves_the_packs_add_outbox_pending(tmp_path, monkeypatch):
+    from astrid.core.pack.transaction import refresh_pending
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _pending_personal_outbox(personal)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    host = GenericPackHost(pack_roots=[])
+
+    def broken(*, idle=True):
+        raise HostError("runtime unavailable")
+
+    monkeypatch.setattr(host, "_renew_executor_registration", broken)
+    assert host.acknowledge_pack_refresh() is False
+    assert refresh_pending(packs_root=personal)
+
+
+@pytest.mark.parametrize("derived_grant", [True, False], ids=["with-derived-grant", "without-derived-grant"])
+def test_personal_pack_under_custody_is_admitted_only_with_a_derived_grant(tmp_path, monkeypatch, derived_grant):
+    """A frozen profile never hides the personal root, and personal packs run only under custody.
+
+    With the Runtime's derived installed-pack grant naming the personal root, the frozen host
+    discovers both packs. Without that grant, the personal pack is not a root of this host and
+    is not admitted, while the frozen profile's own pack still is.
+    """
+    from astrid.core.execution import generic_host
+
+    home = tmp_path / "home"
+    personal = home / "Astrid" / "packs"
+    _write_manifest(personal / "echo", capability_id="personal.echo")
+    frozen_root = tmp_path / "frozen"
+    _write_manifest(frozen_root / "frozen_echo", capability_id="frozen.echo")
+    launch_roots = [str(frozen_root.resolve())] + ([str(personal.resolve())] if derived_grant else [])
+
+    class FrozenCustody:
+        # The retained profile names its own root; the Runtime adds the personal root
+        # only when its derived installed-pack grant names it.
+        _launch_roots = launch_roots
+
+        def verify(self, **_kwargs):
+            return None
+
+        def orchestrator_definitions(self, _roots):
+            return iter(())
+
+        def source_for(self, _path):
+            return None
+
+        def select(self, _record, **_kwargs):
+            return None
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    monkeypatch.setattr(generic_host, "_runtime_external_sources", FrozenCustody())
+
+    # Under custody the Runtime passes the installed root in the host's roots only
+    # when its derived grant names the personal pack.
+    roots = [frozen_root, personal] if derived_grant else [frozen_root]
+    host = GenericPackHost(pack_roots=roots)
+    host.discover()
+
+    assert "frozen.echo" in host.capabilities
+    if derived_grant:
+        assert personal.resolve() in host.pack_roots
+        assert "personal.echo" in host.capabilities
+    else:
+        assert personal.resolve() not in host.pack_roots
+        assert "personal.echo" not in host.capabilities
+
+def test_personal_root_is_not_added_to_scoped_host_and_is_added_to_default_host(tmp_path, monkeypatch):
+    # The personal collection (~/Astrid/packs) joins a default host (no explicit roots).
+    # A scoped host given explicit roots keeps exactly those roots.
+    home = tmp_path / "home"
+    (home / "Astrid" / "packs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    scoped_root = tmp_path / "scoped"
+    scoped_root.mkdir()
+    personal = (home / "Astrid" / "packs").resolve()
+
+    scoped = GenericPackHost(pack_roots=[scoped_root])
+    assert personal not in scoped.pack_roots
+    assert scoped.pack_roots == (scoped_root.resolve(),)
+
+    default = GenericPackHost(pack_roots=[], personal_collection=True)
+    assert personal in default.pack_roots

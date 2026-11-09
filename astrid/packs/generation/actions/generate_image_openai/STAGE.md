@@ -44,20 +44,14 @@ result = sdk.invoke("generation.generate_image_openai",
 Pass `--preset <name>` to use a canned prompt and behaviour bundle. Currently:
 
 - `saint-peter-of-banodoco` — onboarding portrait of the maker as Saint Peter
-  of Banodoco; opens the rendered image after writing it (use `--no-open` to
-  skip). This preset is an internal runner/debug escape hatch because the
-  public executor manifest accepts prompt files; direct module invocation is
-  not a public entrypoint:
+  of Banodoco. The preset is not a public executor input: the public executor
+  manifest accepts prompt files, so pass the preset's prompt through
+  `generation.generate_image_openai` with `inputs={"prompt": ...}` (or a prompt
+  file) via the SDK. Direct module invocation is rejected by the
+  canonical-entrypoint guard.
 
-  ```bash
-  ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.generation.actions.generate_image_openai.run \
-    --preset saint-peter-of-banodoco \
-    --out-dir runs/first-rite/images \
-    --manifest runs/first-rite/manifest.json \
-    --force
-  ```
-
-  Add `--dry-run` to print the planned API call without spending tokens.
+  Add `dry_run=True` to the SDK call to print the planned API call without
+  spending tokens.
 
 ## Requirements
 

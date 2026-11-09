@@ -69,7 +69,7 @@ keeping the low-resolution badge readable.
 | Distill a long stream or event into reviewable clips | [stream content](../../../stream_content/docs/SKILL.md) | `stream_content.distill` |
 | Build a training dataset or run LoRA training | [training](../../../training/docs/SKILL.md) | `training.dataset_build`, `training.training_run` |
 | Render a standalone Blender scene or terminal screenplay | [blender](../../../blender/docs/SKILL.md) or [moirae](../../../moirae/docs/SKILL.md) | `blender.render`, `moirae.moirae` |
-| Acquire or publish YouTube media | [youtube](../../../youtube/docs/SKILL.md) | `youtube.youtube_audio`, `youtube.upload` |
+| Acquire YouTube media | [youtube](../../../youtube/docs/SKILL.md) | `youtube.youtube_audio` (the upload action is removed) |
 
 The complete discovered pack catalog is available in
 [pack references](references/packs.md) when an exact route outside this table

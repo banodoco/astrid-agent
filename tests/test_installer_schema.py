@@ -301,6 +301,12 @@ def test_windows_pinokio_stage_copies_packages_so_schema_inputs_inherit_the_priv
                         path.parent.mkdir(parents=True, exist_ok=True)
                     cached.write_bytes((ROOT / relative).read_bytes())
                     (shutil.copyfile if copy else os.link)(cached, installed)
+                lock = Path("astrid/resources/runtime.lock.json")  # package data the reader's pin resolves to
+                cached, installed = cache / lock, site / lock
+                for path in (cached, installed):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_bytes((ROOT / "runtime.lock.json").read_bytes())
+                (shutil.copyfile if copy else os.link)(cached, installed)
         if call[1:3] == ["/tools/npm-cli.js", "ci"]:
             Path(cwd, "node_modules").mkdir()
         if "load_verified_schema" in " ".join(call):

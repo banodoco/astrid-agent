@@ -27,7 +27,7 @@ def case(tmp_path, monkeypatch):
         "provider_account_ref": "account-a", "gpu_types": ["preferred-gpu", "fallback-gpu"],
         "image": "worker@sha256:" + "a" * 64,
         "volume": {"id": "volume-a", "name": "storage", "size_gb": 100, "mount_path": "/workspace"},
-        "idle_timeout_seconds": 60, "credential_ref": "env:FAKE_RUNPOD_CREDENTIAL",
+        "idle_timeout_seconds": 60, "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL",
     }
     prefs = RunPodPreferences.from_mapping(raw)
     offer = RunPodOffer("account-a", "preferred-gpu", 1.0, "offer-1")
@@ -68,8 +68,12 @@ def case(tmp_path, monkeypatch):
 
     def config(offer):
         state.configs += 1
+        selected = state.owner.preferences
         return SimpleNamespace(api_key="fake-only", gpu_type_candidates=(offer.gpu_type,),
-                               worker_image=prefs.image, volume_mount_path=prefs.mount_path)
+                               worker_image=prefs.image, volume_mount_path=prefs.mount_path,
+                               network_volume_id=selected.volume_id,
+                               data_center_id=offer.datacenter_id or selected.datacenter_id,
+                               gpu_type_id=offer.gpu_type_id)
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get_pod)
@@ -110,6 +114,19 @@ def test_canonical_account_path_and_dry_run_make_no_writes(case):
     assert result["offer"]["hourly_usd"] == 1.0
     assert not path.parent.exists()
     assert case.creates == case.configs == 0
+
+
+@pytest.mark.parametrize("change", [
+    {"network_volume_id": "foreign"}, {"data_center_id": "other"},
+    {"gpu_type_id": "other-gpu"}, {"storage_name": "storage"},
+    {"storage_volumes": ("storage",)},
+])
+def test_config_cannot_substitute_accepted_placement_before_create(case, change):
+    config = case.owner.config_factory(case.offer)
+    case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), **change})
+    with pytest.raises(PaidSelectionError, match="consented exact placement"):
+        asyncio.run(case.owner.select(case.grant))
+    assert not case.owner.path.exists() and case.creates == 0
 
 
 @pytest.mark.parametrize("change", [
@@ -283,7 +300,8 @@ def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, mon
 
     case.owner.config_factory = lambda offer: RunPodConfig(
         api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
-        volume_mount_path=case.prefs.mount_path, storage_name="wrong", storage_volumes=("other",),
+        volume_mount_path=case.prefs.mount_path, network_volume_id=case.prefs.volume_id,
+        data_center_id=offer.datacenter_id or case.prefs.datacenter_id, gpu_type_id=offer.gpu_type_id,
         ram_tiers_enabled=True, attach_only=True,
     )
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
@@ -323,7 +341,9 @@ def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch)
 
     case.owner.config_factory = lambda offer: RunPodConfig(
         api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
-        volume_mount_path=case.prefs.mount_path, storage_name="storage", attach_only=True,
+        volume_mount_path=case.prefs.mount_path, network_volume_id=case.prefs.volume_id,
+        data_center_id=offer.datacenter_id or case.prefs.datacenter_id, gpu_type_id=offer.gpu_type_id,
+        attach_only=True,
     )
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
     monkeypatch.setattr(lifecycle, "find_gpu_type", lambda *args: {"id": "gpu-1"})
@@ -348,3 +368,133 @@ def test_preferences_default_idle_uses_shared_warm_hold_default(case):
     assert DEFAULT_IDLE_SECONDS == 1800
     assert parsed.idle_timeout_seconds == direct.idle_timeout_seconds == DEFAULT_IDLE_SECONDS
     assert RunPodPreferences.from_mapping(parsed.as_mapping()) == parsed
+def test_default_idle_and_explicit_optional_volume(tmp_path):
+    from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
+    raw = {"provider_account_ref": "account-a", "gpu_types": ["gpu"],
+           "image": "worker@sha256:" + "a" * 64, "volume": None}
+    preferences = RunPodPreferences.from_mapping(raw)
+    assert preferences.idle_timeout_seconds == DEFAULT_IDLE_SECONDS == 1800
+    assert RunPodPreferences.from_mapping(preferences.as_mapping()) == preferences
+    path = tmp_path / "config.toml"
+    save_runpod_preferences(raw, path=path)
+    assert read_runpod_preferences(path=path) == preferences
+    assert "volume" not in path.read_text()
+
+
+def test_initial_intent_directory_is_flushed_before_create(case, monkeypatch):
+    from astrid.packs.runpod import worker_preparation
+    flushed = []
+    real = worker_preparation.platform.fsync_directory
+
+    def fsync(path):
+        flushed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(worker_preparation.platform, "fsync_directory", fsync)
+    case.before_create = lambda: pytest.fail("intent directory was not flushed") if case.owner.path.parent not in flushed else None
+    asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 1
+
+
+def test_symlink_account_lock_refused_before_create(case):
+    case.owner.path.parent.mkdir(parents=True)
+    other = case.owner.path.parent / "foreign-lock"
+    other.write_text("foreign")
+    case.owner.path.with_name(".claim.json.owner.lock").symlink_to(other)
+    with pytest.raises(AcquisitionUnresolvedError, match="opened safely"):
+        asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 0 and not case.owner.path.exists()
+    assert other.read_text() == "foreign"
+
+
+def test_failed_intent_flush_keeps_custody_and_never_rents(case, monkeypatch):
+    from astrid.packs.runpod import worker_preparation
+
+    def failed_flush(path):
+        raise OSError("simulated directory flush failure")
+
+    monkeypatch.setattr(worker_preparation.platform, "fsync_directory", failed_flush)
+    with pytest.raises(OSError):
+        asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 0
+    assert json.loads(case.owner.path.read_text())["state"] == "allocation_ready"
+
+
+def test_no_volume_legacy_worker_route_refuses_before_renting(case):
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None})
+    case.owner.preferences = preferences
+    with pytest.raises(PaidSelectionError, match="retained lease owner"):
+        asyncio.run(case.owner.select(replace(case.grant, offer_digest=case.offer.digest(preferences))))
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()
+
+
+def test_mismatched_digest_refuses_before_any_claim_or_pod_create(case, monkeypatch):
+    def unreachable(*args, **kwargs):
+        raise AssertionError("claim or pod create reached before consent validation")
+
+    monkeypatch.setattr(selection, "create_target_record_exclusive", unreachable)
+    monkeypatch.setattr(selection, "target_owner", unreachable)
+    monkeypatch.setattr(selection.acquire_target, "__wrapped__", unreachable)
+    case.owner.config_factory = unreachable
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        asyncio.run(case.owner.select(replace(case.grant, offer_digest="sha256:" + "9" * 64)))
+    assert not case.owner.path.exists() and case.creates == case.configs == 0
+
+
+def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
+    case.offer = RunPodOffer("account-a", "preferred-gpu", 1.5, "offer-2")
+    observed = case.offer.digest(case.prefs)
+    with pytest.raises(PaidSelectionError, match="offer or rate changed") as raised:
+        asyncio.run(case.owner.select(case.grant))
+    assert case.grant.offer_digest in str(raised.value) and observed in str(raised.value)
+    record = json.loads(case.owner.path.with_name("offer-refusal.json").read_text())
+    assert record["schema"] == "astrid.runpod.offer-refusal.v1"
+    assert record["offer"] == {"provider_account_ref": "account-a", "gpu_type": "preferred-gpu",
+                               "hourly_usd": 1.5, "offer_id": "offer-2", "datacenter_id": None,
+                               "gpu_type_id": None}
+    assert record["run_offer_digest"] == observed
+    assert record["quoted_offer_digest"] == case.grant.offer_digest
+    assert "fake-only" not in json.dumps(record)
+    assert not case.owner.path.exists() and case.creates == 0
+
+
+def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch):
+    from astrid.packs.runpod import adapter
+
+    monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
+    owner = SimpleNamespace(selection=case.owner)
+    facade = adapter.RunPodAdapter(lease_owner=owner, placement=None,
+                                   installation=SimpleNamespace(engine="comfyui"), validate=None)
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("preparation reached before consent validation")
+
+    facade.prepare = facade.bind_endpoint = unreachable
+    monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
+              "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
+              "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
+              "idle_seconds": 60}
+    inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
+    with pytest.raises(PaidSelectionError, match="offer or rate changed"):
+        facade.bind_task(policy, inputs, invocation_id="invocation-1", scratch=None,
+                         begin_lease=unreachable, retain_bridge=unreachable, retire_bridge=unreachable)
+    assert not case.owner.path.exists() and case.creates == case.configs == 0
+
+
+def test_refused_reuse_never_reaches_create_or_reconcile(case, monkeypatch):
+    """A reuse refused for lifetime must not start any create, launch or reconcile."""
+    from astrid.packs.runpod import target_selection as selection_module
+
+    asyncio.run(case.owner.select(case.grant))
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("refused reuse reached a pod create, launch or reconcile")
+
+    for name in ("acquire_target", "reconcile_target"):
+        target = getattr(selection_module, name)
+        monkeypatch.setattr(target, "__wrapped__", must_not_run, raising=False)
+        monkeypatch.setattr(selection_module, name, must_not_run)
+    case.now += timedelta(hours=2)
+    with pytest.raises(PaidSelectionError, match="cannot be extended by reuse"):
+        asyncio.run(case.owner.select(replace(case.grant, deadline=(case.now + timedelta(hours=1)).isoformat())))

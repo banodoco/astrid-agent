@@ -12,11 +12,6 @@ requires-python = ">=3.11"
 dependencies = [
     "openai>=1.55,<3",
     "scenedetect[opencv-headless]==0.6.4",
-    # Newer headless OpenCV wheels require macOS versions outside the release
-    # target's generic x86_64 compatibility tag.
-    "opencv-python-headless>=4.9.0.80,<4.10",
-    # The portable OpenCV 4.9 wheels are built against NumPy 1.x.
-    "numpy>=1.21.2,<2",
     "anthropic>=0.40.0",
     "google-genai>=1.15.0",
     "filelock>=3.13",
@@ -28,18 +23,19 @@ dependencies = [
     "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
-    # cryptography 49+ no longer publishes macOS x86_64 wheels. Keep the
-    # runtime closure binary-installable on every supported release platform.
-    "cryptography>=48.0.1,<49",
-    # Third-party runtime requirements for the manifest-installed RunPod
-    # lifecycle and SDK sources. Those two distributions themselves are
-    # installed from immutable manifest commits with --no-deps.
+    # RunPod SDK from PyPI through the hashed runtime lock. The lifecycle
+    # source is a manifest sibling installed with --no-deps, so its own
+    # third-party requirements stay listed here.
+    "runpod>=1.10.1,<1.11; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "runpod>=1.12,<2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "aiohttp[speedups]>=3.14.3",
     "aiohttp-retry>=2.9.1",
     "backoff>=2.2.1",
     "boto3>=1.43.66",
     "click>=8.4.2",
     "colorama>=0.4.6,<0.4.7",
+    "cryptography>=50.0.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "cryptography>=48.0.1,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "fastapi[all]>=0.141.1",
     "inquirerpy==0.3.4",
     "paramiko>=5.0.0",
@@ -64,9 +60,8 @@ dependencies = [
 ]
 
 [project.scripts]
-# ``astrid-tools`` is the direct Astrid product gateway.  Keep ``python -m astrid``
-# as the package gateway, while the shorter ``astrid`` command uses the
-# installed console dispatcher (``astrid.console``).
+# Dispatch engine and generation commands without importing the conversational
+# launcher; the console delegates agent commands to the named OMP agent.
 astrid-tools = "astrid.core.gateway:main"
 astrid = "astrid.console:main"
 astrid-credential = "astrid.core.util.credential_store:main"
@@ -80,7 +75,7 @@ dev = [
     "mutagen>=1.47",
     # The RunPod claim script is exercised by unit and Darwin CI tests. Pin
     # the lifecycle implementation because it is not published on PyPI.
-    "runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle.git@96360a27a53c4608f780f7b370f747a2aa3c7ca8",
+    "runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle.git@f2948817eeb94af8dee76be21f6d673724f1606e",
     "mypy==1.17.0",
     "pytest==9.0.2",
     "pytest-cov==7.1.0",
@@ -104,13 +99,6 @@ dev = [
     # Offline wheel resource tests use the release build backend directly.
     "setuptools==80.9.0",
     "wheel==0.46.3",
-]
-
-# Runtime installs need a configured package index or local wheelhouse because
-# runpod-lifecycle is not published on public PyPI.
-# Install: pip install 'astrid[runpod]'
-runpod = [
-    "runpod-lifecycle>=0.3.1.dev0,<0.4",
 ]
 
 [tool.setuptools]
@@ -152,6 +140,11 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
+    # Core-hosted packs (astrid/core/**/pack.yaml) load their docs/SKILL.md and other
+    # resources from the installed wheel exactly like astrid/packs/**; core/**/*.yaml covers pack.yaml.
+    "core/**/docs/*",
+    "core/**/docs/**/*",
+    "core/hivemind/LICENSE",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
 
@@ -184,8 +177,6 @@ astrid = [
     "packs/**/actions/**/*.txt",
     "packs/**/requirements.txt",
     "packs/**/requirements.windows-nvidia.txt",
-    "packs/runpod/requirements.linux-cu130.lock",
-    "packs/comfyui/requirements.linux-cu130.lock",
     "packs/**/requirements.*.lock",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",
@@ -207,8 +198,6 @@ astrid = [
     # Additional resources are declared by the V3 pack manifests/elements;
     # keep these exact directories/files narrow so no unrelated media enters
     # the wheel.
-    "packs/astrid_motion/preview/render.mjs",
-    "packs/blender/server/blender-render-api.service",
     "packs/rendering/actions/timeline_visualize/motion/element_motion.mjs",
     "packs/local/rendering/elements/effects/end-codex-transform/assets/*.png",
     "packs/local/rendering/elements/effects/end-codex-transform/assets/plate.mp4",

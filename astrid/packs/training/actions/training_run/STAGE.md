@@ -42,13 +42,16 @@ result = sdk.invoke(
 )
 ```
 
-Internal runner form (not a public entrypoint; direct invocation is rejected
-unless Astrid has set its internal invocation marker):
+Equivalent SDK call:
 
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.training.actions.training_run.run \
-  --config configs/training-run.json \
-  --dry-run
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "training.training_run",
+    kind="action",
+    project="demo",
+    orchestrator_args=('--config', 'configs/training-run.json', '--dry-run'),
+)
 ```
 
 ## Seinfeld Example
@@ -84,19 +87,14 @@ paused checkpoint-review gate. It validates `--pick` against
 teardown, and records the final registration metadata. Use `--skip-teardown`
 only when you intentionally want to keep the pod alive after registration.
 
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.training.actions.training_run.run resume \
-  --out runs/training/my-run \
-  --pick final \
-  --notes "best checkpoint"
-```
-
-Direct module form:
-
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.training.actions.training_run.run resume \
-  --out runs/training/my-run \
-  --pick final
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "training.training_run",
+    kind="action",
+    project="demo",
+    orchestrator_args=('resume', '--out', 'runs/training/my-run', '--pick', 'final', '--notes', 'best checkpoint'),
+)
 ```
 
 ## Outputs

@@ -32,7 +32,7 @@ def _verify(source_root: Path, profile_path: Path) -> dict:
     if (Path(source.source_checkout) != agent or Path(source.runtime_checkout) != runtime):
         raise ValueError("pod source profile differs from transported checkouts")
     manifest = json.loads((root / ".pod-source.json").read_text())
-    names = {"astrid-agent", "astrid-runtime", "runpod-python", "runpod-lifecycle", "VibeComfy"}
+    names = {"astrid-agent", "astrid-runtime", "runpod-lifecycle", "VibeComfy"}
     if set(manifest) != {"heads", "runtime_lock_sha256"} or set(manifest["heads"]) != names:
         raise ValueError("pod source manifest is incomplete")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}

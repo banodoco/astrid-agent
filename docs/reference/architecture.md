@@ -89,7 +89,6 @@ Every runnable tool is a built-in or external executor exposed from exactly one 
 | Standalone/service tools | `astrid/packs/{training,editorial,generation,rendering}/*` | Standalone executor capabilities across domain packs. `generate_image` is the multi-backend (local + cloud) image executor in `generation`; `generate_image_openai` is the OpenAI DALL-E executor, also in `generation`. |
 | External tools | `astrid/packs/{moirae,vibecomfy,fal,runpod,youtube}/*` | `moirae.moirae`, `vibecomfy.inspect`, `vibecomfy.edit`, `vibecomfy.validate`, `vibecomfy.run`, `fal.fal_foley`, `runpod.*`, `youtube.*`. Each adapter pack wraps a third-party substrate; only these canonical ids are registered. |
 | Iteration tools | `astrid/packs/iteration/assemble` | Runtime-owned project runs are read through the generated client; `iteration_video` invokes `iteration.assemble` and `rendering.render`. The retired iteration.prepare executor is not declared or invoked. |
-| Upload tools | `astrid/packs/youtube/` | `youtube.upload` and `youtube.youtube_audio`. |
 
 Executor-owned complexity stays in the executor folder, usually under optional local `src/` modules. Hype/editing domain logic belongs with its owning pack under `astrid/packs/editorial/hype`; generic plumbing belongs in `astrid/utilities`.
 
@@ -118,7 +117,6 @@ Executor-owned complexity stays in the executor folder, usually under optional l
 | `astrid/core/theme/` | Shared library | Theme resolution, CLI, and schema validation helpers. |
 | `astrid/core/paths.py` | Shared library | Repository and workspace path resolution. |
 | `astrid/packs/editorial/executors/refine/src/reviewers/*` | Executor-owned library | Focused review heuristics used only by `editorial.refine`. |
-| `astrid/packs/youtube/executors/upload/src/social_publish.py` | Executor-owned library | Social publishing client logic used by `youtube.upload`. |
 
 This classification keeps only retained root and bin launchers; executor-owned public metadata and entrypoints live in canonical executor folders, and orchestrator-owned public metadata and entrypoints live in canonical orchestrator folders.
 

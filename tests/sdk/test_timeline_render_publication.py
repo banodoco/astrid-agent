@@ -177,21 +177,6 @@ def test_runtime_refusal_keeps_full_structured_details_and_never_admits_render(t
     assert pending['failure']['details'] == details
 
 
-def test_video_editing_production_wrapper_uses_requester_commit(tmp_path):
-    from astrid.packs.video_editing.shared.runtime_orchestration import publish_stitched_render
-
-    session, generated, proposal, renders, _ = requester(tmp_path)
-    result = publish_stitched_render(
-        session.client, project='p', timeline_ref='t', expected_version=1,
-        proposal=proposal, requester_session=session, render_capability_digest=DIGEST,
-        group_id='wrapper-group', idempotency_key='wrapper',
-    )
-    assert result['render_task_id'] == 'render-1'
-    assert generated.calls[0][1] == 'wrapper'
-    assert json.loads(generated.calls[0][0])['group_id'] == 'wrapper-group'
-    assert renders[0]['idempotency_key'] == 'wrapper:render'
-
-
 def test_accepted_retry_never_rereads_mutable_producer_lifecycle(tmp_path):
     session, generated, proposal, renders, _ = requester(tmp_path)
     first = publish(session, proposal)

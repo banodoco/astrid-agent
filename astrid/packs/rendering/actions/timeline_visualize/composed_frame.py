@@ -7,6 +7,10 @@ frames.
 """
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import copy
 import hashlib
 import json
@@ -218,7 +222,7 @@ def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
     for label, root, path in candidates:
         try:
             stat = path.stat()
-            signature.update(f"{label}|{path}|{stat.st_size}|{stat.st_mtime_ns}\0".encode("utf-8"))
+            signature.update(f"{label}|{path}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_ctime_ns}|{stat.st_ino}\0".encode("utf-8"))
         except OSError:
             signature.update(f"{label}|{path}|missing\0".encode("utf-8"))
     memo_key = signature.hexdigest()
@@ -238,18 +242,85 @@ def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
     return _DIGEST_MEMO[memo_key]
 
 
-def element_source_roots(checkout: Path) -> list[tuple[str, Path]]:
-    """Every pack's elements: a component or motion change must change the frame cache key."""
-    packs = Path(checkout) / "astrid" / "packs"
-    roots = sorted({*packs.glob("*/elements"), *packs.glob("*/rendering/elements")})
-    return [(f"elements:{root.relative_to(packs).as_posix()}", root) for root in roots if root.is_dir()]
+def _pack_root_digests(
+    checkout: Path, config: Mapping[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Hash only files of the elements selected by the renderer's own resolver.
+
+    Discovery/registry owns admission. Neither checkout siblings nor environment
+    pack collections (including staged-root hints) are a cache input inventory.
+    Project snapshots use the same verified staging path as Root preparation.
+    """
+    from astrid.core.element.registry import load_default_registry
+    from astrid.core.element.schema import ELEMENT_MANIFEST_NAMES
+    from astrid.core.pack.manifest import load_manifest_mapping
+    from astrid.core.rendering.project_elements import (
+        require_project_snapshots, selections, stage_project_elements,
+    )
+    from astrid.packs.rendering.rendering.renderers.remotion.run import _timeline_element_selection
+
+    config = config or {}
+    if not config.get("clips"):
+        return []
+    require_project_snapshots(config)
+    # Same selected registry as the renderer (g5 3aa8fd98): the canonical
+    # personal pack contributes elements, so its bytes are part of the identity.
+    from astrid.core.pack.personal import PERSONAL_PACK_ID, resolve_personal_packs_root
+
+    personal_root = resolve_personal_packs_root()
+    personal_pack = personal_root / PERSONAL_PACK_ID if personal_root is not None else None
+    if personal_pack is not None and (personal_pack / "pack.yaml").is_file():
+        registry = load_default_registry(project_root=checkout, extra_pack_roots=(str(personal_pack),))
+    else:
+        registry = load_default_registry(project_root=checkout)
+
+    def identities(registry):
+        resolved, effects, _, _ = _timeline_element_selection(config, registry=registry)
+        elements = {(item.kind, item.id, item.root): item for item in effects.values()}
+        for kind, rows in resolved.items():
+            for row in rows:
+                item = registry.get(kind, row["element_id"], pack_id=row["source_pack_id"],
+                                    revision=row.get("revision"))
+                elements[item.kind, item.id, item.root] = item
+        result = []
+        for item in elements.values():
+            owner = registry._pack_id(item)
+            pack_manifest = next((parent / "pack.yaml" for parent in item.root.parents
+                                  if (parent / "pack.yaml").is_file()), None)
+            files = [item.component, *item.support_files,
+                     *(item.root / asset.path for asset in item.assets)]
+            # A v2 element has no declared support closure; its own directory is
+            # the legacy executable source boundary. V3 uses only admitted files.
+            if pack_manifest is None or str(load_manifest_mapping(pack_manifest).get("schema_version")) != "3":
+                files.extend(path for path in item.root.rglob("*") if path.is_file())
+            if pack_manifest is not None:
+                files.append(pack_manifest)
+            files.extend(item.root / name for name in ELEMENT_MANIFEST_NAMES
+                         if (item.root / name).is_file())
+            paths = [(f"{owner}/{item.kind}/{item.id}/{os.path.relpath(path, item.root)}", path)
+                     for path in sorted(set(files))]
+            result.append((owner, _digest_paths(paths)))
+        return sorted(result)
+
+    if not selections(config):
+        return identities(registry)
+    with tempfile.TemporaryDirectory(prefix="astrid-cache-elements-") as temporary:
+        selected, _ = stage_project_elements(config, Path(temporary), registry=registry)
+        return identities(selected)
+
+
+def _snapshot_config(snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+    config = snapshot.get("config")
+    if config is None and isinstance(snapshot.get("fast_lane"), Mapping):
+        config = snapshot["fast_lane"].get("config")
+    return config if isinstance(config, Mapping) else snapshot
 
 
 def _checkout_root() -> Path:
-    return Path(__file__).resolve().parents[5]
+    return checkout_root()
 
 
-def renderer_environment_identity() -> str:
+def renderer_environment_identity(config: Mapping[str, Any] | None = None) -> str:
     """Return a content fingerprint for renderer, generated effects, and fonts."""
     checkout = _checkout_root()
     project_dir = os.environ.get("ASTRID_REMOTION_PROJECT_DIR")
@@ -257,13 +328,8 @@ def renderer_environment_identity() -> str:
     project = Path(project_dir) if project_dir else checkout / "remotion"
     source_root = os.environ.get("ASTRID_RENDERER_SOURCE_ROOT")
     paths: list[tuple[str, Path]] = [
-        # every pack's elements, not only local/ and rendering/: an astrid_motion
-        # component change used to return cached frames ("capture 0 s")
-        *element_source_roots(checkout),
-        ("local-elements", checkout / "astrid/packs/local/rendering/elements"),
         ("renderer-backend", checkout / "astrid/packs/rendering/rendering/renderers/remotion/run.py"),
         ("renderer-root-preparation", checkout / "astrid/packs/rendering/rendering/renderers/remotion/root_preparation.py"),
-        ("rendering-elements", checkout / "astrid/packs/rendering/rendering/elements"),
         ("capture-provider", checkout / "astrid/packs/rendering/actions/timeline_visualize/composed_frame.py"),
         ("element-catalog", checkout / "astrid/packs/rendering/rendering/elements/catalog.ts"),
         ("rendering-core", checkout / "astrid/core/rendering"),
@@ -273,9 +339,6 @@ def renderer_environment_identity() -> str:
     ]
     if source_root:
         paths.append(("explicit-source-root", Path(source_root)))
-    if project.resolve(strict=False).parent != checkout.resolve(strict=False):
-        # the bundle imports the elements beside the project, not this checkout's
-        paths.extend((f"project-{label}", root) for label, root in element_source_roots(project.parent))
     paths.append(("remotion-project-source", project / "src"))
     paths.append(("remotion-project-config", project / "remotion.config.ts"))
     paths.append(("package-lock", project / "package-lock.json"))
@@ -298,6 +361,7 @@ def renderer_environment_identity() -> str:
         "node": os.environ.get("ASTRID_NODE_EXECUTABLE"),
         "theme": os.environ.get("ASTRID_ACTIVE_THEME"),
         "font_bundle": os.environ.get("ASTRID_FONT_BUNDLE_ID"),
+        "pack_roots": _pack_root_digests(checkout, config),
         "sources": _digest_paths(paths),
     }
     return json.dumps(parts, sort_keys=True, separators=(",", ":"))
@@ -329,7 +393,7 @@ def frame_cache_key(
         "frame": int(frame),
         "resolution": list(resolution) if resolution is not None else None,
         "renderer": renderer_identity,
-        "environment": renderer_environment_identity(),
+        "environment": renderer_environment_identity(_snapshot_config(snapshot)),
     }
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -545,7 +609,7 @@ class _PersistentRemotionRenderer:
             frame_session=self.session,
             theme_path=self.theme_path,
             on_scene_props=self.on_scene_props,
-            frame_session_identity=renderer_environment_identity(),
+            frame_session_identity=renderer_environment_identity(json.loads(self.timeline_path.read_text())),
         )
 
     def close(self, *, force: bool = False) -> None:
@@ -596,7 +660,7 @@ class _SharedRemotionOwner:
                 frame_session=self.session,
                 theme_path=context.get("theme_path"),
                 on_scene_props=context.get("on_scene_props"),
-                frame_session_identity=renderer_environment_identity(),
+                frame_session_identity=renderer_environment_identity(json.loads(Path(context["timeline_path"]).read_text())),
             )
 
     def release(self, *, force: bool = False) -> None:
@@ -707,6 +771,8 @@ class RemotionFrameProvider:
     ) -> None:
         self.snapshot = copy.deepcopy(dict(snapshot))
         self.timeline_path = Path(timeline_path)
+        if "config" not in self.snapshot and "fast_lane" not in self.snapshot and self.timeline_path.is_file():
+            self.snapshot["config"] = json.loads(self.timeline_path.read_text(encoding="utf-8"))
         self.assets_path = Path(assets_path)
         self.project_dir = Path(project_dir)
         self.materialized_root = Path(materialized_root) if materialized_root else None
@@ -861,7 +927,7 @@ class RemotionFrameProvider:
     def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
         from astrid.core.rendering.scene_answers import SceneQueryUnavailable
         from astrid.packs.rendering.rendering.renderers.remotion.run import (
-            REPO_ROOT,
+            CHECKOUT_ROOT,
             _effect_id_for_clip,
             _effect_registry_for_assets,
             _resolve_end_spanning_card_assets,
@@ -869,7 +935,7 @@ class RemotionFrameProvider:
             load_default_registry,
         )
 
-        catalog = load_default_registry(project_root=REPO_ROOT)
+        catalog = load_default_registry(project_root=CHECKOUT_ROOT)
         effects, aliases = _effect_registry_for_assets(self.theme_path, registry=catalog)
         ref = clip.get("elementRef")
         effect_id = ref.get("id") if isinstance(ref, Mapping) and ref.get("kind") == "effect" else _effect_id_for_clip(clip, effects, aliases)
@@ -879,7 +945,7 @@ class RemotionFrameProvider:
                 raise SceneQueryUnavailable("capture staged assets on a non-effect clip")
             return
         element = catalog.get("effects", effect_id, pack_id=ref.get("packId")) if isinstance(ref, Mapping) and "packId" in ref else catalog.get("effects", effect_id)
-        cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("local", "end-spanning-layer") else {}
+        cards = _resolve_end_spanning_card_assets(clip, registry) if (_source_pack_id(element), element.id) == ("personal", "end-spanning-layer") else {}
         if not isinstance(staged, Mapping) or set(staged) != {asset.name for asset in element.assets} | set(cards):
             raise SceneQueryUnavailable("capture staged element assets mismatch")
         for asset in element.assets:
@@ -997,7 +1063,7 @@ class RemotionFrameProvider:
         return {
             "evidence_source": "cache" if fresh == 0 else "fresh_capture" if cached == 0 else "mixed",
             "renderer": RENDERER_IDENTITY,
-            "renderer_environment": renderer_environment_identity(),
+            "renderer_environment": renderer_environment_identity(_snapshot_config(self.snapshot)),
             "findings": list(getattr(
                 getattr(self.worker.renderer, "session", None)
                 or getattr(getattr(self.worker.renderer, "owner", None), "session", None),

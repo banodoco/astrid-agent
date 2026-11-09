@@ -18,6 +18,7 @@ import pytest
 
 from astrid.core.execution.generic_host import GenericPackHost
 from astrid.core.execution.guards import ExecutionGuardPolicy
+from astrid.pack_api import VERSION
 
 
 def _write_pack(root: Path, capability_ids: tuple[str, ...]) -> None:
@@ -47,6 +48,7 @@ def _write_pack(root: Path, capability_ids: tuple[str, ...]) -> None:
     (root / "pack.yaml").write_text(
         "schema_version: 3\n"
         "id: fixture\n"
+        f'pack_api: "{".".join(map(str, VERSION))}"\n'
         "name: Fixture\n"
         "version: 1.0.0\n"
         "status: active\n"

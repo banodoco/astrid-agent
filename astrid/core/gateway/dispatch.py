@@ -78,7 +78,7 @@ def _dispatch_skills(args: list[str]) -> int:
 
 
 def _dispatch_generate(args: list[str]) -> int:
-    if args and args[0] in {"image", "video", "align", "-h", "--help"}:
+    if args and args[0] in {"image", "video", "audio", "align", "-h", "--help"}:
         from astrid.core.generation.cli import main
     else:
         from astrid.core.generation.listing import main
@@ -719,7 +719,7 @@ def compose_profile_handoff(
         stamp_boot_manifest,
         validate_manifest_path,
     )
-    from astrid.packs.shots.conformance import (
+    from astrid.core.gateway.boot_conformance import (
         VIBE_PROFILE_REGISTRY,
         vibe_profile_specs,
     )

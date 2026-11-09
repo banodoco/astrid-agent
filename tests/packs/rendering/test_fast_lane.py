@@ -118,7 +118,7 @@ def test_managed_candidate_label_uses_marker_base_not_candidate_parent():
 
     assert label == {
         "status": "uncertified",
-        "label": "Unpublished candidate preview (base R1)",
+        "label": "Unpublished candidate preview (candidate parent C1) (base R1)",
         "actual_revision_id": None,
         "base_revision_id": "R1",
     }
@@ -161,7 +161,7 @@ def test_candidate_with_missing_marker_base_stays_unsaved_without_fabricating_ca
 
     assert label == {
         "status": "uncertified",
-        "label": "Unpublished candidate preview (base revision unavailable)",
+        "label": "Unpublished candidate preview (candidate parent C1) (base revision unavailable)",
         "actual_revision_id": None,
         "base_revision_id": None,
     }
@@ -193,7 +193,7 @@ def test_conflicting_admitted_candidate_bases_are_unavailable():
 
     assert label == {
         "status": "uncertified",
-        "label": "Unpublished candidate preview (base revision unavailable: contradictory markers)",
+        "label": "Unpublished candidate preview (candidate parent C1) (base revision unavailable: contradictory markers)",
         "actual_revision_id": None,
         "base_revision_id": None,
     }

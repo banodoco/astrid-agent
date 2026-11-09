@@ -18,6 +18,7 @@ import threading
 import time
 from pathlib import Path
 
+from ._engine_python_bootstrap import engine_process_env
 from ._engine_target_files import _TargetFiles
 from .engine_release import ReleaseError, verify_tree
 
@@ -32,9 +33,11 @@ def _seconds(value):
     return float(value)
 
 
-def _public_environment(home):
-    return {'PATH': PUBLIC_PATH, 'HOME': str(home), 'LANG': 'C.UTF-8',
-            'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUNBUFFERED': '1'}
+def _public_environment(home, root):
+    # The engine's one process env: bytecode goes under the engine's prefix tree,
+    # never beside the pinned sources (DONTWRITEBYTECODE alone still reads stale .pyc).
+    return engine_process_env({'PATH': PUBLIC_PATH, 'HOME': str(home), 'LANG': 'C.UTF-8',
+                               'PYTHONUNBUFFERED': '1'}, root)
 
 
 class _Segments:
@@ -243,7 +246,7 @@ def run_sequence(*, cli_prefix, root, observations, private, timeout_seconds=360
             argv = (*cli_prefix, 'engines', command, 'vibecomfy-h3', '--placement', 'local',
                     '--platform', 'linux-x86_64-cu130', '--root', str(root),
                     '--deadline', str(remaining))
-            result, raw = _run(argv, cwd=private, env=_public_environment(private),
+            result, raw = _run(argv, cwd=private, env=_public_environment(private, root),
                                deadline=min(end, time.monotonic() + remaining), logs=logs,
                                stop_event=stop_event,
                                on_started=on_install_started if label == 'first' else None)
@@ -340,7 +343,7 @@ def main(argv=None, *, release_root=None):
         installer_started = True
         policy = {'schema': 'astrid.pod-observation.v1', 'roots': [str(observation)],
                   'files': [str(root / '.astrid-engine/install.json')]}
-        env = _public_environment(private)
+        env = _public_environment(private, root)
         env.update(ASTRID_POD_TOKEN=token, ASTRID_POD_PORT='8000',
                    ASTRID_POD_OBSERVATION_B64=base64.b64encode(json.dumps(policy).encode()).decode())
         observer = platform.spawn_tree((sys.executable, '-I', '-S', str(Path(release_root) / 'run.py'),

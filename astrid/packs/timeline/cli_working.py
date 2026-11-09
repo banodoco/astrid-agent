@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
+from astrid.pack_api import print_result
 from astrid.packs.timeline.cli_common import (
     VerbError,
     clips_changed,
@@ -188,12 +188,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_lint_header import print_broken_header
 
     print_broken_header("check")  # a check that could not load is named first, never silently absent
-    from astrid.core.timeline.cuts import (
-        bundle_fps,
-        find_cut,
-        occurrences_from_bundle,
-        picture_cuts,
-    )
+    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
+    from astrid.core.timeline.cuts import find_cut
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
     from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks
@@ -371,7 +367,7 @@ def _read_beats(path: str) -> str:
 
 
 def _timeline_args(subparser: argparse.ArgumentParser, *, required_timeline: bool = True, project_required: bool = True) -> None:
-    from astrid.packs.timeline.cli import _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_project_arg
 
     if required_timeline:
         subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
@@ -382,7 +378,7 @@ def _timeline_args(subparser: argparse.ArgumentParser, *, required_timeline: boo
 
 
 def _configure_transcripts_sync(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli import _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_project_arg
 
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
     _add_project_arg(subparser, required=True)
@@ -404,7 +400,7 @@ def _cmd_transcripts_sync(parsed: argparse.Namespace) -> int:
 
 
 def _configure_lint(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli import _add_json_flag, _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_json_flag, _add_project_arg
 
     subparser.description = (
         "Run every registered check (built-in and pack-provided) over every picture cut, from timeline data "
@@ -714,7 +710,7 @@ def _configure_restructure(subparser: argparse.ArgumentParser) -> None:
         "wall as film-level clips. Editing is unchanged (one flat timeline in film seconds). The change is published only "
         "if the renderer input before and after is identical; --dry-run prints the walls and what goes where."
     )
-    from astrid.packs.timeline.cli import _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_project_arg
 
     subparser.add_argument("ref", help="Timeline (UUID, ULID or slug).")
     _add_project_arg(subparser)
@@ -740,7 +736,7 @@ def _configure_duplicate(subparser: argparse.ArgumentParser) -> None:
         "Create a new timeline holding a copy of this timeline's published head, with new shot ids "
         "(shot ids are global per project). Narration is bound again from the lines' script text when they declare it."
     )
-    from astrid.packs.timeline.cli import _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_project_arg
 
     subparser.add_argument("ref", help="Source timeline (UUID, ULID or slug); read only.")
     _add_project_arg(subparser)
@@ -756,7 +752,7 @@ def _cmd_rename(parsed: argparse.Namespace) -> int:
 
 
 def _configure_rename(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli import _add_json_flag, _add_project_arg
+    from astrid.core.cli.domain_timelines import _add_json_flag, _add_project_arg
 
     subparser.add_argument("ref", help="Timeline id or slug.")
     subparser.add_argument("name", help="New display name.")

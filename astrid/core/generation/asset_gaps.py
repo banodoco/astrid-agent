@@ -5,6 +5,50 @@ import shlex
 from typing import Any
 
 
+def declared_model_specs(assets: Any, *, require_complete: bool = True):
+    """Project canonical workflow declarations into the existing downloader type.
+
+    Incomplete declarations grant no custody authority. Inventory composition
+    may ignore them; provisioning a selected entry must report them instead.
+    """
+    from .engine_contracts import EngineError, IntegrityError, ModelLockValidationError, ModelSpec
+    from .model_downloader import _safe_relative, _validate_model
+
+    if not isinstance(assets, (list, tuple)):
+        raise ModelLockValidationError('entry model_assets must be a list')
+    models = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ModelLockValidationError('entry model_assets must contain objects')
+        missing = [key for key in ('name', 'url', 'sha256', 'size_bytes')
+                   if asset.get(key) is None or asset.get(key) == '']
+        if missing:
+            if require_complete:
+                raise ModelLockValidationError(
+                    f"Declared model {asset.get('name', '?')} is unavailable: missing {', '.join(missing)}")
+            continue
+        try:
+            name = _safe_relative(asset['name'])
+            subdir = asset.get('subdir', '')
+            if not isinstance(subdir, str):
+                raise ModelLockValidationError('declared model subdir must be a string')
+            destination = f'{subdir}/{name}' if subdir not in ('', '.') else str(name)
+            model = ModelSpec(asset['name'], None, None, None, asset['url'], destination,
+                              asset['size_bytes'], asset['sha256'])
+            _validate_model(model)
+        except EngineError:
+            if require_complete:
+                raise
+            # A non-provisionable, unselected declaration grants no authority.
+            # The exact-root verifier will still reject any unlisted file.
+            continue
+        previous = models.get(destination)
+        if previous is not None and previous != model:
+            raise IntegrityError(f'conflicting entry model declarations: {destination}')
+        models[destination] = model
+    return tuple(models.values())
+
+
 def align_argv(entry: str | None = None) -> list[str]:
     return ['astrid', 'generate', 'align', '--apply', '--consent', 'user_env',
             *(['--entry', entry] if entry else ['--all'])]

@@ -18,7 +18,7 @@ def test_syntax_ok():
 def test_strict_mode_and_marker():
     text = SCRIPT.read_text()
     assert "set -euo pipefail" in text
-    assert '${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}' in text
+    assert '${ASTRID_BOOTSTRAP_ROOT:-/root/astrid/bootstrap}' in text
     assert 'marker_dir="$BOOTSTRAP_ROOT/$digest"' in text
     assert 'marker="$marker_dir/ok"' in text
     assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD" in text

@@ -2,16 +2,12 @@
 """Compatibility alias for the common OpenAI generation provider executor."""
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main, warn_if_unledgered
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
+from astrid.core.pack.entrypoint import warn_if_unledgered
 
 guard_canonical_entrypoint("generation.generate_image_openai")
-from astrid.core.generation.backends.openai import (
-    API_URL, DEFAULT_MODEL, DEFAULT_SIZE, DEFAULT_QUALITY, DEFAULT_FORMAT,
-    PRESETS, _build_openai_manifest, _call_image_api, _resolve_key, build_parser,
-    GPT_IMAGE_2_MAX_EDGE, GPT_IMAGE_2_MAX_PIXELS, GPT_IMAGE_2_MAX_RATIO,
-    GPT_IMAGE_2_MIN_PIXELS, _die, _validate_payload,
-    execute_legacy, write_json_atomic,
-)
+from astrid.pack_api import write_json_atomic
+from astrid.core.generation.backends.openai import API_URL, DEFAULT_MODEL, DEFAULT_SIZE, DEFAULT_QUALITY, DEFAULT_FORMAT, PRESETS, _build_openai_manifest, _call_image_api, _resolve_key, build_parser, GPT_IMAGE_2_MAX_EDGE, GPT_IMAGE_2_MAX_PIXELS, GPT_IMAGE_2_MAX_RATIO, GPT_IMAGE_2_MIN_PIXELS, _die, _validate_payload, execute_legacy
 
 
 def generate(args):

@@ -29,12 +29,13 @@ from astrid.core.cli_choices import AstridArgumentError, StaticChoices
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "recoverability_conformance_worklist.json"
 RECOVERY_STEP_BUDGET = 3
+# Every first-party pack still in this tree; the fixture holds no rows for moved packs.
 SAMPLED_PACK_ORDER = (
-    "editorial",
     "generation",
+    "rendering",
     "runpod",
-    "understanding",
-    "video_editing",
+    "vibecomfy",
+    "h3_av",
 )
 
 

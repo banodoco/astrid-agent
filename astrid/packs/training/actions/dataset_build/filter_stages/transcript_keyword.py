@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import hashlib
 import json
 import mimetypes
@@ -13,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from astrid import sdk
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ..artifacts import (
     load_valid_cached_sidecar,
@@ -51,7 +54,7 @@ TRANSCRIPT_SCHEMA = {
 
 
 class TranscriptKeywordFilter:
-    def __init__(self, *, repo_root: Path = REPO_ROOT, **_: Any) -> None:
+    def __init__(self, *, repo_root: Path = PACK_ROOT, **_: Any) -> None:
         self._repo_root = repo_root
 
     @property
@@ -170,7 +173,7 @@ class TranscriptKeywordFilter:
         return transcript
 
 
-def transcript_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, repo_root: Path = REPO_ROOT) -> Path:
+def transcript_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, repo_root: Path = PACK_ROOT) -> Path:
     out_dir = config.get("out_dir")
     if out_dir is None:
         out_dir = resolve_media_path(item, repo_root=repo_root, required=True).parent / "transcripts"

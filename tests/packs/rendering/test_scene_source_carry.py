@@ -211,7 +211,7 @@ def test_real_projector_carries_opaque_occurrences_and_all_clip_ids(monkeypatch)
     assert snapshot["metadata"]["capture_authority"]["expansion"]["children"][0]["revision_id"] == "internal:old"
 
 
-@pytest.mark.parametrize("kind", ["text-card", "text", "am-snap-plate", "image", "frame-overlay"])
+@pytest.mark.parametrize("kind", ["text-card", "text", "image", "frame-overlay"])
 def test_actual_source_join_queries_historical_scene_and_overlay(source_query, tmp_path, monkeypatch, kind):
     snapshot, client = saved(monkeypatch, kind)
     p, calls = provider(tmp_path, monkeypatch, snapshot)

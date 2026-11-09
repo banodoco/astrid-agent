@@ -2,6 +2,7 @@
 
 This is transport packaging, not an installer or another downloader. All module
 bodies come from the controller's product package, including A1's real contracts.
+Shipped bytes equal source bytes.
 The temporary package is private to one isolated target process and is removed
 after provisioning. No installed Astrid or third-party target package is needed.
 """
@@ -23,8 +24,10 @@ _SOURCES = (
     "version.py",
     "core/__init__.py",
     "core/generation/__init__.py",
+    "core/generation/_engine_python_bootstrap.py",
     "core/generation/engine_contracts.py",
     "core/generation/model_downloader.py",
+    "personal_packs_root.py",
     "packs/__init__.py",
     "packs/runpod/h3_release_bootstrap.py",
     "packs/runpod/h3_release_remote.py",

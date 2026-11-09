@@ -908,6 +908,16 @@
    "required_packages": []
   },
   {
+   "id": "runpod.ls",
+   "disposition": "optional",
+   "evidence_reason": "List the retained RunPod lease through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "runpod.provision",
    "disposition": "optional",
    "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
@@ -932,6 +942,16 @@
    "required_packages": []
   },
   {
+   "id": "runpod.release",
+   "disposition": "optional",
+   "evidence_reason": "Retained target release through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "runpod.session",
    "disposition": "optional",
    "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
@@ -939,6 +959,26 @@
    "resource_keys": [
     "provider"
    ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.setup",
+   "disposition": "optional",
+   "evidence_reason": "Save validated RunPod preferences through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.status",
+   "disposition": "optional",
+   "evidence_reason": "Retained target status through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
    "required_env": [],
    "required_binaries": [],
    "required_packages": []
@@ -1318,18 +1358,6 @@
    "resource_keys": [
     "provider"
    ]
-  },
-  {
-   "id": "youtube.upload",
-   "disposition": "optional",
-   "evidence_reason": "Optional external publishing integration; not required for local beta.",
-   "adapter_family": "cpu",
-   "resource_keys": [
-    "cpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
   },
   {
    "id": "youtube.youtube_audio",

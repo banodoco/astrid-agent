@@ -6,6 +6,10 @@ focused on `main()` and `run_pipeline()` adapter glue.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import copy
 import json
 import shutil
@@ -15,8 +19,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.jsonio import write_json_atomic
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import write_json_atomic
+from astrid.pack_api import AstridError, load_default_registry
 
 from .acquisition import build_acquisition_request
 from .caption_providers import caption_candidate
@@ -208,9 +212,8 @@ def _confine_candidate_media(candidate: Mapping[str, Any], run_dir: Path) -> dic
     item = dict(candidate)
     source_path = Path(str(item["media_path"])).expanduser()
     if not source_path.is_absolute():
-        from astrid.core.foundation.paths import REPO_ROOT
 
-        source_path = (REPO_ROOT / source_path).resolve()
+        source_path = (PACK_ROOT / source_path).resolve()
     clips_dir = run_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
     stem = _item_id(item)
@@ -482,6 +485,29 @@ def _phase_prepare_review_data(paths: Mapping[str, Path], all_items: list[dict[s
     return write_review_data(paths["review_data"], _apply_review_sampling(all_items, config))
 
 
+HUMAN_REVIEW_CAPABILITY = "editorial.human_review"
+
+
+def _human_review_argv() -> list[str]:
+    """Resolve the Human Review command through the capability registry.
+
+    The capability lives in the separately installed ``editorial`` pack, so its
+    absence is reported as a missing pack rather than spawning a hard-coded module.
+    """
+    registry = load_default_registry()
+    try:
+        definition = registry.get(HUMAN_REVIEW_CAPABILITY)
+    except KeyError:
+        definition = None
+    reason = None if definition is None else definition.metadata.get("unavailable_reason")
+    if definition is None or reason or definition.command is None or not definition.command.argv:
+        raise AstridError(
+            f"Human Review requires pack 'editorial' ({reason or 'capability ' + HUMAN_REVIEW_CAPABILITY + ' is not installed'})",
+            recovery_command="install the editorial pack from poms_packs",
+        )
+    return [sys.executable if part == "{python_exec}" else part for part in definition.command.argv]
+
+
 def _run_human_review(run_dir: Path, review_data_path: Path, state_path: Path, runner, *,
                       media_root: Path | None = None, services: DatasetRunServices | None = None,
                       round_index: int = 0) -> None:
@@ -501,11 +527,7 @@ def _run_human_review(run_dir: Path, review_data_path: Path, state_path: Path, r
     out_path = run_dir / "review_server" / "human_review.final.json"
     media_dir = media_root or run_dir / "clips"
     cmd = [
-        sys.executable,
-        "-X",
-        "utf8",
-        "-m",
-        "astrid.packs.editorial.actions.human_review.run",
+        *_human_review_argv(),
         "--html",
         str(REVIEW_UI_ROOT),
         "--data",

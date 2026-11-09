@@ -9,18 +9,20 @@ from astrid.core.execution.capability_ledger import load_capability_ledger
 def test_shipped_ledger_reconciles_historical_capability_sets():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     sources = ledger["sources"]
+    coverage = sources["coverage"]
 
-    assert sources["counts"]["pack_labels"] == 110
-    assert sources["counts"]["historical_pack_labels"] == 111
-    # The executor inventory is the committed output-result snapshot plus historical
-    # rows; it grows whenever a bundled executor is registered, so pin it to the
-    # approved census lock rather than a literal.
+    # The approved census lock is the core-only set, so the installed packs
+    # reconcile completely with no drift.
+    assert sources["counts"]["pack_labels"] == 42
+    assert sources["counts"]["historical_pack_labels"] == 46
     lock = json.loads(Path("config/astrid-capability-census.lock.json").read_text(encoding="utf-8"))
-    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"])
-    assert all(section["complete"] for section in sources["coverage"].values())
-    assert not sources["coverage"]["source_labels"]["missing"]
-    assert sources["coverage"]["historical_source_labels"]["complete"]
-    assert not sources["coverage"]["executor_inventory"]["missing"]
+    assert sources["counts"]["executor_inventory"] == len(lock["executor_inventory"]) == 56
+    assert len(lock["source_labels"]) == 42
+    assert len(lock["historical_source_labels"]) == 46
+    assert all(section["complete"] for section in coverage.values())
+    for section in ("source_labels", "historical_source_labels", "executor_inventory"):
+        assert coverage[section]["status"] == "ok"
+        assert coverage[section]["added"] == [] and coverage[section]["missing"] == []
     assert not {
         row["pack"]
         for row in sources["pack_labels"]
@@ -55,8 +57,11 @@ def test_ledger_has_only_canonical_ids_models_backends_and_explicit_unmapped_lab
 def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
     from astrid.core.execution.generic_host import GenericPackHost
 
-    host = GenericPackHost(pack_roots=[Path("astrid/packs")])
-    assert host.ledger["sources"]["counts"]["pack_labels"] == 110
+    host = GenericPackHost(
+        pack_roots=[Path("astrid/packs")],
+        capability_matrix=Path("config/astrid-beta-capabilities.json"),
+    )
+    assert host.ledger["sources"]["counts"]["pack_labels"] == 42
     # The host matrix is the shipped readiness matrix, row for row; deriving the
     # count keeps it from drifting each time a capability is admitted.
     shipped = json.loads(Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8"))
@@ -117,16 +122,23 @@ def test_historical_source_labels_preserve_retirements_and_replacement():
     assert rows["typed_timeline.typed_timeline.render"]["disposition"] == "retired"
 
 
-def test_hivemind_census_keeps_the_external_contract_without_claiming_installation():
-    ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
-    census = ledger["sources"]["hivemind"]["external_census"]
+HIVEMIND_IDS = {
+    "hivemind.contribute", "hivemind.get_item", "hivemind.ingest_article",
+    "hivemind.ingest_workflow", "hivemind.ingest_youtube",
+    "hivemind.refresh_media", "hivemind.search",
+}
 
-    assert census == {
-        "declared_count": 7,
-        "installed_count": 0,
-        "unresolved": True,
-        "note": "Seven Hivemind executors are declared by the optional external pack; installation is proven by the managed source inventory.",
-    }
+
+def test_hivemind_is_an_installed_pack_not_an_external_contract():
+    ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
+    sources = ledger["sources"]
+
+    # Hivemind ships in-tree now, so the matrix declares no external contract and
+    # all seven executors are discovered rather than reported not-installed.
+    assert "hivemind" not in sources
+    rows = {row["id"]: row for row in sources["executor_inventory"] if row["id"].startswith("hivemind.")}
+    assert set(rows) == HIVEMIND_IDS
+    assert {row["discovery_status"] for row in rows.values()} == {"discovered"}
 
 
 def test_hivemind_matrix_rows_expose_provider_readiness_metadata():
@@ -154,8 +166,8 @@ def test_source_census_reports_unreviewed_pack_labels_without_failing_host(monke
 
     original = capability_ledger._census_sets
 
-    def with_unreviewed_label(repo_root):
-        census = original(repo_root)
+    def with_unreviewed_label(repo_root, **kwargs):
+        census = original(repo_root, **kwargs)
         census["current"]["source_labels"].add("hivemind.unreviewed")
         return census
 
@@ -167,52 +179,29 @@ def test_source_census_reports_unreviewed_pack_labels_without_failing_host(monke
     assert row["complete"] is False
 
 
-def test_hivemind_matrix_contract_is_not_mistaken_for_bundled_source():
+def test_hivemind_is_excluded_from_the_in_tree_source_label_census():
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
     assert not any(row["pack"] == "hivemind" for row in ledger["sources"]["pack_labels"])
-    assert ledger["sources"]["hivemind"]["disposition"] == "optional_external"
-    assert len(ledger["sources"]["hivemind"]["executor_ids"]) == 7
     matrix_ids = {row["id"] for row in ledger["capabilities"]}
-    assert set(ledger["sources"]["hivemind"]["executor_ids"]) <= matrix_ids
+    assert HIVEMIND_IDS <= matrix_ids
 
 
-def test_reviewed_v3_pack_labels_preserve_exact_canonical_action_admission():
+def test_moved_pack_labels_are_not_reported_as_installed():
     from astrid.core.execution.capability_ledger import capability_execution_admission
 
     ledger = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))
-    labels = {
-        (row["pack"], row["label"]): row
-        for row in ledger["sources"]["pack_labels"]
-        if row["pack"] in {"capture", "chiptune", "pixel"}
-    }
-    expected = {
-        ("capture", "capture_web_page"): ("capture.web_page", "provider", ["provider"]),
-        ("chiptune", "compose"): ("chiptune.compose", "cpu", ["cpu"]),
-        ("chiptune", "sfx"): ("chiptune.sfx", "cpu", ["cpu"]),
-        ("pixel", "cutout"): ("pixel.cutout", "cpu", ["cpu"]),
-        ("pixel", "snap"): ("pixel.snap", "cpu", ["cpu"]),
-        ("pixel", "sprites"): ("pixel.sprites", "cpu", ["cpu"]),
-        ("chiptune", "midi"): ("chiptune.midi", "cpu", ["cpu"]),
-        ("pixel", "strip"): ("pixel.strip", "cpu", ["cpu"]),
-    }
-    # pixel.strip now has a reviewed matrix row (4b77bdcf), so it is admitted like its siblings.
-    assert set(labels) == set(expected)
+    # capture, chiptune and pixel moved to poms_packs: their labels are absent
+    # from a core-only source census, while their reviewed matrix rows remain.
+    assert not [row for row in ledger["sources"]["pack_labels"] if row["pack"] in {"capture", "chiptune", "pixel"}]
     matrix = {row["id"]: row for row in ledger["capabilities"]}
-    for (pack, label), (action_id, adapter, resources) in expected.items():
-        source = labels[(pack, label)]
-        assert source["source"] == f"astrid/packs/{pack}/pack.yaml"
+    for action_id, resources in (("pixel.snap", ["cpu"]), ("chiptune.compose", ["cpu"]), ("capture.web_page", ["provider"])):
         assert matrix[action_id]["disposition"] == "optional"
-        assert matrix[action_id]["adapter_family"] == adapter
         assert matrix[action_id]["resource_keys"] == resources
-        admission = capability_execution_admission(ledger, action_id)
-        assert admission["executable"] is True
-        assert admission["requires_runtime_readiness"] is True
-        if pack == "capture":
-            assert source["canonical_id"] is None
-            assert source["disposition"] == "unmapped_source_label"
-        else:
-            assert source["canonical_id"] == action_id
-            assert source["disposition"] == "advertised"
+    # Reconciliation is complete against the core-only lock; the matrix row
+    # admits the capability, which still needs runtime readiness to run.
+    admission = capability_execution_admission(ledger, "pixel.snap")
+    assert admission["executable"] is True
+    assert admission["requires_runtime_readiness"] is True
 
 
 def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
@@ -220,12 +209,12 @@ def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
 
     original = capability_ledger._census_sets
 
-    def without_reviewed_occurrence(repo_root):
-        census = original(repo_root)
-        census["current"]["source_labels"].discard("pixel.snap")
+    def without_reviewed_occurrence(repo_root, **kwargs):
+        census = original(repo_root, **kwargs)
+        census["current"]["source_labels"].discard("h3_av.finalize_publication")
         return census
 
     monkeypatch.setattr(capability_ledger, "_census_sets", without_reviewed_occurrence)
     row = load_capability_ledger(Path("config/astrid-beta-capabilities.json"))["sources"]["coverage"]["source_labels"]
     assert row["status"] == "drift"
-    assert row["missing"] == ["pixel.snap"]
+    assert "h3_av.finalize_publication" in row["missing"]
