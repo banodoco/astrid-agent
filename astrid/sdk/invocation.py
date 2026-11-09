@@ -2193,9 +2193,22 @@ def _validate_generation_intent(
     return result
 
 
+# Builtin generation capability ids and their modality; the one table the
+# generation preflight and the modality resolver both read.
+_GENERATION_MODALITY_BY_CAPABILITY = {
+    "generation.generate_image": "image",
+    "generation.generate_image_codex": "image",
+    "generation.generate_image_openai": "image",
+    "generation.generate_video": "video",
+    "generation.generate_audio": "audio",
+}
+
+
 def _generation_capability_modality(capability: Any) -> str | None:
     """Resolve a generation modality, including metadata opt-in capabilities."""
     capability_id = str(getattr(capability, "id", capability))
+    if capability_id in _GENERATION_MODALITY_BY_CAPABILITY:
+        return _GENERATION_MODALITY_BY_CAPABILITY[capability_id]
     if capability_id.startswith("generation.generate_image"):
         return "image"
     if capability_id.startswith("generation.generate_video"):
@@ -4764,13 +4777,7 @@ def invoke(
     # and live invocation.  This keeps generic ``sdk.invoke`` from accepting
     # an impossible model/mode/backend cell (or FLF request missing its end
     # frame) and discovering the problem only after kernel admission.
-    modality = {
-        "generation.generate_image": "image",
-        "generation.generate_image_codex": "image",
-        "generation.generate_image_openai": "image",
-        "generation.generate_video": "video",
-        "generation.generate_audio": "audio",
-    }.get(str(capability.id))
+    modality = _GENERATION_MODALITY_BY_CAPABILITY.get(str(capability.id))
     if modality is not None:
         model_registry = sdk_module._load_model_registry(
             project_root=project_root,
