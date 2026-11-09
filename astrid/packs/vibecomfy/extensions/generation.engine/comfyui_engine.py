@@ -64,26 +64,43 @@ def _present(models_root: Path, row: Any) -> bool:
 class VibeComfyCommands:
     """VibeComfy's own commands, the only place a model is fetched.
 
-    The argv shapes are unverified here: VibeComfy is not part of this checkout.
+    The argv shapes are checked against vibecomfy.cli.build_parser() in test_run_local.py.
+    Every command takes the workflow path; prepare runs with --no-models --no-packs so that
+    `vibecomfy fetch` is the only command that downloads a model, and `nodes restore` the only one
+    that installs node packs. fetch skips files already on disk, so it is not passed --force.
     """
 
-    def _run(self, *argv: str) -> None:
+    def __init__(self, workflow: str = "", lockfile: str | None = None) -> None:
+        self.workflow, self.lockfile = workflow, lockfile
+
+    def argv(self, step: str) -> list[str]:
+        if step == "doctor":
+            return ["doctor", self.workflow, "--non-interactive"]
+        if step == "prepare":
+            return ["prepare", self.workflow, "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"]
+        if step == "nodes_restore":
+            return ["nodes", "--non-interactive", "restore", *(["--lockfile", self.lockfile] if self.lockfile else [])]
+        if step == "fetch":
+            return ["fetch", self.workflow, "--non-interactive"]
+        raise ValueError(step)
+
+    def _run(self, step: str) -> None:
         import subprocess
         import sys
-        subprocess.run([sys.executable, "-m", "vibecomfy", *argv], check=True)
+        subprocess.run([sys.executable, "-c", "import sys;from vibecomfy.cli import main;sys.exit(main(sys.argv[1:]))",
+                        *self.argv(step)], check=True)
 
     def doctor(self) -> None:
         self._run("doctor")
 
     def prepare_deps_sync(self) -> None:
-        self._run("prepare", "--deps", "sync")
+        self._run("prepare")
 
     def nodes_restore(self, nodes: Any) -> None:
-        self._run("nodes", "restore")
+        self._run("nodes_restore")
 
     def fetch(self, rows: Any) -> None:
-        for row in rows:
-            self._run("fetch", _key(row))
+        self._run("fetch")  # per workflow; VibeComfy skips the rows already present
 
 
 class ComfyUIEngine:
@@ -148,7 +165,7 @@ class ComfyUIEngine:
         if mode == "check":
             result["status"] = "ready" if not missing else "missing"
             return result
-        commands = self.commands or VibeComfyCommands()
+        commands = self.commands or VibeComfyCommands(manifest.get("workflow", ""), manifest.get("lockfile"))
         commands.doctor()
         commands.prepare_deps_sync()
         commands.nodes_restore((manifest.get("extra") or {}).get("nodes", []))
