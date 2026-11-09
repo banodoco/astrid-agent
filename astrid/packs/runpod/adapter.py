@@ -173,10 +173,13 @@ def prevalidate_task(policy, inputs, *, scratch):
 
     required = {"kind", "engine", "preferences", "offer_digest", "consent", "max_usd", "deadline",
                 "preparation_seconds", "execution_seconds", "idle_seconds"}
-    if not isinstance(policy, dict) or set(policy) != required or policy["kind"] != "runpod":
+    if (not isinstance(policy, dict) or not required <= set(policy) <= required | {"machine"}
+            or policy["kind"] != "runpod"):
         raise PaidSelectionError("target policy lacks exact offer and paid bounds")
     if policy["engine"] not in {"comfyui"}:
         raise PaidSelectionError("unsupported retained installation route")
+    if "machine" in policy and (not isinstance(policy["machine"], str) or not policy["machine"]):
+        raise PaidSelectionError("a pinned machine must name a live lease's machine id")
     if RunPodPreferences.from_mapping(policy["preferences"]).as_mapping() != policy["preferences"]:
         raise PaidSelectionError("target preferences are not canonical")
     if not isinstance(policy["offer_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", policy["offer_digest"]):
@@ -361,6 +364,14 @@ class TargetProviderBindings:
                 if self.active is active:
                     self.active = None
         return None
+
+    def observe(self):
+        """One liveness pass over the retained owner's live lease (the host calls it on its polls)."""
+        with self.lock:
+            provider = self.provider
+            if provider is None or self.operations or (self.active is not None and not self.active["done"].is_set()):
+                return None
+        return provider.lease_owner.observe_liveness(observe=getattr(provider, "observe_pod", None))
 
     def operate(self, policy, operation, *, include_quote=False):
         if operation not in {"setup", "ls", "status", "release"}:

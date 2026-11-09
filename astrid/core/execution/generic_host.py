@@ -6417,6 +6417,18 @@ class _TaskOutputCapture:
         self.persist(force=True)
 
 
+def _local_machine(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Which machine runs a built-in placement: this host (local) or the user's ComfyUI (attached)."""
+    import socket
+
+    url = inputs.get("comfy_url")
+    if url:
+        return {"placement": "attached", "machine": "attached", "id": str(url), "lease": None, "device": None}
+    device = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return {"placement": "local", "machine": "local", "id": socket.gethostname(), "lease": None,
+            "device": device if device not in (None, "") else "auto"}
+
+
 def _align_trust(task: Mapping[str, Any]) -> bool:
     intent = _task_generation_intent(task)
     metadata = intent.get("metadata") if isinstance(intent, Mapping) else None
@@ -7148,12 +7160,33 @@ class GenericPackHost:
             scratch=root, progress_path=root / ".astrid-progress.json",
             align="trust" if _align_trust(task_data) else "align",
         )
+        def claimed(lease):
+            # Which machine runs this attempt, recorded as soon as it is claimed (failures keep it too).
+            terminal["machine"] = dict(machine.describe(lease))
+
         fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
-                                 poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0))
-        terminal["machine"] = {"kind": policy["kind"], "manifest_sha256": fetched.get("manifest_sha256"),
+                                 poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0),
+                                 on_claim=claimed)
+        terminal["machine"] = {**terminal.get("machine", {}), "manifest_sha256": fetched.get("manifest_sha256"),
                                "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
         return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),
                                returncode=fetched.get("returncode"))
+
+    def _observe_machines(self, now: float) -> None:
+        """On host polls, ask the machine provider whether each live lease still runs (throttled)."""
+        owner = self._handoff_accounting_owner
+        bindings = getattr(owner, "_target_bindings", None)
+        observe = getattr(bindings, "observe", None)
+        if not callable(observe):
+            return
+        every = float(os.environ.get("ASTRID_MACHINE_LIVENESS_SECONDS") or 60.0)
+        if now < getattr(owner, "_machines_observed_at", float("-inf")) + every:
+            return
+        owner._machines_observed_at = now
+        try:
+            observe()
+        except Exception as exc:  # observation never stops the claim loop; the next poll retries
+            _LOGGER.warning("machine liveness observation failed: %s", type(exc).__name__)
 
     def _host_target_bindings(self, kind):
         """Lazily share selected target custody across this host's claim slots."""
@@ -12605,6 +12638,8 @@ class GenericPackHost:
                     managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
                     if isinstance(managed_adapter, _ManagedVibeSessionAdapter):
                         comfy_invocation = managed_adapter.invoke(managed_token, model_id=model_id, template_id=template_id)
+                if machine_policy is None and capability_id == "vibecomfy.run":
+                    _terminal["machine"] = _local_machine(inputs)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -13784,6 +13819,7 @@ class GenericPackHost:
             self._claim_slots = slots
             while not self._shutdown.is_set():
                 now = time.monotonic()
+                self._observe_machines(now)
                 while not completed.empty():
                     index, result, exc = completed.get()
                     active.pop(index).join()

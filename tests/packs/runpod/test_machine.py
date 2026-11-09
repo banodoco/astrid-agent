@@ -204,3 +204,85 @@ def test_an_unsafe_manifest_path_is_refused(machine_case, tmp_path):
         c.machine.fetch(run, tmp_path / "dest")
     c.machine.release(lease, False)
     assert c.deletes == ["pod-1"]
+
+
+def test_liveness_ends_a_dead_idle_lease_with_provider_terminated(machine_case):
+    """T5d: a host poll that finds the pod gone ends the lease; it stops being charged and leaves reuse."""
+    c = machine_case
+    job = c.job()
+    run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    assert c.host.observe_liveness(observe=lambda pod: "live") == "live"
+    assert c.read()["lease"]["state"] == "idle" and c.deletes == []
+    assert c.host.observe_liveness(observe=lambda pod: "gone") == "provider_terminated"
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "provider_terminated"
+    assert c.host.observe_liveness(observe=lambda pod: "gone") is None  # nothing live is left
+    ended = json.loads(c.host.ended_path().read_text())
+    assert [(row["id"], row["ended"], row["live"]) for row in ended] == [("pod-1", "provider_terminated", False)]
+    assert rm.lease_rows(c.host)[0]["ended"] == "provider_terminated"
+
+
+def test_a_job_pinned_to_an_ended_machine_is_refused_with_the_reason(machine_case):
+    from astrid.packs.runpod.target_selection import PaidSelectionError
+
+    c = machine_case
+    job = c.job()
+    run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    c.host.observe_liveness(observe=lambda pod: "gone")
+    pinned = c.job(2)
+    pinned = type(pinned)(**{**pinned.__dict__, "policy": {**pinned.policy, "machine": "pod-1"}})
+    creates = c.creates
+    with pytest.raises(PaidSelectionError, match=r"no live runpod lease for machine 'pod-1' "
+                                                 r"\(ended: provider_terminated\); live leases: none"):
+        c.machine.claim(pinned)
+    assert c.creates == creates
+
+
+def test_the_host_observes_machines_on_its_polls_throttled(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.execution.generic_host import GenericPackHost
+
+    calls = []
+    host = SimpleNamespace(_target_bindings=SimpleNamespace(observe=lambda: calls.append(1)))
+    host._handoff_accounting_owner = host
+    monkeypatch.setenv("ASTRID_MACHINE_LIVENESS_SECONDS", "10")
+    for now in (100.0, 105.0, 111.0):
+        GenericPackHost._observe_machines(host, now)
+    assert calls == [1, 1]
+    host._target_bindings = SimpleNamespace(observe=lambda: (_ for _ in ()).throw(RuntimeError("provider down")))
+    GenericPackHost._observe_machines(host, 200.0)  # never raises into the claim loop
+
+
+def test_an_entry_from_a_pack_missing_from_the_shipped_selection_is_refused_before_the_claim(machine_case, tmp_path):
+    from types import SimpleNamespace
+
+    c = machine_case
+    installed = SimpleNamespace(id="studio.workflows", scope="installed", path=tmp_path / "studio" / "w.yaml",
+                                fields={"entries": [{"id": "studio-look"}]})
+    builtin = SimpleNamespace(id="vibecomfy.ready", scope="built-in",
+                              path=rm._agent_packs() / "vibecomfy" / "extensions" / "w.yaml",
+                              fields={"entries": [{"id": "z-image"}]})
+    registry = SimpleNamespace(contributions=lambda point: [installed, builtin])
+    reason = rm.unshipped_entry_reason("studio-look", registry=registry, action_rows=[])
+    assert "studio.workflows (installed pack" in reason and "not in the selection shipped" in reason
+    assert rm.unshipped_entry_reason("z-image", registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason(None, registry=registry, action_rows=[]) is None
+    assert rm.unshipped_entry_reason("h3", registry=SimpleNamespace(contributions=lambda p: []),
+                                     action_rows=[{"id": "h3", "action": "h3_av.transform"}]) is None
+    assert "pack 'elsewhere'" in rm.unshipped_entry_reason(
+        "x", registry=SimpleNamespace(contributions=lambda p: []), action_rows=[{"id": "x", "action": "elsewhere.run"}])
+    # Through the machine: refused before any offer observation, lock or create.
+    import astrid.packs.runpod.machine as module
+    original = module.unshipped_entry_reason
+    module.unshipped_entry_reason = lambda entry: original(entry, registry=registry, action_rows=[])
+    try:
+        job = c.job()
+        job = type(job)(**{**job.__dict__, "entry": "studio-look"})
+        quotes = len(c.quotes)
+        with pytest.raises(rm.MachineError, match="not in the selection shipped"):
+            c.machine.claim(job)
+    finally:
+        module.unshipped_entry_reason = original
+    assert c.creates == 0 and len(c.quotes) == quotes and not c.owner.path.exists()
