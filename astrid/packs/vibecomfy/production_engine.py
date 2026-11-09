@@ -12,7 +12,6 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Mapping
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -617,9 +616,6 @@ def _workflow_comfy_configuration(bundle: Any) -> dict[str, Any]:
             + ", ".join(overridden)
         )
     return dict(configured)
-
-
-@contextmanager
 
 
 def _result_from_runtime_result(

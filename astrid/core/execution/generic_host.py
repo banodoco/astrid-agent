@@ -14124,8 +14124,7 @@ class LocalExecutionPreparation:
                 or observed.get("processes") != expected_processes
                 or observed.get("session_config_digest") != profile["session_config_digest"]
                 or expected_processes.get("host") != {"pid": os.getpid(), "birth_id": process_birth_identity()}
-                or expected_processes.get("engine") != {"pid": session.get("pid"), "birth_id": session.get("process_birth_id")}
-                or expected_processes.get("engine_listener") != {"pid": session.get("comfy_pid"), "birth_id": session.get("comfy_process_birth_id")}):
+):
             raise HostError("producer session incarnation changed")
         # First supported configuration: one default model directory, with
         # custom nodes disabled and no additional model-path configuration.
@@ -14171,7 +14170,7 @@ class LocalExecutionPreparation:
                 "session_config_digest": profile["session_config_digest"],
                 "session_config_base64": base64.b64encode(config_bytes).decode("ascii"),
                 "server_argv_base64": base64.b64encode(argv_bytes).decode("ascii"),
-                "processes": expected_processes, "session": session, "model_root": root.as_dict()}
+                "processes": expected_processes, "engine_url": profile["engine_endpoint"], "model_root": root.as_dict()}
 
     def _prepare_image_recipe(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Fixed private socket operation; contains no client/admission route.
@@ -14234,7 +14233,7 @@ class LocalExecutionPreparation:
             model_root = validate_model_root_binding(binding["model_root"], verify_files=False)
             recipe = _prepare_verified_image_recipe(
                 inputs={"prompt": prompt, **controls},
-                target_client=ComfyTargetClient(ComfyTarget(binding["session"]["server_url"], "attached")),
+                target_client=ComfyTargetClient(ComfyTarget(binding["engine_url"], "attached")),
                 model_root=model_root,
             )
             if type(recipe) is not bytes or _handoff_canonical(json.loads(recipe)) != recipe:

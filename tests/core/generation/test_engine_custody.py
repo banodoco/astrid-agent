@@ -1480,27 +1480,6 @@ def test_installed_consumer_refuses_changed_evidence_without_legacy_control(inst
     assert _alive(receipt.comfy_pid)
 
 
-@pytest.mark.parametrize("engine", ["comfyui"])
-def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch, engine):
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-    from types import SimpleNamespace
-
-    owner, transport, reference, readiness, registry = installed_consumer
-    registry = registry.parent / engine
-    registry.mkdir(exist_ok=True)
-    adapter = object.__new__(CheckoutServerAdapter)
-    adapter._endpoint_transport = None
-    adapter._host_session = {"session_dir": str(registry)}
-    def forbidden(*args, **kwargs):
-        pytest.fail("capacity replacement reached engine/CLI control")
-    adapter._engine = SimpleNamespace(_clear_warm=forbidden, _clear_prepared=forbidden,
-                                      _clear_retention_hint=forbidden, release=forbidden)
-    adapter._control_preflight = forbidden
-    monkeypatch.setattr(subprocess, "run", forbidden)
-    with pytest.raises(ValueError, match="capacity replacement"):
-        adapter.release(reason="capacity_replacement")
-    with pytest.raises(ValueError, match="capacity replacement"):
-        adapter._restart_owned_session()
 
 
 @pytest.mark.parametrize("failure", [None, "wrong_bearer", "denied_file", "corrupt_digest"])

@@ -158,7 +158,7 @@ def test_retained_host_prepares_frozen_recipe_without_admission(retained_produce
     binding = result["binding"]
     assert binding["source_closure_digest"] == CLOSURE
     assert binding["model_root"] == fixture.readiness["launch"]["model_root"]
-    assert binding["session"] == fixture.session
+    assert binding["engine_url"] == fixture.selected["engine_endpoint"]
     assert binding["processes"] == fixture.measured["processes"]
     assert binding["profile_digest"] == fixture.selected["profile_digest"]
     assert binding["profile_binding_digest"] == _digest(_canonical(fixture.selected))
@@ -168,7 +168,7 @@ def test_retained_host_prepares_frozen_recipe_without_admission(retained_produce
     assert args == ()
     assert kwargs["inputs"] == {"prompt": fixture.prompt, **fixture.request["controls"]}
     assert kwargs["model_root"].path == fixture.root
-    assert kwargs["target_client"].target.url == fixture.session["server_url"]
+    assert kwargs["target_client"].target.url == fixture.selected["engine_endpoint"]
     assert fixture.preparation.result["version"] == host._LOCAL_PREPARATION_VERSION
     assert not fixture.preparation._aborted
 
@@ -205,7 +205,7 @@ def test_private_dispatch_freezes_real_installed_producer_recipe(retained_produc
     assert all(item["inventory"] in recipe["model_root"]["inventory"] for item in recipe["model_references"])
     assert set(recipe["members"]) == {"workflow.py", "workflow.vibe.json", "source.json"}
     assert recipe["approval"]["api_projection"] and recipe["approval"]["ui_projection"]
-    assert observed and set(observed) == {fixture.session["server_url"]}
+    assert observed and set(observed) == {fixture.selected["engine_endpoint"]}
     # Runtime can verify/retain every returned member after scratch teardown.
     monkeypatch.setattr(Path, "read_bytes", forbidden)
     for member in recipe["members"].values():
