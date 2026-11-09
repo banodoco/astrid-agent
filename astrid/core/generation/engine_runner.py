@@ -207,8 +207,8 @@ def _models_root(root: str, models_root: str | None) -> str | None:
         raise UnsafePathError("models root must be a target-native absolute path")
     if any(p in {"", ".", ".."} for p in models_root[1:].split("/")) or models_root == "/":
         raise UnsafePathError("models root must be normalized")
-    if models_root == root or models_root.startswith(root + "/"):
-        raise UnsafePathError("models root must not be inside the engine root")
+    if models_root == root or models_root.startswith(root + "/") or root.startswith(models_root + "/"):
+        raise UnsafePathError("models root must not be inside or contain the engine root")
     return models_root
 
 
