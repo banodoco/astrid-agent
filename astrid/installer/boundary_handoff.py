@@ -45,6 +45,16 @@ def archive_path(service):
     return journal_path(service).with_name(HANDOFF_ARCHIVE)
 
 
+def finish_restore(service):
+    """Finish a restore_archive cut between its link and its unlink (same inode at both names)."""
+    journal, archive = absolute(journal_path(service)), absolute(archive_path(service))
+    if os.path.lexists(journal) and os.path.lexists(archive):
+        if not os.path.samestat(os.lstat(journal), os.lstat(archive)):
+            raise ValueError("Both an active and an archived storage move exist; both data folders were kept.")
+        archive.unlink()
+        r0_stop._sync_directory(archive.parent)
+
+
 def retained_roots(service):
     roots = []
     for path in (journal_path(service), archive_path(service)):
@@ -108,6 +118,7 @@ class BoundaryHandoff:
             alias=registration._publication_alias(self.journal, value) if first else None)
 
     def _load(self):
+        finish_restore(self.service)
         value = read_json(absolute(self.journal))
         if (value.get("version") != 1 or value.get("program_root") != str(self.root)
                 or value.get("system") != self.service.system
@@ -257,6 +268,9 @@ class BoundaryHandoff:
         # The selected version's launcher must accept the normalised records
         # before they are written: the R1 service restarts through it.
         registration.stage_runtime_launcher(candidate, replace=True)
+        if _text(candidate.root / "bin/runtime.py") != registration.launcher_script(candidate):
+            # Never write records the running version's launcher would refuse.
+            raise ValueError("The selected version's launcher could not be replaced; nothing was changed.")
         for path, selection in ((self.root / "install.json", False), (self.service.selection, True)):
             record = json.loads(_text(path))
             normalised = _normalise_record(record, value, selection=selection)
@@ -393,6 +407,7 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
     instead of being silently dropped; unchanged saved policy is carried over.
     """
     path = journal_path(backend.service)
+    finish_restore(backend.service)
     if rollback and not os.path.lexists(path) and os.path.lexists(archive_path(backend.service)):
         BoundaryHandoff(backend).restore_archive()
     if not rollback and not os.path.lexists(path) and os.path.lexists(archive_path(backend.service)):
@@ -403,8 +418,10 @@ def handle(root, data, backend, *, manifest_loader=None, rollback=False, say=pri
         transaction = BoundaryHandoff(backend)
         value = transaction._load()
         if value["phase"] == "complete" and not rollback:
-            transaction.normalise(value)
-            return False
+            # The caller resolved its data root from the un-normalised records;
+            # continuing would use R0's. The install line normalises first.
+            raise ValueError("The earlier storage move must be finished by the install line first; "
+                             "nothing was changed. Run the install line again.")
         if policy_change:
             raise ValueError(POLICY_REFUSAL.format(names=", ".join(sorted(policy_change))))
         if value["phase"] != "rolled_back" or rollback:

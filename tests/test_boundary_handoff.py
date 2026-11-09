@@ -379,6 +379,11 @@ def test_sigkill_each_adoption_and_switch_step_recovers_one_owner(case, monkeypa
     # when a plausible published receipt exists.
     if cut == 'complete':
         monkeypatch.setattr(c.backend, 'verify', lambda *a: pytest.fail('old handoff candidate re-verified'))
+        # handle() refuses an un-normalised complete journal (its caller's data root
+        # would be stale); the install line normalises first, then continues.
+        with pytest.raises(ValueError, match='must be finished by the install line first'):
+            handoff.handle(c.root, c.data, c.backend)
+        assert handoff.normalise_completed(c.backend)
         assert handoff.handle(c.root, c.data, c.backend) is False
         assert read_json(c.service.selection)['data_root'] == str(c.destination)
         assert state(c.manager)['r1'] == 'active' and not state(c.manager)['running']

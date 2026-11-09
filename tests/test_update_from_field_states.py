@@ -12,6 +12,8 @@ import json
 import sys
 
 import pytest
+from pathlib import Path
+
 from runtime_protocol import platform
 
 from astrid.installer import cli
@@ -228,3 +230,287 @@ def test_update_that_only_recovers_an_interrupted_update_is_not_updated(case, mo
     receipt = read_json(platform.log_dir() / "last-run.json")
     assert (receipt["kind"], receipt["reason"], receipt["still"], receipt["exit_code"]) == (
         "not-updated", "recovered-previous-version", 1, 3)
+
+
+# --- S review of #319 ---------------------------------------------------------
+
+def _alive(pid):
+    from astrid.installer.installation import _process_alive
+
+    return _process_alive(pid)
+
+
+def test_known_r0_leftover_is_stopped_its_files_kept_and_the_update_proceeds(case, monkeypatch, capsys):
+    """Hannah's R0-era Runtime, running again under R0's own label, is retired first."""
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="label")
+    _cli(c, monkeypatch)
+    leftover = c.r0_process.pid
+    r0_files = snapshot(c.data)
+    assert _alive(leftover)
+    code = _update(c, 2)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Stopped the earlier Astrid copy that was running again; its files were kept." in out
+    c.r0_process.wait(timeout=30)
+    assert not _alive(leftover)
+    calls = c.state()["calls"]
+    assert calls.index(["--user", "disable", "--now", "astrid.service"]) < calls.index(
+        ["--user", "stop", "astrid-r1.service"])
+    assert snapshot(c.data) == r0_files  # files kept, including its stale discovery
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["still"], receipt["target"], receipt["exit_code"]) == ("updated", 2, 2, 0)
+
+
+def test_unknown_second_runtime_is_refused_before_anything_is_stopped(case, monkeypatch, capsys):
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="unknown")
+    _cli(c, monkeypatch)
+    calls = len(c.state()["calls"])
+    code = _update(c, 2)
+    lines = _summary(capsys.readouterr().out)
+    assert code == 3
+    assert "Why: two copies of Astrid are running for the same workspace." in lines
+    assert _alive(c.r0_process.pid) and current(c.root).release == 1
+    mutations = [call for call in c.state()["calls"][calls:]
+                 if call[1] in {"stop", "start", "disable", "enable"}]
+    assert mutations == []
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["reason"], receipt["exit_code"]) == ("not-updated", "other-runtime-running", 3)
+    c.r0_process.kill()
+
+
+def test_real_live_probe_reads_runtime_health_identity(case, monkeypatch, capsys):
+    """The real probe path (no stub): Runtime health identity served by a stand-in owner."""
+    import http.server
+    import threading
+
+    from astrid.installer import installation
+    from astrid_runtime.runtime_boundary import WIRE_PROTOCOL
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    _cli(c, monkeypatch)
+
+    class Health(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            if self.path != "/v1/health" or c.state()["r1"] != "active":
+                self.send_error(503)
+                return
+            body = json.dumps({"protocol": WIRE_PROTOCOL, "status": "ok", "runtime_instance_id": "r1-live",
+                               "identity": {"release": c.started_release, "managed_by": None}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        discovery = c.destination / "runtime" / "discovery.json"
+        import os
+
+        discovery.write_text(json.dumps({
+            "endpoint": f"http://127.0.0.1:{server.server_port}", "runtime_instance_id": "r1-live",
+            "pid": os.getpid(), "process_birth_id": platform.process_identity(os.getpid())["birth_id"]}))
+        monkeypatch.setattr(installation, "probe_live", installation.probe_runtime_identity)
+        assert installation.probe_live(c.destination) == {"release": 1, "managed_by": None, "instance_id": "r1-live"}
+        code = _update(c, 2)
+        out = capsys.readouterr().out
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert code == 0, out
+    assert "Astrid updated: Release 1 → Release 2." in out
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["start"], receipt["still"], receipt["exit_code"]) == ("updated", 1, 2, 0)
+
+
+def _launcher_admits(c, version):
+    """Run the selected version's R1 launcher checks (everything before it starts the Runtime)."""
+    import subprocess
+
+    script = (version / "bin" / "runtime.py").read_text(encoding="utf-8")
+    checks = script[:script.index("settings_path =")] + "print('ADMITTED')\n"
+    result = subprocess.run([sys.executable, "-I", "-c", checks, "run", "--profile", "astrid",
+                             "--data-root", str(c.destination)], capture_output=True, text=True, timeout=60)
+    return result.returncode == 0 and result.stdout.strip() == "ADMITTED", result.stdout + result.stderr
+
+
+def test_launcher_admits_r1_when_normalisation_was_cut_between_marker_and_selection(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff, boundary_registration as registration
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    version = c.root / "versions/release1"
+    publish = registration._publish
+
+    def cut_after_marker(path, content, **options):
+        publish(path, content, **options)
+        if path == c.root / "install.json":
+            raise KeyboardInterrupt("cut after the marker was published")
+
+    monkeypatch.setattr(registration, "_publish", cut_after_marker)
+    with pytest.raises(KeyboardInterrupt):
+        handoff.normalise_completed(c.backend)
+    assert "retained_r0_data_root" in read_json(c.root / "install.json")
+    assert "r1_data_root" in selection(c)  # mixed: marker normalised, selection not yet
+    admitted, output = _launcher_admits(c, version)
+    assert admitted, output
+    monkeypatch.setattr(registration, "_publish", publish)
+    assert handoff.normalise_completed(c.backend)  # the next run finishes it
+    admitted, output = _launcher_admits(c, version)
+    assert admitted, output
+
+
+def test_restore_archive_cut_between_link_and_unlink_is_finished_by_the_next_run(case, monkeypatch, capsys):
+    import os
+
+    from astrid.installer import boundary_handoff as handoff
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    _cli(c, monkeypatch)
+    assert handoff.normalise_completed(c.backend)
+    archive = handoff.archive_path(c.service)
+    os.link(archive, c.tx.journal)  # restore_archive linked the journal, then was cut
+    assert cli.main(["--root", str(c.root), "--rollback"]) == 0
+    assert not archive.exists() and current(c.root).release == 0
+    assert selection(c)["data_root"] == str(c.data)
+
+
+def test_a_failing_run_after_a_success_leaves_no_stale_receipt(case, monkeypatch, capsys):
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    _cli(c, monkeypatch)
+    assert _update(c, 2) == 0
+    record = platform.log_dir() / "last-run.json"
+    first = read_json(record)
+    assert first["kind"] == "updated" and first["operation_id"] and first["started_at"]
+
+    def broken(*_args, **_kwargs):
+        raise OSError("the installer could not start")
+
+    monkeypatch.setattr(cli, "Backend", broken)
+    assert cli.main(["--update", "--root", str(c.root), "--manifest", str(c.manifest_path(3))]) == 1
+    assert not record.exists() or read_json(record)["operation_id"] != first["operation_id"]
+
+
+def test_a_finished_local_update_journal_reads_as_direct(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff
+    from astrid.installer.core import write_json
+    from astrid.installer.installation import Installation
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    assert handoff.normalise_completed(c.backend)
+    write_json(c.root / "update-transaction.json", {"format": "astrid-install-update/v1", "step": "complete",
+                                                     "transaction_context": {"owner": "local-update"}})
+    assert Installation.resolve(c.service.home, system="linux").kind == "direct"
+
+
+def test_local_update_operates_the_r1_label_after_normalisation(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff, local_update
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    assert handoff.normalise_completed(c.backend)
+    r0_unit = c.service.path
+    before = r0_unit.read_bytes()
+    backend = local_update._backend(c.root)
+    assert backend.service.handed_off and backend.service.path.name == "astrid-r1.service"
+    backend.service.publish_launch_admission(current(c.root), c.destination)  # the local update's first step
+    assert r0_unit.read_bytes() == before
+
+
+def test_retained_versions_keep_every_version_when_the_move_cannot_be_read(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff
+    from astrid.installer.core import write_json
+    from astrid.installer.installation import retained_versions
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    assert handoff.normalise_completed(c.backend)
+    assert retained_versions(c.service, c.root) == {c.root / "versions/release0"}
+    write_json(c.service.selection, {**selection(c), "retained_r0_data_root": "/elsewhere"})
+    kept = retained_versions(c.service, c.root)
+    assert c.root / "versions/release0" in kept and c.root / "versions/release1" in kept
+
+
+def test_update_whose_runtime_was_not_restarted_reports_runtime_not_running(case, monkeypatch, capsys):
+    """The selection advances to the target, but the live Runtime still runs the old release."""
+    from astrid.installer.core import switch
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    _cli(c, monkeypatch)
+
+    class SwitchOnly(Installer):
+        def run(self, mode, manifest, **_kwargs):
+            switch(self.root, c.backend.stage(manifest, self.root, self.data))
+
+    monkeypatch.setattr(cli, "Installer", SwitchOnly)
+    code = _update(c, 2)
+    lines = _summary(capsys.readouterr().out)
+    assert code == 3 and current(c.root).release == 2
+    assert "Astrid did NOT update. It is still Release 1; Release 2 is available." in lines
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["reason"]) == ("not-updated", "runtime-not-running")
+
+
+def test_handle_refuses_an_unnormalised_complete_journal_without_changes(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    before = (c.tx.journal.read_bytes(), c.service.selection.read_bytes(), (c.root / "install.json").read_bytes())
+    with pytest.raises(ValueError, match="must be finished by the install line first"):
+        handoff.handle(c.root, c.data, c.backend)
+    assert (c.tx.journal.read_bytes(), c.service.selection.read_bytes(),
+            (c.root / "install.json").read_bytes()) == before
+
+
+def test_normalisation_replaces_the_release1_launcher_before_rewriting_records(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff, boundary_registration as registration
+    from tests.fixtures.release1_launcher import release1_launcher_script
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    version = current(c.root)
+    script = version.root / "bin/runtime.py"
+    assert script.read_text(encoding="utf-8") == release1_launcher_script(version)
+    admitted, output = _launcher_admits(c, version.root)
+    assert admitted, output  # Release 1's launcher admits the handoff's records
+    order = []
+    publish = registration._publish
+
+    def recorded(path, content, **options):
+        order.append(Path(path).name)
+        return publish(path, content, **options)
+
+    monkeypatch.setattr(registration, "_publish", recorded)
+    assert handoff.normalise_completed(c.backend)
+    assert order[:2] == ["runtime.py", "runtime"] and order.index("runtime.py") < order.index("install.json")
+    assert script.read_text(encoding="utf-8") == registration.launcher_script(version)
+    admitted, output = _launcher_admits(c, version.root)
+    assert admitted, output  # the R1 service still starts on the normalised records
+
+
+def test_normalisation_that_cannot_replace_the_launcher_changes_nothing(case, monkeypatch):
+    from astrid.installer import boundary_handoff as handoff, boundary_registration as registration
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    version = current(c.root)
+    records = (c.root / "install.json").read_bytes(), c.service.selection.read_bytes()
+    monkeypatch.setattr(registration, "stage_runtime_launcher", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="launcher could not be replaced"):
+        handoff.normalise_completed(c.backend)
+    assert ((c.root / "install.json").read_bytes(), c.service.selection.read_bytes()) == records
+    assert c.tx.journal.exists()
+    admitted, output = _launcher_admits(c, version.root)
+    assert admitted, output  # Release 1 keeps starting on the untouched records
+
+
+def test_release1_launcher_refuses_normalised_records(case, monkeypatch):
+    """Why the order matters: the fixture's Release 1 launcher detects a records-first normalisation."""
+    from astrid.installer import boundary_handoff as handoff
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    version = current(c.root)
+    value = read_json(c.tx.journal)
+    for path, is_selection in ((c.root / "install.json", False), (c.service.selection, True)):
+        path.write_text(json.dumps(handoff._normalise_record(read_json(path), value, selection=is_selection)))
+    admitted, _output = _launcher_admits(c, version.root)
+    assert not admitted

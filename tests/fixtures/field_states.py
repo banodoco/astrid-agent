@@ -40,7 +40,29 @@ def _extend_manager(shim: Path) -> None:
         '    state["r1"] = "inactive"\n'
         '    path.write_text(json.dumps(state))\n'
         'elif args == ["--user", "daemon-reload"]:', 1)
+    # R0's own label reports the process it runs, and stopping it ends that process.
+    body = body.replace('print("FragmentPath=" + state["unit"])\n',
+                        'print("FragmentPath=" + state["unit"])\n'
+                        '    print("MainPID=" + str(state.get("r0_pid", 0) if state["running"] else 0))\n', 1)
+    body = body.replace('elif args == ["--user", "disable", "--now", "astrid.service"]:\n',
+                        'elif args == ["--user", "disable", "--now", "astrid.service"]:\n'
+                        '    if state["running"] and state.get("r0_pid"):\n'
+                        '        os.kill(state["r0_pid"], signal.SIGTERM)\n', 1)
+    assert "MainPID=" in body and 'os.kill(state["r0_pid"]' in body
     shim.write_text(body)
+
+
+def _r0_era_runtime(c):
+    """A live process standing in for the R0-era Runtime, reaped as soon as it exits."""
+    import atexit
+    import subprocess
+    import threading
+
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    threading.Thread(target=process.wait, daemon=True).start()
+    atexit.register(lambda: process.poll() is None and process.kill())
+    c.r0_process = process
+    return process.pid
 
 
 def stage_release(c, release: int):
@@ -72,8 +94,13 @@ def _as_completed_by_earlier_installer(c) -> None:
     """The field state: a ``complete`` journal and the handoff's own records, never normalised.
 
     Installers before UR-15 left the handoff journal authoritative forever. A
-    current installer normalises at the end of the handoff, so undo that here.
+    current installer normalises at the end of the handoff, so undo that here,
+    including the launcher: Release 1's admits only the handoff's own records.
     """
+    from tests.fixtures.release1_launcher import install_release1_launcher
+
+    # Release 1's own launcher, as staged by the installer that ran the handoff.
+    install_release1_launcher(current(c.root))
     journal = c.tx.journal
     archive = journal.with_name("astrid-r1-handoff.completed.json")
     if not archive.exists():
@@ -85,29 +112,45 @@ def _as_completed_by_earlier_installer(c) -> None:
     os.replace(archive, journal)
 
 
-def handed_off_release1_r0_live(c, monkeypatch):
-    """Hannah's state; returns ``c`` with ``manifest_path(release)`` and fake live health."""
+def handed_off_release1_r0_live(c, monkeypatch, *, r0_runtime: str = "label"):
+    """Hannah's state; returns ``c`` with ``manifest_path(release)`` and fake live health.
+
+    ``r0_runtime``: ``"label"`` (the R0-era Runtime is running again under R0's
+    own login label, the field state), ``"unknown"`` (a live R0-root owner the
+    R0 label does not run) or ``"none"`` (its discovery file is stale).
+    """
     from tests.test_installer_r0_entry import state
 
     c.tx.run(c.data, lambda: c.manifest, say=lambda _line: None)
     assert current(c.root).release == 1
     _as_completed_by_earlier_installer(c)
+    _extend_manager(Path(os.environ["PATH"].split(os.pathsep)[0]) / "systemctl")
     # The R0-era Runtime came back against the retained R0 data (same realm id).
+    pid = _r0_era_runtime(c) if r0_runtime in {"label", "unknown"} else 2 ** 22 + 1
+    if r0_runtime == "label":
+        state(c.manager, running=True, r0_pid=pid)
     write_json(c.data / "runtime" / "discovery.json", {
-        "pid": os.getpid(), "runtime_instance_id": R0_INSTANCE, "active_realm": "r0",
+        "pid": pid, "runtime_instance_id": R0_INSTANCE, "active_realm": "r0",
         "identity": {"release": 0, "managed_by": None},
         "door_endpoint": "http://127.0.0.1:17340"})
-    _extend_manager(Path(os.environ["PATH"].split(os.pathsep)[0]) / "systemctl")
     c.staged = []
     c.verified_releases = []
     c.state = lambda: state(c.manager)
 
+    c.started_release = current(c.root).release
+    start = c.backend.start
+
+    def started(version, data):
+        start(version, data)
+        c.started_release = current(c.root).release  # the Runtime runs what was selected at start
+
+    monkeypatch.setattr(c.backend, "start", started)
+
     def live(_data_root, program_root=None):
-        # Health answers only while the R1 unit runs; it reports the selected version.
+        # Health answers only while the R1 unit runs; it reports the release it started with.
         if state(c.manager)["r1"] != "active":
             return None
-        version = current(c.root)
-        return {"release": version.release, "managed_by": None, "instance_id": f"r1-{version.release}"}
+        return {"release": c.started_release, "managed_by": None, "instance_id": f"r1-{c.started_release}"}
 
     def verify(version, data, realm_id, **_options):
         assert data == c.destination and realm_id == "r0"

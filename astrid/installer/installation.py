@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .core import Version, absolute, current, owned_by_local_update, read_json
+from .core import Version, absolute, current, owned_by_local_update, pending_transaction, read_json
 from .service import LABEL, default_program_root, install_selection, installer_lock_path
 
 KINDS = ("none", "r0", "handoff", "handoff-rolled-back", "direct", "pinokio", "source", "fully-local")
@@ -39,6 +39,7 @@ class LiveRuntime:
     instance_id: str | None
     pid: int | None
     selected: bool
+    alive: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class State:
         return release if type(release) is int else None
 
 
-def probe_live(data_root: Path | None, program_root: Path | None = None) -> dict | None:
+def probe_runtime_identity(data_root: Path | None, program_root: Path | None = None) -> dict | None:
     """The live Runtime's health identity at a data root, or None when it is not answering.
 
     ``program_root`` is unused here; hermetic tests substitute a probe that reports
@@ -89,6 +90,23 @@ def probe_live(data_root: Path | None, program_root: Path | None = None) -> dict
         return None
 
 
+probe_live = probe_runtime_identity  # hermetic tests replace this name; the real probe stays reachable
+
+
+def _process_alive(pid: int | None, birth: str | None = None) -> bool:
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        from runtime_protocol import platform
+
+        identity = platform.process_identity(pid)
+    except Exception:  # noqa: BLE001 - an unknowable process is treated as live below
+        return True
+    if identity is None:
+        return False
+    return not birth or identity.get("birth_id") == birth
+
+
 def _discovered(data_root: Path, *, selected: bool) -> LiveRuntime | None:
     try:
         discovery = json.loads((data_root / "runtime" / "discovery.json").read_text(encoding="utf-8"))
@@ -98,8 +116,10 @@ def _discovered(data_root: Path, *, selected: bool) -> LiveRuntime | None:
         return None
     pid = discovery.get("pid")
     instance = discovery.get("runtime_instance_id")
-    return LiveRuntime(data_root, instance if isinstance(instance, str) else None,
-                       pid if type(pid) is int else None, selected)
+    birth = discovery.get("process_birth_id")
+    pid = pid if type(pid) is int else None
+    return LiveRuntime(data_root, instance if isinstance(instance, str) else None, pid, selected,
+                       _process_alive(pid, birth if isinstance(birth, str) else None))
 
 
 def _size(path: Path | None) -> int:
@@ -142,7 +162,10 @@ class Installation:
         retained = _path(selection.get("retained_r0_data_root") or marker.get("retained_r0_data_root"))
         data = _path(selection.get("data_root") or marker.get("data_root"))
         phase = journal.get("phase") if journal else None
-        pending = read_json(program_root / "update-transaction.json")
+        try:
+            pending = pending_transaction(program_root) or {}
+        except (OSError, ValueError):
+            pending = {}
         if journal:
             kind = "handoff-rolled-back" if phase == "rolled_back" else "handoff"
             if phase == "complete":
@@ -217,11 +240,78 @@ def adopt_if_handed_off(backend, root: Path):
 
 def retained_versions(service, root: Path) -> set[Path]:
     """Version folders a finished handoff keeps for --rollback (the R0 program)."""
+    if not hasattr(service, "home") or not hasattr(service, "system"):
+        return set()  # not a login service, so there is no storage move to keep
     try:
         value = normalised_handoff(service, root)
-    except (OSError, ValueError, AttributeError, TypeError):
-        return set()
+    except (OSError, ValueError, TypeError, KeyError):
+        # Fail closed: when the move's evidence cannot be read, keep every version.
+        versions = absolute(root) / "versions"
+        return {path for path in versions.iterdir()} if versions.is_dir() else set()
     if not value:
         return set()
     pointer = str(value.get("old_pointer") or "").strip()
     return {absolute(root) / "versions" / pointer} if pointer else set()
+
+
+class OtherRuntimeRunning(ValueError):
+    """A second live Runtime for this workspace that the installer may not stop."""
+
+
+def _r0_label_pid(service) -> int | None:
+    """The pid the R0 login label's manager runs now, or None when that label runs nothing."""
+    from . import r0_stop
+
+    if service.system == "linux":
+        output = r0_stop._run(service, ["systemctl", "--user", "show", "astrid.service",
+                                        "--property=MainPID", "--property=ActiveState"])
+        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        pid = int(fields.get("MainPID") or 0)
+        return pid if fields.get("ActiveState") in {"active", "activating", "reloading"} and pid > 0 else None
+    if service.system == "darwin":
+        import re
+
+        output = r0_stop._launchd_print(service, f"gui/{r0_stop._launchd_uid()}/{LABEL}")
+        found = re.findall(r"(?m)^\tpid = (\d+)$", output or "")
+        return int(found[0]) if len(found) == 1 else None
+    return None
+
+
+def retire_r0_leftover(service, root: Path, *, timeout: float = 90.0, poll: float = 0.2) -> bool:
+    """Before any stop: stop a known R0-era Runtime left by a finished storage move.
+
+    Known means the retained R0 root publishes a live owner and R0's own login
+    label (``astrid.service`` / ``haus.astrid.runtime``) runs exactly that
+    process. It is disabled and stopped through that label; its files are kept
+    for --rollback. Any other live second Runtime, or a leftover that does not
+    stop, is refused with ``other-runtime-running`` before anything is stopped.
+    Returns whether a leftover was stopped.
+    """
+    import time
+
+    from . import r0_stop
+
+    value = normalised_handoff(service, root)
+    if not value:
+        return False
+    leftover = _discovered(absolute(value["r0_data_root"]), selected=False)
+    if leftover is None or not leftover.alive:
+        return False
+    try:
+        owner = _r0_label_pid(service)
+    except Exception as failure:  # noqa: BLE001 - an unreadable manager is not a known leftover
+        raise OtherRuntimeRunning("Another Astrid is running this workspace and its owner could not be checked.") from failure
+    if owner is None or owner != leftover.pid:
+        raise OtherRuntimeRunning(
+            f"Another Astrid is running this workspace from {value['r0_data_root']} (pid {leftover.pid}) "
+            "and it is not the earlier version's login service, so nothing was stopped.")
+    try:
+        r0_stop._disable_and_stop(service, r0_stop._launchd_uid() if service.system == "darwin" else None)
+    except Exception as failure:  # noqa: BLE001 - reported as the refusal below
+        raise OtherRuntimeRunning("The earlier Astrid copy could not be stopped.") from failure
+    deadline = time.monotonic() + timeout
+    while _process_alive(leftover.pid):
+        if time.monotonic() >= deadline:
+            raise OtherRuntimeRunning("The earlier Astrid copy did not stop.")
+        time.sleep(poll)
+    return True

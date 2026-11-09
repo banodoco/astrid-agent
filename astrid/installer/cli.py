@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from . import update_job
 from .backend import Backend
 from .installation import Installation
-from .outcome import RECORD, Request, settle, write_record
+from .outcome import RECORD, Request, clear_record, settle, write_record
 from .choices import (
     CHOICE_NAMES,
     RECOMMENDED_CHOICES,
@@ -329,16 +329,24 @@ class _Run:
         self.mode = mode
         self.target: int | None = None
         self.reason: str | None = None
+        self.refused = False  # the run stopped before doing anything; never reported as reached
         self.before = None
         self.home = self.system = self.root = None
         self.choices = None
         self.installer = None
         self.transaction_id = None
+        self.operation_id: str | None = None
+        self.started_at: int | None = None
         self.protected: list[Path] = []
         self.log: Path | None = None  # the installer log, once it is known to be outside every root
 
     def observe(self, home: Path, system: str, root: Path | None) -> None:
+        import secrets
+        import time
+
         self.home, self.system, self.root = home, system, root
+        self.operation_id = self.operation_id or secrets.token_hex(16)
+        self.started_at = self.started_at or int(time.time())
         try:
             self.before = Installation.resolve(home, system=system, root=root)
             pending = read_json((root or self.before.program_root) / "update-transaction.json")
@@ -364,13 +372,14 @@ class _Run:
         except (OSError, ValueError):
             rolled_back = False
         request_mode = "update" if self.mode in {"update", "app-update"} else self.mode
-        outcome = settle(Request(request_mode, self.target, self.reason), self.before,
+        outcome = settle(Request(request_mode, self.target, self.reason, self.refused), self.before,
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back)
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
-            write_record(self.log.with_name(RECORD), outcome, *self.protected)
+            write_record(self.log.with_name(RECORD), outcome, *self.protected,
+                         run={"operation_id": self.operation_id, "started_at": self.started_at})
         _print_run_summary(self.choices, mode=self.mode, outcome=outcome,
                            outcomes=getattr(self.installer, "outcomes", None), failure=failure,
                            install_root=self.root)
@@ -455,6 +464,13 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-job is invalid.")
     from runtime_protocol import platform
     log = None  # Unresolved selection and unsafe/unavailable logs use the console.
+    if settled:
+        # A run that fails before it can write its own receipt must not leave
+        # the previous run's receipt standing as if it were this run's.
+        try:
+            clear_record(platform.log_dir() / RECORD)
+        except (OSError, ValueError, KeyError):
+            pass
     try:
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         log_path = platform.log_dir() / "install.log"
@@ -742,6 +758,18 @@ def main(argv: list[str] | None = None) -> int:
                         refuse_unintegrated_r1_handoff(root, backend.service)
                     elif mode == "rollback":
                         raise ValueError("Copy-only service rollback is available for direct installations.")
+                if handed_off and mode in {"install", "update"}:
+                    from .installation import OtherRuntimeRunning, retire_r0_leftover
+
+                    try:
+                        # Before any stop: a known R0-era leftover is stopped through
+                        # R0's own label (files kept); anything else is refused.
+                        if retire_r0_leftover(backend.service, root):
+                            print("Stopped the earlier Astrid copy that was running again; its files were kept.")
+                    except OtherRuntimeRunning as refusal:
+                        print(str(refusal))
+                        run.reason, run.refused = "other-runtime-running", True
+                        return run.finish()
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":

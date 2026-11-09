@@ -11,6 +11,8 @@ already read; never inside a program or data root). Exit 0 means the live releas
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -46,7 +48,7 @@ REASONS = {
     "consent-required": "setup needs your consent; run the exact rerun command shown above.",
     "declined": "you declined the setup, so nothing was changed.",
     "recovered-previous-version": "an earlier update was interrupted and Astrid restored the version before it; run the same command again to update.",
-    "runtime-not-running": "Astrid's Runtime did not report its release after the run.",
+    "runtime-not-running": "the new release was installed, but the running Astrid did not restart onto it.",
     "refused": "the installer refused to continue; the message above says why.",
     "error": "the run stopped with an error; the message above says why.",
     "installer-bug": "the installer finished without installing the new release. This is a bug in Astrid, not something you did.",
@@ -59,6 +61,7 @@ class Request:
     mode: str
     target: int | None = None
     reason: str | None = None
+    refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,11 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode)
+    others = [r for r in (getattr(after, "live_runtimes", ()) or ()) if r.alive and not r.selected]
+    if request.refused or others:
+        # Refused before any work, or a second Runtime is live for this workspace.
+        reason = request.reason or "other-runtime-running"
+        return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode)
     if request.mode == "update":
         # --update: the target is the manifest release.
         if live is not None and target is not None and live == target:
@@ -174,12 +182,27 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         return Outcome(kind, live, start, live, request.reason, request.mode)
     reason = request.reason
     if reason is None:
-        reason = "runtime-not-running" if live is None and target is not None and after is not None \
-            and after.selected_release == target else "installer-bug"
+        # The selected version advanced but the live Runtime did not follow it.
+        selected = after.selected_release if after is not None else None
+        reason = ("runtime-not-running" if selected is not None and selected != start
+                  and selected == (target if request.mode == "update" else selected) else "installer-bug")
     return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode)
 
 
-def write_record(path: Path, outcome: Outcome, *protected: Path) -> Path | None:
+def clear_record(path: Path) -> None:
+    """Remove a previous run's receipt at the start of a run, so it can never outlive it.
+
+    Only Astrid's own regular, single-link record is removed.
+    """
+    try:
+        info = os.lstat(path)
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and read_record(path) is not None:
+            os.unlink(path)
+    except (OSError, ValueError):
+        pass
+
+
+def write_record(path: Path, outcome: Outcome, *protected: Path, run: dict | None = None) -> Path | None:
     """Write the receipt; never into a protected program or data root."""
     from .core import absolute, write_json
 
@@ -187,7 +210,7 @@ def write_record(path: Path, outcome: Outcome, *protected: Path) -> Path | None:
         path = absolute(path)
         if any(path.is_relative_to(absolute(root)) for root in protected):
             return None
-        write_json(path, outcome.record())
+        write_json(path, {**outcome.record(), **(run or {})})
         return path
     except (OSError, ValueError, TypeError):
         return None
