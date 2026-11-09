@@ -193,3 +193,22 @@ def test_windows_upgrade_refusal_settles_as_not_updated_with_exit_3():
     out = settle(Request("install"), r0, lambda: r0, failure=ValueError(WINDOWS_UPGRADE_REFUSAL))
     assert out.kind == "not-updated" and out.exit_code == 3
     assert out.reason == "windows-upgrade-unsupported"
+
+
+# --- autostart-off is one reason in the enum: a --update refusal, exit 3, with its own copy.
+
+def test_autostart_off_refusal_of_an_update_settles_not_updated_exit_3_with_why_next_and_details():
+    from astrid.installer.update_job import _AutostartOff
+
+    before = _state("runtime", 11)
+    refusal = _AutostartOff("This update cannot run because saved autostart is off and the installer "
+                            "cannot preserve that choice yet.")
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: before, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "autostart-off"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[0] == "Astrid did NOT update. It is still Release 11; Release 12 is available."
+    assert lines[1] == "Why: start at sign-in is off, so this update has to run from a terminal."
+    assert lines[-2] == ("Next: run the update command from a terminal. It updates Astrid and starts it, "
+                         "and your choice stays off.")
+    assert lines[-1] == "Details: /logs/install.log"
