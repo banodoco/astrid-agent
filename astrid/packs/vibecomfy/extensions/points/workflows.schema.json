@@ -17,7 +17,20 @@
           "bundle": {"type": "string", "minLength": 1},
           "needs": {"type": "array"},
           "binds": {"type": "object"},
-          "defaults": {"type": "object"}
+          "defaults": {"type": "object"},
+          "default_for": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "mode", "priority"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {"enum": ["image", "video", "audio"]},
+                "mode": {"type": "string", "minLength": 1},
+                "priority": {"type": "integer"}
+              }
+            }
+          }
         }
       }
     },

@@ -33,9 +33,11 @@ from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receip
 from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
+from tests.helpers.generation_defaults import default_entries
+SLOT_DEFAULTS = default_entries()
 pytestmark = pytest.mark.integration
 
-SLOTS = sorted(generation._DEFAULT_ENTRIES)
+SLOTS = sorted(SLOT_DEFAULTS)
 PROMPTS = {("image", "t2i"): {"prompt": "A red cube on a white tabletop."},
            ("image", "edit"): {"prompt": "Make the cube blue."},
            ("audio", "tts"): {"text": "Hello from the pod."},
@@ -52,7 +54,7 @@ def _slot_classes(slot):
     from astrid.core.generation import entries
     ready = entries.ready_entries()
     classes = set()
-    for identifier in generation._DEFAULT_ENTRIES.get(slot, _CAPABILITY_ENTRIES.get(slot, ())):
+    for identifier in SLOT_DEFAULTS.get(slot, _CAPABILITY_ENTRIES.get(slot, ())):
         for row in ready:
             if identifier in (row["id"], row.get("registry_id")):
                 workflow = entries._load_entry_workflow(row)
@@ -81,7 +83,7 @@ class SlotPod(MachineProviderHTTP):
         self.expect_entry = None
         from astrid.core.generation import entries
         self.listed = sorted({row["id"] for row in entries.ready_entries()}
-                             | {value for values in generation._DEFAULT_ENTRIES.values() for value in values}
+                             | {value for values in SLOT_DEFAULTS.values() for value in values}
                              | {value for values in _CAPABILITY_ENTRIES.values() for value in values})
         # Each engine's own readiness gate needs its required nodes in /object_info, besides the workflow's classes.
         from astrid.core.generation import engine_recipe
@@ -447,7 +449,7 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
 # One case per generation capability, each on every target kind. The runpod cells
 # repeat the slot and h3 cases above through the same drive; the local-managed and
 # attached cells are the questions T3/T4 answer. The i2v default is absent from
-# _DEFAULT_ENTRIES and reaches RunPod only through its own engine lock.
+# SLOT_DEFAULTS and reaches RunPod only through its own engine lock.
 CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio", "music"),
                 ("audio", "sfx"), ("video", "i2v"), ("video", "h3")]
 # T1 characterization. Each red cell asserts today's refusal: (exception type or "result", key message, task that flips it).
