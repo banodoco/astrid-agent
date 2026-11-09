@@ -813,6 +813,20 @@ def _output_prefix_binding(workflow: Any, requested: dict[str, Any], binds) -> d
     return {'filename_prefix': _resolve_binding(workflow, 'filename_prefix', f'{node.id}.filename_prefix')}
 
 
+def prepare_execution_bindings(workflow: Any, bindings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve run randomness once, before sealing, and retain it as native bindings.
+
+    The same helper prepares catalog, entry, hook and direct workflow executions.
+    An explicit or replayed seed is authoritative; independent seedless preparations stay fresh.
+    """
+    import secrets
+
+    prepared = dict(bindings or {})
+    if "seed" in getattr(workflow, "inputs", {}) and "seed" not in prepared:
+        prepared["seed"] = secrets.randbelow(2**32)
+    return prepared
+
+
 def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
                           binds=None, defaults=None, param_map=None):
     """One validated native binding path for catalog, entry and raw workflows."""
@@ -859,7 +873,10 @@ def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
             assets[public] = Path(value)
         else:
             workflow.set_input(public, value)
-    return workflow, {"kind": kind, "bindings": applied, "unbound": sorted(unbound)}, assets
+    prepared = prepare_execution_bindings(workflow, applied)
+    for name in prepared.keys() - applied.keys():
+        workflow.set_input(name, prepared[name])
+    return workflow, {"kind": kind, "bindings": prepared, "unbound": sorted(unbound)}, assets
 
 
 # RunPod engines in their declared preference order: the lighter recipe first.

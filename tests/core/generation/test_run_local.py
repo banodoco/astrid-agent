@@ -296,3 +296,18 @@ def test_requirements_of_built_entries_read_selected_graph_without_rebuilding(tm
         live = action._entry_manifest("input-dependent-hook", {}, workflow_path=Path(path))
         assert live == dry
         assert live["models"][0]["name"] == Path(path).with_suffix(".bin").name
+
+
+def test_prepared_random_seed_is_fresh_recorded_and_replayable(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.generation.entries import prepare_execution_bindings
+
+    fresh = iter((123, 456))
+    monkeypatch.setattr("secrets.randbelow", lambda limit: next(fresh))
+    workflow = SimpleNamespace(inputs={"seed": object()})
+    first = prepare_execution_bindings(workflow, {"prompt": "exact prompt"})
+    second = prepare_execution_bindings(workflow, {"prompt": "exact prompt"})
+    assert first == {"prompt": "exact prompt", "seed": 123}
+    assert second == {"prompt": "exact prompt", "seed": 456}
+    assert prepare_execution_bindings(workflow, first) == first
+    assert prepare_execution_bindings(workflow, {"seed": 0}) == {"seed": 0}
