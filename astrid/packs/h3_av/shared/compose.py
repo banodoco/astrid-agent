@@ -464,9 +464,9 @@ def _spatial_video_masks(
         if not mask_id and ("rectangle" in selector or selector.get("full_frame") is True):
             if source is None:
                 raise CompositionError("regional video generation requires an authoritative source")
-            from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
-            from astrid.packs.h3_av.shared.request import H3RequestError
-            from astrid.packs.h3_av.shared.spec import Region
+            from .static_regions import resolve_static_region
+            from .request import H3RequestError
+            from .spec import Region
 
             width, height = _video_dimensions(_probe(source), role="source")
             box = tuple(selector.get("rectangle", (0, 0, width, height)))

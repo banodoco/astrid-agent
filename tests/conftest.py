@@ -260,3 +260,11 @@ def generation_settings_store():
     settings.set_store_factory(lambda: store)
     yield store
     settings.set_store_factory(None)
+
+
+@pytest.fixture(autouse=True)
+def _h3_engine_facts():
+    """h3_av imports nothing from Astrid; its host installs the engine facts (production: each run.py)."""
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts
+    engine_facts.install(comfyui_facts())

@@ -15,8 +15,8 @@ import jsonschema
 import pytest
 from PIL import Image
 
-from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import H3RequestError, normalize_request
 from astrid.packs.h3_av.shared.spec import normalize_spec
 
@@ -58,7 +58,7 @@ def _node(api: dict, class_type: str) -> dict:
 @pytest.mark.ffmpeg
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 def test_imported_v1_and_v2_use_the_same_native_lowering(case, tmp_path, monkeypatch):
-    compiler = importlib.import_module("astrid.packs.h3_av.actions.compile.compile")
+    compiler = importlib.import_module("astrid.packs.h3_av.shared.compile")
 
     def legacy_route(*args, **kwargs):
         pytest.fail("an edit reached the legacy compiler")
@@ -99,7 +99,7 @@ def test_imported_v1_and_v2_use_the_same_native_lowering(case, tmp_path, monkeyp
 
 
 def test_static_mask_is_the_canonical_b2_raster(tmp_path):
-    from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
+    from astrid.packs.h3_av.shared.static_regions import resolve_static_region
 
     assets = _assets(tmp_path)
     request = normalize_request(CASES[2]["v2"])
@@ -183,7 +183,7 @@ def test_unsupported_operation_controls_fail_closed(control, value):
 
 @pytest.mark.parametrize("mutation", ["audio", "multiple", "polygon", "preserve-control"])
 def test_unsupported_edits_fail_before_any_legacy_route(tmp_path, monkeypatch, mutation):
-    compiler = importlib.import_module("astrid.packs.h3_av.actions.compile.compile")
+    compiler = importlib.import_module("astrid.packs.h3_av.shared.compile")
     monkeypatch.setattr(compiler, "_compile_lanpaint", lambda *a, **kw: pytest.fail("legacy route reached"))
     raw = copy.deepcopy(CASES[2]["v2"])
     edits = raw["media"][0]["edit"]

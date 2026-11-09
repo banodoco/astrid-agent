@@ -1,4 +1,4 @@
-description: A workflow family that VibeComfy runs; the entries, an optional build and an optional finalize.
+description: A workflow family that VibeComfy runs; the entries, an optional build and an optional after_outputs.
 version: 1
 min_supported: 1
 side: agent

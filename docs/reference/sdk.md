@@ -281,7 +281,7 @@ from astrid.sdk import observe_task_invocation
 
 result = observe_task_invocation(
     client,
-    capability_id="h3_av.compose",
+    capability_id="vibecomfy.run",
     capability_type="executor",
     native_kind="executor",
     task_id="task-from-journal",

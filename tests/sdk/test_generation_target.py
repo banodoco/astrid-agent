@@ -200,7 +200,6 @@ def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
     registry = ModelRegistry([entry])
     monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
     monkeypatch.setattr(entries, 'user_entries', lambda: [])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     monkeypatch.setattr(availability, 'availability_declaration', lambda: {'models': {
         entry.id: {'available': False, 'error': {'code': 'generation_route_unqualified',
                    'message': 'synthetic entry qualification missing'}}}})
@@ -248,7 +247,6 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
              'source': 'ready-template', 'bundle': 'authored.py'}
     monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
     monkeypatch.setattr(entries, 'ready_entries', lambda: [])
-    monkeypatch.setattr(entries, 'action_entries', lambda: [])
     class Probed(Exception):
         pass
     probe = Mock(side_effect=Probed)

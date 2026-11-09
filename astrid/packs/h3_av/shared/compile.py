@@ -9,14 +9,12 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
-from astrid.core.generation.engine_recipe import engine_source_revision
-
-from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, normalize_request
-from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
-from astrid.packs.h3_av.shared.timing import ContinuationTimingError, plan_continuation
-from astrid.packs.h3_av.shared.errors import CompilationError
-from astrid.packs.h3_av.shared.input_bundle import _canonical_bytes, _write_asset_bundle
+from .engine_facts import facts
+from .request import H3Request, H3RequestError, normalize_request
+from .request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
+from .timing import ContinuationTimingError, plan_continuation
+from .errors import CompilationError
+from .managed_assets import _canonical_bytes, _write_asset_bundle
 
 
 
@@ -43,7 +41,7 @@ def _sha256(path: Path) -> str:
 
 
 def _pack_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def _resolved_request(preparation: Mapping[str, Any]) -> H3Request:
@@ -470,14 +468,14 @@ def _compile_native_masked_edit(
     between the target latent and the sampler. Bounded mask frames encode the
     edit interval; composition still owns preservation and exact tail trimming.
     """
-    from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
+    from .generation import build_generation_workflow, generation_timing
     from vibecomfy.model_assets import resolve_referenced_assets
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
-    from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
-    from astrid.packs.h3_av.shared.spec import Region, canonical_spec
+    from .static_regions import resolve_static_region
+    from .compose import CompositionError, probe_mask
+    from .spec import Region, canonical_spec
 
     try:
         spec = canonical_spec(request)
@@ -566,14 +564,14 @@ def _compile_native_masked_edit(
     active_assets, unresolved = resolve_referenced_assets(graph)
     if unresolved:
         raise CompilationError(f"H3 model requirements are unresolved: {unresolved!r}")
-    members = _member_by_binding(build_asset_manifest(bindings))
+    members = _member_by_binding(facts().build_asset_manifest(bindings))
     destination.mkdir(parents=True, exist_ok=True)
     workflow_resource = destination / "native-masked-edit-bundle"
     emit_bundle(graph, workflow_resource / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
     (workflow_resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_native_masked_edit",
         "node": "H3V2VGranularFractionalDenoise",
-        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": facts().comfy_commit(),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"], "steps": settings["steps"], "seed": seed,
@@ -637,7 +635,7 @@ def _compile_character_swap_v2(
     graph receives only the typed Character Swap references, so composition
     continues to own the exact source audio and delivery-mask permissions.
     """
-    from astrid.packs.h3_av.shared.generation import (
+    from .generation import (
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
@@ -763,7 +761,7 @@ def _compile_character_swap_v2(
     if bool(TURBO_FILENAME in assets_by_name) != bool(turbo["enabled"]):
         raise CompilationError("Turbo loader and managed model requirement disagree")
 
-    bindings_manifest = build_asset_manifest(bindings)
+    bindings_manifest = facts().build_asset_manifest(bindings)
     members = _member_by_binding(bindings_manifest)
     destination.mkdir(parents=True, exist_ok=True)
     workflow_resource = destination / "character-swap-bundle"
@@ -771,7 +769,7 @@ def _compile_character_swap_v2(
     (workflow_resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_character_swap_adapter",
         "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": facts().comfy_commit(),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"],
@@ -984,7 +982,7 @@ def _compile_native_v2(
     if reference_ids:
         bindings["reference_0"] = assets[reference_ids[0]]
         bindings["reference_1"] = assets[reference_ids[1] if len(reference_ids) == 2 else reference_ids[0]]
-    members = _member_by_binding(build_asset_manifest(bindings))
+    members = _member_by_binding(facts().build_asset_manifest(bindings))
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"],
         "steps": settings["steps"],
@@ -1065,7 +1063,7 @@ def _compile_generation(
     from PIL import Image
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
-    from astrid.packs.h3_av.shared.generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
+    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
 
     references = request.value["references"]
     # Keep slots ordered even for repeated assets; the archive deduplicates bytes.
@@ -1112,7 +1110,7 @@ def _compile_generation(
     emit_bundle(graph, resource / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
     (resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_reference_adapter", "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": facts().comfy_commit(),
     }, sort_keys=True) + "\n")
     capabilities = {
         "operation": "generate",
