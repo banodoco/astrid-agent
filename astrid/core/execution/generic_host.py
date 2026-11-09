@@ -7138,12 +7138,17 @@ class GenericPackHost:
         """
         from types import SimpleNamespace
 
-        from astrid.core.execution.machine_run import MachineJob, resolve_machine, run_on_machine
+        from astrid.core.execution.machine_run import (
+            WORKFLOW_FILE_ENTRY, MachineJob, resolve_machine, run_on_machine,
+        )
 
         if record.id != "vibecomfy.run":
             raise HostError("only generation runs on a rented machine")
         metadata = (_task_generation_intent(task_data) or {}).get("metadata") or {}
         entry = metadata.get("model") if isinstance(metadata.get("model"), str) and metadata.get("model") else None
+        if entry == WORKFLOW_FILE_ENTRY:
+            # A workflow-file job (describe_workflow's id): no named entry, its bundle ships in the job.
+            entry = None
         provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
                                       preferences=policy.get("preferences"))
         machine = resolve_machine(policy["kind"]).for_host(
