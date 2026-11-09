@@ -2536,3 +2536,16 @@ def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(se
     assert not list(tmp_path.rglob('*.cache-*'))
     assert not [event for event in context.events if event[0] == 'service:start']
     assert context.events[-1][0] == 'release' and not context.held
+
+
+def test_model_free_install_receipt_binds_the_model_root_unpatched(setup):
+    """Plan 32 T5h: a fresh model-free install records no models, and the model-root binding
+    derived from that receipt is valid (empty inventory), with no patch on the derivation."""
+    from astrid.core.generation import engine_local_endpoint as endpoint
+
+    receipt = install(setup)
+    assert receipt.status == "installed" and tuple(receipt.models) == ()
+    binding = endpoint.model_root_binding_from_receipt(receipt, ROOT, engine="comfyui")
+    assert list(binding.inventory) == []
+    bound = endpoint.composed_model_root_binding(receipt, ROOT, engine="comfyui", deadline=time.monotonic() + 30)
+    assert list(bound.inventory) == []
