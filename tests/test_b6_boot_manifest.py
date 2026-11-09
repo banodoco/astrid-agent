@@ -115,7 +115,7 @@ def test_manifest_drift_refuses_existing_stamp(tmp_path: Path) -> None:
     support, manifest = _paths(tmp_path)
     compose_profile_handoff(manifest, support_root=support)
     registry = {key: dict(value) for key, value in VIBE_PROFILE_REGISTRY.items()}
-    registry["pip_embedded"]["probe"] = "mutated"
+    registry["checkout_server"]["probe"] = "mutated"
     with pytest.raises(BootManifestDrift, match="registry/fixtures"):
         compose_profile_handoff(manifest, support_root=support, registry=registry)
 
@@ -229,7 +229,7 @@ def test_host_provenance_detects_startup_manifest_drift(tmp_path: Path) -> None:
         boot_manifest_hash=expected,
     )
     payload = json.loads(manifest.read_text(encoding="utf-8"))
-    payload["profile_order"] = list(reversed(payload["profile_order"]))
+    payload["profile_order"] = [*payload["profile_order"], "mutated"]  # one profile is left, so reversing would not change it
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HostError, match="changed"):
         host.boot_manifest_provenance()
