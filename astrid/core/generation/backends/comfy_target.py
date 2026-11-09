@@ -37,6 +37,14 @@ MAX_ENGINE_BODY_BYTES = 1024 * 1024 * 1024
 HTTP_TRANSFER_SECONDS = 15
 LOCAL_HTTP_SECONDS = 30
 _CHUNK_BYTES = 1024 * 1024
+# Managed upload kinds: whether the caller must pin the file's SHA-256, and the
+# refusal for a file whose media type does not match the kind (default text
+# when absent).
+_MANAGED_KIND_RULES: dict[str, dict[str, Any]] = {
+    "image": {"hash_required": False, "media_error": "local_server managed assets must be images"},
+    "video": {"hash_required": True},
+    "audio": {"hash_required": True},
+}
 
 
 def validate_attached_url(value: str) -> str:
@@ -300,23 +308,22 @@ class ComfyTargetClient:
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",
                      expected_sha256: str | None = None) -> str:
-        if kind not in {"image", "video", "audio"}:
+        if kind not in _MANAGED_KIND_RULES:
             raise ValueError(f"unsupported local_server managed asset kind: {kind}")
+        rule = _MANAGED_KIND_RULES[kind]
         source = Path(source)
         subfolder = f"astrid/{validate_identity(task_id)}"
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"managed {kind} is not a regular file: {source}")
         media_type = mimetypes.guess_type(source.name)[0] or ""
         if not media_type.startswith(f"{kind}/"):
-            if kind == "image":
-                raise ValueError("local_server managed assets must be images")
-            raise ValueError(f"local_server managed {kind} asset must have a {kind}/* media type")
+            raise ValueError(rule.get("media_error") or f"local_server managed {kind} asset must have a {kind}/* media type")
         with source.open("rb") as handle:
             data = handle.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
             raise ValueError("managed media upload is too large")
         digest = hashlib.sha256(data).hexdigest()
-        if (kind != "image" or expected_sha256 is not None) and (
+        if (rule["hash_required"] or expected_sha256 is not None) and (
                 expected_sha256 is None or digest != _digest_hex(expected_sha256)):
             raise ValueError(f"managed {kind} failed hash verification: {source.name}")
         filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
