@@ -137,6 +137,12 @@ class _BusyRefusal(ValueError):
     reason = "busy"
 
 
+class _InvalidAutostartChoice(_BusyRefusal):
+    """A saved autostart choice that is not a valid choice: the install must be repaired first."""
+
+    reason = "needs-repair"
+
+
 class _AutostartOff(_BusyRefusal):
     """Saved autostart is off, which this release cannot preserve in-app: a refusal with its own reason."""
 
@@ -509,7 +515,12 @@ def autostart_off(value: object) -> bool:
 def _saved_autostart(record: dict) -> bool:
     """The saved autostart choice: the record's choices through the choices resolver. A legacy record stays on."""
     from .choices import resolve_choices
-    return resolve_choices(saved=record.get("choices"), existing_install=True)["autostart"]
+    try:
+        return resolve_choices(saved=record.get("choices"), existing_install=True)["autostart"]
+    except ValueError as failure:
+        raise _InvalidAutostartChoice(
+            "The saved autostart choice is not valid; run the install command without --update "
+            "to repair this installation, then update again.") from failure
 
 
 def _selection_path() -> Path:
@@ -798,6 +809,8 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
         return old
     except _BusyRefusal:
         raise
+    except _InvalidAutostartChoice:
+        raise  # a malformed saved choice is a repair, not a changed old version
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The accepted old version, live Runtime, or private update inputs changed.") from failure
 
