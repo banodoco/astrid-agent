@@ -105,7 +105,6 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     if engine is not None:
         _shared("engine_facts").install(engine)
     stages = _shared("stages")
-    pack = _pack()
     compose_candidate = importlib.import_module(f"{_PACK}.shared.compose").compose_candidate
     verify_candidate = importlib.import_module(f"{_PACK}.shared.verify").verify_candidate
 

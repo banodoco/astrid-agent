@@ -75,8 +75,12 @@ def test_h3_contribution_build_and_after_outputs_end_to_end(tmp_path):
     import astrid.packs.vibecomfy.extensions  # noqa: F401
     job = {**entries.entry_job(entry, inputs, job_dir, hooks=hooks),
            "manifest": {"models": [], "extra": {"nodes": []}}}
+    original_commands = engine.commands
     engine.commands = NoCommands()
-    outputs = engine.run(job, Local())  # prepare (build), align, submit, finish (after_outputs)
+    try:
+        outputs = engine.run(job, Local())  # prepare (build), align, submit, finish (after_outputs)
+    finally:
+        engine.commands = original_commands
     assert [c[0] for c in calls] == ["submit"] and calls[0][1] is not None
     assert outputs and Path(outputs[0]).is_file() and Path(outputs[0]) != generated
 
@@ -90,3 +94,22 @@ def test_h3_contribution_build_and_after_outputs_end_to_end(tmp_path):
     finally:
         stages.compile_stages = original
     assert again and Path(again[0]).is_file()
+
+
+def test_the_run_actions_after_outputs_spec_composes_the_candidate(tmp_path):
+    """vibecomfy.run's ``--after-outputs-job`` (what the facade passes) resolves h3's hook and composes."""
+    import importlib
+    entry = entries.find_entry("h3")
+    source = _video(tmp_path / "source.mp4", frames=57)
+    request = json.loads(REQUEST.read_text())
+    inputs = {"request": str(REQUEST), "asset_map": {request["media"][0]["asset"]["id"]: str(source), "source": str(source)}}
+    job_dir = tmp_path / "job"
+    entries.build_entry(entry, inputs, job_dir)
+    job = entries.entry_job(entry, inputs, job_dir, hooks={})
+    spec = json.dumps({"entry": "h3", "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]})
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    after_outputs = run._after_outputs(spec)
+    generated = _video(tmp_path / "generated.mp4", seconds=4.5)
+    produced = after_outputs([generated])
+    assert Path(produced[0]).is_file() and Path(produced[0]) != generated
+    assert run._after_outputs("{}") is None

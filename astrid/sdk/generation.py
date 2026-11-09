@@ -1027,9 +1027,20 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
-    def _generate_on_target(
+    def _generate_on_target(self, **kwargs: Any) -> Any:
+        """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
+        import shutil
+        job_dirs: list[Path] = []
+        try:
+            return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
+        finally:
+            for directory in job_dirs:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    def _generate_on_target_impl(
         self,
         *,
+        _job_dirs: list,
         registry: Any,
         model: str | None,
         mode: str,
@@ -1192,6 +1203,10 @@ class GenerationFacade:
                 assets = {}
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
+                    if source == "workflow" and candidate.get('hooks_declared'):
+                        import tempfile
+                        _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
+                        candidate = workflow_entries.attach_hooks(candidate, inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
@@ -1219,14 +1234,13 @@ class GenerationFacade:
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
                             retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
-                    elif source == "workflow" and 'build' in workflow_entries.entry_hooks(candidate):
+                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
-                        import atexit
-                        import shutil
                         import tempfile
-                        job_dir = Path(tempfile.mkdtemp(prefix='astrid-job-'))
-                        atexit.register(shutil.rmtree, job_dir, ignore_errors=True)
+                        job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
+                        if not candidate.get('job_dir'):
+                            _job_dirs.append(Path(job_dir))
                         built = workflow_entries.build_entry(candidate, inputs, job_dir)
                         workflow, assets = built['workflow'], dict(built.get('assets') or {})
                         plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
@@ -1372,7 +1386,7 @@ class GenerationFacade:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
             hook_job = None
-            if source == 'workflow' and plan and plan.get('job_dir') and 'after_outputs' in workflow_entries.entry_hooks(candidate):
+            if source == 'workflow' and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
                 # The hook runs where the job runs, after the outputs are written and before they are sealed.
                 job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
                 hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
