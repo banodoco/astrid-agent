@@ -25,6 +25,8 @@ def _facade(monkeypatch):
 
 
 def test_bare_prompt_uses_auto_target_and_sdk_default_model(monkeypatch, capsys):
+    # align is forwarded only when --align is given: the facade reads "not asked" as check
+    # on a local target and lets RunPod align, so the CLI does not invent a value.
     calls = _facade(monkeypatch)
 
     assert cli.main(["image", "a dog eating an ice cream", "--project", "demo"]) == 0
@@ -32,7 +34,7 @@ def test_bare_prompt_uses_auto_target_and_sdk_default_model(monkeypatch, capsys)
     assert calls == [{
         "model": None, "placement": "auto", "dry_run": False,
         "prompt": "a dog eating an ice cream", "project": "demo",
-        "client": "runtime-client", "align": "check",
+        "client": "runtime-client",
     }]
     assert "dog.png" in capsys.readouterr().out
 
@@ -62,7 +64,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
         "dry_run": False, "prompt": "a dog", "project": "demo", "out": "export",
         "image_ref": "reference.png", dimension_input: "768x512",
         "steps": 8, "seed": 41, "guidance_scale": 1.5,
-        "client": "runtime-client", "align": "check",
+        "client": "runtime-client",
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
 
@@ -171,6 +173,13 @@ def test_runtime_connection_stays_open_until_generation_finishes(monkeypatch, ca
     assert events == ["connect", "complete", "close"]
 
 
+@pytest.mark.parametrize("align", ["check", "trust"])
+def test_explicit_align_is_forwarded_to_the_facade(monkeypatch, align):
+    calls = _facade(monkeypatch)
+    assert cli.main(["image", "a dog", "--project", "demo", "--align", align]) == 0
+    assert calls[0]["align"] == align
+
+
 @pytest.mark.parametrize("modality", ["image", "video"])
 def test_installed_console_dispatches_generate_to_the_gateway(monkeypatch, modality):
     from astrid import console
@@ -219,7 +228,7 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
     ]) == 0
     assert calls == [{
         "model": None, "placement": "http://127.0.0.1:8188", "dry_run": False,
-        "prompt": "a dog", "client": "runtime-client", "align": "check",
+        "prompt": "a dog", "client": "runtime-client",
         **({"image_ref": "dog.png"} if modality == "video" else {}),
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
@@ -346,7 +355,7 @@ def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode)
         'dry_run': False, 'client': 'runtime-client', 'wait': False, 'consent': ['paid'],
         'max_usd': 2.0, 'deadline': '2099-01-01T00:00:00Z', 'offer_digest': 'offer',
         'preparation_seconds': 60.0, 'execution_seconds': 60.0, 'idle_seconds': 1800.0,
-        'recovery_path': 'receipt.json', 'resume': True, 'align': 'check'}]
+        'recovery_path': 'receipt.json', 'resume': True}]
     assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
 
 
@@ -373,7 +382,7 @@ def test_audio_cli_omitted_target_uses_auto(monkeypatch, capsys, mode):
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview connected to Runtime'))
     assert cli.main(['audio', 'hello', '--mode', mode, '--dry-run', '--json']) == 0
     assert calls == [{'model': None, 'mode': mode, 'placement': 'auto',
-                      'prompt': 'hello', 'dry_run': True, 'align': 'check'}]
+                      'prompt': 'hello', 'dry_run': True}]
     assert json.loads(capsys.readouterr().out) == {'status': 'preview'}
 
 
