@@ -110,8 +110,13 @@ def _merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
 
 def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
                       path: str | Path | None = None, builtin: Placement | None = None,
-                      client: Any = None) -> Placement:
-    """request -> user default -> built-in; the only place a placement is chosen."""
+                      client: Any = None, repo: str | Path | None = None) -> Placement:
+    """request -> user default -> built-in; the only place a placement is chosen.
+
+    An unrequested placement with no default kind follows a bound ComfyUI
+    attachment (env, repo or global config) when one exists; otherwise it is local.
+    An explicit request or default is never overridden by discovery.
+    """
     from astrid.core.generation import settings
 
     default = settings.placement_default(client, legacy_path=path)
@@ -119,6 +124,10 @@ def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
         raise _refuse("the [placement] default must be a table", field_name="placement")
     over = request.as_mapping() if isinstance(request, Placement) else dict(request or {})
     merged = _merge((builtin or Placement()).as_mapping(), _merge(default, over))
+    if not over and "kind" not in default and merged.get("kind") == "local":
+        attached = _discovered_attachment(repo)
+        if attached is not None:
+            merged = _merge(merged, attached.as_mapping())
     return Placement.from_mapping(merged)
 
 
@@ -137,11 +146,29 @@ def request_from_selector(selector: Any) -> Mapping[str, Any] | Placement | None
     return {"kind": selector}
 
 
-def comfy_selector(placement: Placement, selector: Any = None) -> str:
-    """What ``select_generation_target`` is asked for, from the resolved placement."""
+def comfy_selector(placement: Placement) -> str:
+    """What ``select_generation_target`` is asked for, from the resolved placement.
+
+    Pure: an attached placement is its endpoint and a local one is the managed
+    engine. Nothing here reads config, so an explicit local placement cannot reach
+    an attached ComfyUI.
+    """
     if placement.kind == "attached":
         return str(placement.endpoint)
-    return "managed" if selector == "managed" else "auto"
+    if placement.kind == "local":
+        return "managed"
+    raise _refuse(f"a {placement.kind} placement has no ComfyUI target", field_name="kind")
+
+
+def _discovered_attachment(repo: str | Path | None = None) -> Placement | None:
+    """The one read of ComfyUI config that picks a placement: a bound human endpoint, else None."""
+    from astrid.core.generation import targets
+
+    selection = targets.resolve_target("auto", repo=repo)
+    record = selection.record
+    if not selection.bound or record is None or record.owner == "astrid" or record.endpoint is None:
+        return None
+    return Placement(kind="attached", endpoint=record.endpoint)
 
 
 def registered_machine_kinds() -> tuple[str, ...]:
