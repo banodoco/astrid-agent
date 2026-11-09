@@ -40,10 +40,23 @@ class FakePod:
         self.corrupt_manifest = False
         self.cancelled: list[str] = []
         self.listed: list[str] = ["cpu-image"]  # entries the pod's runtime lists as ready
+        # The pod's one Runtime (T5f): container-disk state, not the volume.
+        self.pod_state = "absent"  # absent | ready; an active job makes it pending
+        self.active_job: dict | None = None
+        self.template = False
+        self.resets: list[dict] = []
 
     # --- agent surface
     def exec(self, command, timeout=600):
         self.exec_log.append(command)
+        if "pod-state:" in command:
+            state = "pending" if self.active_job is not None else self.pod_state
+            return 0, f"pod-state:{state}\n", ""
+        if command.startswith("rm -rf "):
+            gone = command.split(" ", 2)[2].strip("'")
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+            return 0, "", ""
         if command.startswith("test -f "):
             path = command.split(" ", 2)[2].strip("'")
             return (0 if path in self.files else 1), "", ""
@@ -78,7 +91,11 @@ class FakePod:
         job_id = f"{len(self.job_log):032x}"
         directory = f"/workspace/.astrid-jobs/{job_id}"
         rc = 1 if any(marker in command for marker in self.fail_jobs) else 0
-        stdout = ""
+        stdout, stderr = "", "boom" if rc else ""
+        if "pod_reset reset" in command:
+            stdout = self._reset(command, ok=rc == 0)
+        elif " generate " in command and "--placement local" in command and rc == 0:
+            rc, stderr = self._enter(command)
         if rc == 0:
             if "pod_bootstrap.sh" in command:
                 self.files[self.marker] = b"ok"
@@ -89,12 +106,46 @@ class FakePod:
             if " generate " in command and "--placement local" in command:
                 stdout = self._generate(command)
         self.files[f"{directory}/stdout"] = stdout.encode()
-        self.files[f"{directory}/stderr"] = b"boom" if rc else b""
+        self.files[f"{directory}/stderr"] = stderr.encode()
         self.jobs[job_id] = rc
         return {"id": job_id, "dir": directory}
 
     def job_poll(self, job_id):
         return {"id": job_id, "state": "exited", "exit_code": self.jobs[job_id]}
+
+    def _reset(self, command: str, *, ok: bool) -> str:
+        """``pod_reset reset``: template (first) or restore+replace, sweep, ready.json."""
+        import shlex as _shlex
+
+        argv = _shlex.split(command)
+        dirs = [argv[argv.index(flag) + 1] for flag in ("--run-dir", "--job-dir") if flag in argv]
+        self.resets.append({"dirs": dirs, "ok": ok, "active": self.active_job})
+        if not ok:
+            self.pod_state = "absent"
+            return json.dumps({"reset": "failed", "error": "RuntimeError: replace refused"}) + "\n"
+        for gone in dirs:
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+        taken = not self.template
+        self.template, self.pod_state, self.active_job = True, "ready", None
+        return json.dumps({"reset": "ok", "removed": len(dirs), "template": "taken" if taken else "restored"}) + "\n"
+
+    def _enter(self, command: str) -> tuple[int, str]:
+        """The generation command's own gate: ready, no pending reset, entry listed."""
+        import shlex as _shlex
+
+        assert "ensure_runtime" not in command and "astrid-runtime" not in command, "a warm job ran up/connect"
+        assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in command
+        assert "flock -s 9" in command and "ASTRID_RUNTIME_DOOR_PORT=0" in command
+        if self.pod_state != "ready" or self.active_job is not None:
+            return 75, "the pod is not ready: a reset is pending"
+        active = next(row for row in command.splitlines() if row.startswith("printf '%s' ") and "active-job" in row)
+        self.active_job = json.loads(_shlex.split(active)[2])
+        line = next(row for row in command.splitlines() if "--placement local" in row)
+        entry = _shlex.split(line.split(" > ")[0])[2]
+        if entry != "workflow" and entry not in self.listed:
+            return 3, f"entry {entry!r} is not listed by the pod's runtime"
+        return 0, ""
 
     def job_cancel(self, job_id):
         self.cancelled.append(job_id)
@@ -141,7 +192,7 @@ def _fake_generate(pod: "FakePod", command: str) -> str:
     """The pod-side local run (T4 STUB contract): out tree, result line and digest manifest."""
     import shlex as _shlex
 
-    line = next(row for row in command.splitlines() if " generate " in row)
+    line = next(row for row in command.splitlines() if "--placement local" in row)
     argv = _shlex.split(line.split(" > ")[0])
     root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
     out = f"{root}/out"

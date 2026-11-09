@@ -46,7 +46,7 @@ def prepare_retained_generation(
     requested_idle_seconds: float | None = None,
     on_acquired: Callable[[RunPodLease], None] | None = None,
     entry: str | None = None,
-    runtime_check: bool = False,
+    pod_ready: bool = False,
     observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
 ) -> PreparedRunPodLease:
     """Prepare one machine under A3's existing lock and journal, without a worker on pod.
@@ -55,11 +55,16 @@ def prepare_retained_generation(
     settle, expiry, reconciliation and release; no second account lock is taken.
     A warm machine is reused only when its machine custody (account, observed
     GPU, image, pinned volume, source digest) matches this job's; a saved volume
-    is pinned by the storage probe before install, and ``entry`` is checked on
-    the pod's own runtime after install.
+    is pinned by the storage probe before install, and with ``pod_ready`` the
+    pod's one Runtime is ready (reset in place when no ready.json is left).
     """
-    from .machine import CustodyChanged, custody_differences, machine_custody, pin_storage
-    from .machine import runtime_check as check_runtime
+    from .machine import (
+        CustodyChanged,
+        custody_differences,
+        ensure_pod_ready,
+        machine_custody,
+        pin_storage,
+    )
 
     if (request.entry.get("engine", "comfyui") != installation.engine
             or request.max_usd != consent.max_usd or request.deadline != consent.deadline
@@ -160,8 +165,9 @@ def prepare_retained_generation(
                 reuse_snapshot=previous["installed"] if reuse else None,
                 model_cache_root=cache_root,
             )
-            if runtime_check:
-                save(runtime_check=check_runtime(placement, state, entry))
+            if pod_ready:
+                # The pod's one Runtime: ready as left by the last reset, or reset now.
+                save(pod_ready=ensure_pod_ready(placement, state))
             if (lease_owner.clock() >= claimed["lease"]["paid_expires_at"]
                     or source_digest(placement.source_root) != bootstrap_digest
                     or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]
