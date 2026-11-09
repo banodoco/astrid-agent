@@ -245,3 +245,10 @@ def test_readme_banner_ends_with_connected_check_and_names_no_missing_heading():
     assert "#" not in prompt  # the prompt links the skill file only, no heading anchor
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert BANNER_ENDING in readme
+
+
+def test_readme_banner_keeps_saved_choices_for_an_existing_install():
+    # Route 3 in docs/setup/SKILL.md: an existing install keeps its saved choices.
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "If Astrid is already installed, keep my saved choices unless I ask to change one." in readme
+    assert "Before you run anything, show me the setup choices" not in readme
