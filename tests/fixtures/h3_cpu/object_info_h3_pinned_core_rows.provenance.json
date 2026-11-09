@@ -1,0 +1,10 @@
+{
+  "purpose": "ComfyMathExpression and PreviewAny at the pod's pinned ComfyUI schema; the snapshot cache ranks older runpod-snapshot rows (2 and 0 outputs) first in the stand-in",
+  "source": "vibecomfy/porting/cache/object_info/comfy_core@object_info_comfyui_0.24.0.1.json",
+  "rows": [
+    "ComfyMathExpression",
+    "PreviewAny"
+  ],
+  "source_file_sha256": "bda0a9f7ebed602e58a78429fc20744ae6cc44be5644ce9f4894df14db67e387",
+  "note": "rows copied verbatim from the cache file; not a pod capture, so they are kept apart from the pod-captured CLIPLoader overlay and its pinned digest"
+}

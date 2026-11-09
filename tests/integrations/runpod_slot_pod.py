@@ -99,7 +99,9 @@ def pin_object_info() -> dict:
     root = Path(__file__).resolve().parents[1] / "fixtures/h3_cpu"
     closure = json.loads((root / "object_info_h3_runpod_graph_closure.json").read_text())
     overlay = json.loads((root / "object_info_h3_runpod_overlay.json").read_text())
-    return {**closure, **overlay}
+    # Rows for classes whose snapshot rows predate the pin (kept out of the pod-captured overlay and its digest).
+    pinned = json.loads((root / "object_info_h3_pinned_core_rows.json").read_text())
+    return {**closure, **overlay, **pinned}
 
 
 def receipt_files(receipt: dict) -> list[str]:
