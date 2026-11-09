@@ -9,8 +9,10 @@ Open tools and knowledge for humans and agents to make art.
 ### Give this to your agent (recommended)
 
 ```text
-Help me set up Astrid on this computer. Follow:
+Help me set up Astrid on this computer. Follow the onboarding skill at
 https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+without installing it. Show me the setup choices and let me change them
+before you run anything.
 
 Preserve my existing work and credentials, confirm that the
 Runtime is connected, and help me begin at https://astrid.haus.
@@ -20,15 +22,18 @@ Runtime is connected, and help me begin at https://astrid.haus.
 
 ### Set it up yourself
 
-Follow the [manual setup guide](docs/getting-started.md), or run the installer for your operating system. Review the installer before running it.
+Follow the [manual setup guide](docs/getting-started.md), or follow the
+onboarding skill at [docs/setup/SKILL.md](docs/setup/SKILL.md) and use its
+choices step to review the setup choices before anything is installed. Review
+the installer before running it.
 
 The recommended setup starts Astrid at sign-in, adds the `astrid` terminal
 command, installs Astrid skills, and leaves skill copies off. The four choices
 are controlled by `--autostart on|off`, `--command on|off`, `--skills on|off`,
 and `--skill-copies on|off`. Ask for consent once for a fresh install when it
-has not already been given. Pass `--yes` to accept the recommended choices without a prompt.
-After consent, use one installer command with the approved values. An
-already-approved handoff needs no second consent question; preserve all its choices.
+has not already been given. After consent, use one installer command with the
+approved values. An already-approved handoff needs no second consent question;
+preserve all its choices.
 
 macOS or Linux (Terminal):
 

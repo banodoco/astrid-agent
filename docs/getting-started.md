@@ -9,6 +9,9 @@ itself, you can also run everything on your computer using the fully local
 path below. Both paths keep projects, media, models and your agent on your
 computer through Astrid Runtime.
 
+If an agent is doing the setup, have it follow the onboarding skill at
+`docs/setup/SKILL.md`, which shows these choices and lets you change them.
+
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
 before running it. It keeps your existing workspace and credentials. Ask for
 consent once before a fresh install if it has not already been given. If an
