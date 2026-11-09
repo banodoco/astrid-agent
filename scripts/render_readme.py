@@ -13,8 +13,7 @@ BANNER = """
 Help me set up Astrid on this computer. Follow:
 https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
 
-Preserve my existing work and credentials, confirm that the
-Runtime is connected, and help me begin at https://astrid.haus.
+Preserve my existing work and credentials. Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus.
 ```
 """
 

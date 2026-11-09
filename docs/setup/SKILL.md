@@ -22,11 +22,13 @@ was already given and must not be used to bypass the consent question.
 The recommended choices are startup at sign-in on, the `astrid` terminal
 command on, Astrid skills on, and skill copies off. The supported choice flags
 are `--autostart on|off`, `--command on|off`, `--skills on|off`, and
-`--skill-copies on|off`. For the recommended choices, run one command after
-consent:
+`--skill-copies on|off`. The full-flag command is for a fresh install, or after the choices step only. Run one command after consent:
 
 - macOS or Linux: `curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart on --command on --skills on --skill-copies off`
 - Windows PowerShell: `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off`
+
+On an existing install, run the plain install line from Getting Started with no
+choice flags; your saved choices stay.
 
 For an agent using another shell on Windows (such as Git Bash), run
 `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --autostart on --command on --skills on --skill-copies off"`

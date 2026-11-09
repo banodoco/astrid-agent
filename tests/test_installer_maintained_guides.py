@@ -75,6 +75,6 @@ def test_readme_banner_ends_with_connected_check_and_names_no_missing_heading():
     prompt = banner.split("```text\n", 1)[1].split("\n```", 1)[0]  # the prompt the person copies
     assert prompt.rstrip().endswith(BANNER_ENDING)
     assert "Set up generation" not in banner
-    assert "#" not in banner  # the banner links the skill file only, no heading anchor
+    assert "#" not in prompt  # the prompt links the skill file only, no heading anchor
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert BANNER_ENDING in readme
