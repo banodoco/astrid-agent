@@ -29,6 +29,7 @@ if __package__:
         RELEASE1_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         RELEASE1_1_PINOKIO_MATRIX,
+        RELEASE11_UPDATE_MATRIX,
     )
 else:
     try:
@@ -50,6 +51,7 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
+            RELEASE11_UPDATE_MATRIX,
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
@@ -70,6 +72,7 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
+            RELEASE11_UPDATE_MATRIX,
         )
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -82,6 +85,19 @@ RELEASE9_IDENTITY = {
     "runtime": "f4c7a4623c84da077daac3e3a9366fc2e6a55051",
     "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
 }
+# The served Release 11 starts the release11-then-update leg; the candidate's
+# install --update must take it to Release 12 (the pins live in journey_version_jumps).
+RELEASE11_LEG = "release11-then-update"
+RELEASE11_APP_COMMIT = "57e200b45615a59181920192697a932400d985fc"
+RELEASE11_RELEASE = 11
+RELEASE11_TARGET_RELEASE = 12
+RELEASE11_IDENTITY = {
+    "agent": "a105de3a4852cb61b9647dfe2c920118bd29f272",
+    "runtime": "4f5477cb0f5b03d28bec991a1fe34edcd8fc309f",
+    "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+}
+RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service",
+                    "health", "semantic_data", "task_settled", "unrelated_sentinel")
 RELEASE0_BOOTSTRAP_SHA256 = {
     "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
     "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
@@ -316,15 +332,66 @@ def _windows_fresh_update_errors(update, job_id):
     return errors
 
 
-# The receipt kind each Release-1 matrix leg writes. The R0 handoff leg writes
-# its own kind; every other leg writes the shared lifecycle receipt.
-RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update"}
+# The receipt kind each Release-1 matrix leg writes. The R0 handoff leg and the
+# release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
+RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
+                          RELEASE11_LEG: RELEASE11_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
 
 def release1_receipt_kind(contract):
     """The receipt kind a Release-1 matrix row must carry for its leg."""
     return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
+
+
+def _release11_row_errors(job_id, row):
+    """The release11-then-update row's four assertions, each read from the leg's own receipt fields.
+
+    1. the installed release is 12 (from 11, the pinned Release 11 source, live identity 12);
+    2. the candidate's run receipt says updated, exit 0, still and target 12;
+    3. exactly one Runtime is live afterwards;
+    4. the seeded user data survives (identical semantic digests).
+    Every other leg assertion must also pass. Each failure names the missing assertion.
+    """
+    errors = []
+    source = row.get("release11_source")
+    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE11_APP_COMMIT
+            or source.get("identity") != RELEASE11_IDENTITY):
+        errors.append(f"{job_id}: pinned release-11 source identity is absent or wrong")
+    transition = row.get("release_transition")
+    health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
+    if (not isinstance(transition, dict) or transition.get("from") != RELEASE11_RELEASE
+            or transition.get("to") != RELEASE11_TARGET_RELEASE
+            or transition.get("source") != "candidate-install-update"
+            or health.get("candidate_live_release") != RELEASE11_TARGET_RELEASE):
+        errors.append(f"{job_id}: installed release is not {RELEASE11_TARGET_RELEASE} "
+                      f"(release {RELEASE11_RELEASE} to {RELEASE11_TARGET_RELEASE}, live identity)")
+    update = row.get("update")
+    receipt = update.get("receipt") if isinstance(update, dict) else None
+    if (not isinstance(update, dict) or update.get("command") != "install --update"
+            or update.get("exit_code") != 0 or not isinstance(receipt, dict)
+            or receipt.get("kind") != "updated" or receipt.get("exit_code") != 0
+            or receipt.get("still") != RELEASE11_TARGET_RELEASE
+            or receipt.get("target") != RELEASE11_TARGET_RELEASE):
+        errors.append(f"{job_id}: candidate install --update receipt does not say updated to release "
+                      f"{RELEASE11_TARGET_RELEASE}")
+    live = row.get("live_runtimes")
+    roots = row.get("run_roots") if isinstance(row.get("run_roots"), dict) else {}
+    data = roots.get("data")
+    if (not isinstance(live, list) or len(live) != 1 or not isinstance(live[0], dict)
+            or not isinstance(data, str) or live[0].get("data_root") not in {data, data + "-r1"}):
+        errors.append(f"{job_id}: exactly one live Runtime is not recorded after the update")
+    semantic = row.get("semantic_data")
+    if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+            or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                       for name in ("before_sha256", "after_sha256"))
+            or semantic.get("before_sha256") != semantic.get("after_sha256")):
+        errors.append(f"{job_id}: seeded user data preservation is absent or unequal")
+    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    for check in RELEASE11_CHECKS:
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: {check} assertion did not pass")
+    return errors
 
 
 def _release1_row_errors(candidate, contract, row):
@@ -441,6 +508,8 @@ def _release1_row_errors(candidate, contract, row):
                 for check in ("refusal", "data_marker", "r0_selected", "scheduled_task"):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
+        elif contract.get("leg") == RELEASE11_LEG:
+            errors.extend(_release11_row_errors(job_id, row))
         elif not fresh:
             if row.get("scenario") != "r0-handoff-then-update":
                 errors.append(f"{job_id}: direct receipt did not run the r0-handoff-then-update leg")
@@ -530,9 +599,15 @@ def fresh_update_errors(job_id, update):
 
 
 def evaluate_release1_matrix(candidate, results):
-    """Reject an incomplete, skipped, or ownership-ambiguous five-job receipt set."""
+    """Reject an incomplete, skipped, or ownership-ambiguous five-job receipt set.
+
+    The release11-then-update rows are optional here. A receipt that carries one of
+    their job ids is validated against its own leg and kind, and is rejected unless all
+    four of that leg's assertions are present; a run without them is not an error.
+    """
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    optional = {row["job_id"]: row for row in RELEASE11_UPDATE_MATRIX}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         if path.parent.name == "before-cleanup":
@@ -543,16 +618,17 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{path}: {exc}")
             continue
         job_id = row.get("job_id")
-        if not isinstance(job_id, str) or job_id not in expected:
+        if not isinstance(job_id, str) or (job_id not in expected and job_id not in optional):
             errors.append(f"{path}: unknown or absent Release-1 job id")
         elif job_id in found:
             errors.append(f"{path}: duplicate receipt for {job_id}")
         else:
             found[job_id] = row
-    for job_id, contract in expected.items():
+    for job_id, contract in {**expected, **optional}.items():
         row = found.get(job_id)
         if row is None:
-            errors.append(f"{job_id}: missing receipt")
+            if job_id not in optional:
+                errors.append(f"{job_id}: missing receipt")
             continue
         errors.extend(_release1_row_errors(candidate, contract, row))
     return errors
