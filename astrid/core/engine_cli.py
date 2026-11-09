@@ -45,6 +45,7 @@ def _parser():
                              help='Operation time limit in seconds (default: 3600)')
         if name == 'install':
             command.add_argument('--dry-run', action='store_true', help='Print the verified plan without executing it')
+            command.add_argument('--models-root', help='Absolute target-native model directory outside the engine root (a saved volume cache); default: <root>/models')
     return parser
 
 
@@ -101,7 +102,8 @@ def main(argv=None, *, backend_factory=None):
         if not math.isfinite(args.deadline) or args.deadline <= 0 or args.deadline > 604800:
             raise RecipeValidationError('deadline must be greater than zero and at most 604800 seconds')
         recipe = load_recipe(args.engine, args.platform)
-        plan = plan_install(recipe, root=_root(args), placement=args.placement)
+        plan = plan_install(recipe, root=_root(args), placement=args.placement,
+                            models_root=getattr(args, 'models_root', None))
         if args.command == 'install':
             # Plan 32 T5h: an install is model-free; align fetches a job's missing model rows,
             # so the plan quantifies no model bytes. Source and environment space is additional.

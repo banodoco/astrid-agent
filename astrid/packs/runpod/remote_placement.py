@@ -147,6 +147,8 @@ class RunPodInstallation:
     engine: str = "comfyui"
     platform: str = "linux-x86_64-cu130"
     root: str = f"{ENGINE_BASE}/comfyui"
+    # The saved volume's model cache; None keeps <root>/models (no volume saved).
+    models_root: str | None = None
 
     def plan(self):
         from astrid.core.generation import engine_recipe, engine_runner
@@ -157,7 +159,8 @@ class RunPodInstallation:
                 or self.root != f"{ENGINE_BASE}/{self.engine}"):
             raise RemotePlacementError("unsupported retained installation route")
         recipe = engine_recipe.load_recipe(self.engine, self.platform)
-        plan = engine_runner.plan_install(recipe, root=self.root, placement="local")
+        plan = engine_runner.plan_install(recipe, root=self.root, placement="local",
+                                          models_root=self.models_root)
         vibe = next(s for s in recipe.sources if s.name == "vibecomfy")
         runtime_lock = Path(__file__).resolve().parents[3] / "runtime.lock.json"
         if (expected["recipe_digest"] != "sha256:" + plan.recipe_sha256
@@ -589,9 +592,11 @@ class RemotePlacement:
             state.note("install", "skipped")
             return
         installation = state.installation
+        models = (f" --models-root {shlex.quote(installation.models_root)}"
+                   if installation is not None and installation.models_root is not None else "")
         command = (
             f"{POD_VENV}/bin/astrid engines install {installation.engine} "
-            f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)} "
+            f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)}{models} "
             f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}"
         ) if installation is not None else (
             f"{POD_VENV}/bin/astrid engines install {ENGINE_ID} --placement local "

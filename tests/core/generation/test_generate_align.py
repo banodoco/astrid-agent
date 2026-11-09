@@ -663,3 +663,30 @@ def test_invalid_unselected_declarations_grant_no_inventory_authority(damage):
     assert declared_model_specs([asset], require_complete=False) == ()
     with pytest.raises(EngineError):
         declared_model_specs([asset])
+
+
+def test_second_claim_on_a_warm_volume_fetches_nothing(fake, tmp_path, monkeypatch):
+    """Plan 32 volume cache: a fresh pod (empty engine root) bound to the same saved volume fetches no rows."""
+    volume_models = tmp_path / 'volume/astrid/engines/comfyui/models'
+    first_engine = tmp_path / 'claim-1/engine'
+    second_engine = tmp_path / 'claim-2/engine'
+
+    def target_for(engine):
+        return alignment.ManagedAssetTarget(engine, volume_models,
+            engine / 'runtime/ComfyUI/custom_nodes', sys.executable,
+            'http://127.0.0.1:8188', 'a' * 64, engine / 'cache.json')
+
+    monkeypatch.setattr(alignment, 'selected_target', lambda: target_for(first_engine))
+    first_calls = []
+    report = apply(fake, client=request_bytes(first_calls))
+    assert report['status'] == 'ready' and len(first_calls) == 1
+    assert (volume_models / fake.model.destination).read_bytes() == DATA
+    assert not (first_engine / 'models').exists()
+
+    # The second claim's engine root is new and empty; only the saved volume's cache survives.
+    monkeypatch.setattr(alignment, 'selected_target', lambda: target_for(second_engine))
+    second_calls = []
+    report = apply(fake, client=FakeClient(second_calls))
+    assert second_calls == [], 'a warm volume must not re-fetch any manifest row'
+    assert report['actions'][0]['action'] == 'skipped'
+    assert not (second_engine / 'models').exists()
