@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 
 from astrid.packs.vibecomfy import production_engine
@@ -43,6 +44,37 @@ def test_local_run_uses_the_engine_run(comfy, tmp_path, monkeypatch):  # noqa: F
     assert len(comfy.prompts) == 1
     assert (out / manifest["managed_generation_result_path"]).is_file()
     assert selected == ["table"] and engine_runs[0]["manifest"]["engine"] == "comfyui"  # selected from manifest.engine
+
+
+def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """The run site passes the engine's real requirements(): a declared model that is absent refuses before any /prompt."""
+    import pytest
+    from astrid.core.contracts.errors import AstridValueError
+    from astrid.core.generation import entries
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    row = next(r for r in entries.ready_entries() if r.get("bundle") and r.get("model_assets"))
+    root = tmp_path / "engine"
+    (root / "models").mkdir(parents=True)
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.default_engine_root", lambda engine: str(root))
+    with pytest.raises(AstridValueError, match="missing declared models"):
+        action._run_and_settle(Path(row["bundle"]), tmp_path / "out", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []
+
+
+def test_local_run_refuses_an_unpinned_custom_node_with_a_clear_message(comfy, tmp_path, monkeypatch):  # noqa: F811
+    import pytest
+    from astrid.core.contracts.errors import AstridValueError
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.core.generation import entries
+    engine = entries.engine_table()["comfyui"]
+    unpinned = SimpleNamespace(metadata={"custom_node_packs": {"pack": {"url": "https://example.invalid/pack"}}})
+    monkeypatch.setitem(engine.requirements.__globals__, "_workflows", lambda entry, inputs=None: [unpinned])  # no commit
+    monkeypatch.setattr(entries, "engine_table", lambda: {"comfyui": engine})
+    with pytest.raises(AstridValueError, match="workflow declares an unpinned custom node"):
+        action._run_and_settle(comfy.workflow, tmp_path / "out", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []
 
 
 def test_attached_run_probes_before_submit_and_never_aligns(comfy, tmp_path, monkeypatch):  # noqa: F811

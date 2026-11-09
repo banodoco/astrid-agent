@@ -680,6 +680,30 @@ def _engine_for(manifest: dict[str, Any]) -> Any:
     return engine
 
 
+def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
+    """The engine's own requirements for this workflow, rooted at the installed local engine's models.
+
+    Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
+    lists nothing (the target's own preflight still checks what it needs).
+    """
+    from vibecomfy.workflow_bundle import WorkflowBundleError
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import default_engine_root
+
+    try:
+        manifest = engine.requirements({"bundle": str(workflow_path)}, {})
+    except WorkflowBundleError:
+        return {"models": [], "extra": {"nodes": []}}
+    except ValueError as exc:  # validate_extra: a custom node ref without its repo or commit
+        raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
+    try:
+        root = default_engine_root("comfyui")
+    except EngineError:
+        root = None
+    # An engine that is not installed has no models directory to check; ensure_running names that failure.
+    return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
+
+
 class _LocalEngineServer:
     """The ``local`` that ComfyUIEngine.run drives: the installed local ComfyUI, and one production submit."""
 
@@ -898,10 +922,18 @@ def _run_and_settle(
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
                 write_progress("align")
-                manifest = manifest if manifest is not None else {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
-                _engine_for(manifest).run(
-                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "check"},
-                    local)
+                engine = _engine_for(manifest or {"engine": "comfyui"})
+                if manifest is None:
+                    manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
+                mode = align or "check"
+                job = {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": mode,
+                       "refuse_missing": bool(manifest.get("models_root"))}  # a declared model absent: refuse before /prompt
+                try:
+                    engine.run(job, local)
+                except ValueError as exc:
+                    if getattr(exc, "missing", None):
+                        raise AstridValueError(str(exc)) from exc
+                    raise
                 write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
