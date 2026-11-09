@@ -185,8 +185,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
-        command.add_argument("--align", action=_Once, choices=("check", "trust"), default="check",
-                             help="check: judge models against the target's inventory (default); "
+        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"), default="check",
+                             help="align: fetch what the target lacks (local run only); "
+                                  "check: judge models against the target's inventory (default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
@@ -204,6 +205,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
     command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
     command.add_argument('--replace', action='store_true')
+    command.add_argument('--no-run', action='store_true',
+                         help='With --as-entry: save the entry and queue nothing on any target.')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
     command.add_argument("--placement", action=_Once, default="auto")
     command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
@@ -356,10 +359,24 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
         raise ValueError('--replace requires --as-entry')
+    if parsed.no_run and not parsed.as_entry:
+        raise ValueError('--no-run requires --as-entry')
+    if parsed.as_entry and parsed.dry_run:
+        # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        preview = {
+            "dry_run": True,
+            "written": False,
+            "would_save_entry": parsed.as_entry,
+            "replaces_existing": bool(parsed.replace),
+            "kind": description.get("kind"),
+            "modes": description.get("modes"),
+            "inputs": description.get("inputs"),
+        }
+        print(json.dumps(preview, indent=2, sort_keys=True, default=str))
+        return 0
     if parsed.as_entry:
         from vibecomfy.entries import import_as_entry
-        if parsed.dry_run:
-            raise ValueError('--as-entry writes an entry; omit it for a read-only dry-run')
         if parsed.replace:
             from inspect import signature
             if 'replace' not in signature(import_as_entry).parameters:
@@ -368,6 +385,10 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                                        code='missing_dependency', details={'field': 'replace'})
         entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
+        if parsed.no_run:
+            print(json.dumps({'saved': True, 'ran': False, 'entry': parsed.as_entry,
+                              'replaced': bool(parsed.replace)}, indent=2, sort_keys=True))
+            return 0
     def generate(client=None):
         facade = _generate_facade()
         if not parsed.as_entry:
@@ -401,8 +422,34 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _job_command(argv: list[str]) -> int:
+    """``generate <entry> --placement local --job FILE --out DIR --json``: the pod-side run."""
+    parser = _GenerationParser(prog='astrid generate', description='Run one machine job file locally.')
+    parser.json_errors = '--json' in argv
+    parser.add_argument('entry')
+    parser.add_argument('--placement', required=True, choices=('local',))
+    parser.add_argument('--job', required=True, metavar='FILE')
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--mode')
+    parser.add_argument('--align', choices=('align', 'check', 'trust'),
+                        help="Override the job's align mode.")
+    parser.add_argument('--json', action='store_true')
+    parsed = parser.parse_args(argv)
+    from astrid.core.generation.local_job import JobFileError, run_job
+    from astrid.core.generation.progress import write_progress
+    try:
+        result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
+    except JobFileError as exc:
+        parser.error(str(exc))
+    write_progress('done')
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    if '--job' in argv:
+        return _job_command(argv)
     parser = _parser(_context_description(argv))
     def configure(parser):
         parser.json_errors = '--json' in argv

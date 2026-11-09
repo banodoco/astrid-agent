@@ -37,6 +37,8 @@ class _ComfyHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/userdata":
             assert parse_qs(parsed.query) == {"dir": ["workflows"]}
             payload = ["portrait_flux.json", "nested/wan_i2v.json"]
+        elif parsed.path == "/object_info":
+            payload = {"KSampler": {"input": {"required": {}}}}
         else:
             self.send_error(404)
             return
@@ -477,3 +479,29 @@ def test_pack_images_refuses_to_overwrite(tmp_path: Path) -> None:
     else:
         raise AssertionError("existing ZIP must not be overwritten")
     assert output.read_bytes() == b"keep"
+
+
+def test_wan2gp_probe_reads_files_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    install = tmp_path / "Wan2GP"
+    (install / "outputs").mkdir(parents=True)
+    (install / "wgp.py").write_text("# entrypoint, never executed by the probe\n")
+
+    found = local_scan.wan2gp_folder(str(install))
+    assert found == {
+        "path": str(install),
+        "exists": True,
+        "is_wan2gp": True,
+        "outputs": str(install / "outputs"),
+    }
+
+    other = tmp_path / "not-wan2gp"
+    other.mkdir()
+    assert local_scan.wan2gp_folder(str(other)) == {
+        "path": str(other), "exists": True, "is_wan2gp": False, "outputs": None,
+    }
+    absent = tmp_path / "absent"
+    assert local_scan.wan2gp_folder(str(absent))["exists"] is False
+
+    assert local_scan.main(["wan2gp", str(install)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["is_wan2gp"] is True

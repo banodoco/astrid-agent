@@ -20,6 +20,7 @@ Choose the route by the requested result. Read only that route's guidance:
 
 | Request | Start here |
 | --- | --- |
+| Set up my generation: connect their ComfyUI, find Wan2GP, pick defaults | [Set up my generation](../../generation/docs/SKILL.md#set-up-my-generation) (skill `generation`; [public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)) |
 | Generate with the user's own ComfyUI: "my ComfyUI", "my saved workflow", local generation | [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
 | **Edit a timeline** (clips, timing, text, layout, effects), then publish and point the user to the editor (render only if asked) | [Timeline editing](../../timeline/docs/SKILL.md) |
@@ -39,8 +40,8 @@ for the guides and how to sync them.
 
 For the exact distinction between managed setup, bring-your-own engines, and
 remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
-Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with
-`comfy_url`. H3 (`h3_av`) inference currently requires a RunPod worker.
+A ComfyUI the user already runs is the `attached` placement of the generation
+skill; H3 (`h3_av`) inference currently requires a RunPod worker.
 For batch timeline edits, narration and beats, or exact-value approval, load
 `timeline-series`, `timeline-narrated`, or `timeline-review` by skill name.
 
@@ -64,10 +65,9 @@ irm https://astrid.haus/install.ps1 | iex
 
 The installer checks that Astrid is healthy and opens astrid.haus itself. Tell
 the user to choose Allow if Chrome or Edge asks to reach their computer, then
-confirm astrid.haus shows Connected. That is the end of setup. To generate
-with a ComfyUI the user already runs, follow [Run on your own
-ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui); it covers
-Wan2GP results too. Do not install or clone `astrid-app`; it is for app
+confirm astrid.haus shows Connected. That is the end of setup. To connect a
+ComfyUI the user already runs, or to find Wan2GP, follow the generation skill's
+[Set up my generation](../../generation/docs/SKILL.md#set-up-my-generation). Do not install or clone `astrid-app`; it is for app
 developers.
 
 Synced skills use the absolute path of Astrid's own Python, so their
@@ -98,8 +98,8 @@ precedence over project preferences, then user preferences, then ordinary
 defaults. Temporary choices stay in the conversation. Save a lasting default
 only when the user asks to remember it; "for this project" means project scope,
 while "remember my default" means user scope. One exception: after the first
-successful run on the user's own ComfyUI, save its machine facts (URL, folders,
-saved workflow names) to the user scope and say so; see the VibeComfy skill.
+successful run on the user's own ComfyUI, save its placement and saved workflow
+names to the generation settings and say so; see the generation skill.
 Never put passwords, API keys, or other secrets in preferences; they are
 included in model prompts.
 

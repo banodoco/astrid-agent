@@ -242,7 +242,7 @@ def _prompt_only_video(*, model, entry, inputs):
     return model is None and entry is None and set(inputs) == {"prompt"}
 
 
-_ALIGN_MODES = ('check', 'trust')
+_ALIGN_MODES = ('align', 'check', 'trust')
 
 
 def _align_mode(align):

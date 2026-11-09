@@ -417,6 +417,25 @@ def scan(ports: list[int]) -> dict[str, Any]:
     }
 
 
+def wan2gp_folder(path: str) -> dict[str, Any]:
+    """Read-only check of a user's Wan2GP folder: file presence only, nothing is run."""
+    folder = Path(path).expanduser()
+    result: dict[str, Any] = {
+        "path": str(folder),
+        "exists": folder.is_dir(),
+        "is_wan2gp": False,
+        "outputs": None,
+    }
+    if not result["exists"]:
+        return result
+    entrypoint = folder / "wgp.py"
+    result["is_wan2gp"] = entrypoint.is_file()
+    outputs = folder / "outputs"
+    if outputs.is_dir():
+        result["outputs"] = str(outputs)
+    return result
+
+
 def pack_images(out_path: str, images: list[str]) -> dict[str, Any]:
     """Write the canonical managed_assets archive accepted by vibecomfy.run."""
     target = Path(out_path).expanduser()
@@ -461,6 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     scan_parser = commands.add_parser("scan", help="discover running loopback ComfyUI servers")
     scan_parser.add_argument("--ports", default="8188,8000")
+    wan2gp_parser = commands.add_parser("wan2gp", help="read-only check of a Wan2GP folder")
+    wan2gp_parser.add_argument("path")
     images_parser = commands.add_parser("pack-images", help="build a managed_assets ZIP")
     images_parser.add_argument("out")
     images_parser.add_argument("images", nargs="+")
@@ -492,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
                 return 0
             result = scan(ports)
+        elif args.command == "wan2gp":
+            result = wan2gp_folder(args.path)
         else:
             result = pack_images(args.out, args.images)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))

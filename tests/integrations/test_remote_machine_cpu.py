@@ -850,3 +850,26 @@ def test_an_entry_from_a_pack_outside_the_active_selection_is_refused_before_the
             preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
     assert provider.deploys == 0 and not s["claim_path"].exists()
     assert not [e for e in provider.events if e[0] == "graphql" and "podFindAndDeployOnDemand" in e[1]]
+
+
+def test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry(journey):
+    """T5g: a one-off workflow file (describe_workflow id 'workflow') is a bundle-only job."""
+    j = journey
+    s = j.start()
+    provider = s["provider"]
+    provider.expect_entry = None
+    bundle = j.tmp / "entries" / "cpu-image" / "workflow.py"
+    result = GenerationFacade().workflow(workflow=bundle, placement="runpod", client=s["client"],
+        project=s["project"], consent=("paid",), max_usd=1.5,
+        deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        offer_digest=GenerationFacade().describe(placement="runpod", client=s["client"])["offer_digest"],
+        preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
+    assert result.ok, result.to_dict()
+    (job,) = provider.generations
+    assert job["entry"] is None and set(job["inputs"]) >= {"python", "companion", "source"}
+    assert provider.kinds(" generate workflow --placement local ")
+    assert not provider.kinds(" generate cpu-image ")
+    assert provider.selections[-1]["entry"] is None and provider.selections[-1]["entries"] == []
+    machine = s["client"].tasks.show(result.task_id).data["result"]["machine"]
+    assert machine["id"] == POD
+    _released(provider, j.release())
