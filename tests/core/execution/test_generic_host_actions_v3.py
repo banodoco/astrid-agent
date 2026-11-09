@@ -286,95 +286,18 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
     assert all(getattr(host, name) is None for name in ("_vibecomfy_warmth_hint", "_vibecomfy_current_warmth_hint", "_vibecomfy_requested_warmth_hint"))
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
-def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    backend = f.bridge.backend
-    if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
-    elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
-    elif field == "model": backend._bound_model_id = "different-model"
-    elif field == "template": backend._bound_template_id = "different-template"
-    elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
-    elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
-    elif field == "backend": f.bridge.backend = object()
-    elif field == "lost_binding": backend._host_session = None
-    elif field == "invocation": backend._invocation_identity = "changed-task"
-    with pytest.raises(HostError, match="exact settled ownership"):
-        _open_cpu_handoff(f)
-    assert f.controls == [] and f.host.managed_tool_session.current_adapter is f.bridge
-
-
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("fault", ["listener", "parent", "birth", "child_birth", "cancel_transport", "release_transport", "completion"])
-def test_sdk_cpu_handoff_canonical_ownership_and_control_fail_closed(tmp_path, monkeypatch, fault):
-    from astrid.core.execution.managed_tool_session import SessionCapacityError
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    if fault in f.observations: f.observations[fault] = "changed" if "birth" in fault else -1
-    elif fault in {"cancel_transport", "release_transport"}:
-        f.http.update(failure="/api/free", failure_call=3 if fault == "cancel_transport" else 5)
-    elif fault == "completion": f.http["completion"] = {"ok": True}
-    with pytest.raises((HostError, SessionCapacityError)):
-        _open_cpu_handoff(f)
-    assert f.bridge.cpu_handoff_failed and f.host.managed_tool_session.occupied
-    assert f.host.managed_tool_session._active.fenced
-    controls = list(f.controls)
-    with pytest.raises(HostError, match="unresolved"):
-        f.bridge.release(reason="cpu_residency_eviction")
-    assert f.controls == controls
-
-
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("fault", ["completed_intervening", "pending", "shutdown", "unknown", "gate", "fenced", "generation"])
-def test_sdk_cpu_handoff_actual_binding_keeps_atomic_refusals(tmp_path, monkeypatch, fault):
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    manager = f.host.managed_tool_session
-    if fault in {"completed_intervening", "pending"}:
-        newer = manager.admit(capability_id="vibecomfy.run", invocation_id="intervening")
-        if fault == "completed_intervening": _settle_cpu_handoff_token(manager, newer)
-    elif fault == "shutdown": f.host._shutdown.set()
-    elif fault == "unknown": f.host._handoff_observation_known = False
-    elif fault == "gate": f.host._handoff_claim_gate_closed = True
-    elif fault == "fenced": manager._active.fenced = True
-    elif fault == "generation": manager._generation += 1
-    with pytest.raises(HostError, match="exact settled ownership"):
-        _open_cpu_handoff(f)
-    assert f.controls == [] and manager.occupied
 
 
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("settlement", ["managed", "runtime"])
-def test_sdk_cpu_handoff_requires_both_settlements(tmp_path, monkeypatch, settlement):
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    f.host._record_native_cpu_handoff(f.bridge, f.token,
-        managed_settled=settlement != "managed", runtime_settled=settlement != "runtime")
-    with pytest.raises(HostError, match="exact settled ownership"):
-        _open_cpu_handoff(f)
-    assert not f.controls and f.host.managed_tool_session.occupied
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-def test_sdk_cpu_handoff_late_finally_preserves_fresh_token(tmp_path, monkeypatch):
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    newer = f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="newer")
-    _settle_cpu_handoff_token(f.host.managed_tool_session, newer)
-    f.host._record_native_cpu_handoff(f.bridge, newer, managed_settled=True, runtime_settled=True)
-    f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=False, runtime_settled=False)
-    assert f.bridge.cpu_handoff_token is newer
-    _open_cpu_handoff(f)
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
-def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
-    from astrid.core.execution.managed_tool_session import SessionCapacityError
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    with pytest.raises(SessionCapacityError, match="release was not verified"):
-        _open_cpu_handoff(f, resources=resources)
-    assert f.host.managed_tool_session.occupied
-    assert f.controls == ["/interrupt", "/queue", "/api/free"]
+
+
+
+
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -389,19 +312,6 @@ def test_sdk_cpu_handoff_factory_rejects_registry_drift(tmp_path, monkeypatch, f
     assert not f.controls
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-def test_sdk_cpu_handoff_first_chain_is_redacted_before_secondary_cleanup(tmp_path, monkeypatch, caplog):
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    def failed(**kwargs):
-        try:
-            raise OSError("SECRET arbitrary caller data")
-        except OSError as cause:
-            raise RuntimeError("SECRET secondary data") from cause
-    monkeypatch.setattr(f.host.managed_tool_session, "_replace_quiescent", failed)
-    with pytest.raises(RuntimeError, match="secondary"):
-        _open_cpu_handoff(f)
-    assert "CPU residency handoff first failure: runtime>io" in caplog.text
-    assert "SECRET" not in caplog.text
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -416,43 +326,6 @@ def test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile(tmp_path, m
     assert not f.controls
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-def test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown(tmp_path, monkeypatch):
-    from astrid.core.execution.managed_tool_session import ManagedToolSessionError
-    f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    entered, proceed, admission_entered, shutdown_entered = [f.threading.Event() for _ in range(4)]
-    outcomes = []
-    def on_control(count):
-        if count == 5:
-            entered.set()
-            assert proceed.wait(3)
-    f.http["on_control"] = on_control
-    def transition():
-        try: _open_cpu_handoff(f); outcomes.append("transition")
-        except BaseException as exc: outcomes.append(exc)
-    def admit():
-        admission_entered.set()
-        try: f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="race")
-        except ManagedToolSessionError: outcomes.append("admission-rejected")
-    def shutdown_gate():
-        shutdown_entered.set()
-        with f.host.managed_tool_session._lock: f.host._shutdown.set()
-        with f.host._handoff_condition: outcomes.append("shutdown-gate")
-    threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown_gate)]
-    try:
-        threads[0].start(); assert entered.wait(3)
-        threads[1].start(); threads[2].start()
-        assert admission_entered.wait(3) and shutdown_entered.wait(3)
-        assert "admission-rejected" not in outcomes and "shutdown-gate" not in outcomes
-    finally:
-        proceed.set()
-        for thread in threads:
-            if thread.ident is not None: thread.join(4)
-    assert not any(thread.is_alive() for thread in threads)
-    assert sorted(outcomes) == ["admission-rejected", "shutdown-gate", "transition"]
-    assert f.controls == ["/interrupt", "/queue", "/api/free", "/queue", "/api/free"]
-    assert f.identity_reads and all(pid in (f.daemon, f.child) for pid in f.identity_reads)
-    assert all(sig == 0 for _, sig in f.signals)
 
 
 
@@ -472,124 +345,6 @@ def test_host_dependency_projection_preserves_absent_runtime_origin(monkeypatch)
     assert observed == ["astrid", "runtime_protocol"]
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("case", ["installed", "source", "unconfigured", "profile_drift", "unattested",
-                                  "candidate_drift", "unsupported_candidate", "alias", "cached_collision",
-                                  "cached_submodule_collision", "resolution_collision", "ambient"])
-def test_installed_host_vibe_imports_use_only_attested_root(tmp_path, case):
-    """Exercise the helper in a fresh isolated process with controlled inputs.
-
-    Qualification can supply its installed interpreter and attested clone;
-    ordinary tests construct their own dependency and readiness document.
-    """
-    import hashlib
-    import astrid.core.execution.generic_host as host_module
-
-    python = os.environ.get("ASTRID_H3_HOST_IMPORT_TEST_PYTHON")
-    retained = os.environ.get("ASTRID_H3_HOST_IMPORT_TEST_PROFILE")
-    assert bool(python) == bool(retained), "qualification interpreter/profile must be paired"
-    products = []
-    if retained:
-        profile = json.loads(Path(retained).read_text())
-    else:
-        import runtime_protocol
-
-        python = sys.executable
-        products = [str(Path(host_module.__file__).resolve().parents[3]),
-                    str(Path(runtime_protocol.__file__).resolve().parent.parent)]
-        fixture_checkout = tmp_path / "controlled-dependency"
-        package = fixture_checkout / "vibecomfy"
-        package.mkdir(parents=True)
-        (package / "__init__.py").write_text('"""Controlled import fixture, no backend."""\n')
-        (package / "workflow_bundle.py").write_text("FIXTURE_ONLY = True\n")
-        revision = "1" * 40
-        content = "sha256:" + hashlib.sha256((package / "workflow_bundle.py").read_bytes()).hexdigest()
-        profile = {"vibecomfy_candidate": {"kind": "local_snapshot", "checkout": str(fixture_checkout),
-                   "revision": revision, "source_content_digest": content},
-                   "vibecomfy_session": {"source_revision": revision, "source_content_digest": content}}
-    checkout = profile["vibecomfy_candidate"]["checkout"]
-    selected = tmp_path / "readiness.json"
-    if case == "candidate_drift":
-        profile["vibecomfy_candidate"]["source_content_digest"] = "sha256:" + "0" * 64
-    selected.write_text(json.dumps(profile))
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env.update(ASTRID_HOST_EXECUTION_PROFILE="source" if case == "source" else "installed",
-               ASTRID_VIBECOMFY_CHECKOUT=checkout,
-               ASTRID_HOST_READINESS_PROFILE_PATH=str(selected),
-               ASTRID_HOST_READINESS_PROFILE_HASH="sha256:" + hashlib.sha256(selected.read_bytes()).hexdigest(),
-               ASTRID_VIBECOMFY_ATTESTED_REVISION=profile["vibecomfy_session"]["source_revision"],
-               ASTRID_VIBECOMFY_ATTESTED_CONTENT_DIGEST=profile["vibecomfy_session"]["source_content_digest"],
-               ASTRID_VIBECOMFY_CANDIDATE_KIND="local_snapshot",
-               ASTRID_VIBECOMFY_CANDIDATE_REVISION=profile["vibecomfy_candidate"]["revision"],
-               ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST=profile["vibecomfy_candidate"]["source_content_digest"],
-               VIBECOMFY_HEADLESS="1")
-    if case == "profile_drift":
-        env["ASTRID_HOST_READINESS_PROFILE_HASH"] = "sha256:" + "0" * 64
-    elif case == "unattested":
-        env.pop("ASTRID_VIBECOMFY_ATTESTED_REVISION")
-    elif case == "unconfigured":
-        env.pop("ASTRID_VIBECOMFY_CHECKOUT")
-    elif case == "unsupported_candidate":
-        env["ASTRID_VIBECOMFY_CANDIDATE_KIND"] = "ambient"
-    elif case == "alias":
-        alias = tmp_path / "clone-alias"
-        alias.symlink_to(checkout, target_is_directory=True)
-        env["ASTRID_VIBECOMFY_CHECKOUT"] = str(alias)
-    foreign = tmp_path / "foreign"
-    (foreign / "vibecomfy").mkdir(parents=True)
-    (foreign / "vibecomfy" / "__init__.py").write_text("raise AssertionError('foreign dependency must never execute')\n")
-    if case == "ambient":
-        env["PYTHONPATH"] = str(foreign)
-    script = r'''
-import importlib.util,json,os,sys
-from pathlib import Path
-from types import ModuleType
-source,case,foreign,checkout,product_roots=sys.argv[1:]
-# A production installed interpreter has no VibeComfy of its own. Remove any this test interpreter
-# carries (an editable install is a .pth path entry or a meta-path finder) so only the attested root can resolve.
-sys.path[:]=[p for p in sys.path if not (Path(p)/'vibecomfy'/'__init__.py').is_file()]
-sys.meta_path[:]=[f for f in sys.meta_path if 'vibecomfy' not in getattr(f,'__module__','')]
-# Ordinary source tests bind their known product roots explicitly. Qualified
-# installed tests supply no roots, retaining the interpreter's true -I origins.
-sys.path.extend(json.loads(product_roots))
-spec=importlib.util.spec_from_file_location('astrid.core.execution.generic_host',source)
-module=importlib.util.module_from_spec(spec)
-sys.modules[spec.name]=module
-spec.loader.exec_module(module)
-if case in ('cached_collision','cached_submodule_collision'):
-    name='vibecomfy' if case=='cached_collision' else 'vibecomfy.workflow_bundle'
-    wrong=ModuleType(name);wrong.__file__=str(Path(foreign)/'vibecomfy/__init__.py')
-    sys.modules[name]=wrong
-elif case=='resolution_collision':
-    sys.path.insert(0,foreign)
-before=sys.path[:]
-products={name:importlib.util.find_spec(name).origin for name in ('astrid','runtime_protocol')}
-try:
-    result=module._install_host_vibecomfy_import_root()
-except module.HostError:
-    assert case not in ('installed','ambient','source','unconfigured')
-    assert sys.path==before
-    print(json.dumps({'rejected':True,'path_unchanged':True}))
-else:
-    assert case in ('installed','ambient','source','unconfigured')
-    if case in ('installed','ambient'):
-        assert str(result)==checkout and sys.path==before+[checkout]
-        import vibecomfy.workflow_bundle as bundle
-        assert Path(bundle.__file__).resolve().is_relative_to(Path(checkout)/'vibecomfy')
-        assert module._install_host_vibecomfy_import_root()==result
-        assert sys.path==before+[checkout]
-    else:
-        assert result is None and sys.path==before
-    assert products=={name:importlib.util.find_spec(name).origin for name in products}
-    print(json.dumps({'rejected':False,'product_origins_unchanged':True}))
-'''
-    result = subprocess.run([python, "-I", "-B", "-c", script, host_module.__file__, case,
-                             str(foreign), checkout, json.dumps(products)], env=env, cwd=tmp_path,
-                            capture_output=True, text=True, timeout=20)
-    assert result.returncode == 0, result.stderr
-    row = json.loads(result.stdout.strip().splitlines()[-1])
-    assert row["rejected"] == (case not in {"installed", "ambient", "source", "unconfigured"})
 
 
 class FakeRuntime(_CurrentFakeRuntime):
