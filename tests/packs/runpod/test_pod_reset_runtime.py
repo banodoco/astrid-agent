@@ -209,3 +209,21 @@ def test_the_realm_root_comes_from_the_launcher_catalog_only(tmp_path):
     assert pod_reset.realm_root("r1", data_root) == realm
     with pytest.raises(pod_reset.ResetError, match="no root for realm 'other'"):
         pod_reset.realm_root("other", data_root)
+
+
+def test_the_reset_reads_the_data_root_override_like_pod_bootstrap(tmp_path, monkeypatch):
+    """ASTRID_RUNTIME_DATA_ROOT, when set, is the root whose catalog the reset reads."""
+    override = tmp_path / "override-data"
+    monkeypatch.delenv("ASTRID_RUNTIME_DATA_ROOT", raising=False)
+    assert pod_reset.runtime_data_root() == pod_reset.DATA_ROOT
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(override))
+    assert pod_reset.runtime_data_root() == override
+    credential = tmp_path / "token"
+    credential.write_text("t")
+    pod = tmp_path / "pod"
+    (pod / "realm-template").mkdir(parents=True)  # a later reset: it must locate the realm first
+    with pytest.raises(pod_reset.ResetError, match=f"cannot read the launcher catalog {override}/runtime/catalog.json"):
+        pod_reset.reset(ensure=lambda: {"endpoint": "http://127.0.0.1:1", "credential_file": str(credential),
+                                        "realm_id": "r1", "actor_id": "owner"},
+                        template=pod / "realm-template", lock=pod / "reset.lock", prepared=pod / "p.json",
+                        ready=pod / "ready.json", active=pod / "active.json")

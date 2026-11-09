@@ -138,6 +138,12 @@ def pending_dirs(active: Path = ACTIVE_JOB, *, runs_root: Path = RUNS_ROOT) -> t
     return run_dir, job_dir
 
 
+def runtime_data_root() -> Path:
+    """The data root pod_bootstrap uses: ``ASTRID_RUNTIME_DATA_ROOT`` when set, else the pod default."""
+    value = os.environ.get("ASTRID_RUNTIME_DATA_ROOT", "").strip()
+    return Path(value) if value else DATA_ROOT
+
+
 def realm_root(realm_id: str, data_root: Path = DATA_ROOT) -> Path:
     """The live realm's root, from the launcher's own catalog (the one source of truth).
 
@@ -244,13 +250,16 @@ def _token(result: Mapping[str, Any]) -> str:
 
 
 def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
-          ensure: Callable[[], Mapping[str, Any]] | None = None, data_root: Path = DATA_ROOT,
+          ensure: Callable[[], Mapping[str, Any]] | None = None, data_root: Path | None = None,
           template: Path = TEMPLATE, lock: Path = LOCK, prepared: Path = PREPARED, ready: Path = READY,
           active: Path = ACTIVE_JOB, runs_root: Path = RUNS_ROOT) -> dict[str, Any]:
     """The whole pod reset under the exclusive lock; raises ResetError on any failure.
 
-    The realm root comes from the launcher's catalog under ``data_root`` only.
+    The realm root comes from the launcher's catalog under ``data_root`` only;
+    ``data_root`` defaults to ``ASTRID_RUNTIME_DATA_ROOT`` when set (as pod_bootstrap
+    and the launcher read it), else ``/root/astrid/runtime-data``.
     """
+    data_root = Path(data_root) if data_root is not None else runtime_data_root()
     if ensure is None:
         from astrid.sdk.autobootstrap import ensure_runtime
         ensure = ensure_runtime
