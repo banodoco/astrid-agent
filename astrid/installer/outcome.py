@@ -15,7 +15,7 @@ import os
 import stat
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 # Exit-code contract (ruled by M-INT on PR #319). The target follows the request:
@@ -282,6 +282,9 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
+    if failure is not None and reason_of(failure) == "windows-upgrade-unsupported":
+        # boundary_handoff refuses a Windows upgrade before any stop, journal or copy: a refusal.
+        request, failure = replace(request, refused=True, reason="windows-upgrade-unsupported"), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
