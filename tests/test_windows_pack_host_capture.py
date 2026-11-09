@@ -16,7 +16,7 @@ def capture(tmp_path, monkeypatch):
     data = tmp_path / "data"
     runtime = data / "runtime"
     runtime.mkdir(parents=True)
-    evidence = tmp_path / "evidence" / "release0-to-release1"
+    evidence = tmp_path / "evidence" / "release9-then-install"
     native = tmp_path / "native-logs"
     isolated = tmp_path / "isolated-localappdata"
     native.mkdir()
