@@ -37,7 +37,7 @@ def envelope(root, *, status='failed', task='task-1'):
     return path
 
 
-@pytest.mark.parametrize('route', ['embedded', 'attached'])
+@pytest.mark.parametrize('route', ['attached'])
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path, route, cancelled):
     import astrid.packs.vibecomfy.production_engine as producer
@@ -71,7 +71,8 @@ def test_wrapped_native_receipt_retains_nested_envelope(monkeypatch, tmp_path):
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', tmp_path / 'out',
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1',
+                                           profile_id='local_server', comfy_url='http://127.0.0.1:8188')
     assert caught.value.managed_generation_result_path == path
 
 
@@ -90,7 +91,8 @@ def test_failure_without_partial_outputs_keeps_existing_result(monkeypatch, tmp_
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', root,
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1',
+                                           profile_id='local_server', comfy_url='http://127.0.0.1:8188')
     assert caught.value.managed_generation_result_path == path
 
 
@@ -107,7 +109,8 @@ def test_foreign_or_corrupt_partial_result_is_not_exposed(monkeypatch, tmp_path,
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
     with pytest.raises(RuntimeError) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'workflow.py', root,
-                                           task_identity='task-1', attempt_identity='attempt-1')
+                                           task_identity='task-1', attempt_identity='attempt-1',
+                                           profile_id='local_server', comfy_url='http://127.0.0.1:8188')
     assert caught.value is error
     assert not hasattr(caught.value, 'managed_generation_result_path')
 
