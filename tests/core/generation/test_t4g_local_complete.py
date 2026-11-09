@@ -331,7 +331,7 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
 
     T4i: binds and defaults are applied by ``entries.apply_workflow_inputs`` (the function the facade's
     ``entries.prepare`` calls), proved against a real bound workflow in test_t4i_job_contract.py. This test
-    keeps the public-input validation and the entry identity; the binding is stubbed.
+    keeps the alias-to-public-name resolution, the validation and the entry identity; only the binding is stubbed.
     """
     from astrid.core.generation import entries
     from astrid.core.generation.local_job import JobFileError, run_job
@@ -351,7 +351,7 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
     monkeypatch.setattr(entries, "_load_entry_workflow", lambda entry: object())
     monkeypatch.setattr(entries, "target_schema", lambda *a, **k: None)
     monkeypatch.setattr(entries, "apply_workflow_inputs", lambda workflow, **kw: (
-        workflow, {"kind": "image", "bindings": {"bound": dict(kw["values"])}, "unbound": []}, {}))
+        workflow, {"kind": "image", "bindings": dict(kw["values"]), "unbound": []}, {}))
 
     def write(inputs):
         job = tmp_path / "job.json"
@@ -360,7 +360,7 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
         return job
 
     run_job("named", write({"prompt": "x", "texture": 0.5}), tmp_path / "out")
-    assert json.loads(seen["workflow_inputs"]) == {"bound": {"prompt": "x", "texture": 0.5}}
+    assert json.loads(seen["workflow_inputs"]) == {"prompt": "x", "paint_strength": 0.5}
     assert seen["entry"] == "named" and seen["workflow"] == bundle
     with pytest.raises(JobFileError, match="not valid for entry"):
         run_job("named", write({"prompt": "x", "unknown_field": 1}), tmp_path / "out")
