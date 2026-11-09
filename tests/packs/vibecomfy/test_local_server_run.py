@@ -535,3 +535,24 @@ def test_explicit_trust_is_unverified_in_native_attempt_and_published_receipt(co
     expected = {'mode': 'trust', 'status': 'unverified', 'verified': False}
     assert receipt['evidence']['producer']['alignment'] == expected
     assert attempt['alignment'] == expected
+
+
+def test_trust_refuses_a_native_attempt_symlink(comfy, tmp_path, monkeypatch):
+    run = importlib.import_module('vibecomfy.runtime.run')
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    original = run.run_sync
+    outside = tmp_path / 'outside-attempt.json'
+    outside.write_text('{"sentinel": true}')
+    def substitute_attempt(*args, **kwargs):
+        result = original(*args, **kwargs)
+        native = Path(result.managed_generation_result_path).with_name('attempt.json')
+        native.unlink()
+        native.symlink_to(outside)
+        return result
+    monkeypatch.setattr(run, 'run_sync', substitute_attempt)
+    with pytest.raises(production_engine.ProductionEngineError, match='native attempt escaped attempt custody'):
+        production_engine.run_workflow_result_path(
+            comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-trust',
+            attempt_identity='attempt-trust', comfy_url=comfy.url, profile_id='local_server',
+        )
+    assert outside.read_text() == '{"sentinel": true}'

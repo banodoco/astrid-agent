@@ -551,7 +551,7 @@ def _validate_catalog_target_request(*, registry, candidate, mode, modality, inp
 def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
                                      modality: str, inputs: dict[str, Any],
                                      target_client: Any, backend: Any, retain_source=None,
-                                     defer_target: bool = False):
+                                     defer_target: bool = False, align: str = "check"):
     """Shared installed-catalog resolution and binding, without admission."""
     from astrid.core.generation.preflight import require_generation_target_readiness
     if not defer_target:
@@ -561,6 +561,7 @@ def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str
     workflow, plan, schema = backend.prepare_catalog_workflow(
         candidate, mode, inputs, resolve_target=target_client is not None,
         **({'retain_source': retain_source} if retain_source is not None else {}),
+        **({'align': 'trust'} if align == 'trust' else {}),
     )
     from astrid.core.generation.entries import apply_workflow_inputs
     workflow, bindings, assets = apply_workflow_inputs(workflow, mode=mode, values=inputs,
@@ -1435,7 +1436,7 @@ class GenerationFacade:
                     workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                         registry=registry, candidate=candidate, mode=mode, modality=modality,
                         inputs=inputs, target_client=target_client, backend=backend,
-                        retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
+                        retain_source=None if dry_run else retain_source, defer_target=is_remote_target, align=align)
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
@@ -1454,7 +1455,7 @@ class GenerationFacade:
                         workflow, plan, schema, assets = _prepare_catalog_target_workflow(
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
-                            retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
+                            retain_source=None if dry_run else retain_source, defer_target=is_remote_target, align=align)
                     elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.

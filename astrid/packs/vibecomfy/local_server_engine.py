@@ -390,6 +390,10 @@ def run_local_server(
                 alignment = {"mode": "trust", "status": "unverified", "verified": False}
                 payload["evidence"]["producer"]["alignment"] = alignment
                 attempt_path = result_path.with_name("attempt.json")
+                if (attempt_path.is_symlink() or not attempt_path.is_file()
+                        or not attempt_path.resolve().is_relative_to(destination.resolve())
+                        or any(part.is_symlink() for part in attempt_path.parents)):
+                    raise ProductionEngineError("local_server native attempt escaped attempt custody")
                 attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
                 attempt["alignment"] = alignment
                 from astrid.core.foundation.atomic_io import write_json_atomic

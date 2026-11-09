@@ -92,3 +92,37 @@ def test_only_explicit_trust_skips_managed_local_byte_verification(monkeypatch):
     for mode in ('align', 'check'):
         with pytest.raises(ValueError, match='bytes not verified'):
             entries.target_schema(entry, workflow, client, align=mode)
+
+
+def test_catalog_trust_resolves_only_a_single_declared_missing_name():
+    from dataclasses import replace
+    from astrid.core.model_catalog.registry import ModelRegistry
+    from astrid.core.generation.backends.comfy_target import _capture_model_resolution, ComfyModelMissing
+    from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    from tests.core.generation.backends.test_qwen_21_turbo import object_info
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+    registry = ModelRegistry.load_default()
+    entry = registry.get('qwen-image-2.1-turbo')
+    workflow = workflow_from_ready(entry.modes['t2i'].backends['local'].template)
+    info = object_info(workflow)
+    info['UNETLoader']['input']['required']['unet_name'] = [[]]
+    client = SimpleNamespace(object_info=lambda: info, http_origin='http://127.0.0.1:8188',
+                             target=SimpleNamespace(url='http://127.0.0.1:8188', kind='attached'))
+    backend = VibeComfyBackend(target_client=client)
+    with pytest.raises(ComfyModelMissing):
+        backend.prepare_catalog_workflow(entry, 't2i', {'prompt': 'test', 'seed': 42}, resolve_target=True)
+    prepared, plan, schema = backend.prepare_catalog_workflow(
+        entry, 't2i', {'prompt': 'test', 'seed': 42}, resolve_target=True, align='trust')
+    assert plan['model_bytes'] == 'unverified_declaration'
+    assert load_bundle(prepared).compile(schema_provider=schema).api_projection
+    assert info['UNETLoader']['input']['required']['unet_name'] == [[]]
+    spec = entry.modes['t2i'].backends['local']
+    role, declaration = next((role, declaration) for role, declaration in spec.model_roles.items()
+                             if declaration.node_class == 'UNETLoader')
+    ambiguous = replace(spec, model_roles={**spec.model_roles,
+        role: replace(declaration, names=(*declaration.names, 'another.safetensors'))})
+    mode = replace(entry.modes['t2i'], backends={'local': ambiguous})
+    ambiguous_entry = replace(entry, modes={'t2i': mode})
+    with pytest.raises(ComfyModelMissing):
+        _capture_model_resolution(client, ModelRegistry([ambiguous_entry]), entry.id, 't2i', align='trust')

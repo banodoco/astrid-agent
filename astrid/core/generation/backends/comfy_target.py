@@ -657,13 +657,23 @@ def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, st
 
 
 def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
-                              model_id: str, mode: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                              model_id: str, mode: str, *, align: str = "check") -> tuple[dict[str, Any], dict[str, Any]]:
     """Keep the observed inventory internal; a returned plan grants no authority."""
     entry, mode_spec = registry.get_by_mode(model_id, mode)
     spec = mode_spec.backends.get("local")
     object_info = client.object_info()
     resolved, failures = (_resolve_roles(spec, object_info) if spec and spec.model_roles
                           else ({}, {"catalog_roles": []}))
+    if align == "trust" and spec is not None:
+        # A declaration with alternatives still needs an observed, unambiguous choice.
+        # Trust can supply a missing exact name; it never picks the first alternative.
+        for role in list(failures):
+            declaration = spec.model_roles.get(role)
+            names = tuple(dict.fromkeys(declaration.names)) if declaration is not None else ()
+            if (not failures[role] and len(names) == 1
+                    and declaration.node_class in object_info):
+                resolved[role] = names[0]
+                del failures[role]
     if failures:
         missing_nodes = sorted({spec.model_roles[role].node_class for role in failures
                                 if spec and role in spec.model_roles
@@ -692,7 +702,7 @@ def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
             {role: list(spec.model_roles[role].names) for role in failures if spec and role in spec.model_roles})
     plan = {"model": model_id, "mode": mode, "template": spec.template,
             "target": {"url": client.target.url, "kind": client.target.kind},
-            "roles": resolved, "model_bytes": "unverified_target_inventory"}
+            "roles": resolved, "model_bytes": "unverified_declaration" if align == "trust" else "unverified_target_inventory"}
     return plan, object_info
 
 
