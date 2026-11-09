@@ -848,9 +848,9 @@ def observe(self,operation,payload,deadline,*,start=True):
   operations.append('service:'+operation)
  return original_request(self,operation,payload,deadline,start=start)
 custody.LinuxEngineServiceClient._request=observe
-from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
 from astrid.core.generation.backends.vibecomfy_local_server import _request
-engine=_resolve_local_engine()
+engine=local_engine_endpoint('comfyui')
 response=_request(engine.endpoint.url,'/prompt',{'client_id':sys.argv[3],'prompt':{'1':{'class_type':'MiniMaxH3ReferenceToVideo','inputs':{}}}})
 history=_request(engine.endpoint.url,'/history/'+response['prompt_id'])
 assert history[response['prompt_id']]['status']['completed'] is True
@@ -1069,9 +1069,9 @@ import os,sys
 from pathlib import Path
 exec(Path(sys.argv[1]).read_text())
 os.environ['ASTRID_ENGINE_ROOT']=sys.argv[2]
-from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
 try:
- _resolve_local_engine()
+ local_engine_endpoint('comfyui')
 except Exception as exc:
  assert exc.code=='endpoint_ownership', str(exc)
  print(exc.code)

@@ -408,15 +408,10 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     assert "vibecomfy_candidate" not in profile
     assert profile["runtime"] == {"runtime_instance_id": str(__import__("uuid").UUID(marker["launch_token"])),
                                   "comfyui_version": "==" + installation["version"]}
-    assert profile["vibecomfy_session"] == {
-        "session_dir": str(installation["registry"]), "server_url": marker["url"],
-        "pid": marker["pid"], "process_birth_id": marker["process_start_identity"],
-        "comfy_pid": marker["comfy_pid"], "comfy_process_birth_id": marker["comfy_process_start_identity"],
-        "launch_token": marker["launch_token"],
-        "config_digest": "sha256:" + hashlib.sha256(before["config.json"]).hexdigest(),
-        "source_revision": before["source_revision"].decode().strip(),
-        "source_content_digest": before["source_content_digest"].decode().strip(),
-    }
+    # The engine identity is the attested install receipt under the engine root.
+    receipt = Path(root) / ".astrid-engine" / "install.json"
+    assert profile["engine_identity"] == {"engine": "comfyui", "root": str(root),
+                                          "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     assert profile["launch"]["output_root"] == json.loads(before["config.json"])["output_directory"]
 
     # Existing GenericHost reader (hash fence) + normalizer accept the exact bytes.

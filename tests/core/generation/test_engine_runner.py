@@ -1240,7 +1240,6 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
     from astrid.core.contracts.errors import AstridError
     from astrid.core.generation import engine_execution
     from astrid.core.generation import engine_local_endpoint as local
-    from astrid.packs.h3_av.actions.transform import run as transform
 
     # This fake installer test is independent of host filesystem capacity.
     monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 10**15))
@@ -1284,8 +1283,15 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
         return receipt
 
     def ready():
-        # Real H3 wrapper, root selection, status and endpoint gate; fake target backend only.
-        return transform._resolve_local_engine()
+        # Real root selection, status and endpoint gate; fake target backend only. The refusal is
+        # reported as the CLI reports it: the readiness reason and the install command.
+        from astrid.core.generation.engine_contracts import EngineError
+        try:
+            return local.local_engine_endpoint("comfyui")
+        except EngineError as exc:
+            reason = f"readiness reason: {exc.reason_code}; " if isinstance(exc, local.EngineNotInstalled) else ""
+            raise AstridError(f"local engine is not ready ({exc.code}): {reason}run `astrid engines install comfyui` first",
+                              code=exc.code, recovery_command="astrid engines install comfyui") from exc
 
     def current():
         return runner.engine_status(plan.engine, platform=plan.platform, placement="local",

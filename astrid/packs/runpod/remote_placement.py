@@ -293,33 +293,6 @@ def _build_source_archive(source_root: Path, destination: Path,
     return destination
 
 
-# The ONE place the pod job's command is defined. Swap in the CLIP-COMMAND
-# (task 93) argv by changing this function, or pass ``command_argv=`` to
-# ``RemotePlacement``. The module CLI (python -m astrid.packs.h3_av...) refuses
-# direct invocation and must not be used.
-def clip_command_argv(
-    remote_args: Mapping[str, str],
-    remote_out: str,
-    *,
-    project: str | None = None,
-    editorial_approved: bool = False,
-) -> list[str]:
-    argv = [
-        f"{POD_VENV}/bin/astrid", "action", "run", "h3_av.transform",
-        "--request", remote_args["request"],
-        "--asset-map", remote_args["asset_map"],
-        "--placement", "local",
-        "--out", remote_out,
-    ]
-    if "execution_request" in remote_args:
-        argv += ["--execution-request", remote_args["execution_request"]]
-    if project:
-        argv += ["--project", project]
-    if editorial_approved:
-        argv.append("--editorial-approved")
-    return argv
-
-
 # Runs on the pod after the transform: digests every file under the out dir.
 _MANIFEST_SCRIPT = r'''
 import hashlib, json, os, sys
@@ -392,7 +365,6 @@ class RemotePlacement:
         pod_id: str | None = None,
         verify_fn: Callable[[Path, Mapping[str, Any]], None] | None = None,
         ffprobe_fn: Callable[[Path], None] | None = None,
-        command_argv: Callable[..., Sequence[str]] = clip_command_argv,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -404,7 +376,6 @@ class RemotePlacement:
         # The h3 caller passes its own verify/ffprobe; this module imports no h3 code.
         self._verify_fn = verify_fn
         self._ffprobe_fn = ffprobe_fn
-        self._command_argv = command_argv
         self._clock = clock
         self._sleep = sleep
         self._claims_made = 0
@@ -888,7 +859,7 @@ def _lookup_cost(handle: Mapping[str, Any]) -> float | None:
 
 
 # ----------------------------------------------------------------------------
-# Entry used by h3_av.transform
+# Entry used by the RunPod machine
 # ----------------------------------------------------------------------------
 
 

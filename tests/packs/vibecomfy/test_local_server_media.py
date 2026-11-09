@@ -171,15 +171,6 @@ def test_local_staging_records_verified_digests_for_the_engine(tmp_path):
     assert local_server_engine._staged_digest(output_root, "unknown.mp4") is None
 
 
-def test_staging_digest_ledger_is_not_written_for_checkout_server_profiles(tmp_path):
-    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    archive = _archive(tmp_path / "assets.zip", {"source_video": (tmp_path / "clip.mp4", VIDEO)})
-    session = tmp_path / "session"
-    session.mkdir()
-    (session / "config.json").write_text(json.dumps({"input_directory": str(tmp_path / "comfy-input")}))
-    profile = {"vibecomfy_session": {"session_dir": str(session)}}
-    action._stage_managed_assets(str(archive), readiness_profile=profile, output_root=tmp_path / "out")
-    assert not (tmp_path / "comfy-input" / ".managed-asset-digests.json").exists()
 
 
 def test_staged_digest_ignores_symlink_and_corrupt_ledger(tmp_path):

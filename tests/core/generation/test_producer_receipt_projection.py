@@ -9,11 +9,14 @@ import pytest
 from astrid.packs.vibecomfy.workflow_route import WorkflowRunner as VibeComfyWorkflowBackend
 from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from tests.core.generation.test_producer_result_recovery import compiled, envelope
+from tests.local_engine_stub import LOCAL_ENGINE_URL
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 
 
-@pytest.mark.parametrize('route', ['embedded', 'attached'])
-def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path, route):
+# The engine's local run submits as local_server to the installed engine's endpoint (tests/local_engine_stub.py).
+_ENGINE_ROUTE = {'profile_id': 'local_server', 'comfy_url': LOCAL_ENGINE_URL}
+
+def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path):
     from astrid.packs.vibecomfy import production_engine
     from vibecomfy.testing.canonical import canonical_bytes
     root = tmp_path / 'out'
@@ -29,7 +32,7 @@ def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, 
     original = json.loads(path.read_bytes())
     result = SimpleNamespace(managed_generation_result_path=path, managed_generation_result=None)
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', lambda *args, **kwargs: result)
-    kwargs = {'profile_id': 'local_server', 'comfy_url': 'http://127.0.0.1:8188'} if route == 'attached' else {}
+    kwargs = _ENGINE_ROUTE  # the 'embedded' route was retired: the engine's local run is the only no-comfy_url path
     returned = VibeComfyWorkflowBackend().workflow(tmp_path / 'absent.py', root,
         task_identity='task-1', attempt_identity='attempt-1', **kwargs)
     after = json.loads(path.read_bytes())
@@ -93,7 +96,7 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(type(error)) as caught:
         VibeComfyWorkflowBackend().workflow(bundle.python_path, out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert caught.value is error
     path = caught.value.managed_generation_result_path
     assert path == out / 'managed-generation-result.json'
@@ -186,7 +189,7 @@ def test_native_partial_hash_checks_survive_materialization_and_harvest(monkeypa
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(type(error)) as raised:
         VibeComfyWorkflowBackend().workflow(bundle.python_path, out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     assert raised.value is error
     run = importlib.import_module('astrid.packs.vibecomfy.actions.run.run')
     spool = tmp_path / 'spool'
@@ -250,7 +253,7 @@ def test_native_cancel_without_outputs_keeps_stop_unknown_and_refuses_stale_rece
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
     with pytest.raises(SystemExit) as caught:
         VibeComfyWorkflowBackend().workflow(tmp_path / 'absent.py', out,
-            task_identity='task-1', attempt_identity='attempt-1')
+            task_identity='task-1', attempt_identity='attempt-1', **_ENGINE_ROUTE)
     if stale:
         assert not hasattr(caught.value, 'managed_generation_result_path')
         assert not (out / 'managed-generation-result.json').exists()

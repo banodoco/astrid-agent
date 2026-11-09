@@ -37,32 +37,8 @@ _EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_
 # Default entries are data: packs declare them (generation.defaults, entries[].default_for) and the
 # user pins them in the generation settings document; see astrid.core.generation.defaults.
 
-# A CLI caller can retain the validated action's connection through delivery.
-# Acquisition stays inside the SDK, after the action's preconditions succeed.
-_action_client_connection: ContextVar[Any] = ContextVar('generation_action_client_connection', default=None)
-
-
 def _local_template(entry: Any, mode: str) -> str:
     return getattr(entry.modes[mode].backends.get("local"), "template", "")
-
-
-@contextmanager
-def _action_client_scope(factory):
-    with ExitStack() as stack:
-        owner = None
-
-        @contextmanager
-        def connection():
-            nonlocal owner
-            if owner is None:
-                owner = stack.enter_context(factory())
-            yield owner
-
-        token = _action_client_connection.set(connection)
-        try:
-            yield lambda: owner
-        finally:
-            _action_client_connection.reset(token)
 
 
 class WorkflowInvocationClient(Protocol):
@@ -725,6 +701,24 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     return frozen
 
 
+def _asset_map(value: Any) -> Any:
+    """``asset_map`` is a ``file_map`` input ({id: path}); a path to its JSON document is read here.
+
+    Relative paths in the document are taken relative to the document.
+    """
+    if not isinstance(value, (str, Path)) or not Path(str(value)).expanduser().is_file():
+        return value  # a map, a managed digest, or a missing path (validation names it)
+    document = Path(value).expanduser()
+    try:
+        raw = json.loads(document.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GenerationInputError(f"asset_map must be a JSON file of id to path: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise GenerationInputError("asset_map must be a JSON object of id to path")
+    return {key: (str(item) if not isinstance(item, str) or Path(item).is_absolute()
+                  else str((document.parent / item).resolve())) for key, item in raw.items()}
+
+
 @dataclass(frozen=True)
 class GenerationFacade:
     """Public typed entrypoint for generation executors."""
@@ -918,6 +912,7 @@ class GenerationFacade:
         source_video_widget: str | None = None,
         managed_assets: WorkflowFile | None = None,
         workflow_inputs: str | None = None,
+        after_outputs_job: str | None = None,
         comfy_url: str | None = None,
         comfy_output_dir: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
@@ -1019,6 +1014,7 @@ class GenerationFacade:
                 "source_video_node": source_video_node,
                 "source_video_widget": source_video_widget,
                 "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "after_outputs_job": after_outputs_job,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
                 "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
                                   if placement_policy is not None else None),
@@ -1043,9 +1039,20 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
-    def _generate_on_target(
+    def _generate_on_target(self, **kwargs: Any) -> Any:
+        """Run ``_generate_on_target_impl``, then remove any hook job directories it made."""
+        import shutil
+        job_dirs: list[Path] = []
+        try:
+            return self._generate_on_target_impl(_job_dirs=job_dirs, **kwargs)
+        finally:
+            for directory in job_dirs:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    def _generate_on_target_impl(
         self,
         *,
+        _job_dirs: list,
         registry: Any,
         model: str | None,
         mode: str,
@@ -1209,6 +1216,10 @@ class GenerationFacade:
                 assets = {}
                 if is_remote_target:
                     template = (None if source == "workflow" else _local_template(candidate, mode))
+                    if source == "workflow" and candidate.get('hooks_declared'):
+                        import tempfile
+                        _job_dirs.append(Path(tempfile.mkdtemp(prefix='astrid-job-')))
+                        candidate = workflow_entries.attach_hooks(candidate, inputs, _job_dirs[-1])
                     runpod_engine = workflow_entries.runpod_engine(candidate if source == "workflow" else
                         workflow_entries.find_entry(template) if template else None)
                     pending_target = {'engine': runpod_engine, 'placement': 'runpod', 'state': 'pending_host_readiness'}
@@ -1236,6 +1247,28 @@ class GenerationFacade:
                             registry=registry, candidate=catalog_entry, mode=mode,
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
                             retain_source=None if dry_run else retain_source, defer_target=is_remote_target)
+                    elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
+                        # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
+                        # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
+                        if controls.get('wait') is False and not dry_run and not is_remote_target:
+                            # after_outputs reads the build state in this call's job directory, which is
+                            # removed when the call returns; a queued task would find it gone.
+                            raise CapabilityValidationError(
+                                f"entry {identifier!r} runs a post-generation step on this machine; "
+                                "it cannot run with --no-wait (the build state lives only for this call)")
+                        import tempfile
+                        job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
+                        if not candidate.get('job_dir'):
+                            _job_dirs.append(Path(job_dir))
+                        built = workflow_entries.build_entry(candidate, inputs, job_dir)
+                        workflow, assets = built['workflow'], dict(built.get('assets') or {})
+                        plan = {'kind': candidate['kind'], 'unbound': [], 'bindings': dict(built['bindings']),
+                                'build_plan': built.get('plan'), 'job_dir': str(job_dir)}
+                        if not dry_run and source_ref is None:
+                            retained = Path(built['bundle']) / 'source.json'
+                            retain_source(retained.name, retained.read_bytes())
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client, engine=runpod_engine,
+                                                                pending_target=pending_target, align=align)
                     else:
                         with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
                             if not dry_run and source_ref is None:
@@ -1371,7 +1404,16 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            hook_job = None
+            if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
+                # The hook runs where the job runs, after the outputs are written and before they are sealed.
+                # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
+                # this controller's job directory is not shipped.
+                job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
+                hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
+                                       'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
             result = self.workflow(
+                **({'after_outputs_job': hook_job} if hook_job else {}),
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
                 source=source_ref,
@@ -1408,35 +1450,14 @@ class GenerationFacade:
             raise CapabilityValidationError("model and entry select different generation entries")
         try:
             description = describe_entry(entry, mode=mode, registry=registry, _native=True)
-            ports = {port["name"]: port for port in description["inputs"]}
-            producer = (description.get("action") == "h3_av.transform"
-                        and all(ports.get(name, {}).get("file_custody") == "producer_local"
-                                for name in ("request", "asset_map")))
-            if producer:
-                # The H3 admission adapter alone reads these owner controls.
-                # Keep its explicit producer boundary while validating each
-                # declared control's type, without changing execution metadata.
-                from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS
-                controls = {key: value for key, value in inputs.items() if key in PUBLIC_CONTROLS}
-                description, values = resolve_entry_inputs(
-                    entry, {key: value for key, value in inputs.items() if key not in PUBLIC_CONTROLS},
-                    mode=mode, kind=modality, registry=registry,
-                )
-                control_schema = {**description, "inputs": [
-                    {**port, **({"type": "object"} if port["name"] in {"execution_request", "cleanup_receipt"}
-                                and isinstance(controls.get(port["name"]), Mapping) else
-                               {"file_custody": "producer_local"} if port["type"] == "file" else {})}
-                    for port in description["inputs"] if port["name"] in PUBLIC_CONTROLS]}
-                values.update(validate_inputs(control_schema, controls, required=False))
-            else:
-                description, values = resolve_entry_inputs(
-                    entry, dict(inputs), mode=mode, kind=modality, registry=registry,
-                )
+            description, values = resolve_entry_inputs(
+                entry, dict(inputs), mode=mode, kind=modality, registry=registry,
+            )
         except (ValueError, KeyError) as exc:
             raise GenerationInputError(str(exc), entry=locals().get('description')) from exc
         from astrid.core.generation.availability import require_entry_available
         require_entry_available(description, description['mode'])
-        if description.get("action") and (not producer or description.get("runtime_parent_required")):
+        if description.get("action"):
             raise CapabilityPreconditionError(
                 "action-backed generation requires a Runtime-admitted parent; "
                 "the tracked parent interface is not yet available"
@@ -1656,20 +1677,6 @@ class GenerationFacade:
             return result
         return _reconstruct_generation_result(result)
 
-    @staticmethod
-    def _validate_action_entry(entry: dict[str, Any], *, modality: str,
-                               mode: str | None, inputs: Mapping[str, Any]) -> None:
-        """Check declared bindings without initiating the untracked action route."""
-        if entry["kind"] != modality or (mode is not None and mode not in entry["modes"]):
-            raise CapabilityValidationError(f"entry {entry['id']!r} does not support {modality}/{mode}")
-        if mode is None and len(entry["modes"]) != 1:
-            raise CapabilityValidationError(f"entry {entry['id']!r} requires an explicit mode")
-        from astrid.core.generation.entries import validate_inputs
-        try:
-            validate_inputs({**entry, "source": "action"}, dict(inputs))
-        except ValueError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
     @_generation_boundary
     def video(
         self,
@@ -1716,7 +1723,7 @@ class GenerationFacade:
         controls['align'] = _align_mode(align)
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
-                       (("request", request), ("asset_map", asset_map)) if value is not None})
+                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
         if _prompt_only_video(model=model, entry=entry, inputs=inputs):
             raise GenerationInputError(
                 "Prompt-only video requires a reference or an H3 request. "
@@ -1726,7 +1733,6 @@ class GenerationFacade:
             )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
-        action_entry = None
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
@@ -1736,45 +1742,8 @@ class GenerationFacade:
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
-            action_entry = description if description.get("action") else None
             if description["source"] == "workflow" and placement is None:
                 placement = "auto"
-        elif model is not None:
-            from astrid.core.generation.entries import find_entry
-            manifest = find_entry(model)
-            if manifest is not None and "action" in manifest:
-                registry = sdk_module._load_model_registry(
-                    project_root=project_root, extra_pack_roots=extra_pack_roots,
-                )
-                action_entry, inputs = self._resolve_public_entry(
-                    entry=model, model=model, mode=mode, modality="video", inputs=inputs, registry=registry,
-                )
-        if action_entry is not None:
-            if action_entry["action"] != "h3_av.transform":
-                raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
-            if placement not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
-                raise CapabilityValidationError("tracked H3 requires the default Runtime target")
-            if not inputs.get("request") or not inputs.get("asset_map"):
-                raise CapabilityValidationError("H3 requires request and asset_map")
-            if placement == 'runpod':
-                _runpod_paid_controls(controls)
-                if not dry_run:
-                    from astrid.core.generation.entries import runpod_engine
-                    inputs['placement_policy'] = _runpod_placement_policy(controls, engine=runpod_engine(action_entry))
-            controls = dict(kind="action", inputs=inputs, project=project, out=out,
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
-                dry_run=dry_run, wait=wait, read_managed_outputs=True,
-                recovery_path=recovery_path, resume=resume)
-            if client is None and not dry_run:
-                # Reuse the ordinary owner launcher connection; the admitted
-                # parent, including prepared custody, stays in this context.
-                connection = _action_client_connection.get()
-                with (connection() if connection is not None else
-                      sdk_module.AstridClient.open_from_launcher(start_pack_host=False)) as owner:
-                    return owner.invoke_result("h3_av.transform", **controls)
-            invoke = client.invoke_result if client is not None else sdk_module.invoke_result
-            return invoke("h3_av.transform", **controls)
         if resume or recovery_path is not None and placement != 'runpod':
             raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)

@@ -4330,30 +4330,9 @@ def invoke(
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     if not isinstance(read_managed_outputs, bool):
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
-    if resume and recovery_path is None and capability_id != "h3_av.transform":
+    if resume and recovery_path is None:
         raise CapabilityValidationError("resume requires recovery_path")
     owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
-    if capability_id == "h3_av.transform" and not child_mode:
-        public_inputs = dict(inputs or {})
-        for name in ("resume", "dry_run"):
-            if name in public_inputs and type(public_inputs[name]) is not bool:
-                raise CapabilityValidationError(f"H3 {name} must be an explicit boolean")
-        resume = public_inputs.pop("resume", resume)
-        dry_run = public_inputs.pop("dry_run", dry_run)
-        inputs = public_inputs
-        if recovery_path is None and out is not None and (resume or public_inputs.get("prepared_worker") is not None):
-            recovery_path = Path(out) / "h3-parent-recovery.json"
-        if resume and recovery_path is None:
-            raise CapabilityValidationError("resume requires recovery_path")
-        if public_inputs.get("prepared_worker") is not None and not dry_run:
-            if recovery_path is None:
-                raise CapabilityValidationError("prepared H3 requires a parent recovery receipt")
-            owner_tick = _prepared_owner_for(client, recovery_path, capability_id)
-            if owner_tick is None:
-                from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
-                owner_tick = retain_prepared_owner(client, recovery_path=recovery_path,
-                    capability_id=capability_id,
-                    monitor=PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"]))
     if owner_tick is not None and not wait and not dry_run:
         if (not callable(getattr(getattr(owner_tick, 'owner', None), 'retain', None))
                 and not callable(getattr(client, 'retain_generation_owner', None))):
@@ -4429,9 +4408,6 @@ def invoke(
     if kind == "action":
         kind = capability.capability_type
 
-    if capability.id == "h3_av.transform" and "host_output_root" in (inputs or {}):
-        raise CapabilityValidationError("H3 output custody is host-owned")
-
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
     if capability.id == "generation.generate_image_openai":
@@ -4492,7 +4468,7 @@ def invoke(
         variant_context = {"variant_of": variant_of, "primary": primary}
     generation_intent: dict[str, Any] | None = None
     if "generation_intent" in request_inputs:
-        if intent_modality is None and capability.id not in {"vibecomfy.run", "h3_av.publication_finalizer"}:
+        if intent_modality is None and capability.id != "vibecomfy.run":
             raise CapabilityValidationError(
                 "generation_intent is only accepted for generation capabilities"
             )
@@ -4525,35 +4501,9 @@ def invoke(
                 "output cardinality is not safely inferable at admission"
             )
 
-    h3_preview_controls = None
-    if dry_run and capability.id == "h3_av.transform" and not child_mode:
-        from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS, public_controls
-        h3_preview_controls = public_controls(request_inputs)
-        request_inputs = {key: value for key, value in request_inputs.items() if key not in PUBLIC_CONTROLS}
-    if not dry_run and capability.id == "h3_av.transform" and not child_mode:
-        if capability.capability_type != "executor":
-            raise CapabilityPreconditionError("H3 requires a Runtime-admitted executor parent")
-        if validated_child_policy is not None or outputs or orchestrator_args:
-            raise CapabilityValidationError("tracked H3 parent owns its stage and output mapping")
-        if normalized_execution_request is not None:
-            target = normalized_execution_request.get("target", {"kind": "default"})
-            if target != {"kind": "default"} or normalized_execution_request.get("inputs"):
-                raise CapabilityValidationError("tracked H3 parent requires its default target and managed roots")
-        project = project or _runtime_selected_project(_client)
-        from astrid.packs.h3_av.actions.transform.run import project_parent
-        from astrid.core.contracts.errors import AstridError
-        try:
-            request_inputs, validated_child_policy = project_parent(
-                request_inputs, project=project, client=_client, registry=registries[0])
-            project = request_inputs["plan"]["project"]
-        except (AstridError, ValueError, OSError) as exc:
-            raise CapabilityPreconditionError(str(exc)) from exc
-
     from .actions import validate_action_inputs
 
     effective_inputs = dict(request_inputs)
-    if child_mode and capability.id == "h3_av.publication_finalizer" and generation_intent is not None:
-        effective_inputs["generation_intent"] = generation_intent
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
             effective_inputs[port.name] = port.default
@@ -4870,13 +4820,6 @@ def invoke(
     # already resolved manifest DTO and does not import either runner or any
     # local project/run authority.
     if dry_run:
-        if h3_preview_controls is not None:
-            from astrid.packs.h3_av.actions.transform.run import STAGES
-            return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
-                native_kind=capability.native_kind, ok=True, outputs={}, raw_result={
-                    "status": "planned", "parent_target": {"kind": "default"},
-                    "run_execution_request": h3_preview_controls["run_execution_request"],
-                    "stages": [{"stage": name, "capability_id": child} for name, child in STAGES]})
         try:
             raw_result, preview_ok = _manifest_dry_run_result(
                 capability,

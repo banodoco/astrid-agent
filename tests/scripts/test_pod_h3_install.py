@@ -84,8 +84,8 @@ def test_install_selected_recovers_legacy_receipt_and_returns_ready_attestation(
     assert receipt["status"] == "installed"
     assert all(step["action"] == "skipped" and step["validation"] == "passed"
                for step in receipt["steps"])
-    from astrid.packs.h3_av.actions.transform import run as transform
-    endpoint = transform._resolve_local_engine()
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+    endpoint = local_engine_endpoint("comfyui")
     assert endpoint.endpoint.state == "ready"
     assert endpoint.endpoint.attestation.install_receipt_sha256 == result["receipt_sha256"]
 

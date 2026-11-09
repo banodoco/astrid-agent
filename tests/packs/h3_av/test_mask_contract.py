@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+from astrid.packs.h3_av.shared.prepare import prepare_request
 from astrid.packs.h3_av.shared.errors import PreparationError
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.h3_av.shared.request_v2 import H3RequestError

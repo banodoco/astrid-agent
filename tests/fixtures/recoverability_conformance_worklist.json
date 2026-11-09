@@ -2,13 +2,13 @@
   "ast_findings": [
     {
       "kind": "direct_stderr",
-      "line": 1087,
+      "line": 1225,
       "path": "astrid/packs/vibecomfy/actions/run/run.py",
       "source": "sys.stderr.write(\"\".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))",
       "stderr_kind": "write"
     }
   ],
-  "expected_parser_surface_count": 35,
+  "expected_parser_surface_count": 28,
   "expected_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -39,36 +39,6 @@
       "builder": "build_parser",
       "module": "astrid.packs.generation.actions.generate_video.run",
       "path": "astrid/packs/generation/actions/generate_video/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.compile.run",
-      "path": "astrid/packs/h3_av/actions/compile/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.compose.run",
-      "path": "astrid/packs/h3_av/actions/compose/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.prepare.run",
-      "path": "astrid/packs/h3_av/actions/prepare/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.publication_finalizer.run",
-      "path": "astrid/packs/h3_av/actions/publication_finalizer/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.transform.run",
-      "path": "astrid/packs/h3_av/actions/transform/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.h3_av.actions.verify.run",
-      "path": "astrid/packs/h3_av/actions/verify/run.py"
     },
     {
       "builder": "build_parser",
@@ -183,23 +153,8 @@
   ],
   "kind_arg_findings": [],
   "mode": "zero",
-  "non_kind_enum_findings": [
-    {
-      "choices_class": "tuple",
-      "dest": "placement",
-      "module": "astrid.packs.h3_av.actions.transform.run",
-      "option_strings": [
-        "--placement"
-      ],
-      "parser_path": [],
-      "path": "astrid/packs/h3_av/actions/transform/run.py",
-      "valid_options": [
-        "local",
-        "runpod"
-      ]
-    }
-  ],
-  "scanned_parser_surface_count": 35,
+  "non_kind_enum_findings": [],
+  "scanned_parser_surface_count": 28,
   "scanned_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -241,48 +196,6 @@
       "enum_arg_count": 5,
       "module": "astrid.packs.generation.actions.generate_video.run",
       "path": "astrid/packs/generation/actions/generate_video/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.h3_av.actions.compile.run",
-      "path": "astrid/packs/h3_av/actions/compile/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.h3_av.actions.compose.run",
-      "path": "astrid/packs/h3_av/actions/compose/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.h3_av.actions.prepare.run",
-      "path": "astrid/packs/h3_av/actions/prepare/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.h3_av.actions.publication_finalizer.run",
-      "path": "astrid/packs/h3_av/actions/publication_finalizer/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 1,
-      "module": "astrid.packs.h3_av.actions.transform.run",
-      "path": "astrid/packs/h3_av/actions/transform/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.h3_av.actions.verify.run",
-      "path": "astrid/packs/h3_av/actions/verify/run.py",
       "prog": "-c"
     },
     {
