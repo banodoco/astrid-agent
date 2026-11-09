@@ -175,6 +175,8 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
             directory = "/workspace/.astrid-jobs/" + job_id
             for name in ("stdout", "stderr"):
                 self.files[directory + "/" + name] = self.files.pop(old["dir"] + "/" + name)
+            if self.active_job and self.active_job.get("job_dir") == old["dir"]:
+                self.active_job["job_dir"] = directory  # the agent folder under its checkpointed id
             if "engines install" in command and not self.jobs[job_id] and c.install_uses_command_deadline:
                 seconds = float(command.split("--deadline ", 1)[1].split()[0])
                 try:

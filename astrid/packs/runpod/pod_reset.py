@@ -42,6 +42,9 @@ READY = POD_ROOT / "ready.json"
 PREPARED = POD_ROOT / "prepared-connection.json"
 ACTIVE_JOB = POD_ROOT / "active-job.json"
 LOCK = POD_ROOT / "reset.lock"
+RUNS_ROOT = POD_ROOT / "runs"
+#: The realm store's job tables; an empty realm (the template's source) has none of these rows.
+JOB_TABLES = ("projects", "tasks", "runs", "events", "objects")
 PREPARED_ENV = "ASTRID_PREPARED_CONNECTION"
 
 
@@ -70,11 +73,69 @@ def _post(endpoint: str, token: str, path: str, body: Mapping[str, Any], *, time
         return json.loads(response.read() or b"null")
 
 
-def take_template(endpoint: str, token: str, template: Path = TEMPLATE) -> Mapping[str, Any]:
-    """Back up the (empty) realm once; later resets restore exactly this."""
+def realm_job_rows(root: Path) -> dict[str, int]:
+    """Rows a job leaves in the realm store, plus its CAS files; all zero for an empty realm."""
+    import sqlite3
+
+    database = root / "realm.sqlite3"
+    if not database.is_file():
+        raise ResetError(f"no realm store at {database}")
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        rows = {table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                for table in JOB_TABLES if table in tables}
+    finally:
+        connection.close()
+    cas = root / "cas" / "sha256"
+    rows["cas"] = sum(1 for path in cas.rglob("*") if path.is_file()) if cas.is_dir() else 0
+    return rows
+
+
+def take_template(endpoint: str, token: str, template: Path = TEMPLATE, *, realm_root: Path,
+                  active: Path = ACTIVE_JOB) -> Mapping[str, Any]:
+    """Back up the empty realm once; later resets restore exactly this.
+
+    Refused when a job may have written the realm: ``active-job.json`` is present,
+    or the realm holds any job rows or CAS objects (a dirty template would be
+    restored into every later job). The controller then releases the pod.
+    """
     if template.exists():
         raise ResetError(f"template already exists: {template}")
+    if active.exists():
+        raise ResetError("a job was active on this realm; it cannot become the empty template")
+    dirty = {name: count for name, count in realm_job_rows(realm_root).items() if count}
+    if dirty:
+        raise ResetError(f"the realm is not empty; it cannot become the template: {dirty}")
     return _post(endpoint, token, "/v1/backup", {"destination": str(template)})
+
+
+def pending_dirs(active: Path = ACTIVE_JOB, *, runs_root: Path = RUNS_ROOT) -> tuple[Path | None, Path | None]:
+    """The run and pod-agent job folders a job that never reached its reset recorded.
+
+    Only a run folder directly under ``runs_root`` and an agent job folder holding
+    its ``command.sh`` are returned; anything else in the file is ignored.
+    """
+    try:
+        value = json.loads(active.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(value, Mapping):
+        return None, None
+
+    def folder(key: str) -> Path | None:
+        raw = value.get(key)
+        if not isinstance(raw, str) or not raw.startswith("/") or ".." in Path(raw).parts:
+            return None
+        path = Path(raw)
+        return None if path.is_symlink() or not path.is_dir() else path
+
+    run_dir, job_dir = folder("run_dir"), folder("job_dir")
+    if run_dir is not None and run_dir.parent != runs_root:
+        run_dir = None
+    if job_dir is not None and not (job_dir / "command.sh").is_file():
+        job_dir = None
+    return run_dir, job_dir
 
 
 def realm_root(realm_id: str, data_root: Path = DATA_ROOT) -> Path:
@@ -166,7 +227,8 @@ def _token(result: Mapping[str, Any]) -> str:
 def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
           ensure: Callable[[], Mapping[str, Any]] | None = None, data_root: Path = DATA_ROOT,
           template: Path = TEMPLATE, lock: Path = LOCK, prepared: Path = PREPARED, ready: Path = READY,
-          active: Path = ACTIVE_JOB, realm: Path | None = None) -> dict[str, Any]:
+          active: Path = ACTIVE_JOB, realm: Path | None = None,
+          runs_root: Path = RUNS_ROOT) -> dict[str, Any]:
     """The whole pod reset under the exclusive lock; raises ResetError on any failure.
 
     ``realm`` overrides the launcher's realm root (a test daemon's own root).
@@ -176,14 +238,19 @@ def reset(*, run_dir: Path | None = None, job_dir: Path | None = None,
         ensure = ensure_runtime
     with reset_lock(lock):
         ready.unlink(missing_ok=True)  # a failed reset leaves the pod not ready
+        if run_dir is None and job_dir is None:
+            # A redo at the claim: the job that never reached its reset named its folders.
+            run_dir, job_dir = pending_dirs(active, runs_root=runs_root)
         current = ensure()
+        root = realm or realm_root(str(current["realm_id"]), data_root)
         steps: dict[str, Any] = {}
         if template.exists():
             steps["replace"] = replace_realm(current["endpoint"], _token(current), template=template,
-                                             realm_root=realm or realm_root(str(current["realm_id"]), data_root))
+                                             realm_root=root)
         else:
             # First reset on a fresh pod: the realm pod_bootstrap created is still empty.
-            steps["template"] = take_template(current["endpoint"], _token(current), template)
+            steps["template"] = take_template(current["endpoint"], _token(current), template,
+                                              realm_root=root, active=active)
         steps["removed"] = sweep(run_dir=run_dir, job_dir=job_dir, data_root=data_root)
         # Replacement rotates credentials; one full ensure writes the connection the next job opens.
         steps["ready"] = write_prepared(ensure(), prepared=prepared, ready=ready, active=active)
