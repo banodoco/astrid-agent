@@ -170,3 +170,15 @@ def test_skill_and_other_copy_warnings_stand_together():
         DETAILS,
     ]
     assert out.exit_code == 0
+
+
+# --- A plain recovery that ends healthy is a repair, never an update, even when it restores an older release.
+
+def test_plain_recovery_restoring_an_older_release_is_repaired_and_keeps_its_reason():
+    # An interrupted update stopped the Runtime and moved the pointer to 12; the recovery restored 11.
+    stopped = SimpleNamespace(kind="runtime", live_release=None, selected_release=12, live_runtimes=())
+    out = settle(Request("install", reason="recovered-previous-version"), stopped, lambda: _state("runtime", 11))
+    assert out.kind == "repaired" and out.exit_code == 0
+    assert out.reason == "recovered-previous-version"
+    assert out.start is None
+    assert "An earlier update was interrupted" in " ".join(out.headline())
