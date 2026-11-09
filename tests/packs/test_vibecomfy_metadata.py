@@ -78,6 +78,8 @@ class VibeComfyStructuredMetadataTest(unittest.TestCase):
                 "{managed_assets}",
                 "--workflow-inputs",
                 "{workflow_inputs}",
+                "--after-outputs-job",
+                "{after_outputs_job}",
                 "--comfy-url",
                 "{comfy_url}",
                 "--comfy-output-dir",
