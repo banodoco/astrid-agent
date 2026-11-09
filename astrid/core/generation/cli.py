@@ -302,10 +302,22 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
         path = path / "workflow.py"
     if parsed.replace and not parsed.as_entry:
         raise ValueError('--replace requires --as-entry')
+    if parsed.as_entry and parsed.dry_run:
+        # Preview only: validate the inputs the entry would declare, write nothing, run nothing.
+        description, _ = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
+        preview = {
+            "dry_run": True,
+            "written": False,
+            "would_save_entry": parsed.as_entry,
+            "replaces_existing": bool(parsed.replace),
+            "kind": description.get("kind"),
+            "modes": description.get("modes"),
+            "inputs": description.get("inputs"),
+        }
+        print(json.dumps(preview, indent=2, sort_keys=True, default=str))
+        return 0
     if parsed.as_entry:
         from vibecomfy.entries import import_as_entry
-        if parsed.dry_run:
-            raise ValueError('--as-entry writes an entry; omit it for a read-only dry-run')
         if parsed.replace:
             from inspect import signature
             if 'replace' not in signature(import_as_entry).parameters:
