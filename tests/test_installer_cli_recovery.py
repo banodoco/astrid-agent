@@ -380,7 +380,7 @@ def test_installed_cli_validates_candidate_without_requiring_staging_uv(
     if source == "explicit":
         args.extend(["--manifest", str(manifest_path)])
 
-    assert cli.main(args) == 3  # recovery-only run: the receipt says not updated (exit 3)
+    assert cli.main(args) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert validated == [candidate]
     assert dispatched == [("install", candidate)]
 
@@ -558,7 +558,7 @@ def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
 
     monkeypatch.setattr(Installer, "_recover_update", recover)
     assert gateway_main(["install", "--root", str(root), "--manifest", str(tmp_path / "missing"),
-                         "--uv", str(tmp_path / "missing-uv")]) == 3  # recovery-only run: the receipt says not updated (exit 3)
+                         "--uv", str(tmp_path / "missing-uv")]) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert recovery == [True]
     assert not backend.calls
 

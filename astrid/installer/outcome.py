@@ -15,9 +15,13 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-# Exit-code contract (ruled by M-INT on PR #319): 0 = the live release is the
-# target (updated, already-current, repaired); 3 = not updated, including a
-# declined run and a recovery-only run that leaves the release unchanged;
+# Exit-code contract (ruled by M-INT on PR #319). The target follows the request:
+# --update targets the manifest release; a plain install or repair (including
+# Pinokio finishing an interrupted update) targets "the selected version is live
+# and healthy". 0 = target reached (updated, already-current, repaired; a
+# recovery that ends healthy is repaired with reason recovered-previous-version
+# as detail); 3 = not updated, including a declined run and a recovery-only
+# --update that leaves the release unchanged;
 # 2 = setup consent required (kept: the bootstrap and journeys rerun with --yes);
 # 1 = failed or rolled back. Readers: App public/install and install.ps1 pass
 # the code through; the Pinokio launcher and the journey harness treat every
@@ -83,7 +87,11 @@ class Outcome:
         if self.kind == "already-current":
             return [f"Astrid is already up to date ({release(self.still)}). Nothing was changed."]
         if self.kind == "repaired":
-            return [f"Astrid is installed and running ({release(self.still)})."]
+            lines = [f"Astrid is installed and running ({release(self.still)})."]
+            if self.reason == "recovered-previous-version":
+                lines.append("An earlier update was interrupted; Astrid restored the version before it. "
+                             "Run the command with --update to update.")
+            return lines
         if self.kind == "not-updated":
             if self.still is None and self.start is None:
                 first = "Astrid was NOT installed."
@@ -153,11 +161,17 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode)
-    if live is not None and target is not None and live == target:
-        if start != target:
-            return Outcome("updated", live, start, target, None, request.mode)
-        kind = "already-current" if request.mode == "update" else "repaired"
-        return Outcome(kind, live, start, target, None, request.mode)
+    if request.mode == "update":
+        # --update: the target is the manifest release.
+        if live is not None and target is not None and live == target:
+            kind = "updated" if start != target else "already-current"
+            return Outcome(kind, live, start, target, None, request.mode)
+    elif live is not None and after is not None and live == after.selected_release:
+        # A plain install or repair (including Pinokio finishing an interrupted
+        # update): the target is "the selected version is live and healthy".
+        # A recovery that ends healthy is repaired; its reason stays as detail.
+        kind = "repaired" if start == live else "updated"
+        return Outcome(kind, live, start, live, request.reason, request.mode)
     reason = request.reason
     if reason is None:
         reason = "runtime-not-running" if live is None and target is not None and after is not None \

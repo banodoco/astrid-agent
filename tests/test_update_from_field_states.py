@@ -178,3 +178,53 @@ def test_exit_code_contract_read_by_bootstraps_pinokio_and_journeys():
         ("not-updated", "installer-bug"): 3, ("not-updated", "declined"): 3,
         ("not-updated", "recovered-previous-version"): 3, ("not-updated", "consent-required"): 2,
         ("failed", "refused"): 1, ("rolled-back", "error"): 1}
+
+
+def _interrupted_update(c, monkeypatch):
+    """A pending C2 journal whose replay restores the running version (Release 1)."""
+    from astrid.installer.core import write_json
+
+    journal = c.root / "update-transaction.json"
+    write_json(journal, {"format": "astrid-install-update/v1", "operation_id": "a" * 32,
+                         "transaction_kind": "migration", "step": "stopping",
+                         "data_root": str(c.destination)})
+    replayed = []
+
+    def recover(self):
+        replayed.append(self.data)
+        write_json(journal, {**read_json(journal), "step": "rolled_back"})
+
+    monkeypatch.setattr(Installer, "_recover_update", recover)
+    return replayed
+
+
+def test_plain_install_that_recovers_an_interrupted_update_is_repaired(case, monkeypatch, capsys):
+    """A plain install (or Pinokio finishing an update) targets "selected version live and healthy"."""
+    c = handed_off_release1_r0_live(case, monkeypatch)
+    _cli(c, monkeypatch)
+    replayed = _interrupted_update(c, monkeypatch)
+    code = cli.main(["--root", str(c.root), "--manifest", str(c.manifest_path(2)), "--uv", sys.executable])
+    out = capsys.readouterr().out
+    assert replayed == [c.destination] and current(c.root).release == 1
+    assert code == 0, out
+    assert "Astrid is installed and running (Release 1)." in out
+    assert "An earlier update was interrupted" in out
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["reason"], receipt["still"], receipt["exit_code"]) == (
+        "repaired", "recovered-previous-version", 1, 0)
+
+
+def test_update_that_only_recovers_an_interrupted_update_is_not_updated(case, monkeypatch, capsys):
+    """--update targets the manifest release, so a recovery-only run exits 3."""
+    c = handed_off_release1_r0_live(case, monkeypatch)
+    _cli(c, monkeypatch)
+    replayed = _interrupted_update(c, monkeypatch)
+    code = _update(c, 2)
+    lines = _summary(capsys.readouterr().out)
+    assert replayed == [c.destination] and current(c.root).release == 1
+    assert code == 3
+    assert "Astrid did NOT update. It is still Release 1." in lines
+    assert any(line.startswith("Why: an earlier update was interrupted") for line in lines)
+    receipt = read_json(platform.log_dir() / "last-run.json")
+    assert (receipt["kind"], receipt["reason"], receipt["still"], receipt["exit_code"]) == (
+        "not-updated", "recovered-previous-version", 1, 3)

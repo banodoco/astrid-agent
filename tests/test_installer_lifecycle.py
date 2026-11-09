@@ -1766,7 +1766,7 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
         "--uv", str(tmp_path / "unavailable-uv"),
     ])
 
-    assert result == 3  # recovery-only run: the receipt says not updated (exit 3)
+    assert result == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert read_json(journal)["step"] == "rolled_back"
     assert current(backend.root).root == old_root
     assert read_json(paths.catalog_path)["selected_realm_id"] == "realm-1"
