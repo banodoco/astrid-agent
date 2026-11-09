@@ -586,6 +586,10 @@ def _main(argv: list[str]) -> int:
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
+        elif description is not None and description["source"] == "action" and parsed.placement != 'runpod':
+            # Action-backed entries are validated (and refused, fail-closed) by the SDK
+            # before any Runtime is needed; never open one ahead of that.
+            result = generate(**kwargs)
         else:
             try:
                 client_scope = _open_client()
