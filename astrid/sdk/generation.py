@@ -1538,6 +1538,45 @@ class GenerationFacade:
         align: str = 'check',
         **inputs: Any,
     ) -> Any:
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("image", **arguments, **inputs)
+
+    def _media_request(
+        self,
+        modality: str,
+        *,
+        model: str | None = None,
+        entry: str | None = None,
+        placement: str | None = None,
+        mode: str | None = None,
+        execution: str | None = None,
+        engine: str | None = None,
+        consent: tuple[str, ...] = (),
+        max_usd: float | None = None,
+        deadline: str | None = None,
+        offer_digest: str | None = None,
+        preparation_seconds: float | None = None,
+        execution_seconds: float | None = None,
+        idle_seconds: float | None = None,
+        wait: bool = True,
+        out: Path | str | None = None,
+        project: str | None = None,
+        client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        project_root: str | Path | None = None,
+        extra_pack_roots: tuple[str, ...] = (),
+        banodoco_config: Any | None = None,
+        active_theme: str | Path | None = None,
+        include_missing_roots: bool = False,
+        brief: Path | str | None = None,
+        dry_run: bool = False,
+        check_binaries: bool = False,
+        python_exec: str | None = None,
+        verbose: bool = False,
+        argv: tuple[str, ...] = (),
+        align: str = 'check',
+        **inputs: Any,
+    ) -> Any:
         inputs = _public_input_values(inputs)
         controls = _modality_controls(
             engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
@@ -1552,7 +1591,7 @@ class GenerationFacade:
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
             description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="image",
+                entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
@@ -1578,7 +1617,7 @@ class GenerationFacade:
             placement = 'auto'
         if placement is not None:
             return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="image",
+                registry=registry, model=model, mode=resolved_mode, modality=modality,
                 placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
@@ -1633,7 +1672,7 @@ class GenerationFacade:
             mode=resolved_mode,
             execution=resolved_execution,
             inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="image",
+            modality=modality,
             # Keep the image facade's historic deferred prompt validation:
             # executor-owned prompt semantics (including prompt-less upscale)
             # remain compatible while matrix/readiness checks happen here.
@@ -1659,7 +1698,7 @@ class GenerationFacade:
             project_root=project_root,
         )
         result = self._invoke(
-            "generation.generate_image",
+            f"generation.generate_{modality}",
             kind="executor",
             client=client,
             project_root=project_root,
