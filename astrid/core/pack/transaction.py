@@ -100,7 +100,10 @@ def _json(value: Any) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 def _sync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if not hasattr(os, "O_DIRECTORY"):
+        # Windows cannot open a directory for fsync; NTFS journals the rename itself.
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(fd)
     finally:

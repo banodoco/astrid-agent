@@ -56,3 +56,31 @@ def test_unsupported_platform_is_refused_cleanly(monkeypatch, tmp_path):
     with pytest.raises(Exception, match="supported filesystem"):
         with group_read_lock(tmp_path / "packs", exclusive=True):
             pass
+
+
+def test_directory_sync_is_skipped_without_o_directory(monkeypatch, tmp_path):
+    from astrid.core.pack import transaction
+
+    monkeypatch.delattr(os, "O_DIRECTORY")
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    opened = []
+    monkeypatch.setattr(os, "open", lambda *a, **k: opened.append(a) or 0)
+    transaction._sync_directory(tmp_path)
+    assert opened == []
+
+
+def test_directory_sync_still_fsyncs_where_supported(tmp_path):
+    from astrid.core.pack import transaction
+
+    transaction._sync_directory(tmp_path)
+
+
+def test_locks_work_without_fcntl_o_directory_or_o_nofollow(no_fcntl, monkeypatch, tmp_path):
+    monkeypatch.delattr(os, "O_DIRECTORY")
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    root = tmp_path / "packs"
+    root.mkdir()
+    with group_read_lock(root, exclusive=True):
+        pass
+    with _install_lock(root):
+        pass
