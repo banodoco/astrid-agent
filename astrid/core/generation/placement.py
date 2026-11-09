@@ -110,8 +110,13 @@ def _merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
 
 def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
                       path: str | Path | None = None, builtin: Placement | None = None,
-                      client: Any = None) -> Placement:
-    """request -> user default -> built-in; the only place a placement is chosen."""
+                      client: Any = None, repo: str | Path | None = None) -> Placement:
+    """request -> user default -> built-in; the only place a placement is chosen.
+
+    An unrequested placement with no default kind follows a bound ComfyUI
+    attachment (env, repo or global config) when one exists; otherwise it is local.
+    An explicit request or default is never overridden by discovery.
+    """
     from astrid.core.generation import settings
 
     default = settings.placement_default(client, legacy_path=path)
@@ -119,6 +124,10 @@ def resolve_placement(request: Mapping[str, Any] | Placement | None = None, *,
         raise _refuse("the [placement] default must be a table", field_name="placement")
     over = request.as_mapping() if isinstance(request, Placement) else dict(request or {})
     merged = _merge((builtin or Placement()).as_mapping(), _merge(default, over))
+    if not over and "kind" not in default and merged.get("kind") == "local":
+        attached = _discovered_attachment(repo)
+        if attached is not None:
+            merged = _merge(merged, attached.as_mapping())
     return Placement.from_mapping(merged)
 
 
@@ -137,11 +146,59 @@ def request_from_selector(selector: Any) -> Mapping[str, Any] | Placement | None
     return {"kind": selector}
 
 
-def comfy_selector(placement: Placement, selector: Any = None) -> str:
-    """What ``select_generation_target`` is asked for, from the resolved placement."""
+def comfy_selector(placement: Placement) -> str:
+    """What ``select_generation_target`` is asked for, from the resolved placement.
+
+    Pure: an attached placement is its endpoint and a local one is the managed
+    engine. Nothing here reads config, so an explicit local placement cannot reach
+    an attached ComfyUI.
+    """
     if placement.kind == "attached":
         return str(placement.endpoint)
-    return "managed" if selector == "managed" else "auto"
+    if placement.kind == "local":
+        return "managed"
+    raise _refuse(f"a {placement.kind} placement has no ComfyUI target", field_name="kind")
+
+
+def _discovered_attachment(repo: str | Path | None = None) -> Placement | None:
+    """The one read of ComfyUI config that picks a placement; None means local.
+
+    A bound human endpoint (env, repo or global config) is attached as-is: the
+    attached probe reports it unreachable rather than switching. An unbound
+    discovery address is attached only when it answers, so an unconfigured user
+    with a running ComfyUI keeps the attached route, and an absent one stays local.
+    """
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import targets
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    try:
+        selection = targets.resolve_target("auto", repo=repo)
+    except targets.TargetConfigError as exc:
+        raise AstridError(
+            str(exc), code="COMFY_TARGET_INVALID", field="target",
+            fix="Repair the saved ComfyUI config or explicitly select a loopback URL or managed target",
+        ) from exc
+    record = selection.record
+    if record is None or record.owner == "astrid":
+        return None
+    if record.endpoint is None:
+        if selection.bound:
+            raise AstridError(
+                "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
+                code="COMFY_TARGET_UNAVAILABLE", field="target",
+                fix="Launch the selected ComfyUI and explicitly select its loopback URL",
+            )
+        return None
+    if not selection.bound:
+        try:
+            facts = ComfyTargetClient(ComfyTarget(record.endpoint, "attached")).request_json(
+                "/system_stats", timeout=1.0)
+        except (OSError, ValueError, TimeoutError):
+            return None
+        if not isinstance(facts, dict) or not isinstance(facts.get("system"), dict):
+            return None
+    return Placement(kind="attached", endpoint=record.endpoint)
 
 
 def registered_machine_kinds() -> tuple[str, ...]:

@@ -242,7 +242,7 @@ def _prompt_only_video(*, model, entry, inputs):
     return model is None and entry is None and set(inputs) == {"prompt"}
 
 
-_ALIGN_MODES = ('check', 'trust')
+_ALIGN_MODES = ('align', 'check', 'trust')
 
 
 def _align_mode(align):
@@ -1066,8 +1066,9 @@ class GenerationFacade:
         from astrid.core.generation import placement as placements
 
         # The one decision site: request -> user default -> built-in, then frozen.
-        selector, placement = placement, placements.validate_placement(placements.resolve_placement(
-            placements.request_from_selector(placement), client=controls.get('client')))
+        placement = placements.validate_placement(placements.resolve_placement(
+            placements.request_from_selector(placement), client=controls.get('client'),
+            repo=controls.get('project_root')))
         is_remote_target = placement.kind not in placements.BUILTIN_KINDS
         if is_remote_target:
             _runpod_paid_controls(controls)
@@ -1170,7 +1171,7 @@ class GenerationFacade:
         default_id = (candidates[0][1].id if candidates[0][0] == 'catalog'
                       else candidates[0][1]['id']) if candidates else None
         target_client = (None if is_remote_target else select_generation_target(
-            placements.comfy_selector(placement, selector), repo=controls.get("project_root"),
+            placements.comfy_selector(placement), repo=controls.get("project_root"),
             entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id') or default_id,
             mode=mode))
         backend = VibeComfyBackend(target_client=target_client)
@@ -1377,7 +1378,7 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": "trust"} if align == "trust" else {})},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": align} if align != "check" else {})},
                 },
                 **asset_arguments, **controls,
             )

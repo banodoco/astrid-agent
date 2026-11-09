@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from types import ModuleType
 
+from astrid.core.generation.progress import write_progress  # noqa: E402
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.pack_api import AstridError, render_astrid_error  # noqa: E402
 from astrid.pack_api import add_choice_arg  # noqa: E402
@@ -687,7 +688,7 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     """
     from vibecomfy.workflow_bundle import WorkflowBundleError
     from astrid.core.generation.engine_contracts import EngineError
-    from astrid.core.generation.engine_local_endpoint import recorded_engine_root
+    from astrid.core.generation.engine_local_endpoint import default_engine_root
 
     try:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
@@ -696,10 +697,11 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     except ValueError as exc:  # validate_extra: a custom node ref without its repo or commit
         raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
     try:
-        root = recorded_engine_root("comfyui")
+        root = default_engine_root("comfyui")
     except EngineError:
         root = None
-    return {**manifest, "models_root": f"{root}/models" if root else ""}
+    # An engine that is not installed has no models directory to check; ensure_running names that failure.
+    return {**manifest, "models_root": f"{root}/models" if root and Path(root).is_dir() else ""}
 
 
 class _LocalEngineServer:
@@ -711,11 +713,17 @@ class _LocalEngineServer:
         self.result: Any = None
 
     def ensure_running(self) -> str:
+        write_progress("start_engine")
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
         from astrid.core.generation.engine_contracts import EngineError
-        from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+        from astrid.core.generation.engine_local_endpoint import (
+            EngineNotInstalled, local_engine_endpoint,
+        )
+        from astrid.core.generation.engine_local_server import ensure_local_engine_server
 
         try:
+            # Start the installed engine's long-lived server, or reuse the owned one; never stop it.
+            ensure_local_engine_server("comfyui")
             engine = local_engine_endpoint("comfyui")
         except EngineError as exc:
             reason = f" ({exc.reason_code})" if isinstance(exc, EngineNotInstalled) else ""
@@ -725,11 +733,22 @@ class _LocalEngineServer:
         return validate_comfy_url(engine.endpoint.url)
 
     def submit(self, url: str, workflow: Any) -> Any:
+        write_progress("run")
         kwargs = {**self._kwargs, "comfy_url": url, "profile_id": "local_server", "hc03_profile": None}
         if self._output_dir:
             kwargs["comfy_output_dir"] = self._output_dir
         self.result = self._adapter.workflow(Path(workflow), self._output_root, **kwargs)
         return self.result
+
+
+def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """The entry's requirements manifest (what align() judges), or None for an unnamed workflow."""
+    if not entry or entry == "workflow":
+        return None
+    from astrid.core.generation import entries
+
+    described = entries.find_entry(entry)
+    return entries.requirements(described, inputs) if described is not None else None
 
 
 class _AttachedServer(_LocalEngineServer):
@@ -763,8 +782,15 @@ def _run_and_settle(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     execution_request: Any = None,
+    align: str | None = None,
+    manifest: dict[str, Any] | None = None,
+    entry: str | None = None,
 ) -> dict[str, Any]:
-    """Run *workflow_path*, copy every engine result, and write its receipt."""
+    """Run *workflow_path*, copy every engine result, and write its receipt.
+
+    ``align`` (align | check | trust) and ``manifest`` (the entry's requirements) reach
+    the engine's ``align``; the default is the old empty-manifest ``check``.
+    """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
     output_root = output_root.expanduser().resolve()
@@ -802,6 +828,13 @@ def _run_and_settle(
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
     engine_local_run = not comfy_url
+    if manifest is None and engine_local_run and entry:
+        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))
+    if manifest is not None and engine_local_run and not manifest.get("models_root"):
+        # The models directory the installed engine itself uses, so align judges and fetches
+        # only the rows this job lacks there.
+        from astrid.core.generation.engine_local_endpoint import default_engine_root
+        manifest = {**manifest, "models_root": os.path.join(default_engine_root("comfyui"), "models")}
     profile_id = "local_server" if (comfy_url or engine_local_run) else "checkout_server"
     workflow_input_bindings: dict[str, Any] = _workflow_inputs(workflow_inputs)
     if managed_assets:
@@ -888,21 +921,28 @@ def _run_and_settle(
         with provenance.capture():
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
-                engine = _engine_for({"engine": "comfyui"})
-                manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
-                missing = engine.align(manifest, "check")["missing"]
-                if manifest.get("models_root") and missing:
-                    raise AstridValueError(
-                        f"local engine is missing declared models: {', '.join(missing)}; "
-                        "run: astrid generate align --apply --consent user_env --all")
-                engine.run({"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "check"}, local)
+                write_progress("align")
+                engine = _engine_for(manifest or {"engine": "comfyui"})
+                if manifest is None:
+                    manifest = {**_engine_manifest(engine, workflow_path), "engine": "comfyui"}
+                mode = align or "check"
+                job = {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": mode,
+                       "refuse_missing": bool(manifest.get("models_root"))}  # a declared model absent: refuse before /prompt
+                try:
+                    engine.run(job, local)
+                except ValueError as exc:
+                    if getattr(exc, "missing", None):
+                        raise AstridValueError(str(exc)) from exc
+                    raise
+                write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
                 # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.
                 manifest = {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
                 local = _AttachedServer(adapter, output_root, production_kwargs)
                 _engine_for(manifest).run(
-                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "trust",
+                    # An explicit --align (ASTRID_ALIGN) reaches the engine; the attached default stays trust.
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "trust",
                      "endpoint": comfy_url}, local)
                 production_result = local.result
             else:
@@ -1118,6 +1158,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
+                align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else None,
+                entry=os.environ.get("ASTRID_GENERATION_ENTRY") or None,
             )
     except Exception as exc:
         sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))

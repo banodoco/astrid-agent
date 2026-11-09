@@ -24,7 +24,7 @@ def _open_client() -> Any:
     return AstridClient.open_from_launcher()
 
 
-def _no_generation_target(target: str) -> bool:
+def _no_generation_target(target: str, *, repo=None, client=None) -> bool:
     """Whether a local request has no engine and no ComfyUI to run on.
 
     Read-only: it never starts a recorded engine (it stops at the install
@@ -32,12 +32,15 @@ def _no_generation_target(target: str) -> bool:
     Anything it cannot settle is left to the facade's normal path.
     """
     try:
+        from astrid.core.generation import placement as placements
         from astrid.core.generation.engine_local_endpoint import recorded_engine_root
         from astrid.core.generation.preflight import _select_generation_target
 
         if recorded_engine_root('comfyui') is not None:
             return False
-        return _select_generation_target(target) is None
+        # Same inputs as the facade's own decision: the request, the repo and the client it would get.
+        placement = placements.resolve_placement(placements.request_from_selector(target), repo=repo, client=client)
+        return _select_generation_target(placements.comfy_selector(placement), repo=repo) is None
     except Exception:
         return False
 
@@ -185,8 +188,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
-        command.add_argument("--align", action=_Once, choices=("check", "trust"), default="check",
-                             help="check: judge models against the target's inventory (default); "
+        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"), default="check",
+                             help="align: fetch what the target lacks (local run only); "
+                                  "check: judge models against the target's inventory (default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
@@ -421,8 +425,34 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _job_command(argv: list[str]) -> int:
+    """``generate <entry> --placement local --job FILE --out DIR --json``: the pod-side run."""
+    parser = _GenerationParser(prog='astrid generate', description='Run one machine job file locally.')
+    parser.json_errors = '--json' in argv
+    parser.add_argument('entry')
+    parser.add_argument('--placement', required=True, choices=('local',))
+    parser.add_argument('--job', required=True, metavar='FILE')
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--mode')
+    parser.add_argument('--align', choices=('align', 'check', 'trust'),
+                        help="Override the job's align mode.")
+    parser.add_argument('--json', action='store_true')
+    parsed = parser.parse_args(argv)
+    from astrid.core.generation.local_job import JobFileError, run_job
+    from astrid.core.generation.progress import write_progress
+    try:
+        result = run_job(parsed.entry, parsed.job, parsed.out, mode=parsed.mode, align=parsed.align)
+    except JobFileError as exc:
+        parser.error(str(exc))
+    write_progress('done')
+    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
+    if '--job' in argv:
+        return _job_command(argv)
     parser = _parser(_context_description(argv))
     def configure(parser):
         parser.json_errors = '--json' in argv
@@ -557,7 +587,7 @@ def _main(argv: list[str]) -> int:
             try:
                 client_scope = _open_client()
             except AstridSDKError:
-                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement):
+                if parsed.placement != 'runpod' and _no_generation_target(parsed.placement, repo=kwargs.get('project_root'), client=None):
                     # No workspace and no engine or ComfyUI: the target guidance
                     # (the refusal a dry run gives) is the actionable answer.
                     generate(**{**kwargs, "dry_run": True})
