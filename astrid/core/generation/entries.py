@@ -595,6 +595,23 @@ def _dimension_values(description, inputs):
     return values
 
 
+def read_file_map_document(value: Any) -> Any:
+    """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
+    if not isinstance(value, (str, Path)):
+        return value
+    document = Path(str(value)).expanduser()
+    if not document.is_file():
+        return value  # a missing path is reported by the caller's map check
+    try:
+        raw = json.loads(document.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f'file map document {str(value)!r} must be a JSON object of id to path')
+    return {key: (item if not isinstance(item, str) or Path(item).is_absolute()
+                  else str((document.parent / item).resolve())) for key, item in raw.items()}
+
+
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
     """Validate declared fields before SDK custody or execution admission."""
     if not isinstance(inputs, Mapping) or any(not isinstance(key, str) for key in inputs):
@@ -648,12 +665,17 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
         elif kind == 'file_map':
             # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
-            if (not isinstance(value, Mapping) or not value
+            if isinstance(value, (str, Path)) and Path(str(value)).expanduser().is_file():
+                # A path to the map's JSON document (h3's --asset-map): read when the job is built
+                # (``entry_job``), not here, so describing and dry-running do not open the media.
+                value = str(value)
+            elif (not isinstance(value, Mapping) or not value
                     or any(not isinstance(key, str) or not key or '/' in key
                            or not isinstance(path, (str, Path)) or not str(path).strip()
                            for key, path in value.items())):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
-            value = {key: str(path) for key, path in value.items()}
+            else:
+                value = {key: str(path) for key, path in value.items()}
         elif kind in {'string', 'file'}:
             if not isinstance(value, str):
                 raise ValueError(f'entry input {name!r} requires a string')
@@ -1027,9 +1049,15 @@ def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any
 
 def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, hooks: Mapping[str, Any],
               align: str = 'check') -> dict[str, Any]:
-    """The engine job for a hooked entry: its declared file inputs go in ``files``."""
-    file_names = {port['name'] for port in entry.get('inputs', []) if _input_type(port.get('type')) in {'file', 'file_map'}}
-    return {'hooks': dict(hooks), 'inputs': dict(inputs), 'files': {k: v for k, v in inputs.items() if k in file_names},
+    """The engine job for a hooked entry: its declared file inputs go in ``files``.
+
+    A ``file_map`` given as the path of its JSON document is read here, when the job is built.
+    """
+    types = {port['name']: _input_type(port.get('type')) for port in entry.get('inputs', [])}
+    inputs = {name: (read_file_map_document(value) if types.get(name) == 'file_map' else value)
+              for name, value in inputs.items()}
+    files = {name: value for name, value in inputs.items() if types.get(name) in {'file', 'file_map'}}
+    return {'hooks': dict(hooks), 'inputs': inputs, 'files': files,
             'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
 
 
