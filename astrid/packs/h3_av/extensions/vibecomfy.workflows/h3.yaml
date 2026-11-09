@@ -1,0 +1,17 @@
+api: 1
+summary: MiniMax H3 audiovisual transformation (i2v, v2v, video-edit) on the one generate path.
+example: astrid media generate video --entry h3 --request request.json --asset-map assets.json
+effects: none
+ready_root: ../../workflows
+entries:
+  - id: h3
+    kind: video
+    modes: [i2v, v2v, video-edit]
+    bundle: native_h3_continuation
+    needs: [request, asset_map]
+    binds: {}
+    # MiniMax H3 is the video default. T6 keeps slot defaults in astrid/sdk/generation.py:_DEFAULT_ENTRIES,
+    # which has no video row; this entry is the only video workflow entry, so it needs no input defaults.
+    defaults: {}
+build: hooks.py:build
+finalize: hooks.py:finalize
