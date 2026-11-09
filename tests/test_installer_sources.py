@@ -25,6 +25,19 @@ from astrid.installer.core import (
 from astrid.installer.service import LABEL, venv_python
 
 
+def _wheel_layout(product: Path, checkout: Path) -> None:
+    """Mirror an installed wheel: the schema, the reader modules, and the Runtime lock under astrid/resources."""
+    from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+    for relative in (SCHEMA_RELATIVE_PATH, *READER_INPUTS):
+        target = product / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(checkout / relative, target)
+    lock = product / "astrid/resources/runtime.lock.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(checkout / "runtime.lock.json", lock)
+
+
 def test_first_tool_archive_creates_its_missing_parent(tmp_path, monkeypatch):
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as bundle:
@@ -308,11 +321,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr(backend, "existing", lambda _data: None)
     def installed_root(python, _env):
         product = python.parent / "Lib/site-packages"
-        source = python.parent.parent.parent / "a"
-        for relative in ("astrid/core/timeline/schema/timeline-config.schema.json",):
-            target = product / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / relative, target)
+        _wheel_layout(product, Path(__file__).resolve().parents[1])
         return product
 
     monkeypatch.setattr(backend, "_installed_product_root", installed_root)
@@ -480,10 +489,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             py = Path(args[0]).parent.parent
             purelib = py / "lib/site-packages"
             purelib.mkdir(parents=True, exist_ok=True)
-            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-            target = purelib / schema
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(py.parent / "a" / schema, target)
+            _wheel_layout(purelib, Path(__file__).resolve().parents[1])
             origins = {}
             for key in ("host", "child", "action", "client", "sdk"):
                 origin = purelib / f"{key}.py"
@@ -559,7 +565,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert calls["stop"] == calls["backup"] == calls["upgrade"] == []
         assert calls["register"] == calls["start"] == calls["verify"] == []
     elif outcome == "busy":
-        assert result == 1
+        # A safe --update refusal is not-updated (exit 3, outcome.EXIT_CODES), not failed (exit 1).
+        assert result == 3
         assert selected == old_root.name
         assert transaction["step"] == "complete"
         assert transaction["outcome"] == "stop_refused"
@@ -678,3 +685,21 @@ def test_manifest_lifecycle_version_satisfies_pack_declaration():
         assert requirement.name == name
         assert requirement.specifier.contains(tools.LIFECYCLE_VERSION, prereleases=True)
     assert LIFECYCLE_PIN["version"] == tools.LIFECYCLE_VERSION
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+def test_missing_runtime_lock_names_the_missing_path_not_aliasing(tmp_path):
+    from astrid.core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+    from astrid.installer import backend as backend_module
+
+    repo = Path(__file__).parents[1]
+    folder = tmp_path / "candidate"
+    product = folder / "py" / "lib" / "site-packages"
+    for relative in (SCHEMA_RELATIVE_PATH, *READER_INPUTS):
+        target = product / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repo / relative).read_bytes())
+
+    with pytest.raises(ValueError) as caught:
+        backend_module._secure_installed_schema_inputs(folder, product)
+    assert str(caught.value) == "staged Agent is missing: runtime.lock.json"

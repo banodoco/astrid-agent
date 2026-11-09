@@ -193,6 +193,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         raise ValueError("installed timeline schema root is outside the candidate")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     opened = []
+    current = Path("py")  # the input being opened, named if it is missing
     try:
         # Walk from the candidate itself: no resolved alias may escape it.
         fd = os.open(folder, flags)
@@ -206,6 +207,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         root_fd = fd
         dirs = {(): root_fd}
         # The reader's pin source, resolved exactly as the reader resolves it (installed copy, else package data).
+        current = Path("runtime.lock.json")
         lock = runtime_lock_path(product_root)
         try:
             lock_relative = lock.relative_to(product_root)
@@ -214,6 +216,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         files = (SCHEMA_RELATIVE_PATH, lock_relative, *READER_INPUTS)
         # Check all path components without following links before modifying any.
         for relative in files:
+            current = relative
             parent = root_fd
             for index, part in enumerate(relative.parts[:-1], 1):
                 key = relative.parts[:index]
@@ -235,6 +238,7 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
             os.fchmod(directory, 0o755)
         # Each replacement is private even if uv linked its original to cache.
         for relative in files:
+            current = relative
             parent = dirs[relative.parts[:-1]]
             source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
             opened.append(source_fd)
@@ -249,8 +253,10 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
                 shutil.copyfileobj(src, dst)
             os.fchmod(dest_fd, 0o644)
             os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+    except FileNotFoundError as exc:
+        raise ValueError(f"staged Agent is missing: {current}") from exc
     except OSError as exc:
-        raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
+        raise ValueError("staged Agent has an aliased local canonical timeline schema input") from exc
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
