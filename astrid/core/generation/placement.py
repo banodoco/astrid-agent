@@ -155,7 +155,12 @@ def registered_machine_kinds() -> tuple[str, ...]:
 
 
 def _runpod_leases(kind: str) -> list[Mapping[str, Any]]:
-    return []
+    """Live leases of a machine kind, read from its lease journal (no provider call)."""
+    if kind != "runpod":
+        return []
+    from astrid.packs.runpod.machine import journal_leases
+
+    return [{"machine": row["id"], **row} for row in journal_leases()]
 
 
 def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] | None = None,
@@ -178,9 +183,12 @@ def validate_placement(placement: Placement, *, machine_kinds: tuple[str, ...] |
         raise _refuse(f"a {placement.kind} placement takes a machine and policy, not a device or endpoint")
     if placement.machine:
         leases = (live_leases or _runpod_leases)(placement.kind)
-        live = [str(item.get("machine")) for item in leases]
+        live = [str(item.get("machine")) for item in leases if item.get("live", True)]
         if placement.machine not in live:
-            raise _refuse(f"no live {placement.kind} lease for machine {placement.machine!r}; "
+            ended = next((item.get("ended") for item in leases
+                          if str(item.get("machine")) == placement.machine and item.get("ended")), None)
+            raise _refuse(f"no live {placement.kind} lease for machine {placement.machine!r}"
+                          f"{f' (ended: {ended})' if ended else ''}; "
                           f"live leases: {', '.join(live) or 'none'}", field_name="machine", options=live,
                           fix="omit machine to acquire a new one, or name a live lease")
     return placement

@@ -287,6 +287,16 @@ class RunPodMachine:
         )
         # Refuse a changed offer first: before staging, the account lock or any create.
         owner.selection.consented_offer(consent, owner.selection.clock())
+        # A warm machine is reused only while the provider still runs it.
+        owner.observe_liveness(observe=getattr(adapter, "observe_pod", None))
+        pinned = policy.get("machine")
+        if pinned is not None:
+            live = [row["id"] for row in lease_rows(owner) if row["live"]]
+            if pinned not in live:
+                ended = next((row for row in lease_rows(owner) if row["id"] == pinned), None)
+                reason = f" (ended: {ended['ended']})" if ended and ended.get("ended") else ""
+                raise PaidSelectionError(f"no live runpod lease for machine {pinned!r}{reason}; "
+                                         f"live leases: {', '.join(live) or 'none'}")
         values = json.loads(inputs.get("workflow_inputs") or "{}")
         acquired: list[Any] = []
 
@@ -314,6 +324,13 @@ class RunPodMachine:
                     owner.release(reason="preparation_failed", _expected_operation=acquired[0].operation_id)
                 raise
         return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused)
+
+    def describe(self, lease: MachineLease) -> dict[str, Any]:
+        """Which machine runs this job: recorded on the attempt when the machine is claimed."""
+        record = lease.lease.claim
+        return {"placement": KIND, "machine": "runpod.runpod", "id": lease.claim.pod_id,
+                "lease": lease.lease.operation_id, "generation": lease.lease.generation,
+                "device": lease.custody.get("gpu_type") or record.get("gpu_type"), "warm": lease.warm}
 
     # -- start ---------------------------------------------------------------
 
@@ -505,6 +522,42 @@ class RunPodMachine:
             owner._save(record, {**record["lease"], "job": dict(job)})
 
 
+def lease_rows(owner: Any) -> list[dict[str, Any]]:
+    """This account's lease (live or most recently ended), as ``astrid machines`` lists it."""
+    record = owner.selection._read() if hasattr(owner, "selection") else owner
+    return [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
+
+
+def lease_row(record: Mapping[str, Any]) -> dict[str, Any]:
+    lease = record.get("lease") or {}
+    live = record.get("state") == "claimed" and lease.get("state") in {"active", "idle"}
+    return {"id": record.get("pod_id"), "kind": KIND, "lease": record.get("operation_id"),
+            "gpu": record.get("gpu_type"), "state": lease.get("state") if live else "ended",
+            "live": live, "idle_expires_at": lease.get("idle_expires_at") if lease.get("state") == "idle" else None,
+            "cost_usd": round(float(record.get("estimated_cost_usd", lease.get("estimated_cost_usd")) or 0), 4),
+            "ended": None if live else (lease.get("ended") or lease.get("release_reason"))}
+
+
+def journal_leases(account: str | None = None) -> list[dict[str, Any]]:
+    """Read-only listing from the account's lease journal (no lock, no provider call)."""
+    from .target_selection import canonical_claim_path, read_runpod_preferences
+
+    from .worker_owner import ended_leases_path
+
+    try:
+        account = account or read_runpod_preferences().provider_account_ref
+        path = canonical_claim_path(account)
+        record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        ended_path = ended_leases_path(path)
+        ended = json.loads(ended_path.read_text(encoding="utf-8")) if ended_path.is_file() else []
+    except Exception:  # no preferences or no journal: no leases
+        return []
+    current = [lease_row(record)] if isinstance(record, Mapping) and record.get("pod_id") else []
+    seen = {row["lease"] for row in current}
+    # The live (or latest) lease first, then recently ended ones, newest first.
+    return current + [row for row in reversed(ended) if isinstance(row, dict) and row.get("lease") not in seen]
+
+
 def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]:
     """The typed provider mapping, from runpod-lifecycle's exact-pod observation."""
     def observe(pod_id: str, nonce: str) -> Mapping[str, Any]:
@@ -518,6 +571,6 @@ def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]
 #: The registered ``generation.machine`` contribution (no host owner until ``for_host``).
 MACHINE = RunPodMachine()
 
-__all__ = ["MACHINE", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
+__all__ = ["MACHINE", "journal_leases", "lease_row", "lease_rows", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
            "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
            "runtime_check"]
