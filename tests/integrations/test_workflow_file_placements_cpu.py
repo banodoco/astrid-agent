@@ -15,7 +15,7 @@ import pytest
 
 from astrid.core.generation.delivery import deliver_generation
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
-from tests.integrations.test_runpod_slot_path_cpu import TARGET_KINDS, _drive
+from tests.integrations.test_runpod_slot_path_cpu import TARGET_KINDS, _assert_ran_on_the_machine, _drive
 
 pytestmark = pytest.mark.integration
 
@@ -38,12 +38,12 @@ def _workflow_file() -> Path:
 # attached cell makes: the workflow file runs, reaches /prompt on the target, and delivers a result.
 #   local-managed -> T4f (local run path): the refusal above goes, and the cell asserts result.ok,
 #                    a /prompt on the managed ComfyUI, and delivery.
-#   runpod        -> T5g (pod entry listing): the pod lists the generic workflow entry, and the cell
-#                    asserts result.ok, the job ran on the machine, and delivery.
+#   runpod        -> T5g, now merged: a workflow-file job runs on the pod with no named entry, so
+#                    this cell runs for real (see test_remote_machine_cpu::
+#                    test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry).
 _NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
 _RED = {
     "local-managed": ("GenerationReadinessError", _NO_ENGINE, "T4f"),
-    "runpod": ("CapabilityRuntimeError", "entry 'workflow' is not listed by the pod's runtime", "T5g"),
 }
 
 
@@ -67,4 +67,8 @@ def test_workflow_file_runs_on_each_placement(target_kind, tmp_path, monkeypatch
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
-        assert provider.comfy.prompts and not provider.comfy.rejections
+        if target_kind == "runpod":
+            # The pod runs the job and its own ComfyUI takes /prompt; the controller's stand-in sees none.
+            _assert_ran_on_the_machine(provider)
+        else:
+            assert provider.comfy.prompts and not provider.comfy.rejections
