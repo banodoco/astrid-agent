@@ -35,7 +35,11 @@ def test_registry_resolves_comfyui_engine_and_checks_the_protocol(
         assert callable(getattr(engine, name)), name
     params = {n: list(inspect.signature(getattr(engine, n)).parameters) for n in REQUIRED}
     assert params["requirements"] == ["entry", "inputs"]
-    assert params["align"] == ["manifest", "mode"]
+    assert params["align"] == ["manifest", "mode", "workflow"]
+    align_signature = inspect.signature(engine.align)
+    align_signature.bind({}, "check")  # the declared two-argument protocol stays valid
+    assert align_signature.parameters["workflow"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert align_signature.parameters["workflow"].default is None
     assert params["execute"] == ["job"]
     assert params["cancel"] == ["job"]
 

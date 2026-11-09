@@ -53,6 +53,41 @@ def test_align_fetches_only_missing_rows(tmp_path):
     assert result["fetched"] == ["vae/need.safetensors"] and result["verified"] is True
 
 
+@pytest.mark.parametrize("attached", [False, True])
+def test_real_commands_align_the_jobs_workflow_without_changing_manifest(tmp_path, monkeypatch, attached):
+    """The production command builder receives the executable path, not an absent manifest field."""
+    import subprocess
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    manifest = {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}}
+    workflow = tmp_path / "workflow.py"
+    job = {"manifest": manifest, "workflow": workflow, "mode": "align"}
+    engine = mod.ComfyUIEngine()  # real VibeComfyCommands; only the subprocess boundary is doubled
+    if attached:
+        job["endpoint"] = "http://127.0.0.1:8188"
+        monkeypatch.setattr(engine, "probe", lambda endpoint: {"ready": True})
+    engine.run(job, FakeLocal(attached))
+    argv = [call[3:] for call in calls]
+    assert argv[:2] == [
+        ["doctor", str(workflow), "--non-interactive"],
+        ["prepare", str(workflow), "--deps", "sync", "--no-models", "--no-packs", "--non-interactive"],
+    ]
+    assert "workflow" not in manifest
+    assert job["manifest"] is manifest
+
+
+def test_direct_align_keeps_supporting_a_manifest_workflow(tmp_path, monkeypatch):
+    import subprocess
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    workflow = str(tmp_path / "workflow.py")
+    mod.ComfyUIEngine().align({"workflow": workflow, "models": []}, "align")
+    assert calls[0][3:5] == ["doctor", workflow]
+    assert calls[1][3:5] == ["prepare", workflow]
+
+
 def test_align_with_nothing_missing_does_not_fetch(tmp_path):
     manifest = _manifest(tmp_path)
     manifest["models"] = manifest["models"][:1]
