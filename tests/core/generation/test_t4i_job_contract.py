@@ -1,19 +1,16 @@
 """Plan 32 T4i: ``generate <entry> --placement local --job`` runs a named entry through the facade's contract.
 
-(a) entry binds and defaults, (b) a contribution's build and after_outputs once each, (c) readiness
+(a) entry binds and defaults, (b) a contribution's build and after_outputs once each (its proof,
+``test_job_runs_h3_build_and_after_outputs_once_each``, needs T6b-3's hooks and lands with that merge), (c) readiness
 and target_schema on the machine that runs the job.
 """
 from __future__ import annotations
 
-import functools
 import json
-import subprocess
-from pathlib import Path
 
 import pytest
 
 from astrid.core.generation import cli, entries
-from tests.core.generation.test_h3_build_after_outputs import REQUEST, _video
 
 RUN = "astrid.packs.vibecomfy.actions.run.run._run_and_settle"
 
@@ -94,68 +91,3 @@ def test_job_runs_readiness_and_target_schema_on_the_machine(user_entry, ready, 
     with pytest.raises(ValueError, match="requires review"):
         _run_cli(tmp_path, user_entry, {})
     assert len(runs) == 1
-
-
-def test_job_runs_h3_build_and_after_outputs_once_each(ready, tmp_path, monkeypatch):
-    """T6b-3's real h3 hooks, counted. The engine run is stubbed below the seam: the producer's file goes
-    through the real ``_materialize_managed_generation_result`` with the job's real ``after_outputs_job``."""
-    import hashlib
-    import importlib
-    import astrid.packs.vibecomfy.extensions  # noqa: F401
-    from astrid.core.generation import producer_result
-    from tests.test_producer_evidence_f06 import _managed_payload, _write_production
-    run_module = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    calls, composed = [], []
-    real_hooks = entries.entry_hooks
-
-    def counted(fn, name):
-        @functools.wraps(fn)  # the engine reads the hook's signature to decide whether to hand it the engine
-        def wrapper(*args, **kwargs):
-            calls.append(name)
-            result = fn(*args, **kwargs)
-            if name == "after_outputs":  # job_dir is deleted after the job: hash the candidate now
-                composed.append(hashlib.sha256(Path(result[0]).read_bytes()).hexdigest())
-            return result
-        return wrapper
-
-    monkeypatch.setattr(entries, "entry_hooks",
-                        lambda entry, registry=None: {n: counted(f, n) for n, f in real_hooks(entry, registry).items()})
-    source = _video(tmp_path / "source.mp4", frames=57)
-    generated = _video(tmp_path / "generated.mp4", seconds=4.5)
-    request = json.loads(REQUEST.read_text())
-    asset_map = {request["media"][0]["asset"]["id"]: str(source), "source": str(source)}
-    runs = []
-
-    def fake_run(workflow, out, **kwargs):
-        runs.append((workflow, kwargs))
-        root = tmp_path / "producer"
-        payload = _managed_payload(root)
-        payload.update(task_id="task-t4i", attempt_id="attempt-t4i")
-        data = generated.read_bytes()
-        (root / "outputs" / "final.mp4").write_bytes(data)
-        payload["outputs"][0].update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
-        production = _write_production(root, payload)
-        settings = payload["inputs"]["effective_settings"]
-        producer_result.bind_executed_settings(production, settings, task_id="task-t4i", attempt_id="attempt-t4i",
-                                               staging_root=root)
-        return run_module._materialize_managed_generation_result(
-            Path(out), production, task_identity="task-t4i", attempt_identity="attempt-t4i",
-            workflow_path=Path(workflow), after_outputs=run_module._after_outputs(kwargs["after_outputs_job"]))
-
-    monkeypatch.setattr(RUN, fake_run)
-    assert _run_cli(tmp_path, "h3", {"request": str(REQUEST), "asset_map": asset_map}) == 0
-    assert calls == ["build", "after_outputs"]
-    assert len(runs) == 1 and Path(runs[0][0]).name == "workflow.py"
-    # The align manifest is the built graph's requirements, not the asset archive's manifest.
-    align_manifest = runs[0][1]["manifest"]
-    assert "models" in align_manifest and "engine" in align_manifest
-    built_folder = Path(runs[0][0]).parent
-    assert align_manifest == entries.requirements({"id": "h3", "kind": "video", "bundle": str(built_folder)},
-                                                  {"request": str(REQUEST), "asset_map": asset_map})
-    first = json.loads((tmp_path / "out" / "managed-generation-result.json").read_text())["outputs"][0] \
-        if (tmp_path / "out" / "managed-generation-result.json").is_file() else None
-    delivered = next((tmp_path / "out" / "outputs").glob("*.mp4"))
-    sealed = hashlib.sha256(delivered.read_bytes()).hexdigest()
-    assert sealed == composed[0] != hashlib.sha256(generated.read_bytes()).hexdigest()  # the candidate, not the raw output
-    if first is not None:
-        assert first["sha256"] == composed[0]

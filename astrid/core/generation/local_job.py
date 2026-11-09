@@ -104,7 +104,8 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
     prerequisite = SimpleNamespace(id=named, modes={mode: SimpleNamespace(
         backends={"local": SimpleNamespace(template=str(described["bundle"]))})})
     require_generation_target_readiness(prerequisite, mode, None)
-    hooks = entries.entry_hooks(described)
+    # Hooked entries need the vibecomfy.workflows hooks (plan32/t6b3-work); without them there are none.
+    hooks = entries.entry_hooks(described) if hasattr(entries, "entry_hooks") else {}
     run_files = dict(files)
     job_dir = None
     manifest = None
