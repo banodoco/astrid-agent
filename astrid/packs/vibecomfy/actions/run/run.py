@@ -669,15 +669,15 @@ def _t9_child_dispatch(
     return run, marker
 
 
-def _comfyui_engine() -> Any:
-    """The ComfyUI contribution to generation.engine, loaded from its extension file."""
-    import importlib.util
+def _engine_for(manifest: dict[str, Any]) -> Any:
+    """The generation.engine named by manifest["engine"] (default comfyui), from entries.engine_table()."""
+    from astrid.core.generation import entries
 
-    path = Path(__file__).resolve().parents[2] / "extensions" / "generation.engine" / "comfyui_engine.py"
-    spec = importlib.util.spec_from_file_location("astrid_comfyui_engine", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.ComfyUIEngine()
+    name = manifest.get("engine") or "comfyui"
+    engine = entries.engine_table().get(name)
+    if engine is None:
+        raise AstridValueError(f"no generation.engine contribution for {name!r}")
+    return engine
 
 
 class _LocalEngineServer:
@@ -727,6 +727,20 @@ def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any]
     return entries.requirements(described, inputs) if described is not None else None
 
 
+class _AttachedServer(_LocalEngineServer):
+    """The ``local`` for an attached run: the caller's ComfyUI at comfy_url, probed by the engine, never started here."""
+
+    def __init__(self, adapter: Any, output_root: Path, production_kwargs: dict[str, Any]) -> None:
+        super().__init__(adapter, output_root, production_kwargs)
+
+    def ensure_running(self) -> str:
+        return self._kwargs["comfy_url"]
+
+    def submit(self, url: str, workflow: Any) -> Any:
+        self.result = self._adapter.workflow(Path(workflow), self._output_root, **self._kwargs)
+        return self.result
+
+
 def _run_and_settle(
     workflow_path: Path,
     output_root: Path,
@@ -744,7 +758,7 @@ def _run_and_settle(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     execution_request: Any = None,
-    align: str = "check",
+    align: str | None = None,
     manifest: dict[str, Any] | None = None,
     entry: str | None = None,
 ) -> dict[str, Any]:
@@ -884,17 +898,21 @@ def _run_and_settle(
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
                 write_progress("align")
-                _comfyui_engine().run(
-                    {"workflow": workflow_path, "out": output_root,
-                     "manifest": manifest if manifest is not None else {"models": [], "extra": {"nodes": []}},
-                     "mode": align},
+                manifest = manifest if manifest is not None else {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
+                _engine_for(manifest).run(
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "check"},
                     local)
                 write_progress("finalize")
                 production_result = local.result
             elif synthetic is None:
-                production_result = adapter.workflow(
-                    workflow_path, output_root, **production_kwargs,
-                )
+                # Attached: the engine probes the caller's endpoint, then trusts it. It never aligns by default.
+                manifest = {"engine": "comfyui", "models": [], "extra": {"nodes": []}}
+                local = _AttachedServer(adapter, output_root, production_kwargs)
+                _engine_for(manifest).run(
+                    # An explicit --align (ASTRID_ALIGN) reaches the engine; the attached default stays trust.
+                    {"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": align or "trust",
+                     "endpoint": comfy_url}, local)
+                production_result = local.result
             else:
                 run, marker = synthetic
                 production_kwargs["profile_id"] = "t9_cpu_stub"
@@ -1108,7 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
-                align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else "check",
+                align=os.environ.get("ASTRID_ALIGN") if os.environ.get("ASTRID_ALIGN") in ("align", "check", "trust") else None,
                 entry=os.environ.get("ASTRID_GENERATION_ENTRY") or None,
             )
     except Exception as exc:

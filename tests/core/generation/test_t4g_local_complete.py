@@ -11,6 +11,11 @@ from astrid.core.generation import cli
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401  (CPU stand-in ComfyUI)
 
 
+def _engine(name):
+    from astrid.core.generation import entries
+    return entries.engine_table()[name]
+
+
 def _endpoint(comfy, monkeypatch):  # noqa: F811
     endpoint = SimpleNamespace(endpoint=SimpleNamespace(url=comfy.url), comfy_output_dir=str(comfy.output),
                                model_root_binding=None)
@@ -31,14 +36,14 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
     _endpoint(comfy, monkeypatch)
     action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     seen = []
-    engine_cls = type(action._comfyui_engine())
+    engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
         def align(self, manifest, mode):
             seen.append((mode, manifest))
             return super().align(manifest, mode)
 
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy())
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     manifest = {"models": [], "extra": {"nodes": []}, "engine": "comfyui", "base": None}
     for mode in ("trust", "check"):
         action._run_and_settle(comfy.workflow, tmp_path / mode / "outputs", task_identity="t", attempt_identity="a",
@@ -211,14 +216,14 @@ def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align
     monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
     monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
     seen = []
-    engine_cls = type(action._comfyui_engine())
+    engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
         def align(self, manifest, mode):
             seen.append((mode, manifest))
             return super().align(manifest, mode)
 
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy())
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     monkeypatch.setenv("ASTRID_ALIGN", "trust")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
@@ -311,8 +316,8 @@ def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_pa
         def nodes_restore(self, nodes): calls.append(("nodes", nodes))
         def fetch(self, rows): calls.append(("fetch", [row["name"] for row in rows]))
 
-    engine_cls = type(action._comfyui_engine())
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: engine_cls(commands=Commands()))
+    engine_cls = type(_engine("comfyui"))
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: engine_cls(commands=Commands()))
     monkeypatch.setenv("ASTRID_ALIGN", "align")
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
@@ -349,3 +354,25 @@ def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeyp
     assert seen["entry"] == "named" and seen["workflow"] == bundle
     with pytest.raises(JobFileError, match="not valid for entry"):
         run_job("named", write({"prompt": "x", "unknown_field": 1}), tmp_path / "out")
+
+
+def test_an_explicit_align_on_an_attached_run_reaches_the_engine_mode(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """ASTRID_ALIGN=align on an attached run is not dropped: job["mode"] is the requested mode; default stays trust."""
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    modes = []
+    engine_cls = type(_engine("comfyui"))
+
+    class Spy(engine_cls):
+        def run(self, job, local):
+            modes.append(job["mode"])
+            return super().run(job, local)
+
+        def align(self, manifest, mode):
+            return {"mode": mode, "missing": [], "fetched": [], "verified": mode != "trust", "status": "ready"}
+
+    monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
+    for requested, expected in ((None, "trust"), ("align", "align")):
+        action._run_and_settle(comfy.workflow, tmp_path / str(requested) / "outputs", task_identity="t",
+                               attempt_identity="a", comfy_url=comfy.url, comfy_output_dir=str(comfy.output),
+                               align=requested)
+        assert modes[-1] == expected

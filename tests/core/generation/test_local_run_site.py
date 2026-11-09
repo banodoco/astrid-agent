@@ -16,14 +16,16 @@ def test_local_run_uses_the_engine_run(comfy, tmp_path, monkeypatch):  # noqa: F
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_engine_endpoint",
                         lambda *args, **kwargs: endpoint)
     engine_runs = []
-    engine_cls = type(action._comfyui_engine()) if hasattr(action, "_comfyui_engine") else None
+    from astrid.core.generation import entries
+    real_table = entries.engine_table()
+    selected = []
 
-    class Spy(engine_cls or object):
+    class Spy(type(real_table["comfyui"])):
         def run(self, job, local):
             engine_runs.append(job)
             return super().run(job, local)
 
-    monkeypatch.setattr(action, "_comfyui_engine", lambda: Spy(), raising=False)
+    monkeypatch.setattr(entries, "engine_table", lambda: selected.append("table") or {"comfyui": Spy()})
     profiles = []
     real = production_engine.run_workflow_result_path
 
@@ -40,3 +42,40 @@ def test_local_run_uses_the_engine_run(comfy, tmp_path, monkeypatch):  # noqa: F
     assert profiles == ["local_server"]  # the engine run is always local_server
     assert len(comfy.prompts) == 1
     assert (out / manifest["managed_generation_result_path"]).is_file()
+    assert selected == ["table"] and engine_runs[0]["manifest"]["engine"] == "comfyui"  # selected from manifest.engine
+
+
+def test_attached_run_probes_before_submit_and_never_aligns(comfy, tmp_path, monkeypatch):  # noqa: F811
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.core.generation import entries
+    events = []
+
+    class Spy(type(entries.engine_table()["comfyui"])):
+        def probe(self, endpoint, timeout=5.0):
+            events.append("probe")
+            return super().probe(endpoint, timeout)
+
+        def align(self, manifest, mode):
+            events.append("align")
+            return super().align(manifest, mode)
+
+    monkeypatch.setattr(entries, "engine_table", lambda: {"comfyui": Spy()})
+    real = production_engine.run_workflow_result_path
+    monkeypatch.setattr(production_engine, "run_workflow_result_path",
+                        lambda *a, **k: events.append("submit") or real(*a, **k))
+    out = tmp_path / "attempt" / "outputs"
+    action._run_and_settle(comfy.workflow, out, task_identity="t", attempt_identity="a",
+                           comfy_url=comfy.url, comfy_output_dir=str(comfy.output))
+    assert events == ["probe", "submit"]
+
+
+def test_probe_succeeds_on_the_stand_in_and_fails_cleanly_on_a_closed_port(comfy):  # noqa: F811
+    import socket
+    from astrid.core.generation import entries
+    engine = entries.engine_table()["comfyui"]
+    assert engine.probe(comfy.url)["ready"] is True
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    result = engine.probe(f"http://127.0.0.1:{port}", timeout=1)
+    assert result["ready"] is False and result["reason"]
