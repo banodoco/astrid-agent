@@ -1170,7 +1170,8 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     assert str(tmp_path / "service.log") not in output
     # Backend construction fails before any installer log is selected; pre-main
     # then keeps diagnostics on the console and prints no Details path.
-    assert "Details:" not in output
+    assert not any(line.startswith("Details: /") for line in output.splitlines())
+    assert "Details: shown above in this window (the installer log was not used)." in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])

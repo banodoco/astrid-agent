@@ -336,7 +336,7 @@ def test_public_cli_busy_refusal_with_nested_log(tmp_path, monkeypatch, capsys, 
     output = capsys.readouterr()
     assert "Finish or cancel running tasks" in output.out
     assert "Finish or cancel running tasks" in output.err  # console traceback
-    assert "Details:" not in output.out
+    assert not any(line.startswith("Details: /") for line in output.out.splitlines())
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
@@ -390,7 +390,7 @@ def test_public_cli_log_becoming_unwritable_cannot_block_manager_recovery(tmp_pa
     assert "diagnostic destination unavailable" in result.stdout
     assert "R0 restored" in result.stdout
     assert "pinned user-local uv" in result.stderr  # failure handler also falls back
-    assert "Details:" not in result.stdout
+    assert not any(line.startswith("Details: /") for line in result.stdout.splitlines())
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()
     assert (snapshot(root), snapshot(data)) == before
