@@ -193,12 +193,15 @@ def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
         raise ValueError("installed timeline schema root is outside the candidate")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     opened = []
-    current = Path("py")  # the input being opened, named if it is missing
+    current = Path(folder.name)  # the input being opened, named if it is missing
     try:
         # Walk from the candidate itself: no resolved alias may escape it.
         fd = os.open(folder, flags)
         opened.append(fd)
+        walked = Path()
         for part in ("py", *relative_root.parts):
+            walked = walked / part
+            current = walked  # the product-root directory, relative to the candidate
             fd = os.open(part, flags, dir_fd=fd)
             opened.append(fd)
             facts = os.fstat(fd)

@@ -751,3 +751,22 @@ def test_missing_runtime_lock_names_the_missing_path_not_aliasing(tmp_path):
     with pytest.raises(ValueError) as caught:
         backend_module._secure_installed_schema_inputs(folder, product)
     assert str(caught.value) == "staged Agent is missing: runtime.lock.json"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the POSIX secure step is not used on Windows")
+@pytest.mark.parametrize("missing", ["candidate", "py", "lib", "site-packages"])
+def test_missing_candidate_or_product_root_directory_is_named(tmp_path, missing):
+    """The message names the directory that is missing, never "py" for every one of them."""
+    from astrid.installer import backend as backend_module
+
+    folder = tmp_path / "candidate"
+    product = folder / "py" / "lib" / "site-packages"
+    names = ["py", "lib", "site-packages"]
+    if missing != "candidate":
+        present = names[:names.index(missing)]
+        folder.joinpath(*present).mkdir(parents=True, exist_ok=True)
+    expected = "candidate" if missing == "candidate" else str(Path(*names[:names.index(missing) + 1]))
+
+    with pytest.raises(ValueError) as caught:
+        backend_module._secure_installed_schema_inputs(folder, product)
+    assert str(caught.value) == f"staged Agent is missing: {expected}"
