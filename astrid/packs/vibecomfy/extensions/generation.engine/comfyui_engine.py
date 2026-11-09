@@ -212,7 +212,17 @@ class ComfyUIEngine:
         return self.finish(job, outputs)
 
     def execute(self, job: Any) -> Any:
-        raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
+        """Run job["workflow"] through the one local run path; files land in job["out"].
+
+        A thin delegation to vibecomfy's run action (_run_and_settle), which is also what the
+        vibecomfy-h3-workflow backend reaches. Returns its manifest: {"outputs": [...], ...}.
+        """
+        from astrid.packs.vibecomfy.actions.run import run as run_action
+        keys = ("execution_identity", "attempt_identity", "readiness_profile_path", "readiness_profile_hash",
+                "comfy_url", "comfy_output_dir", "placement", "execution_request")
+        return run_action._run_and_settle(
+            Path(job["workflow"]), Path(job["out"]), task_identity=job.get("task_identity"),
+            **{key: job[key] for key in keys if job.get(key) is not None})
 
     def cancel(self, job: Any) -> Any:
         raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
