@@ -13,7 +13,7 @@ import pytest
 from runtime_protocol import platform
 
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-from astrid.installer import cli, core, tools
+from astrid.installer import cli, core, installation, tools
 from astrid.installer.backend import Backend
 from astrid.installer.core import (
     RuntimeOperationError,
@@ -283,7 +283,8 @@ def test_local_source_cleans_failed_extraction(repository, tmp_path, monkeypatch
 @pytest.mark.parametrize("with_vibecomfy", [False, True])
 @pytest.mark.parametrize("managed_by", [None, "pinokio"])
 @pytest.mark.parametrize("release", [None, 73])
-def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy, managed_by, release):
+def test_stage_uses_source_overrides_and_records_manifest(
+        tmp_path, monkeypatch, real_live_probe, with_vibecomfy, managed_by, release):
     value = manifest()
     if release is not None:
         value["release"] = release
@@ -382,11 +383,15 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
     assert not backend.root.exists()
 
 
-@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback"])
+@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback", "never-up"])
 @pytest.mark.parametrize("schema_changed", [True, False])
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
-        tmp_path, monkeypatch, capsys, outcome, schema_changed):
-    """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
+        tmp_path, monkeypatch, capsys, real_live_probe, outcome, schema_changed):
+    """A usable old Runtime/profile can carry ownership while payload is rebuilt.
+
+    ``never-up``: a newer release is staged and selected, but its Runtime never answers.
+    That run is not updated: it must settle as runtime-not-running, never as exit 0.
+    """
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
     old_root = root / "versions" / "old"
     for path in (old_root / "a", old_root / "r", old_root / "tools"):
@@ -415,7 +420,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
     manifest_path = tmp_path / "candidate.json"
     candidate_manifest = manifest()
-    candidate_manifest["release"] = 9
+    candidate_release = 10 if outcome == "never-up" else 9
+    candidate_manifest["release"] = candidate_release
     write_json(manifest_path, candidate_manifest)
     uv = tmp_path / "uv"
     uv.touch()
@@ -434,10 +440,29 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         if outcome == "preparation-failure":
             raise ValueError("candidate rejected during preparation")
 
+    # The live Runtime, modelled here instead of by the autouse stand-in: the old Runtime
+    # answers until it is stopped, and a started version answers only once it comes up.
+    live = {"version": old}
+
+    def probe(_data_root, _program_root=None):
+        version = live["version"]
+        if version is None:
+            return None
+        return {"release": version.release, "managed_by": version.managed_by, "instance_id": "test"}
+
+    monkeypatch.setattr(installation, "probe_live", probe)
+
     def stop(version, _data):
         calls["stop"].append(version.root)
         if outcome == "busy" and version.root == old_root:
             raise RuntimeOperationError("Runtime is busy", details={"safe": False})
+        live["version"] = None
+
+    def start(version, *_args):
+        calls["start"].append(version.root)
+        if outcome == "never-up" and version.root != old_root:
+            return  # Started, but the new Runtime never answers.
+        live["version"] = version
 
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
@@ -453,7 +478,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     original_workspace = workspace_sentinel.read_bytes()
     backend.restore = lambda *_args: workspace_sentinel.write_bytes(original_workspace)
     backend.register = lambda version, *_args: calls["register"].append(version.root)
-    backend.start = lambda version, *_args: calls["start"].append(version.root)
+    backend.start = start
     backend.verify = verify
     backend.finish = lambda *_args: calls["finish"].append("called")
     backend.open = lambda: None
@@ -539,7 +564,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert [name for name, _path in materialized] == ["agent", "runtime", "vibecomfy"]
     assert all(path.is_relative_to(fresh_root) for _name, path in materialized)
     staged = json.loads((fresh_root / "version.json").read_text(encoding="utf-8"))
-    assert staged["identity"]["release"] == 9
+    assert staged["identity"]["release"] == candidate_release
     assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
     assert (fresh_root / "profile.json").is_file()
     if outcome != "rollback":
@@ -557,6 +582,15 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert calls["backup"] == (["called"] if schema_changed else [])
         assert calls["upgrade"] == (["called"] if schema_changed else [])
         assert calls["finish"] == ["called"]
+    elif outcome == "never-up":
+        # The new release is selected and was started, but no Runtime answers on it.
+        assert selected == fresh_root.name
+        assert calls["start"] == [fresh_root]
+        assert result == 3, "a selected release whose Runtime never came up settled as updated"
+        receipt = capsys.readouterr().out
+        assert "did not restart onto it" in receipt
+        assert "Your projects are safe." in receipt
+        return
     elif outcome == "preparation-failure":
         assert result == 1
         assert selected == old_root.name

@@ -32,14 +32,20 @@ from tests.process_groups import ProcessGroups
 
 
 @pytest.fixture(autouse=True)
-def _installer_live_identity():
+def _installer_live_identity(request):
     """Hermetic installer runs: the live Runtime reports the selected version's identity.
 
     The run receipt (astrid.installer.outcome) probes the live Runtime over HTTP.
     No test daemon answers that, so by default the selected version stands in for
     it; a run that leaves the old version selected still fails its post-condition.
     Tests that model the live Runtime separately patch ``probe_live`` themselves.
+
+    This stand-in hides a Runtime that never comes up on the selected version. A test
+    that requests ``real_live_probe`` keeps the real probe and models the Runtime itself.
     """
+    if "real_live_probe" in request.fixturenames:
+        yield
+        return
     try:
         from astrid.installer import installation
     except ImportError:
@@ -63,6 +69,12 @@ def _installer_live_identity():
         yield
     finally:
         installation.probe_live = original
+
+
+@pytest.fixture
+def real_live_probe():
+    """Opt out of ``_installer_live_identity``: ``installation.probe_live`` stays the real probe."""
+    return None
 
 
 @pytest.fixture
