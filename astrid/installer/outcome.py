@@ -73,6 +73,7 @@ REASONS = {
     "needs-repair": "something on this computer is out of step with the installed release; run the install line to repair it.",
     "other-runtime-running": "two copies of Astrid are running for the same workspace.",
     "windows-upgrade-unsupported": "upgrading from an earlier Windows version isn't supported yet.",
+    "autostart-off": "start at sign-in is off, so this update has to run from a terminal.",
     "pinokio-managed": "this Astrid is managed by Pinokio; use Pinokio's Update button.",
     "source-checkout": "this Astrid runs from source checkouts; update those instead.",
     "consent-required": "setup needs your consent; run the exact rerun command shown above.",
@@ -189,6 +190,8 @@ NEXT_STEPS = {
     "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
                                    "Open astrid.haus > Settings > Updates > Download diagnostics "
                                    "to see what is installed.",
+    "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
+                     "and your choice stays off.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "
@@ -223,12 +226,21 @@ def next_steps(log: str | Path | None = None, reason: str | None = None) -> list
     return [next_step(reason), f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
+# Refusals that name their own reason on the exception; the enum (REASONS) is their only source of copy.
+ATTRIBUTED_REASONS = frozenset({"autostart-off", "needs-repair"})
+# Refusals raised before any stop, copy or write: settle reports them as refused (not-updated, exit 3).
+REFUSAL_REASONS = frozenset({"windows-upgrade-unsupported", "autostart-off"})
+
+
 def reason_of(failure: BaseException | None) -> str:
     """Map a run's failure to the reason enum; unknown failures are errors, never success."""
     from .core import BackupSpaceError, RuntimeOperationError, is_lifecycle_refusal
 
     if failure is None:
         return "installer-bug"
+    attributed = getattr(failure, "reason", None)
+    if attributed in ATTRIBUTED_REASONS:
+        return attributed
     message = str(failure)
     if isinstance(failure, BackupSpaceError):
         return "disk-space"
@@ -282,9 +294,10 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         start = before.selected_release
     target = request.target
     source = request.target_source
-    if failure is not None and reason_of(failure) == "windows-upgrade-unsupported":
-        # boundary_handoff refuses a Windows upgrade before any stop, journal or copy: a refusal.
-        request, failure = replace(request, refused=True, reason="windows-upgrade-unsupported"), None
+    if failure is not None and reason_of(failure) in REFUSAL_REASONS:
+        # boundary_handoff refuses a Windows upgrade, and the job refuses autostart-off, before any stop,
+        # journal or copy: a refusal that keeps its own reason.
+        request, failure = replace(request, refused=True, reason=reason_of(failure)), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
