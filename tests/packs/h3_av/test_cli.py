@@ -24,6 +24,14 @@ def _write(path: Path, value: dict) -> Path:
     return path
 
 
+def _help_text(capsys, *args: str) -> str:
+    """argparse prints help and exits 0; the pack CLI does not return it."""
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(list(args))
+    assert exit_info.value.code == 0
+    return capsys.readouterr().out.lower()
+
+
 def test_registration_and_public_help(capsys, monkeypatch) -> None:
     calls = []
     original = cli.main
@@ -32,15 +40,13 @@ def test_registration_and_public_help(capsys, monkeypatch) -> None:
     assert cli.main(["edit"]) == 7
     assert calls == [["plan"], ["edit"]]
     monkeypatch.setattr(cli, "main", original)
-    assert cli.main(["--help"]) == 0
-    help_text = capsys.readouterr().out.lower()
+    help_text = _help_text(capsys, "--help")
     for command in ("plan", "run", "compose", "edit"):
         assert command in help_text
     for forbidden in ("journal", "custody", "worker", "prepare", "compile", "verify"):
         assert forbidden not in help_text
     for command in ("plan", "run", "compose", "edit"):
-        assert cli.main([command, "--help"]) == 0
-        text = capsys.readouterr().out.lower()
+        text = _help_text(capsys, command, "--help")
         assert not any(term in text for term in ("journal", "custody", "worker", "prepare", "compile", "verify"))
 
 
