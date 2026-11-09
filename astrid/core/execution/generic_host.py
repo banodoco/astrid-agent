@@ -1211,6 +1211,16 @@ def _normalize_verified_facts(value: Any) -> dict[str, dict[str, Any]]:
     return {"exact": normalized_exact, "minimum": normalized_minimum}
 
 
+def _installed_vibecomfy_source(profile: Any) -> dict[str, Any] | None:
+    """The attested VibeComfy source identity recorded in installed provenance."""
+    if not isinstance(profile, Mapping):
+        return None
+    installed = profile.get("installed_provenance")
+    source = installed.get("source") if isinstance(installed, Mapping) else None
+    vibe = source.get("vibecomfy") if isinstance(source, Mapping) else None
+    return dict(vibe) if isinstance(vibe, Mapping) and vibe.get("verified") is True else None
+
+
 def _read_readiness_profile_document() -> Mapping[str, Any] | None:
     """Read the Worker-issued readiness document with its hash fence."""
     profile_path = os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH")
@@ -1484,11 +1494,12 @@ def _install_host_vibecomfy_import_root() -> Path | None:
         raise HostError("installed host VibeComfy checkout must be canonical without aliases")
     profile = _read_readiness_profile_document()
     candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
-    session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-    if not isinstance(candidate, Mapping) or not isinstance(session, Mapping):
+    source = _installed_vibecomfy_source(profile)
+    if (not isinstance(candidate, Mapping) or source is None
+            or not isinstance(profile.get("engine_identity"), Mapping)):
         raise HostError("installed host VibeComfy checkout requires attested readiness")
-    revision = session.get("source_revision")
-    content = session.get("source_content_digest")
+    revision = source.get("revision")
+    content = source.get("content_digest")
     if (candidate.get("checkout") != str(lexical)
             or candidate.get("revision") != revision
             or candidate.get("source_content_digest") != content
@@ -9231,11 +9242,10 @@ class GenericPackHost:
             # its normal route-registration environment in its own process.
             explicit["VIBECOMFY_HEADLESS"] = "1"
             profile = _read_readiness_profile_document()
-            session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-            if isinstance(session, Mapping):
-                explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
-                revision = session.get("source_revision")
-                content_digest = session.get("source_content_digest")
+            source = _installed_vibecomfy_source(profile)
+            if source is not None and isinstance(profile.get("engine_identity"), Mapping):
+                revision = source.get("revision")
+                content_digest = source.get("content_digest")
                 if isinstance(revision, str) and isinstance(content_digest, str):
                     explicit[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                     explicit[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
@@ -11618,8 +11628,8 @@ class GenericPackHost:
             warm_reuse_expected=self.execution_policy.warm_reuse_expected,
         )
         readiness_profile = _read_readiness_profile_document()
-        if isinstance(readiness_profile, Mapping) and isinstance(readiness_profile.get("vibecomfy_session"), Mapping):
-            # Checkout-owned VibeComfy sessions were removed with the checkout route.
+        if isinstance(readiness_profile, Mapping) and "vibecomfy_session" in readiness_profile:
+            # The checkout-owned session record was removed with the checkout route.
             raise HostError("created by a removed route; restart it")
         managed_token = None
         managed_settled = False
@@ -14098,17 +14108,16 @@ class LocalExecutionPreparation:
             raise HostError("producer requires the retained verified host protocol")
         readiness = json.loads(self._producer_profile_json)
         root = model_root_binding_from_profile(readiness, verify_files=True)
-        session = readiness.get("vibecomfy_session")
+        identity = readiness.get("engine_identity")
+        source = _installed_vibecomfy_source(readiness)
         launch = profile["engine_launch"]
         config = launch["config"]
-        if (not isinstance(session, dict) or not session.get("launch_token")
-                or session.get("session_dir") != launch["session_root"]
-                or session.get("server_url") != profile["engine_endpoint"]
-                or session.get("config_digest") != profile["session_config_digest"]
-                or session.get("source_revision") != launch["source_revision"]
-                or session.get("source_content_digest") != launch["source_content_digest"]
-                or session != (self.graph.readiness_profile or {}).get("vibecomfy_session")):
-            raise HostError("producer session differs from retained owner selection")
+        if (not isinstance(identity, dict)
+                or identity != (self.graph.readiness_profile or {}).get("engine_identity")
+                or source is None
+                or source.get("revision") != launch["source_revision"]
+                or source.get("content_digest") != launch["source_content_digest"]):
+            raise HostError("producer engine identity differs from retained owner selection")
         observed = self.graph.report()  # Existing owned-process/socket/config observation.
         expected_processes = self.result.get("processes")
         if (not isinstance(expected_processes, Mapping)
@@ -15913,7 +15922,13 @@ class _NativeEngineGraph:
                 raise HostError("engine graph has an unregistered required descendant")
             measured = self._measure_registry(root, nonce, listener_pid)
             if measured is not None:
-                self.readiness_profile = {"vibecomfy_session": measured}
+                from astrid.core.generation.engine_readiness import engine_identity
+
+                try:
+                    identity = engine_identity("comfyui", str(root))
+                except OSError as exc:
+                    raise HostError("engine install receipt is unreadable") from exc
+                self.readiness_profile = {"engine_identity": identity}
                 return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
                                       "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
                                       "engine_listener": {"pid": listener_pid, "birth_id": registration["identity"]["birth_id"]}},
@@ -16731,10 +16746,10 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             parser.error(f"readiness profile is unreadable: {exc}")
         candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
-        session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-        if isinstance(session, Mapping):
-            revision = session.get("source_revision")
-            content_digest = session.get("source_content_digest")
+        source = _installed_vibecomfy_source(profile)
+        if source is not None and isinstance(profile.get("engine_identity"), Mapping):
+            revision = source.get("revision")
+            content_digest = source.get("content_digest")
             if isinstance(revision, str) and isinstance(content_digest, str):
                 os.environ[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
                 os.environ[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest

@@ -1165,11 +1165,14 @@ class RunPodRemoteWorkerPreparer:
         # Independently re-read the collection, rather than trusting a session receipt's digest alone.
         if any(read_file(registry + "/" + name, deadline=deadline) != value for name, value in files.items()):
             raise AttestationError("installed endpoint session evidence changed")
-        existing_session = profile.get("vibecomfy_session", {})
-        if (not isinstance(existing_session, dict) or ("vibecomfy_session" in profile
-                and any(existing_session.get(key) != value for key, value in session.items()))):
-            raise AttestationError("startup and installed endpoint session disagree")
-        profile["vibecomfy_session"] = {**existing_session, **session}
+        # The engine identity is the attested install receipt, not a checkout session record.
+        if not installed_path.endswith("/.astrid-engine/install.json"):
+            raise AttestationError("installed endpoint receipt path is not canonical")
+        identity = {"engine": engine, "receipt_sha256": hashlib.sha256(installed_bytes).hexdigest(),
+                    "root": installed_path[: -len("/.astrid-engine/install.json")]}
+        if profile.get("engine_identity", identity) != identity:
+            raise AttestationError("startup and installed endpoint engine identity disagree")
+        profile["engine_identity"] = identity
         if "endpoint_evidence" in profile:
             # Retain an existing approved snapshot/evidence binding verbatim.
             # The shared ensure below validates its actual bytes and live P1.

@@ -326,13 +326,9 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
         _bad()
     snapshot = _load(snapshot_bytes)
     session = session_receipt
-    session_profile = profile.get("vibecomfy_session")
-    if type(session_profile) is not dict:
-        _bad()
     if (session is None or session.url != f"http://127.0.0.1:{recipe.start.port}"
             or session.config_digest != reference.session_config_digest
-            or session.session_ref != reference.session_ref
-            or session_profile.get("server_url") != session.url):
+            or session.session_ref != reference.session_ref):
         _bad()
     receipt_bytes = read_file(attestation.install_receipt_path, deadline=deadline)
     if (type(receipt_bytes) is not bytes or len(receipt_bytes) > 8 * 1024 * 1024
@@ -343,6 +339,10 @@ def _prepared_session_evidence(reference, session_selection, session_receipt, pr
         _bad()
     root = _path(raw_receipt.get("root"))
     if attestation.install_receipt_path != root + "/.astrid-engine/install.json":
+        _bad()
+    # The retained readiness names the exact installed engine it attested.
+    if profile.get("engine_identity") != {"engine": engine, "receipt_sha256": attestation.install_receipt_sha256,
+                                          "root": root}:
         _bad()
     # Self-start uses the same local installer *on the pod*. Preserve its bytes
     # and placement; never rewrite a local install receipt as a RunPod claim.
