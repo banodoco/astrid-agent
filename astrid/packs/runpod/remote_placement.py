@@ -357,8 +357,6 @@ class RemotePlacement:
         source_root: Path | None = None,
         leave_running: bool = False,
         pod_id: str | None = None,
-        verify_fn: Callable[[Path, Mapping[str, Any]], None] | None = None,
-        ffprobe_fn: Callable[[Path], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -367,9 +365,6 @@ class RemotePlacement:
         self.source_root = source_root
         self.leave_running = leave_running
         self.pod_id = pod_id
-        # The h3 caller passes its own verify/ffprobe; this module imports no h3 code.
-        self._verify_fn = verify_fn
-        self._ffprobe_fn = ffprobe_fn
         self._clock = clock
         self._sleep = sleep
         self._claims_made = 0
