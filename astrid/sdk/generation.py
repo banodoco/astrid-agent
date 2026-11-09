@@ -294,6 +294,13 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
+def _runpod_preferences(client):
+    """The saved RunPod placement policy, read from the caller's Runtime connection when it has one."""
+    from astrid.packs.runpod.target_selection import read_runpod_preferences
+
+    return (read_runpod_preferences(client=client) if client is not None else read_runpod_preferences()).as_mapping()
+
+
 def _runpod_placement_policy(controls, *, engine, machine=None):
     """Snapshot the user's disclosed offer and preferences into the task.
 
@@ -306,7 +313,7 @@ def _runpod_placement_policy(controls, *, engine, machine=None):
     names = ("offer_digest", "preparation_seconds", "execution_seconds", "idle_seconds")
     if any(controls.get(name) is None for name in names):
         raise GenerationInputError("RunPod requires the disclosed offer digest and preparation, execution and idle bounds")
-    return {"kind": "runpod", "engine": engine, "preferences": read_runpod_preferences().as_mapping(),
+    return {"kind": "runpod", "engine": engine, "preferences": _runpod_preferences(controls.get("client")),
             **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"]),
             **({"machine": machine} if machine else {})}
 
@@ -315,7 +322,7 @@ def _runpod_operation(operation, *, client, wait, include_quote=False):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
 
-    policy = {"kind": "runpod", "engine": "comfyui", "preferences": read_runpod_preferences().as_mapping()}
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": _runpod_preferences(client)}
     inputs = {"placement_policy": json.dumps(policy, sort_keys=True, separators=(',', ':'), allow_nan=False)}
     if operation == 'status':
         inputs['include_quote'] = include_quote
