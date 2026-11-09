@@ -1,8 +1,8 @@
 """CPU RunPod-as-a-machine journeys: real Runtime, host, lease owner and HTTPS transport.
 
 Plan 32 T5. Only provider HTTP is doubled: RunPod GraphQL/REST and the pod agent.
-The pod-side generation command is answered by the fake (``T4 STUB`` in
-``astrid.packs.runpod.machine.generation_argv``): it writes the job's output tree,
+These provider journeys answer the pod-side generation command with a fake:
+it writes the job's output tree,
 ``result.json``, a real ``wrapper-manifest.json`` with its sha256 line, and
 ``progress.json`` once per poll. No ``/engines/`` request is ever made.
 
@@ -285,7 +285,8 @@ class MachineProviderHTTP:
                                              "template": "taken" if taken else "restored"}).encode())
 
     def _start_generation(self, directory, detached):
-        # T4 STUB (pod side): `astrid generate <entry> --placement local` is answered here.
+        # Provider-only journeys answer the pod command here; the shipped-job seam
+        # is exercised through real run_job in test_remote_machine_job_seam_cpu.py.
         # T5f: the job's one command opens the prepared connection under the reset lock.
         assert "ensure_runtime" not in detached and "astrid-runtime" not in detached, "a job ran up/connect"
         assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in detached
