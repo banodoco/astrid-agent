@@ -30,9 +30,9 @@ on:
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
       diagnostic_leg:
-        description: NON-PROOF diagnostic leg (release0-to-release1, fresh-install, or both)
+        description: NON-PROOF diagnostic leg (release9-then-install, fresh-install, or both)
         required: false
-        default: release0-to-release1
+        default: release9-then-install
         type: string
       diagnostic_keep_going:
         description: NON-PROOF disposable direct keep-going diagnostic
@@ -102,9 +102,9 @@ on:
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
       diagnostic_leg:
-        description: NON-PROOF diagnostic leg (release0-to-release1, fresh-install, or both)
+        description: NON-PROOF diagnostic leg (release9-then-install, fresh-install, or both)
         required: false
-        default: release0-to-release1
+        default: release9-then-install
         type: string
       diagnostic_keep_going:
         description: NON-PROOF disposable direct keep-going diagnostic
@@ -284,7 +284,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIAGNOSTIC_KEEP_GOING: ${{ inputs.diagnostic_keep_going || false }}
-          DIAGNOSTIC_LEG: ${{ inputs.diagnostic_leg || 'release0-to-release1' }}
+          DIAGNOSTIC_LEG: ${{ inputs.diagnostic_leg || 'release9-then-install' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
@@ -343,9 +343,9 @@ jobs:
           if journey_row:
               direct_only = True
           diagnostic_leg = os.environ["DIAGNOSTIC_LEG"]
-          if diagnostic_leg not in {"release0-to-release1", "fresh-install", "both"}:
+          if diagnostic_leg not in {"release9-then-install", "fresh-install", "both"}:
               raise SystemExit("invalid diagnostic_leg")
-          if diagnostic_leg != "release0-to-release1" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
+          if diagnostic_leg != "release9-then-install" and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() != "true":
               raise SystemExit("fresh-install diagnostic_leg requires diagnostic_keep_going")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
           if pinokio_only and os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
@@ -404,13 +404,15 @@ jobs:
               matrix = [row for row in matrix if row["job_id"] not in journey_matrix.RELEASE1_DIRECT_FRESH_JOB_IDS]
           if journey_row and journey_row not in {"direct", "pinokio"}:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
-          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg == "release0-to-release1":
+          if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg in {"release9-then-install", "both"}:
+              # Keep-going diagnostics stage only the Release 9 leg; the strict
+              # r0-handoff-then-update rows are not staged by keep-going.
               for row in matrix:
                   # Windows R0 upgrades are deferred. Keep its diagnostic on
                   # the supported fresh-install path; the refusal is captured
                   # separately by the strict Windows lifecycle.
                   if row["job_id"] != "direct-windows":
-                      row["leg"] = diagnostic_leg
+                      row["leg"] = "release9-then-install"
           if diagnostic_leg == "fresh-install":
               for row in matrix:
                   row["leg"] = diagnostic_leg
@@ -498,8 +500,8 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
           path: pinokio
           persist-credentials: false
-      - name: Check out the pinned Release 9 App for the release-0 leg
-        if: matrix.leg == 'release0-to-release1'
+      - name: Check out the pinned Release 9 App for the Release 9 and R0 handoff legs
+        if: matrix.leg == 'release9-then-install' || matrix.leg == 'r0-handoff-then-update'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
@@ -795,8 +797,16 @@ jobs:
               '--stopped-path-agent-ref', '${{ needs.config.outputs.stopped_path_agent_ref }}'
             )
           }
-          if ('${{ matrix.leg }}' -eq 'release0-to-release1') {
+          if ('${{ matrix.leg }}' -eq 'release9-then-install') {
             $release0Args = @(
+              '--release9-app-checkout', "$pwd/release9-app",
+              '--allow-release0-to-release1'
+            )
+          }
+          if ('${{ matrix.leg }}' -eq 'r0-handoff-then-update') {
+            # The frozen R0 is handed off by the pinned Release 9 installer, then updated by the candidate.
+            $release0Args = @(
+              '--release0-fixture', "$pwd/agent/tests/fixtures/release0",
               '--release9-app-checkout', "$pwd/release9-app",
               '--allow-release0-to-release1'
             )
