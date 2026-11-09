@@ -356,8 +356,10 @@ class TargetProviderBindings:
                 self.active = active = None
         if active is not None:
             # The host's cancel check stops the machine job; the machine then
-            # marks it done before releasing.
-            active["cancel"].set()
+            # marks it done before releasing. A job already done (its outputs
+            # fetched, the machine now releasing it) is not cancelled.
+            if not active["done"].is_set():
+                active["cancel"].set()
             if not active["done"].wait(timeout=30):
                 raise ValueError("target invocation drain remains unresolved")
             with self.lock:

@@ -76,6 +76,10 @@ class MachineProviderHTTP:
         self.generations = []  # job.json of every generation job the pod ran
         self.selections = []  # selection.json of every shipped selection the pod read
         self.seen_controller_progress = []
+        # The pod's one Runtime (T5f): container-disk state of the current pod.
+        self.fail_reset = False
+        self.resets = []  # each detached pod_reset: when, what it removed, the lease then
+        self._new_pod_state()
         self.job_hold = threading.Event()
         self.job_hold.set()
         image = io.BytesIO()
@@ -116,6 +120,9 @@ class MachineProviderHTTP:
         engine_runner._parse_receipt(asdict(receipt), plan)
         return asdict(receipt)
 
+    def _new_pod_state(self):
+        self.pod_state, self.active_job, self.template = "absent", None, False
+
     def kinds(self, *names):
         return [c for c in self.commands if any(name in c for name in names)]
 
@@ -153,6 +160,7 @@ class MachineProviderHTTP:
             assert not self.pods, "a second pod was deployed while one exists"
             self.deploys += 1
             self.pod_id = POD if self.deploys == 1 else f"{POD}{self.deploys}"
+            self._new_pod_state()
             self.pods.append({"id": self.pod_id, "name": record["request_name"],
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0, "gpuCount": 1,
                 "imageName": record["worker_image"],
@@ -191,7 +199,9 @@ class MachineProviderHTTP:
             detached = base64.b64decode(re.search(r"printf %s (\S+) \| base64 -d", command)[1]).decode()
             self.commands.append(detached)
             self.files.update({directory + "/pid": b"123", directory + "/stderr": b""})
-            if "pod_bootstrap.sh" in detached:
+            if "pod_reset reset" in detached:
+                self._reset(directory, detached)
+            elif "pod_bootstrap.sh" in detached:
                 self.files[self._marker(detached)] = b"ok"
                 self._exit(directory, 0, b"")
             elif re.search(r"engines install (\S+) --platform linux-x86_64-cu130", detached):
@@ -213,25 +223,19 @@ class MachineProviderHTTP:
                 self.files[directory + "/status"] = b"cancelled"
             self.events.append(("detached_cancel", directory))
             return 0, ""
+        if "pod-state:" in command:
+            return 0, "pod-state:" + ("pending" if self.active_job is not None else self.pod_state) + "\n"
+        if command.startswith("rm -rf "):
+            gone = shlex.split(command)[2]
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+            return 0, ""
         if "engines status" in command:
             engine = re.search(r"engines status (\S+)", command)[1]
             installed = f"/root/astrid/engines/{engine}/.astrid-engine/install.json" in self.files
             return 0, json.dumps(self._receipt_for(engine) if installed else None)
         if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
             return self._storage_probe(command)
-        if "generate list --json" in command:
-            # The runtime check: ensure_runtime picks its own port; nothing pins one.
-            assert "ensure_runtime" in command
-            assert "17340" not in command and "--port" not in command and "8188" not in command
-            assert any(path.endswith("/.astrid-engine/install.json") for path in self.files), "checked before install"
-            listed = list(self.listed)  # what the pod's own (built-in) sources provide
-            if "tar -xzf" in command:
-                # The job's entry check: the pod lists only its built-ins and the shipped selection.
-                root = re.search(r"tar -xzf (\S+)/selection\.tar\.gz", command)[1].strip("'")
-                assert f"ASTRID_PACKS_PATH={root}/selection/packs" in command
-                assert f"VIBECOMFY_ENTRIES_DIR={root}/selection/entries" in command
-                listed += self._shipped(root)
-            return 0, json.dumps([{"id": entry, "backend": "local", "ready": True} for entry in listed])
         if command.startswith(("cat ", "tail ")):
             return 0, self.files.get(shlex.split(command)[-1], b"").decode()
         if command.startswith("sha256sum "):
@@ -260,9 +264,37 @@ class MachineProviderHTTP:
         return 0, json.dumps({**request, "cache_device": 64768, "cache_mount_id": self.mount_id,
                               "free_bytes": 10**12, "total_bytes": 2 * 10**12, "local_free_bytes": 10**12})
 
+    def _reset(self, directory, detached):
+        """``pod_reset reset``: template on a fresh pod, else restore + replace; sweep; ready.json."""
+        argv = shlex.split(next(line for line in detached.splitlines() if "pod_reset reset" in line))
+        dirs = [argv[argv.index(flag) + 1] for flag in ("--run-dir", "--job-dir") if flag in argv]
+        record = json.loads(self.claim_path.read_text())
+        self.resets.append({"at": len(self.events), "dirs": dirs, "active": self.active_job,
+                            "lease": record["lease"]["state"], "job": dict(record["lease"].get("job") or {})})
+        self.events.append(("reset", dirs[0] if dirs else None))
+        if self.fail_reset and dirs:
+            self.pod_state = "absent"
+            self._exit(directory, 1, json.dumps({"reset": "failed", "error": "ResetError: replace refused"}).encode())
+            return
+        for gone in dirs:
+            for path in [p for p in self.files if p.startswith(gone + "/")]:
+                del self.files[path]
+        taken = not self.template
+        self.template, self.pod_state, self.active_job = True, "ready", None
+        self._exit(directory, 0, json.dumps({"reset": "ok", "removed": len(dirs),
+                                             "template": "taken" if taken else "restored"}).encode())
+
     def _start_generation(self, directory, detached):
         # T4 STUB (pod side): `astrid generate <entry> --placement local` is answered here.
-        argv = shlex.split(next(line for line in detached.splitlines() if " generate " in line).split(" > ")[0])
+        # T5f: the job's one command opens the prepared connection under the reset lock.
+        assert "ensure_runtime" not in detached and "astrid-runtime" not in detached, "a job ran up/connect"
+        assert "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in detached
+        assert "flock -s 9" in detached and "ASTRID_RUNTIME_DOOR_PORT=0" in detached
+        assert self.pod_state == "ready" and self.active_job is None, "a job started on a pod with no ready reset"
+        active = next(row for row in detached.splitlines() if row.startswith("printf '%s' ") and "active-job" in row)
+        self.active_job = json.loads(shlex.split(active)[2])
+        assert detached.index("generate list --json") < detached.index("--placement local")
+        argv = shlex.split(next(line for line in detached.splitlines() if "--placement local" in line).split(" > ")[0])
         assert argv[1] == "generate" and argv[3:5] == ["--placement", "local"], argv
         assert self.expect_entry is None or argv[2] == self.expect_entry, argv
         assert "17340" not in detached and "--port" not in detached
@@ -349,6 +381,7 @@ class MachineProviderHTTP:
         self.killed.append(self.pod_id)
         self.pods.clear()
         self.files.clear()  # its container disk goes with it
+        self._new_pod_state()
 
     def output_for(self, job):
         """The pod's generated file for a job (an image unless a subclass knows the modality)."""
@@ -422,6 +455,8 @@ class MachineProviderHTTP:
         if path == "/download-chunk":
             target = body["path"]
             directory, _, name = target.rpartition("/")
+            if target.endswith("/out/" + remote_placement.MANIFEST_NAME):
+                self.events.append(("fetch-manifest", target.rsplit("/out/", 1)[0]))
             if name == "exit" and directory in self.detached:
                 self._advance(directory)  # detached_poll reads status, then exit
             if target not in self.files:
@@ -588,17 +623,27 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1
     assert len(provider.kinds("pod_bootstrap.sh")) == 1
     assert len(provider.kinds("engines install comfyui")) == 1
-    # The runtime starts at the claim; the entry is listed from the shipped selection at start.
-    assert len(provider.kinds("generate list --json")) == 2
+    # The entry is listed from the shipped selection inside the job's one command.
+    assert len(provider.kinds("generate list --json")) == 1
     assert len([c for c in provider.kinds("generate list --json") if "tar -xzf" in c]) == 1
+    # T5f: the fresh pod's claim takes the template; the job's reset runs after the
+    # digest-verified fetch and before settle (the lease is still the job's, not idle).
+    claim_reset, job_reset = provider.resets
+    assert claim_reset["dirs"] == [] and claim_reset["active"] is None
+    (run_dir,) = {e[1] for e in provider.events if e[0] == "fetch-manifest"}
+    fetched_at = max(i for i, e in enumerate(provider.events) if e == ("fetch-manifest", run_dir))
+    assert job_reset["dirs"][0] == run_dir and job_reset["at"] > fetched_at
+    assert job_reset["lease"] != "idle" and job_reset["job"]["state"] == "starting"
+    assert job_reset["active"]["run_id"] == run_dir.rsplit("/", 1)[1]
+    assert not [path for path in provider.files if path.startswith(run_dir + "/")], "the run directory survived"
+    assert not [path for path in provider.files if path.startswith(job_reset["dirs"][1] + "/")]
     record = j.record()
     lease = record["lease"]
     assert lease["state"] == "idle" and lease["job"]["state"] == "exited"
     preparation = lease["preparation"]
     assert preparation["state"] == "prepared"
     assert preparation["storage"] == {"mode": "ephemeral"}
-    # The claim proves the runtime starts; the entry is checked against the shipped selection at start.
-    assert preparation["runtime_check"]["entry"] is None and preparation["runtime_check"]["ready"]
+    assert preparation["pod_ready"] == {"entry": None, "ready": True, "found": "absent", "reset": "taken"}
     custody = preparation["custody"]
     assert custody["gpu_type"] == "CPU fixture GPU" and custody["account"] == "cpu-fixture"
     # T5c: the attempt records which machine ran it, and the task listing shows it.
@@ -619,12 +664,34 @@ def test_cold_run_then_warm_second_run_reuses_the_machine(journey):
     assert provider.deploys == 1, "the warm machine was not reused"
     new = provider.commands[len(jobs_before):]
     assert not [c for c in new if "pod_bootstrap.sh" in c or "engines install" in c]
-    assert len([c for c in new if "generate list --json" in c]) == 2  # warm: the claim's check, then the job's
+    assert len([c for c in new if "generate list --json" in c]) == 1  # warm: only the job's own check
     assert len([c for c in new if " generate cpu-image " in c]) == 1
+    # A warm job runs no up and no connect: no claim-time reset, the prepared connection only.
+    assert not [c for c in new if "ensure_runtime" in c or "astrid-runtime" in c]
+    assert len(provider.resets) == 3 and provider.resets[2]["dirs"]
+    assert j.record()["lease"]["preparation"]["pod_ready"]["reset"] == "skipped"
     assert j.record()["lease"]["preparation"]["custody"] == custody
     _released(provider, j.release())
     order = [e[0] for e in provider.events if e[0] in {"pod-delete", "pod-404"}]
     assert order[:2] == ["pod-delete", "pod-404"]
+
+
+def test_a_failed_reset_releases_the_pod_instead_of_settling_it(journey):
+    """T5f: the outputs are delivered, but a pod whose reset failed is never left warm."""
+    j = journey
+    s = j.start()
+    provider = s["provider"]
+    provider.fail_reset = True  # the release-time reset (the claim's template reset still succeeds)
+    first = j.image()
+    assert first.ok, first.to_dict()
+    delivered = deliver_generation(first, client=s["client"], out=j.tmp / "first", project=s["project"])
+    assert Path(delivered["image_paths"][0]).read_bytes() == provider.image
+    record = j.record()
+    _released(provider, record)
+    assert record["lease"]["ended"] == "reset_failed" and record["lease"]["job"]["state"] == "exited"
+    assert [bool(r["dirs"]) for r in provider.resets] == [False, True]
+    order = [e[0] for e in provider.events if e[0] in {"fetch-manifest", "reset", "pod-delete"}]
+    assert order[-3:] == ["fetch-manifest", "reset", "pod-delete"]
 
 
 def test_a_custody_change_refuses_warm_reuse(journey):
