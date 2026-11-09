@@ -107,7 +107,7 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
         monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
         args = ["--update", "--root", str(root), "--manifest", str(manifest), "--uv", str(uv)]
 
-    assert cli.main(args) == 0
+    assert cli.main(args) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert recovered == ["restoring_realm"]
     assert (data / "runtime" / "realms" / "original-realm").is_dir()
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
@@ -206,7 +206,7 @@ def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
             "--uv", str(tmp_path / "missing-uv")]
     if update_flag:
         args.insert(0, "--update")
-    assert cli.main(args) == 0
+    assert cli.main(args) == 3  # recovery-only run: the receipt says not updated (exit 3)
 
     assert events == [
         "recover",
@@ -380,7 +380,7 @@ def test_installed_cli_validates_candidate_without_requiring_staging_uv(
     if source == "explicit":
         args.extend(["--manifest", str(manifest_path)])
 
-    assert cli.main(args) == 0
+    assert cli.main(args) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert validated == [candidate]
     assert dispatched == [("install", candidate)]
 
@@ -558,7 +558,7 @@ def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
 
     monkeypatch.setattr(Installer, "_recover_update", recover)
     assert gateway_main(["install", "--root", str(root), "--manifest", str(tmp_path / "missing"),
-                         "--uv", str(tmp_path / "missing-uv")]) == 0
+                         "--uv", str(tmp_path / "missing-uv")]) == 0  # plain install whose recovery ends healthy: repaired (exit 0)
     assert recovery == [True]
     assert not backend.calls
 
@@ -656,7 +656,7 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
 
     assert cli.main(["--root", str(root), "--update",
                      "--manifest", str(tmp_path / "unavailable-manifest"),
-                     "--uv", str(tmp_path / "unavailable-uv")]) == 0
+                     "--uv", str(tmp_path / "unavailable-uv")]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert current(root) == old
     assert (realm_root / "workspace.txt").read_text(encoding="utf-8") == "original bytes"
     assert read_json(data / "runtime" / "catalog.json")["selected_realm_id"] == "original-realm"
@@ -939,7 +939,7 @@ def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failu
 
     assert cli.main(["--update", "--root", str(backend.root),
                      "--uv", str(tmp_path / "unused-uv"),
-                     "--manifest", str(tmp_path / "unused-manifest")]) == 0
+                     "--manifest", str(tmp_path / "unused-manifest")]) == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert len(task_queries) == 4  # legacy read, action migration, early and fenced revalidation
     assert boundary.stop_calls == 0  # no owner publication; C1 admits the idle readable realm
     assert manager_calls == []

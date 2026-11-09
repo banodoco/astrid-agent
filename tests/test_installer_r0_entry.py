@@ -359,7 +359,7 @@ def test_public_cli_recovers_interrupted_stop_with_nested_read_only_source(tmp_p
         assert not state(manager)["enabled"]
         state(manager, kill_after_disable=False)
         recovered = invoke(root)
-        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert recovered.returncode == 3, recovered.stdout + recovered.stderr  # recovery-only run: the receipt says not updated (exit 3)
         assert "Recovered the previous R0 service" in recovered.stdout
         assert state(manager)["enabled"] and state(manager)["running"]
         assert not r0_stop._marker_path(service).exists()
@@ -478,7 +478,7 @@ def test_sigkill_in_manager_stop_real_cli_rerun_recovers(tmp_path, monkeypatch):
     assert not state(manager)["enabled"]
     state(manager, kill_after_disable=False)
     recovered = invoke(root)
-    assert recovered.returncode == 0
+    assert recovered.returncode == 3  # recovery-only run: the receipt says not updated (exit 3)
     assert "Recovered the previous R0 service" in recovered.stdout
     assert state(manager)["enabled"] and state(manager)["running"]
     assert not r0_stop._marker_path(service).exists()

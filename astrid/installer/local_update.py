@@ -200,7 +200,11 @@ def _backend(root: Path) -> Backend:
     backend.service.choices = resolve_choices(
         saved=backend.service.recorded().get("choices"), existing_install=True,
     )
-    return backend
+    from .installation import adopt_if_handed_off
+
+    # After a finished storage move the live Runtime runs under the R1 label;
+    # never operate R0's retained definition from the local update.
+    return adopt_if_handed_off(backend, root)
 
 
 def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
