@@ -196,22 +196,6 @@ def test_windows_upgrade_refusal_settles_as_not_updated_with_exit_3():
     assert out.reason == "windows-upgrade-unsupported"
 
 
-# --- N3: a --update whose Runtime refuses safely while another live copy runs is refused, exit 3.
-
-def test_safe_refusal_of_update_with_a_second_live_copy_is_refused_with_next_and_details():
-    from astrid.installer.core import RuntimeOperationError
-
-    before = _state("runtime", 11)
-    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
-    refusal = RuntimeOperationError("controlled refused stop", details={"safe": False})
-    out = settle(Request("update", 12, target_source="manifest"), before, lambda: after, failure=refusal)
-    assert out.kind == "not-updated" and out.exit_code == 3
-    assert out.reason == "other-runtime-running"
-    lines = replace(out, log="/logs/install.log").headline()
-    assert lines[-2] == "Next: stop the other Astrid, then run the same command again."
-    assert lines[-1] == "Details: /logs/install.log"
-
-
 # --- A safe --update refusal keeps the Runtime's own reason (busy): it is never relabelled.
 
 BUSY_NEXT = ("Next: quit the other Astrid window (or let the other installer finish), "

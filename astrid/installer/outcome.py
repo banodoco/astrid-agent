@@ -292,9 +292,9 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     if failure is not None and reason_of(failure) == "windows-upgrade-unsupported":
         # boundary_handoff refuses a Windows upgrade before any stop, journal or copy: a refusal.
         request, failure = replace(request, refused=True, reason="windows-upgrade-unsupported"), None
-    if failure is not None and request.mode == "update" and others and _safe_refusal(failure):
-        # Runtime refused the stop safely (nothing destroyed) while another live copy runs: a refusal.
-        request, failure = replace(request, refused=True, reason="other-runtime-running"), None
+    if failure is not None and request.mode == "update" and _safe_refusal(failure):
+        # Runtime refused the stop safely (nothing destroyed): a refusal that keeps its own reason.
+        request, failure = replace(request, refused=True, reason=reason_of(failure)), None
     if failure is not None:
         kind = "rolled-back" if rolled_back else "failed"
         return Outcome(kind, live if live is not None else start, start, target, reason_of(failure), request.mode,
