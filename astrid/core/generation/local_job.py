@@ -117,9 +117,12 @@ def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, A
                                     mode=mode, align=align)
         # The facade has already bound this exact graph. Rebinding or rebuilding it
         # would discard its chosen seed, native controls and uploaded media bindings.
-    return run_action._run_and_settle(
-        Path(workflow), out, task_identity=task, attempt_identity=attempt, entry=named,
-        workflow_inputs=execution.get("workflow_inputs") or "{}", align=align, **files)
+    from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+    with staged_workflow_path(workflow=execution.get("workflow"), python=execution.get("python"),
+                              companion=execution.get("companion"), source=execution.get("source")) as (workflow, _):
+        return run_action._run_and_settle(
+            workflow, out, task_identity=task, attempt_identity=attempt, entry=named,
+            workflow_inputs=execution.get("workflow_inputs") or "{}", align=align, **files)
 
 
 def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],
@@ -203,7 +206,7 @@ def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, An
             # a raise fails the job. It reads the state build left in this job directory.
             job = entries.entry_job(described, inputs, job_dir, hooks={})
             hook_job = {"after_outputs_job": json.dumps(
-                {"entry": named, "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
+                {"entry": described["id"], "job_dir": str(job_dir), "inputs": job["inputs"], "files": job["files"]},
                 sort_keys=True, default=str)}
         result = run_action._run_and_settle(
             workflow, out, task_identity=task, attempt_identity=attempt,

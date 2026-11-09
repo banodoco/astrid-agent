@@ -37,8 +37,11 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(
 
     monkeypatch.setattr(SlotPod, "_start_generation", capture)
     slot = ("image", "t2i")
+    def call(facade, controls, tmp):
+        return _capability_call(slot)(facade, {**controls, "align": "trust"}, tmp)
+
     with _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources,
-                target_kind="runpod", call=_capability_call(slot)) as (_, _, provider, result):
+                target_kind="runpod", call=call) as (_, _, provider, result):
         assert result.ok, result.to_dict()
 
     root = Path(shipped.pop("root"))
@@ -51,7 +54,7 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(
     assert job_path.read_bytes() == shipped[str(job_path)]
     job = json.loads(job_path.read_bytes())
     assert job["entry"] == provider.generations[0]["entry"]
-    assert job["align"] == "align"
+    assert job["align"] == "trust"
     assert job["inputs"]["prompt"] == "A red cube on a white tabletop."
     assert {"python", "companion", "source", "workflow_inputs"} <= job["execution"].keys()
     assert all(Path(job["execution"][name]).is_file() for name in ("python", "companion", "source"))

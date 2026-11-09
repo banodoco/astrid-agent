@@ -1171,7 +1171,7 @@ class GenerationFacade:
                 raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
                     execution_request, source, source_video, source_video_node,
-                    source_video_widget, managed_assets, workflow_inputs, comfy_url,
+                    source_video_widget, managed_assets, entry_inputs, workflow_inputs, comfy_url,
                     comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
             source_controls = {'client': client, 'project': project, 'out': out,
