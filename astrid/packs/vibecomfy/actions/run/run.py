@@ -780,22 +780,19 @@ class _LocalEngineServer:
         return self.result
 
 
-def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any] | None:
+def _entry_manifest(entry: str | None, inputs: dict[str, Any], *, workflow_path: Path | None = None) -> dict[str, Any] | None:
     """The entry's requirements manifest (what align() judges), or None for an unnamed workflow."""
     if not entry or entry == "workflow":
         return None
     from astrid.core.generation import entries
 
     described = entries.find_entry(entry)
-    if described is None:  # a catalog id: its one local mode template owns the models (as the dry run resolves it)
-        from astrid.core.model_catalog.registry import ModelRegistry
-        try:
-            spec = ModelRegistry.load_default().get(entry)
-        except KeyError:
-            spec = None
-        if spec is not None:
-            template = next(iter(spec.modes.values())).backends["local"].template
-            described = entries.find_entry(template)
+    if described is None:
+        # The facade already chose the mode and emitted its bound workflow. Its executable
+        # graph is authoritative; choosing a catalog mode here would repeat that decision.
+        if workflow_path is None:
+            raise ValueError(f"entry {entry!r} needs its resolved workflow path to determine requirements")
+        return _engine_for({"engine": "comfyui"}).requirements({"bundle": str(workflow_path)}, inputs)
     return entries.requirements(described, inputs) if described is not None else None
 
 
@@ -881,9 +878,9 @@ def _run_and_settle(
     # route (align still judges the manifest above, on the local route only).
     admitted_requirements = None
     if entry:
-        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs))
+        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
     if manifest is None and engine_local_run and entry:
-        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))
+        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
         # The models directory the installed engine itself uses, so align judges and fetches
         # only the rows this job lacks there.

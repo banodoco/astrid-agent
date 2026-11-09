@@ -1,20 +1,12 @@
-"""Plan 32 Completion 5: the dry run equals the live run.
+"""Dry preparation and real local/attached execution agree on graph, bindings and alignment.
 
-Placement scope: attached only. Every default slot and the h3_av entry run against one CPU
-stand-in attached ComfyUI, which is the only placement whose /prompt graph this harness can see.
-The dry run (``dry_run=True``) runs first, then the live run. The test compares the built graph,
-the bindings, the requirements manifest the live run recorded for its attempt, and the submitted
-/prompt graph. local-managed and RunPod placements are NOT compared here.
-
-Post-T8 follow-up: the attached live route never calls the requirements step, so its manifest is
-recorded from the entry the run resolved; a managed-local cell and a RunPod cell need their own
-comparison, and the wider call-site work (align and readiness receipts) is not covered here.
+Audio sfx/tts remain GPU cells; every other default runs against the CPU ComfyUI stand-in.
+The local child records the actual engine.align argument while preserving real execution.
 """
 from __future__ import annotations
 
 import json
 import subprocess
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -37,14 +29,67 @@ H3_CLASSES = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "obje
 
 
 def _graph(workflow) -> str:
-    """The built graph as canonical text: every runtime node with its class and values."""
-    nodes = {node_id: {"class_type": node.class_type, "inputs": node.inputs, "widgets": node.widgets}
-             for node_id, node in workflow.runtime_nodes().items()}
-    return json.dumps(nodes, sort_keys=True, default=str)
+    # Compile the built workflow independently of the submitted prompt. This resolves native
+    # links/widgets into the API shape without consulting the eventual submission.
+    return json.dumps({"api": workflow.compile("api"),
+                       "outputs": [str(output.node_id) for output in workflow.outputs]}, sort_keys=True)
 
 
 def _text(value) -> str:
-    return json.dumps(value, sort_keys=True, default=str)
+    return json.dumps(value, sort_keys=True)
+
+
+def _output_reachable(graph):
+    api = graph["api"]
+    pending = list(graph["outputs"])
+    assert pending, "built graph declares no output nodes"
+    reachable = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in reachable:
+            continue
+        assert node_id in api, f"output ancestry references absent built node {node_id}"
+        reachable.add(node_id)
+        for value in api[node_id]["inputs"].values():
+            if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and isinstance(value[1], int):
+                assert value[0] in api, f"broken built link {value}"
+                pending.append(value[0])
+    return {node_id: api[node_id] for node_id in reachable}
+
+
+def _spy_child_align(monkeypatch, path):
+    """Observe the real action child across its process boundary, without replacing the engine."""
+    popen = subprocess.Popen
+    bootstrap = f'''import json, runpy, sys
+from pathlib import Path
+from astrid.core.generation import entries
+original_table = entries.engine_table
+def table():
+    engines = original_table()
+    for engine in engines.values():
+        cls = type(engine)
+        if getattr(cls, "_dry_live_spy", False):
+            continue
+        align = cls.align
+        def spy(self, manifest, mode, _align=align, **kwargs):
+            with Path({str(path)!r}).open("a") as sink:
+                sink.write(json.dumps(manifest, sort_keys=True) + "\\n")
+            return _align(self, manifest, mode, **kwargs)
+        cls.align = spy
+        cls._dry_live_spy = True
+    return engines
+entries.engine_table = table
+sys.argv = ["astrid.core.execution.generic_host_worker", *sys.argv[1:]]
+runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__")
+'''
+    def launch(argv, *args, **kwargs):
+        env = kwargs.get("env") or {}
+        if env.get("ASTRID_GENERATION_ENTRY") and "astrid.core.execution.generic_host_worker" in argv:
+            index = argv.index("-m")
+            assert argv[index + 1] == "astrid.core.execution.generic_host_worker"
+            argv = [*argv[:index], "-c", bootstrap, *argv[index + 2:]]
+        return popen(argv, *args, **kwargs)
+    monkeypatch.setattr(subprocess, "Popen", launch)
 
 
 class Recorder:
@@ -81,16 +126,6 @@ class Recorder:
         return rows
 
 
-def _resolved_entry(entry_id: str) -> dict:
-    """The entry a dry run resolved an id to: the workflow entry, or a catalog id's local template."""
-    described = workflow_entries.find_entry(entry_id)
-    if described is None:  # a catalog id: its one local mode template owns the models
-        from astrid.core.model_catalog.registry import ModelRegistry
-        spec = ModelRegistry.load_default().get(entry_id)
-        described = workflow_entries.find_entry(next(iter(spec.modes.values())).backends["local"].template)
-    return described
-
-
 def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     """The graph and bindings a run settled on: its last built workflow."""
     assert rows, "the run built no graph"
@@ -98,8 +133,9 @@ def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     return graph, bindings
 
 
+@pytest.mark.parametrize("target_kind", ["attached", "local-managed"])
 @pytest.mark.parametrize("cell", CELLS, ids=lambda cell: "/".join(cell) if isinstance(cell, tuple) else "/".join(cell.values[0]))
-def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tuple_sources):
+def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_runtime, tuple_sources):
     modality, mode = cell
     h3 = cell == ("video", "h3")
     h3_classes, h3_assets = (), None
@@ -115,6 +151,8 @@ def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tupl
         h3_classes = set(json.loads(H3_CLASSES.read_text())) | _h3_built_classes(
             H3_REQUEST, json.loads(h3_assets.read_text()), tmp_path)
     recorder = Recorder(monkeypatch)
+    align_log = tmp_path / "actual-align.jsonl"
+    _spy_child_align(monkeypatch, align_log)
     runs = {}
 
     def run(facade, controls, tmp, **extra):
@@ -137,7 +175,7 @@ def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tupl
         return live
 
     with _drive(cell, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=h3_classes, call=call,
-                machine_identity=h3, target_kind="attached", h3_output=h3) as (client, project_id, provider, result):
+                machine_identity=h3, target_kind=target_kind, h3_output=h3) as (client, project_id, provider, result):
         assert result.ok, json.dumps(result.to_dict(), default=str)[:2000]
         (dry, dry_rows), (live, live_rows) = runs["dry"], runs["live"]
         assert isinstance(dry, dict) and dry["status"] == "ready", dry
@@ -145,43 +183,19 @@ def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tupl
         live_graph, live_bindings = _built(live_rows)
         # 1. The built graph is real, and a prompt cell binds its prompt.
         built = json.loads(live_graph)
-        assert built, "the built graph is empty"
+        assert built["api"], "the built graph is empty"
         assert json.loads(dry_graph) == built, "built graph differs between dry and live"
         assert json.loads(dry_bindings) == json.loads(live_bindings), "bindings differ between dry and live"
         assert json.loads(dry_bindings) == dry["entry"]["bindings"], "dry result's bindings differ from its build"
         if not h3:
             assert json.loads(live_bindings), "a prompt cell bound no values"
-        # 3. The requirements manifest: the one the live run recorded for its attempt equals the one the dry
-        #    run's entry yields from the dry inputs, through the same requirements() call.
-        expected = workflow_entries.requirements(_resolved_entry(dry["entry"]["id"]), dict(dry["entry"]["bindings"]))
-        recorded = _recorded_requirements(live.to_dict())
-        assert expected and recorded is not None, "the live run recorded no requirements manifest"
-        assert json.loads(json.dumps(expected, sort_keys=True, default=str)) == recorded, (
-            "requirements manifest differs between dry and live")
+        # The local child records the exact argument passed to real engine.align.
+        if target_kind == "local-managed":
+            assert align_log.is_file(), "the local run never called engine.align"
+            actual = [json.loads(line) for line in align_log.read_text().splitlines()]
+            assert len(actual) == 1, actual
+            assert actual[0] == dry["entry"]["requirements"], "dry and actual align manifests differ"
 
-        # 2. Every submitted node is a built node with the same class and the same scalar values (links aside).
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
-        for node_id, node in submitted.items():
-            assert node_id in built, f"submitted node {node_id} was not built"
-            assert node["class_type"] == built[node_id]["class_type"], node_id
-            for name, value in node["inputs"].items():
-                if isinstance(value, (str, int, float, bool)) or value is None:
-                    assert built[node_id]["inputs"].get(name) == value, (node_id, name)
-
-def _recorded_requirements(value):
-    """The requirements the live run recorded in its attempt's producer evidence (producer.entry.requirements)."""
-    if isinstance(value, dict):
-        producer = value.get("producer")
-        if isinstance(producer, dict) and isinstance(producer.get("entry"), dict) and "requirements" in producer["entry"]:
-            return producer["entry"]["requirements"]
-        for child in value.values():
-            found = _recorded_requirements(child)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for child in value:
-            found = _recorded_requirements(child)
-            if found is not None:
-                return found
-    return None
+        assert submitted == _output_reachable(built), "submitted graph differs in nodes, inputs, links or values"

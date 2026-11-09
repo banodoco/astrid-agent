@@ -27,6 +27,8 @@ def _call_hook(hook: Any, *args: Any) -> Any:
 
 def _workflows(entry: Any, inputs: Any = None) -> list[Any]:
     """The workflow(s) an entry runs: its built graph, its bundle, or an action entry's profile workflows."""
+    if entry.get("workflow") is not None:
+        return [entry["workflow"]]  # the already built, bound graph (no second build or mode choice)
     build = (entry.get("hooks") or {}).get("build")
     if build is not None:  # requirements() reads the built graph's rows; build is deterministic, so not cached
         return [_call_hook(build, inputs or {}, entry.get("files") or {}, _job_dir(entry))["workflow"]]
