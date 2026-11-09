@@ -57,3 +57,17 @@ def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, t
     with pytest.raises(AstridValueError, match="missing declared models"):
         action._run_and_settle(Path(row["bundle"]), tmp_path / "out", task_identity="t", attempt_identity="a")
     assert comfy.prompts == []
+
+
+def test_local_run_refuses_an_unpinned_custom_node_with_a_clear_message(comfy, tmp_path, monkeypatch):  # noqa: F811
+    import pytest
+    from astrid.core.contracts.errors import AstridValueError
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    engine = action._comfyui_engine()
+    unpinned = SimpleNamespace(metadata={"custom_node_packs": {"pack": {"url": "https://example.invalid/pack"}}})
+    engine.requirements.__globals__["_workflows"] = lambda entry, inputs=None: [unpinned]  # a bundle with no commit
+    monkeypatch.setattr(action, "_comfyui_engine", lambda: engine)
+    with pytest.raises(AstridValueError, match="workflow declares an unpinned custom node"):
+        action._run_and_settle(comfy.workflow, tmp_path / "out", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []

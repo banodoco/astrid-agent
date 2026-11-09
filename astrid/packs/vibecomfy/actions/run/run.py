@@ -693,6 +693,8 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
     except WorkflowBundleError:
         return {"models": [], "extra": {"nodes": []}}
+    except ValueError as exc:  # validate_extra: a custom node ref without its repo or commit
+        raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
     try:
         root = recorded_engine_root("comfyui")
     except EngineError:
