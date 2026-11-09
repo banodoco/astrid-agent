@@ -56,6 +56,7 @@ class _ProcessClient:
                                  0.0, None, False, False)
 
 
+@pytest.mark.opt_in
 @pytest.mark.timeout(3600)
 def test_linux_x86_64_h3_environment_closure_before_model_stages(tmp_path):
     assert sys.platform == "linux" and platform.machine().lower() in {"x86_64", "amd64"}, (
