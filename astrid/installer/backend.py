@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -40,7 +41,219 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import binary, clone_source, install_tools, source
+from .tools import asset_downloads, binary, clone_source, install_tools, source, validate_pack_build
+
+
+class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlsplit(newurl)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            raise ValueError("Shared-module lock redirect must use HTTPS.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _stage_pack_toolchain(folder: Path, agent: Path, env: dict[str, str], manifest: dict) -> Path:
+    """Admit the selected App lock and publish a private managed descriptor."""
+    from .. import pack_build
+    from ..core.pack.cli_manage import _TOOLCHAIN_FIELDS
+
+    spec = validate_pack_build(manifest["pack_build"])
+    if manifest["tools"]["node"]["version"] != "20.19.4":
+        raise ValueError("Pack-build requires Node 20.19.4.")
+    folder = absolute(folder)
+
+    def read_input(path: Path) -> bytes:
+        if (not path.is_absolute() or not path.is_relative_to(folder)
+                or any(part in {".", ".."} for part in path.parts)):
+            raise ValueError("Pack-build input is outside the staged version.")
+        # Open every component without following links. Never change source or
+        # npm-cache inodes: executables and API are copied into the private stage.
+        if os.name == "nt":
+            current_path = folder
+            for part in path.relative_to(folder).parts:
+                current_path = current_path / part
+                if current_path.is_symlink():
+                    raise ValueError("Aliased pack-build input.")
+            if not current_path.is_file():
+                raise ValueError("Pack-build input must be a regular file.")
+            return current_path.read_bytes()
+        opened = []
+        try:
+            directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            opened.append(directory)
+            if os.fstat(directory).st_uid != os.geteuid():
+                raise ValueError("Foreign-owned pack-build stage.")
+            parts = path.relative_to(folder).parts
+            for part in parts[:-1]:
+                directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                opened.append(directory)
+                info = os.fstat(directory)
+                if info.st_uid != os.geteuid():
+                    raise ValueError("Foreign-owned pack-build input.")
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode):
+                raise ValueError("Pack-build input must be an owned regular file.")
+            with os.fdopen(os.dup(fd), "rb") as source_file:
+                return source_file.read()
+        except OSError as exc:
+            raise ValueError("Missing or aliased pack-build input.") from exc
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    source_node = Path(env["ASTRID_NODE_EXECUTABLE"])
+    if not source_node.is_relative_to(folder / "tools" / "node") or agent != folder / "a":
+        raise ValueError("Pack-build tools must come from the managed version.")
+    modules_dir = agent / "remotion" / "node_modules"
+    source_api = modules_dir / "esbuild" / "lib" / "main.js"
+    if os.name == "nt":
+        matches = list((modules_dir / "@esbuild").glob("win32-*/esbuild.exe"))
+        if len(matches) != 1:
+            raise ValueError("Expected exactly one managed native esbuild executable.")
+        source_esbuild = matches[0]
+    else:
+        source_esbuild = modules_dir / "esbuild" / "bin" / "esbuild"
+    node_bytes, esbuild_bytes = read_input(source_node), read_input(source_esbuild)
+    api_bytes = read_input(source_api)
+    if hashlib.sha256(api_bytes).hexdigest() != pack_build._API_HASH:
+        raise ValueError("Pack-build JavaScript API does not match the pinned compiler.")
+    destination = folder / "pack-build"
+    destination.mkdir(mode=0o700)  # exclusive creation rejects existing aliases
+    node = destination / ("node.exe" if os.name == "nt" else "node")
+    esbuild = destination / "esbuild" / "bin" / ("esbuild.exe" if os.name == "nt" else "esbuild")
+    api = esbuild.parent.parent / "lib" / "main.js"
+    for target, content, mode in ((node, node_bytes, 0o700), (esbuild, esbuild_bytes, 0o700), (api, api_bytes, 0o600)):
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+    clean_env = {"PATH": "", "LANG": "C.UTF-8", "ESBUILD_BINARY_PATH": str(esbuild)}
+    for executable, expected in ((node, "v20.19.4"), (esbuild, "0.27.7")):
+        result = subprocess.run([str(executable), "--version"], env=clean_env, capture_output=True,
+                                text=True, timeout=15, check=True)
+        if result.stdout.strip() != expected:
+            raise ValueError("Pack-build tool version does not match the release pin.")
+
+    shared = spec["shared_modules"]
+    request = urllib.request.Request(shared["url"], headers={"User-Agent": "astrid-installer"})
+    with urllib.request.build_opener(_HttpsRedirect()).open(request, timeout=120) as response:
+        payload = response.read(1024 * 1024 + 1)
+    if len(payload) > 1024 * 1024 or hashlib.sha256(payload).hexdigest() != shared["sha256"]:
+        raise ValueError("Shared-module lock checksum mismatch.")
+    lock = json.loads(payload)
+    if (not isinstance(lock, dict) or set(lock) != {"version", "shared_modules"}
+            or type(lock["version"]) is not int or lock["version"] != 1):
+        raise ValueError("Invalid shared-module lock.")
+    modules = lock["shared_modules"]
+    if not isinstance(modules, dict) or set(modules) != pack_build._SINGLETONS:
+        raise ValueError("Invalid shared-module contract.")
+    for item in modules.values():
+        if (not isinstance(item, dict) or set(item) != {"url", "sha256", "version"}
+                or not isinstance(item["url"], str) or not item["url"].startswith("/")
+                or item["url"].startswith("//") or "%" in item["url"]
+                or not pack_build._relative(item["url"][1:])
+                or not isinstance(item["sha256"], str) or not pack_build._HASH.fullmatch(item["sha256"])
+                or not isinstance(item["version"], str) or not pack_build._VERSION.fullmatch(item["version"])):
+            raise ValueError("Invalid shared-module binding.")
+
+    lock_path, descriptor = destination / "shared-modules.json", destination / "toolchain.json"
+    value = {"version": 1, "node_path": str(node), "node_version": "20.19.4",
+             "node_sha256": hashlib.sha256(node.read_bytes()).hexdigest(),
+             "esbuild_path": str(esbuild), "esbuild_version": "0.27.7",
+             "esbuild_sha256": hashlib.sha256(esbuild.read_bytes()).hexdigest(),
+             "shared_modules_lock": str(lock_path)}
+    if set(value) != _TOOLCHAIN_FIELDS:
+        raise ValueError("Pack-build descriptor contract changed.")
+    for target, content in ((lock_path, payload), (descriptor, json.dumps(value, sort_keys=True).encode() + b"\n")):
+        fd, temporary = platform.private_temporary(destination, ".pack-build-")
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        platform.durable_replace(Path(temporary), target)
+    return descriptor
+
+
+def _secure_installed_schema_inputs(folder: Path, product_root: Path) -> None:
+    """Secure only the new venv's guarded inputs, detaching shared file inodes."""
+    if os.name == "nt":
+        return  # Windows admission uses ACLs rather than POSIX modes.
+    from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH, runtime_lock_path
+
+    venv_root = folder / "py"
+    try:
+        relative_root = product_root.relative_to(venv_root)
+    except ValueError as exc:
+        raise ValueError("installed timeline schema root is outside the candidate") from exc
+    if not relative_root.parts or ".." in relative_root.parts:
+        raise ValueError("installed timeline schema root is outside the candidate")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    opened = []
+    try:
+        # Walk from the candidate itself: no resolved alias may escape it.
+        fd = os.open(folder, flags)
+        opened.append(fd)
+        for part in ("py", *relative_root.parts):
+            fd = os.open(part, flags, dir_fd=fd)
+            opened.append(fd)
+            facts = os.fstat(fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        root_fd = fd
+        dirs = {(): root_fd}
+        # The reader's pin source, resolved exactly as the reader resolves it (installed copy, else package data).
+        lock = runtime_lock_path(product_root)
+        try:
+            lock_relative = lock.relative_to(product_root)
+        except ValueError as exc:
+            raise ValueError("installed Runtime lock is outside the candidate") from exc
+        files = (SCHEMA_RELATIVE_PATH, lock_relative, *READER_INPUTS)
+        # Check all path components without following links before modifying any.
+        for relative in files:
+            parent = root_fd
+            for index, part in enumerate(relative.parts[:-1], 1):
+                key = relative.parts[:index]
+                if key not in dirs:
+                    child = os.open(part, flags, dir_fd=parent)
+                    opened.append(child)
+                    facts = os.fstat(child)
+                    if facts.st_uid != os.geteuid() or not stat.S_ISDIR(facts.st_mode):
+                        raise ValueError("installed timeline schema input has a foreign owner or type")
+                    dirs[key] = child
+                parent = dirs[key]
+            leaf = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(leaf)
+            facts = os.fstat(leaf)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+        for directory in dirs.values():
+            # Explicit, umask-independent: the reader refuses group/other-writable dirs.
+            os.fchmod(directory, 0o755)
+        # Each replacement is private even if uv linked its original to cache.
+        for relative in files:
+            parent = dirs[relative.parts[:-1]]
+            source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            opened.append(source_fd)
+            facts = os.fstat(source_fd)
+            if facts.st_uid != os.geteuid() or not stat.S_ISREG(facts.st_mode):
+                raise ValueError("installed timeline schema input has a foreign owner or type")
+            name = ".astrid-schema-" + uuid.uuid4().hex
+            dest_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o600, dir_fd=parent)
+            opened.append(dest_fd)
+            with os.fdopen(os.dup(source_fd), "rb") as src, os.fdopen(os.dup(dest_fd), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.fchmod(dest_fd, 0o644)
+            os.replace(name, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+    except OSError as exc:
+        raise ValueError("staged Agent is missing or has an aliased local canonical timeline schema input") from exc
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -1004,6 +1217,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     def stage(self, manifest: dict, root: Path, data: Path, *, copy_from: Path | None = None) -> Version:
         install_release(manifest)
+        if "pack_build" in manifest:
+            validate_pack_build(manifest["pack_build"])
+            node_pin = manifest["tools"]["node"]
+            asset = node_pin.get("assets", {}).get(platform_target())
+            if (node_pin.get("version") != "20.19.4" or not isinstance(asset, dict)
+                    or any(not checksum for _, checksum in asset_downloads(asset))):
+                raise ValueError("Pack-build requires a SHA256-pinned Node 20.19.4 archive.")
         # Repair needs only the installed Runtime. Require bootstrap inputs
         # only when dispatch actually prepares a fresh candidate.
         if not self.uv.is_absolute() or not self.uv.is_file():
@@ -1025,14 +1245,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
         sibling_sources = []
         source_install_env = {}
-        if "lifecycle" in manifest or "runpod" in manifest:
-            for name, directory, distribution in (
-                ("lifecycle", "lifecycle", "RUNPOD_LIFECYCLE"),
-                ("runpod", "runpod", "RUNPOD"),
-            ):
-                pin = manifest[name]
-                sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / directory))
-                source_install_env[f"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_{distribution}"] = pin["version"]
+        if "lifecycle" in manifest:
+            pin = manifest["lifecycle"]
+            sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / "lifecycle"))
+            source_install_env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD_LIFECYCLE"] = pin["version"]
         self._verify_local_timeline_schema(agent)
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])
@@ -1060,13 +1276,25 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         version = Version(folder, python, profile, env, **install_identity(folder))
         env = version.env
         npm = binary(folder / "tools" / "node", "npm-cli.js")
-        self.install_remotion_dependencies(agent, env, npm)
+        remotion_ready = self.install_remotion_dependencies(agent, env, npm)
+        if "pack_build" in manifest:
+            if not remotion_ready:
+                raise ValueError("Pack-build requires successful frozen Remotion dependencies.")
+            from ..core.pack.cli_manage import TOOLCHAIN_ENV
+
+            env[TOOLCHAIN_ENV] = str(_stage_pack_toolchain(folder, agent, env, manifest))
         product_root = self._installed_product_root(python, env)
         # The wheel contains the schema and its reader. Retain the producer's
         # unmodified lock beside the installed package, then admit those bytes
         # before declaring services. The source and npm trees never substitute
         # for a missing or changed wheel resource.
-        shutil.copyfile(agent / "runtime.lock.json", product_root / "runtime.lock.json")
+        _secure_installed_schema_inputs(folder, product_root)
+        # Exclusive creation refuses pre-existing objects (including symlinks).
+        with (agent / "runtime.lock.json").open("rb") as source_lock:
+            with (product_root / "runtime.lock.json").open("xb") as installed_lock:
+                shutil.copyfileobj(source_lock, installed_lock)
+                if os.name != "nt":
+                    os.fchmod(installed_lock.fileno(), 0o600)
         schema = self._verify_local_timeline_schema(product_root)
         env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema)
         self._verify_installed_timeline_schema(python, product_root, env)

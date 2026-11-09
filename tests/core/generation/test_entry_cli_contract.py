@@ -10,6 +10,34 @@ import pytest
 from astrid.core.generation import cli, entries
 
 
+@pytest.mark.parametrize('verb', [['audio', '--mode', 'sfx']])
+def test_public_sfx_route_receives_declared_inputs(monkeypatch, tmp_path, capsys, verb):
+    from astrid import console
+    video = tmp_path / 'clip.mp4'
+    video.write_bytes(b'synthetic local fixture')
+    captured = []
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('dry-run opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        audio=lambda **kwargs: captured.append(kwargs) or {'ok': True}))
+    assert console.main(['generate', *verb, '--entry', 'audio/hunyuan_video_foley',
+                         '--video-ref', str(video), '--prompt', 'gravel footsteps', '--dry-run', '--json']) == 0
+    assert captured == [{'entry': 'audio/hunyuan_video_foley', 'mode': 'sfx', 'target': None,
+                         'dry_run': True, 'prompt': 'gravel footsteps', 'video_ref': str(video)}]
+    assert json.loads(capsys.readouterr().out) == {'ok': True}
+
+
+def test_foley_help_and_describe_show_license_without_runtime(monkeypatch, capsys):
+    from astrid import console
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('metadata opened Runtime'))
+    notice = 'Tencent Hunyuan Community license excludes the EU, UK, and South Korea.'
+    assert console.main(['generate', 'describe', '--entry', 'audio/hunyuan_video_foley']) == 0
+    assert notice in capsys.readouterr().out
+    with pytest.raises(SystemExit) as result:
+        cli.main(['audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley', '--help'])
+    assert result.value.code == 0
+    assert notice in capsys.readouterr().out
+
+
 def _description(source="catalog", kind="image", mode="t2i"):
     fields = [{"name": "prompt", "type": "string", "required": True}]
     if mode == "edit":

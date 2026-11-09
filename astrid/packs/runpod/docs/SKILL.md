@@ -14,19 +14,25 @@ and tear down with a composite session that guarantees cleanup.
 
 ## Ordinary generation on a RunPod target
 
-The Phase 1 prepared-worker components support ComfyUI only. The current
-checkout's `astrid generate` parser accepts `--target runpod`, but its public
-preflight still rejects that target: automatic claim and the public follow and
-release wiring are not yet available here. Do not present the selector as a
-working paid-generation command until the A10 integration is installed and
-verified. The default remains `--target auto`; saving RunPod preferences does
-not replace a configured human ComfyUI target. The older `runpod.session`
-action and H3's specialized placement are separate paths, not proof that the
-ordinary generation selector is connected.
+`--target runpod` requires an installed layout. The Agent derives its RunPod source root
+from the release manifest: it populates `<data-root>/runpod/sources` with clean checkouts at the
+pinned commits (Runtime from `runtime.lock.json`, VibeComfy from the recipe pin, and the other
+packages from the installed release manifest), then validates them. There is no developer-checkout
+route and no environment variable to set; outside an installed layout the command fails with a
+`ManagedSourcesError` (see M02-26).
+
+`astrid generate image --target runpod` uses the retained host adapter, its
+single lease owner, and the existing attached ComfyUI transport. The selected
+executor environment must contain the manifest-installed Agent, Runtime,
+VibeComfy, RunPod SDK and lifecycle packages; a source checkout or ambient
+`PYTHONPATH` does not install dependencies into a child interpreter. Use the
+official installer's local-source manifest route to select these packages.
+The default remains `--target auto`; saving RunPod preferences does not replace
+a configured human ComfyUI target.
 
 The prepared RunPod path requires a fresh, explicit paid authorization for
 each invocation, including reuse. Before claiming, disclose the selected
-account, GPU offer and hourly USD rate, pinned image, network volume and mount,
+account, GPU offer and hourly USD rate, pinned image, optional network volume and mount,
 maximum USD spend, absolute UTC deadline, and estimated preparation, execution
 and idle times. The offer and rate must still match the authorization; a
 changed price or fallback offer needs new consent. Unknown rates, insufficient
@@ -37,15 +43,14 @@ existing bound. A denied reuse must not postpone an existing idle deadline.
 Validate the entry or workflow and its inputs before claim. The journal owns
 only the exact pod it created; it must not adopt or terminate another broker's
 pod. A compatible retained worker can be reused after new consent and identity
-checks. The idle policy is request override, then caller
-`ASTRID_WARM_IDLE_SECONDS`, then service environment, then 600 seconds; zero is
-valid. Expiry of the paid deadline fences even an active hold.
+checks. The generic path defaults to a 1800-second warm lease. Paid preparation,
+execution and idle limits bound it. Expiry of the paid deadline fences even an
+active hold.
 
 The prepared task adapter admits one ordinary Runtime task, activates that
 exact binding, and can return its receipt before completion. Same-host follow
 must recover the original receipt, source and settings and observe that same
-task and binding, without another claim or submission. The installed public
-follow bridge remains an integration dependency in this checkout. Runtime's
+task and binding, without another claim or submission. Runtime's
 existing output settlement owns artifacts: verify the published output hashes
 and durable readback; a successful remote process alone is not delivery. Keep
 the existing spool when publication is unavailable, and resume the same
@@ -58,8 +63,43 @@ independent exact pod GET returns 404 **and** a successful account list shows
 the pod absent; preserve the network volume. Ambiguous provider observations,
 unresolved cancellation, or missing stop evidence remain `cleanup_pending` and
 block reuse. Recover with the same host, journal, task and release receipt;
-never create a replacement to work around uncertain custody. The shared
-release-task dispatcher is also an A10/F07 integration dependency here.
+never create a replacement to work around uncertain custody.
+
+### Replacing preferences
+
+`runpod.setup` is the supported reset of the retained in-process owner. Use a
+Runtime-bound client, as the generation CLI does:
+
+```python
+import json
+from astrid.sdk.client import AstridClient
+
+# preferences is the complete validated policy; it contains credential refs,
+# never credential bytes. Saving policy grants no permission to spend.
+policy = {"kind": "runpod", "engine": "comfyui", "preferences": preferences}
+with AstridClient.open_from_launcher() as client:
+    result = client.invoke_result(
+        "runpod.setup", kind="action", project=None,
+        inputs={"target_policy": json.dumps(policy, sort_keys=True)},
+        wait=True, read_managed_outputs=False,
+    )
+assert result.ok, result.to_dict()
+assert result.raw_result["payload"]["target_operation"]["state"] == "saved"
+```
+
+Writing preferences on disk does not replace the host's retained owner.
+Status, listing and release reject a different policy and preserve the lease.
+Release an existing lease using its original policy, verify cleanup, then call
+setup with the replacement. Setup replaces an absent or cleanup-complete
+owner only when no operation or invocation remains active; it does not quote,
+allocate, or clear unresolved custody. A Runtime restart is unnecessary.
+
+When checking Runtime down/up, pass the same canonical `--data-root` and
+`--source-manifest` on both calls. Record discovery and owner PID, birth ID,
+instance ID, workspace UUID/root and profile hash before down; verify the old
+owner is absent before up. Require a healthy new instance at the same root.
+`owner_busy` protects an existing owner; a bare `stopped` result from a
+different root does not establish a lifecycle defect.
 
 ## Actions
 

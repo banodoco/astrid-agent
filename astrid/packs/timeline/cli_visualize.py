@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
+from astrid.pack_api import print_result
 
 PRESETS = ("overview", "scan", "motion", "beat", "frame", "cut", "compare")
 
@@ -624,43 +624,6 @@ def _lenient_json_or_path(value: str) -> Any:
             raise argparse.ArgumentTypeError(f"invalid JSON: {exc.msg}") from exc
         return parsed
     return text
-
-
-def add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
-    """The flags ``visualize`` had before the combined port (working copy, compare, plan, layers, review)."""
-    subparser.add_argument("--published", action="store_true", default=False,
-                           help="Read published current explicitly (the default).")
-    subparser.add_argument("--draft", default=None, metavar="NAME",
-                           help="Read this named working copy explicitly; output identifies it and its base revision.")
-    subparser.add_argument("--every-cut", dest="all_cuts", action="store_true", default=False,
-                           help="With a working copy and no cut/range selection: every cut, not only the cuts you changed.")
-    subparser.add_argument("--compare", dest="compare_with", choices=("published",), default=None,
-                           help="With a working copy: the published version and the working copy for the same cuts, labelled.")
-    subparser.add_argument("--highlight", default=None, metavar="ADDRESS",
-                           help="Outline one layer over the frames (c41.tool-16; implies --layer bounds); "
-                                "with no window, the frames are taken inside it.")
-    subparser.add_argument("--overlay", action="append", default=None, metavar="LAYER",
-                           help="Alias of --layer for frame overlays (bounds: element bounds, face box, safe areas).")
-    subparser.add_argument("--size", default=None, metavar="WIDTHxHEIGHT",
-                           help="Frame size for the window presets, e.g. 960x540 (alias of --resolution).")
-    subparser.add_argument("--plan", action="store_true",
-                           help="Resolve the view, window, frame count and page layout without capturing (about a second).")
-    subparser.add_argument("--list-layers", dest="list_layers", action="store_true",
-                           help="List the registered visualize layers (built-in and pack-contributed) and exit.")
-    subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
-                           help="motion view: ignore astrid-lint.toml.")
-    subparser.add_argument("--render-every", dest="render_every", type=float, default=None,
-                           help="With --view contact --render-run RUN: sample the rendered file every N seconds "
-                                "(default 5). The review also prints the render's loudness (LUFS, LRA, true peak) and "
-                                "its silences (render-review.json).")
-    subparser.add_argument("--edited", default=None, metavar="N[,M]",
-                           help="diff view: the cuts you meant to edit; a change anywhere else is a SCOPE warning.")
-    subparser.add_argument("--no-capture", dest="no_capture", action="store_true",
-                           help="diff view: compare the documents only (no before/after tiles).")
-    subparser.add_argument("--from", dest="from_revision", default=None,
-                           help="diff/compare: the revision before the edit (alias of --before-revision-id).")
-    subparser.add_argument("--to", dest="to_revision", default=None,
-                           help="diff/compare: the revision after (default: head; alias of --after-revision-id).")
 
 
 def _layer_names(parsed: argparse.Namespace) -> list[str]:

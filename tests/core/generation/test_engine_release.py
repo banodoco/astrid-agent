@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import engine_release as release
+from astrid.core.generation.engine_recipe import engine_source_revision
 from tests._checkouts import (
     agent_checkout,
     runpod_checkout,
@@ -187,7 +188,7 @@ print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revisio
         'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
                     'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
         'vibecomfy': {'repository': 'https://github.com/banodoco/VibeComfy.git',
-                      'revision': 'e2905d068d5851b9c32856d32b8251852a01d6dd', 'path': 'runtime/vibecomfy'},
+                      'revision': engine_source_revision('vibecomfy', 'windows-x86_64-cu130', 'vibecomfy'), 'path': 'runtime/vibecomfy'},
     }
 
 

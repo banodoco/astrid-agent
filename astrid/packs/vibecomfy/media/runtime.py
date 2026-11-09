@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core.cli_choices import RecoverableArgumentParser, StaticChoices
+from astrid.pack_api import RecoverableArgumentParser, StaticChoices
 from astrid.core.generation.storage_policy import RUNTIME_OBJECT_MAX_BYTES
 
 from .compiler import (  # noqa: E402

@@ -69,7 +69,7 @@ def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeyp
     monkeypatch.setattr(entries, "user_entries", lambda: [])
     assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
-    assert plan["entry"]["id"] == "z-image"
+    assert plan["entry"]["id"] == "qwen-image-2.1-turbo"
     assert "highest-ranked ready" in plan["entry"]["reason"]
     assert plan["target"]["endpoint"] == loopback_comfy.url
 
@@ -103,6 +103,8 @@ from tests.core.generation.test_generate_target_journey import loopback_comfy, P
 
 def test_catalog_description_has_same_unqualified_reason_and_fix_as_listing(monkeypatch):
     from astrid.core.model_catalog.registry import ModelRegistry
+    from tests.core.generation.availability_fixtures import declare_wan_unqualified
+    declare_wan_unqualified(monkeypatch)
     monkeypatch.setattr(entries, 'user_entries', lambda: [])
     monkeypatch.setattr(entries, 'action_entries', lambda *args: [])
     monkeypatch.setattr(entries, 'ready_entries', lambda: [])
@@ -202,3 +204,13 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
                    for n in loopback_comfy.prompts[0].values())
     finally:
         host.shutdown()
+
+
+def test_runpod_engines_derive_from_engine_index():
+    import json
+    from astrid.core.generation import entries
+    from astrid.core.generation.engine_recipe import _INDEX_PATH
+    rows = json.loads(_INDEX_PATH.read_text(encoding="utf-8"))["entries"]
+    assert entries.runpod_engines() == tuple(
+        row["engine"] for row in rows if row["platform"] == entries.RUNPOD_PLATFORM)
+    assert entries.runpod_engines() == ("comfyui", "vibecomfy-h3")

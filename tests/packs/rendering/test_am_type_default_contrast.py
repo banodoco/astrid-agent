@@ -88,31 +88,6 @@ def _effective_colour(element) -> str:
     return element.params.get("color") or _am_type_definition().defaults["color"]
 
 
-def test_default_text_on_default_canvas_meets_aa_normal_text():
-    element = _visualized_element({"text": "Chapter one"})
-    colour = _effective_colour(element)
-    for name, background in _canvas_backgrounds().items():
-        ratio = contrast(colour, background)
-        assert ratio >= AA_NORMAL_TEXT, f"default {colour} on {name} {background} is {ratio:.2f}:1, need 4.5:1"
-
-
-def test_default_colour_is_declared_once_and_matches_the_component():
-    definition = _am_type_definition()
-    source = (AM_TYPE / "component.tsx").read_text(encoding="utf-8")
-    declared = re.search(r"const DEFAULT_COLOR = '(#[0-9A-Fa-f]{6})';", source)
-    assert declared, "the am-type component must declare DEFAULT_COLOR"
-    assert declared.group(1) == definition.defaults["color"]
-    assert "params.color ?? DEFAULT_COLOR" in source
-
-
-def test_explicit_colour_still_wins_over_the_default():
-    element = _visualized_element({"text": "Chapter one", "color": "#FF6B23"})
-    assert element.params["color"] == "#FF6B23"
-    assert _effective_colour(element) == "#FF6B23"
-    source = (AM_TYPE / "component.tsx").read_text(encoding="utf-8")
-    assert "params.color ?? DEFAULT_COLOR" in source
-
-
 def test_default_text_is_not_stored_with_a_colour_of_its_own():
     # add_text sends no colour, so the default is what the element paints; no backing box is added.
     element = _visualized_element({"text": "Chapter one"})

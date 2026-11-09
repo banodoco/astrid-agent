@@ -160,66 +160,6 @@ def test_dataset_review_capture_detects_replaced_input(tmp_path, monkeypatch, wi
         review_assets._capture(tmp_path, "media", 8)
 
 
-def test_human_review_publication_and_retirement_use_adapter(tmp_path, monkeypatch, windows_filesystem):
-    from astrid.packs.editorial.actions.human_review import run as review
-    from astrid.core.execution import process_group
-
-    seam = windows_filesystem(review)
-    monkeypatch.setattr(process_group, "process_birth_identity", lambda: "selected-birth")
-    monkeypatch.setenv(review._REVIEW_LAUNCH_NONCE_ENV, "a" * 64)
-    protected = []
-    owner_only = review.platform.owner_only
-
-    def protect(fd):
-        protected.append(fd)
-        owner_only(fd)
-
-    monkeypatch.setattr(review.platform, "owner_only", protect)
-    path = tmp_path / "receiver.json"
-    url = "http://127.0.0.1:17560/?token=" + "a" * 32
-    owner = review._publish_receiver_session(path, url)
-    assert protected and seam.directory_flushes == 1
-    with pytest.raises(FileExistsError):
-        review._publish_receiver_session(path, url)
-    assert not list(tmp_path.glob(".review-session-*"))
-    review._retire_receiver_session(owner)
-    assert not path.exists()
-
-
-def test_human_review_publication_skips_directory_fsync_on_windows(tmp_path, monkeypatch):
-    from astrid.packs.editorial.actions.human_review import run as review
-    from astrid.core.execution import process_group
-
-    seam = WindowsReviewPublicationSeam()
-    monkeypatch.setattr(review, "os", seam)
-    monkeypatch.setattr(process_group, "process_birth_identity", lambda: "selected-birth")
-    monkeypatch.setenv(review._REVIEW_LAUNCH_NONCE_ENV, "a" * 64)
-    path = tmp_path / "receiver.json"
-    url = "http://127.0.0.1:17560/?token=" + "a" * 32
-
-    owner = review._publish_receiver_session(path, url)
-
-    assert owner[3] == path.read_bytes()
-    assert seam.file_flushes == 1
-    assert not list(tmp_path.glob(".review-session-*"))
-
-
-def test_human_review_retirement_preserves_replacement(tmp_path, monkeypatch, windows_filesystem):
-    from astrid.packs.editorial.actions.human_review import run as review
-    from astrid.core.execution import process_group
-
-    windows_filesystem(review)
-    monkeypatch.setattr(process_group, "process_birth_identity", lambda: "selected-birth")
-    monkeypatch.setenv(review._REVIEW_LAUNCH_NONCE_ENV, "a" * 64)
-    path = tmp_path / "receiver.json"
-    owner = review._publish_receiver_session(path, "http://127.0.0.1:17560/?token=" + "a" * 32)
-    path.rename(tmp_path / "original")
-    path.write_bytes(owner[3])
-    with pytest.raises(review.HumanReviewInputError, match="owner mismatch"):
-        review._retire_receiver_session(owner)
-    assert path.exists()
-
-
 def test_frozen_cleanup_removes_owned_tree_without_following_links(tmp_path, windows_filesystem):
     from astrid.packs.rendering.actions.timeline_visualize import frozen
 

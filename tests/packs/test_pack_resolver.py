@@ -175,17 +175,17 @@ def test_pack_resolver_resolves_runtime_defaults_for_regular_executor() -> None:
     assert target.__name__ == "main"
 
 
-def test_pack_resolver_uses_custom_metadata_keys_for_youtube_style_targets() -> None:
+def test_pack_resolver_uses_custom_metadata_keys_for_non_default_targets() -> None:
     target = PackResolver(module_key="callable_module", callable_key="callable_name").resolve(
         {
-            "callable_module": "astrid.packs.youtube.actions.upload.src.social_publish",
-            "callable_name": "publish_youtube_video",
+            "callable_module": "astrid.packs.rendering.actions.render.run",
+            "callable_name": "main",
         },
-        owner_id="youtube.upload",
+        owner_id="rendering.render",
     )
 
-    assert target.__module__ == "astrid.packs.youtube.actions.upload.src.social_publish"
-    assert target.__name__ == "publish_youtube_video"
+    assert target.__module__ == "astrid.packs.rendering.actions.render.run"
+    assert target.__name__ == "main"
 
 
 def test_pack_resolver_reports_missing_runtime_metadata_contextually() -> None:

@@ -7,6 +7,10 @@ acquiring it again.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import os
 import re
 import secrets
@@ -19,9 +23,8 @@ from typing import Any, Iterator
 from filelock import Timeout
 from runtime_protocol import platform
 
-from astrid.core.foundation.paths import REPO_ROOT
 
-REMOTION_LOCK_PATH = REPO_ROOT / "remotion" / ".astrid-registry.lock"
+REMOTION_LOCK_PATH = CHECKOUT_ROOT / "remotion" / ".astrid-registry.lock"
 REMOTION_LOCK_TOKEN_ENV = "ASTRID_REMOTION_LOCK_TOKEN"
 REMOTION_LOCK_PATH_ENV = "ASTRID_REMOTION_LOCK_PATH"
 REMOTION_LOCK_RECEIPT_PREFIX = "ASTRID_REMOTION_LOCK_RECEIPT:"

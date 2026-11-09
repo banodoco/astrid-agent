@@ -127,16 +127,37 @@ class ExecutorRegistry(CapabilityRegistry[str, ExecutorDefinition]):
             {eid: self._resolve_entry(entry) for eid, entry in self._entries.items()}
         )
 
+    def unavailable_reason(self, executor_id: str) -> str | None:
+        """Why *executor_id* cannot run here (a dependency's pack is not installed)."""
+        return self.get(executor_id).metadata.get("unavailable_reason")
+
     def _validate_graph_references(self) -> None:
         known_ids = set(self._entries)  # keys are strings, unchanged
+        # A pack is installed exactly when it contributes an executor to this
+        # registry, so every construction path derives the same answer.
+        installed_namespaces = {executor_id.split(".", 1)[0] for executor_id in known_ids}
         # Winners only.
         for executor in (self._resolve_entry(entry) for entry in self._entries.values()):
+            missing_packs: list[str] = []
             for dependency in executor.graph.depends_on:
                 resolved = dependency
                 if resolved not in known_ids:
+                    namespace, dot, _ = resolved.partition(".")
+                    if dot and namespace not in installed_namespaces:
+                        if namespace not in missing_packs:
+                            missing_packs.append(namespace)
+                        continue
                     raise ExecutorRegistryError(f"executor {executor.id!r} depends on unknown executor {resolved!r}")
                 if resolved == executor.id:
                     raise ExecutorRegistryError(f"executor {executor.id!r} cannot depend on itself")
+            if missing_packs:
+                packs = ", ".join(f"'{name}'" for name in missing_packs)
+                reason = f"requires pack {packs} (install from poms_packs)"
+                entry = self._entries[executor.id]
+                entry[0] = replace(
+                    entry[0],
+                    metadata={**entry[0].metadata, "available": False, "unavailable_reason": reason},
+                )
 
 def load_default_registry(
     banodoco_config: "BanodocoCatalogConfig | None" = None,

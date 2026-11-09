@@ -24,6 +24,7 @@ def _fixture_repo(tmp_path: Path) -> Path:
         yaml.safe_dump(
             {
                 "schema_version": 3,
+                "pack_api": "2.3",
                 "id": "rendering",
                 "name": "Rendering",
                 "version": "1.0.0",

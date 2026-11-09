@@ -41,8 +41,8 @@ _ALLOWLISTED: tuple[str, ...] = (
     "astrid.core.cli.domain_tasks",
     "astrid.core.cli.domain_runs",
     "astrid.packs.timeline.cli",
-    "astrid.packs.shots.cli",
-    "astrid.packs.references.cli",
+    "astrid.core.cli.domain_shots",
+    "astrid.core.cli.domain_references",
 )
 
 # Fully decomposed during M4 — below the 1,200-line threshold and using

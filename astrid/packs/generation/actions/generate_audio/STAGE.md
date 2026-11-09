@@ -81,40 +81,79 @@ result = sdk.invoke(
 Project-scoped runs write outputs inside the project's run tree; do not pass
 `out` together with `project`.
 
-## Internal runner command (not a public entrypoint)
+## Equivalent SDK calls
 
-The module commands below are reserved for Astrid's internal runner and are
-shown only for implementation debugging. Direct invocation is rejected by the
-canonical-entrypoint guard; use the SDK example above.
+Direct module invocation is rejected by the canonical-entrypoint guard; use
+the public SDK action path shown here and in the SDK quick-start above.
 
-```bash
-# Cloud text-to-music (Stable Audio 3)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_audio.run \
-  --model stable-audio-3-medium --mode music --execution cloud \
-  --prompt "a serene ambient drone" --out ./out
-
-# MiniMax with lyrics
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_audio.run \
-  --model minimax-music-v2.6 --mode music --execution cloud \
-  --prompt "upbeat synth-pop chorus" \
-  --lyrics-prompt "We are the robots, beep boop" --out ./out
-
-# MiniMax instrumental (no lyrics required)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_audio.run \
-  --model minimax-music-v2.6 --mode music --execution cloud \
-  --prompt "cinematic orchestral score" --instrumental true --out ./out
-
-# ACE-Step with duration and steps
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_audio.run \
-  --model ace-step --mode music --execution cloud \
-  --prompt "lo-fi hip hop beat" --duration 30 --steps 50 --out ./out
-
-# MiniMax Music 3 (lyrics required; section tags on their own lines)
-ASTRID_INTERNAL_INVOCATION=1 python -m astrid.packs.generation.actions.generate_audio.run \
-  --model minimax-music-3 --mode music --execution cloud \
-  --prompt "Genre: ethereal synth-pop. BPM: 112." \
-  --lyrics-prompt "[verse]\nSoftly the world begins to breathe\n[chorus]\nSing it again" \
-  --duration 180 --out ./out
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "generation.generate_audio",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'stable-audio-3-medium',
+        "mode": 'music',
+        "execution": 'cloud',
+        "prompt": 'a serene ambient drone',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_audio",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'minimax-music-v2.6',
+        "mode": 'music',
+        "execution": 'cloud',
+        "prompt": 'upbeat synth-pop chorus',
+        "lyrics_prompt": 'We are the robots, beep boop',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_audio",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'minimax-music-v2.6',
+        "mode": 'music',
+        "execution": 'cloud',
+        "prompt": 'cinematic orchestral score',
+        "instrumental": 'true',
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_audio",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'ace-step',
+        "mode": 'music',
+        "execution": 'cloud',
+        "prompt": 'lo-fi hip hop beat',
+        "duration": 30,
+        "steps": 50,
+    },
+    dry_run=True,
+)
+result = sdk.invoke(
+    "generation.generate_audio",
+    kind="executor",
+    project="demo",
+    inputs={
+        "model": 'minimax-music-3',
+        "mode": 'music',
+        "execution": 'cloud',
+        "prompt": 'Genre: ethereal synth-pop. BPM: 112.',
+        "lyrics_prompt": '[verse]\\nSoftly the world begins to breathe\\n[chorus]\\nSing it again',
+        "duration": 180,
+    },
+    dry_run=True,
+)
 ```
 
 ## Prompts file (JSONL)

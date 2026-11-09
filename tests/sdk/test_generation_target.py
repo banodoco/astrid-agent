@@ -16,6 +16,7 @@ from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTarge
 from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.results import InvocationResult
+from tests.core.generation.availability_fixtures import declare_wan_unqualified
 from tests.core.generation.backends.test_comfy_model_resolution import install_target, target_info
 from tests.core.generation.backends.test_comfy_target import (  # noqa: F401
     engine_configuration, network, observation_configuration,
@@ -55,6 +56,23 @@ def attached_without_managed(monkeypatch):
     monkeypatch.setattr(preflight, "_comfyui_runtime_available", Mock(side_effect=AssertionError("managed installation probed")))
 
 
+def z_image_only_registry(monkeypatch):
+    """The target serves z-image; the default owns its failure, so offer no other default."""
+    import astrid.sdk as sdk
+    registry = ModelRegistry([ModelRegistry.load_default().get('z-image')])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+
+
+def test_default_missing_on_target_owns_its_failure_without_fallback(network, monkeypatch):
+    client, requests = install_target(network, target_info())
+    attached_without_managed(monkeypatch)
+    with pytest.raises(AstridError, match='qwen_image_2.1_turbo_int8_convrot') as caught:
+        GenerationFacade().image(target=client.target.url, prompt='one boat', dry_run=True)
+    assert caught.value.code == 'missing_model'
+    assert caught.value.to_envelope()['entry']['id'] == 'qwen-image-2.1-turbo'
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
+
+
 @pytest.mark.parametrize('blocked_ids', [
     ('qwen-image-2.1-turbo', 'last-blocked'), ('z-image', 'last-blocked'),
 ])
@@ -92,8 +110,10 @@ def test_auto_filters_before_probe_and_preparation_preserving_qualified_order(mo
     with pytest.raises(AstridError) as caught:
         GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
     assert caught.value.code == 'missing_dependency'
-    assert caught.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_NO_MODEL'
-    assert events == ['probe', *[name for name in order if name not in blocked_ids]]
+    first = next(name for name in order if name not in blocked_ids)
+    assert caught.value.to_envelope()['entry']['id'] == first
+    assert 'fake target missing candidate models' in str(caught.value)
+    assert events == ['probe', first]
 
 
 def test_auto_all_unqualified_names_each_route_and_reason_without_probe(monkeypatch):
@@ -161,6 +181,7 @@ def test_qualified_first_candidate_is_probed_and_prepared_first(network, monkeyp
 
 @pytest.mark.parametrize('target', ['auto', 'managed', 'http://127.0.0.1:8123'])
 def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target):
+    declare_wan_unqualified(monkeypatch)
     probe = Mock(side_effect=AssertionError('explicit unqualified route probed'))
     monkeypatch.setattr(preflight, 'select_generation_target', probe)
     with pytest.raises(AstridError) as caught:
@@ -208,6 +229,7 @@ def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, i
 
 def test_explicit_bundled_template_is_not_filtered_or_dispatched(monkeypatch):
     from astrid.core.generation import entries
+    declare_wan_unqualified(monkeypatch)
     manifest = {'id': 'video/wan_fake', 'kind': 'video', 'modes': ['i2v'], 'source': 'ready-template'}
     monkeypatch.setattr(entries, 'find_entry', lambda name: manifest)
     probe = Mock(side_effect=AssertionError('unqualified template probed'))
@@ -239,8 +261,17 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
 
 
 def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(network, monkeypatch, tmp_path):
+    import builtins
+
+    original_import = builtins.__import__
+    def reject_remote_import(name, *args, **kwargs):
+        if name == 'astrid.packs.runpod' or name.startswith('astrid.packs.runpod.'):
+            raise AssertionError('local generation imported the remote provider')
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', reject_remote_import)
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     seen = {}
     runtime, imported = storage_client(store_root=tmp_path / 'runtime-media')
 
@@ -282,9 +313,7 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     assert seen["comfy_url"] == client.target.url
     assert seen["generation_intent"]["modality"] == "image"
     assert seen["generation_intent"]["metadata"]["model"] == "z-image"
-    # 8d96186db added the higher-priority Qwen candidate; each candidate
-    # resolves against a fresh target inventory before z-image is selected.
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert runtime.media.import_file.call_count == 3
     assert not imported[seen["python"]["digest"]].exists()
 
@@ -376,37 +405,59 @@ def test_default_skips_missing_target_model_and_uses_ready_candidate(network, mo
 def test_attached_dry_run_resolves_and_approves_without_destination_or_admission(network, monkeypatch, tmp_path):
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("dry-run admitted")))
     output = tmp_path / "absent"
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", out=output, dry_run=True)
     assert plan["entry"]["approval"]["status"] == "approved"
     assert plan["target"]["endpoint"] == client.target.url
-    # 8d96186db added the higher-priority Qwen candidate; each candidate
-    # resolves against a fresh target inventory before z-image is selected.
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert not output.exists()
 
 
 def test_auto_probes_attached_before_managed_readiness(monkeypatch):
+    import platform
+
     events = []
+
+    # This fixture exercises the indexed local Linux ComfyUI recovery recipe.
+    # Pin the supported host premise so the test behaves the same on Darwin.
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
 
     def unavailable(self, path, **kwargs):
         events.append(path)
         raise OSError("offline")
 
     monkeypatch.setattr(ComfyTargetClient, "request_json", unavailable)
-    monkeypatch.setattr(preflight, "_module_available", lambda name: events.append(name) or True)
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: events.append("managed") or False)
+    module_probe = Mock(side_effect=AssertionError("legacy module probe used"))
+    runtime_probe = Mock(side_effect=AssertionError("legacy runtime probe used"))
+    monkeypatch.setattr(preflight, "_module_available", module_probe)
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", runtime_probe)
+
+    def registered_managed_engine():
+        events.append("registered-managed")
+        return None
+
+    monkeypatch.setattr(preflight, "_registered_managed_engine", registered_managed_engine)
+    workflow_admission = Mock(side_effect=AssertionError("workflow admission used"))
+    monkeypatch.setattr(GenerationFacade, "workflow", workflow_admission)
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target="auto", prompt="one boat", project="demo")
     assert raised.value.code == "engine_not_found"
+    fixes = raised.value.to_envelope()['fixes']
     import shlex
-    assert "--target http://127.0.0.1:8188" in shlex.join(
-        raised.value.to_envelope()['fixes'][1]['argv'])
-    assert raised.value.fix.startswith('astrid engines install vibecomfy-h3 ')
-    assert raised.value.to_envelope()['fixes'][1]['argv'] == [
+    assert "--target http://127.0.0.1:8188" in shlex.join(fixes[1]['argv'])
+    assert raised.value.fix == 'astrid engines install comfyui --platform linux-x86_64-cu130 --placement local'
+    assert fixes[0]['argv'] == [
+        'astrid', 'engines', 'install', 'comfyui', '--platform',
+        'linux-x86_64-cu130', '--placement', 'local']
+    assert fixes[1]['argv'] == [
         'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
-    assert events == ["/system_stats", "vibecomfy", "managed"]
+    assert events == ["/system_stats", "registered-managed"]
+    module_probe.assert_not_called()
+    runtime_probe.assert_not_called()
+    workflow_admission.assert_not_called()
 
 
 def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
@@ -414,6 +465,7 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
+    z_image_only_registry(monkeypatch)
     original = targets.resolve_target
 
     def default_to_fake(target, **kwargs):
@@ -430,14 +482,19 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
 def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "_module_available", lambda name: True)
-    readiness = Mock(return_value=True)
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", readiness)
+    registered = Mock(return_value={"owner": "astrid", "endpoint": "http://127.0.0.1:8188",
+                                   "root": str(tmp_path / "managed-engine")})
+    monkeypatch.setattr(preflight, "_registered_managed_engine", registered)
+    legacy_probe = Mock(side_effect=AssertionError("managed used legacy runtime probe"))
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", legacy_probe)
     monkeypatch.setattr(ComfyTargetClient, "request_json", Mock(side_effect=AssertionError("managed probed attached")))
     admitted = Mock(return_value=terminal_result(tmp_path))
     runtime, _ = storage_client()
     monkeypatch.setattr(GenerationFacade, "workflow", admitted)
     assert GenerationFacade().image(target="managed", client=runtime, project="demo", prompt="one boat").ok
-    readiness.assert_called_once_with()
+    assert registered.call_count >= 1
+    assert all(call.args == () and call.kwargs == {} for call in registered.call_args_list)
+    legacy_probe.assert_not_called()
     assert admitted.call_args.kwargs["comfy_url"] is None
     assert admitted.call_args.kwargs["generation_intent"]["modality"] == "image"
 
@@ -472,3 +529,341 @@ def test_explicit_unready_target_names_working_recovery(monkeypatch):
     assert raised.value.code == "target_unreachable"
     assert "http://127.0.0.1:8123" in raised.value.fix
     assert raised.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
+
+def _installed_audio_entry(tmp_path, monkeypatch, mode):
+    """Install a canonical test entry and real, isolated target preferences."""
+    import json
+    from astrid.core.generation import targets
+    from astrid.packs.runpod import target_selection
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    folder = tmp_path / 'entries' / '00-audio-test'
+    folder.mkdir(parents=True)
+    monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(folder.parent))
+    monkeypatch.setattr(targets, 'config_path', lambda: tmp_path / 'config.toml')
+    target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
+        'image': 'worker@sha256:' + 'a' * 64})
+    workflow = VibeWorkflow('00-audio-test', WorkflowSource('00-audio-test'))
+    workflow.add_node('SaveAudio', _id='1', uid='sink', filename_prefix='audio')
+    workflow.register_input('filename_prefix', '1', 'filename_prefix', 'audio', type='STRING')
+    (folder / 'source.json').write_text(json.dumps({'nodes': [
+        {'id': 1, 'type': 'SaveAudio', 'inputs': [], 'widgets_values': ['audio']}], 'links': []}))
+    emit_bundle(workflow, folder / 'workflow.py', {'operation': 'authored'})
+    (folder / 'entry.json').write_text(json.dumps({'id': '00-audio-test', 'kind': 'audio',
+        'modes': [mode], 'bundle': 'workflow.py', 'binds': {}, 'defaults': {}, 'needs': []}))
+
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit, tmp_path, monkeypatch):
+    """Exercise the audio composition up to the fake Runtime and storage edges."""
+    import json
+    _installed_audio_entry(tmp_path, monkeypatch, mode)
+    client, _ = storage_client()
+    calls = []
+    def invoke(capability, **kwargs):
+        calls.append((capability, kwargs))
+        return InvocationResult(capability, 'executor', 'command', True,
+                                kernel_task_id='task-a', raw_result={'state': 'queued'})
+    client.invoke_result = invoke
+    receipt = tmp_path / 'admission.json'
+    result = GenerationFacade().audio(mode=mode, target='runpod', client=client, project='demo',
+        **({'entry': '00-audio-test'} if explicit else {}),
+        filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
+        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+    assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
+    assert len(calls) == 1
+    capability, kwargs = calls[0]
+    assert capability == 'vibecomfy.run' and kwargs['recovery_path'] == receipt and not kwargs['wait']
+    inputs = kwargs['inputs']
+    assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
+    assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
+    assert inputs['generation_intent']['modality'] == 'audio'
+    # Without an entry the slot's preferred default owns the route; its declared
+    # output binds filename_prefix exactly as the installed entry's input does.
+    from astrid.sdk.generation import _DEFAULT_ENTRIES
+    selected = '00-audio-test' if explicit else _DEFAULT_ENTRIES[('audio', mode)][0]
+    assert inputs['generation_intent']['metadata'] == {'model': selected, 'mode': mode}
+    assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_foley_runpod_sound_effects_admits_with_target_policy(tmp_path, monkeypatch, explicit):
+    """Sound effects is an ordinary slot: resolves, then admits one task with a RunPod target policy."""
+    import json
+    _installed_audio_entry(tmp_path, monkeypatch, 'sfx')
+    client, _ = storage_client()
+    calls = []
+    def invoke(capability, **kwargs):
+        calls.append((capability, kwargs))
+        return InvocationResult(capability, 'executor', 'command', True,
+                                kernel_task_id='task-a', raw_result={'state': 'queued'})
+    client.invoke_result = invoke
+    result = GenerationFacade().audio(mode='sfx', target='runpod', client=client, project='demo',
+        **({'entry': '00-audio-test'} if explicit else {}),
+        filename_prefix='test', wait=False, consent=('paid',), max_usd=2,
+        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+    assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
+    assert len(calls) == 1
+    capability, kwargs = calls[0]
+    assert capability == 'vibecomfy.run' and not kwargs['wait']
+    assert json.loads(kwargs['inputs']['target_policy'])['kind'] == 'runpod'
+
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, monkeypatch, real_runtime):
+    """Keep the real SDK, local Runtime admission and receipt writer in the route."""
+    import json
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.sdk import AstridClient
+    from astrid.sdk.remote import RemoteAstridClient
+    from astrid.sdk.workspace_client import WorkspaceClient
+    _installed_audio_entry(tmp_path, monkeypatch, mode)
+    daemon = real_runtime()
+    host = None
+    try:
+        transport = WorkspaceClient(daemon.endpoint, daemon.token)
+        client = AstridClient(remote=RemoteAstridClient(transport))
+        project = client.projects.create(name='Audio receipt', slug='audio-receipt', idempotency_key='project')
+        assert project.ok
+        project_id = project.data['project_id']
+        packs = Path(__file__).resolve().parents[2] / 'astrid' / 'packs'
+        host = GenericPackHost(pack_roots=[packs / 'vibecomfy', packs / 'runpod'],
+            client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
+            credential_source={}, attempt_base=tmp_path / 'attempts')
+        host.discover()
+        host.preflight()
+        host.register()
+        receipt = tmp_path / 'receipt.json'
+        args = dict(entry='00-audio-test', mode=mode, target='runpod', client=client, project=project_id,
+                    filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
+                    deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+                    preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        result = GenerationFacade().audio(**args)
+        saved = json.loads(receipt.read_text())
+        assert result.ok and result.kernel_task_id == saved['locator']['task_id']
+        assert saved['metadata']['capability_id'] == 'vibecomfy.run'
+        task = client.tasks.show(result.kernel_task_id)
+        assert task.ok and task.data['state'] == 'queued'
+        assert not task.data.get('execution_binding')
+        resumed = GenerationFacade().audio(**args, resume=True)
+        assert resumed.ok and resumed.kernel_task_id == result.kernel_task_id
+    finally:
+        if host is not None:
+            host.shutdown()
+        daemon.stop()
+
+
+@pytest.mark.parametrize('wait', [False])
+def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wait, tmp_path, monkeypatch, capsys, real_runtime):
+    """Only the Comfy HTTP/GPU edge is synthetic; use real facade/host/Runtime."""
+    import copy
+    import io
+    import json
+    import threading
+    import wave
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
+    from email.parser import BytesParser
+    from email.policy import default
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid import console
+    from astrid.core.execution import generic_host as host_module
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.core.generation import cli
+    from astrid.sdk.client import AstridClient
+    from vibecomfy.porting.object_info import get_class
+    from vibecomfy.registry.ready import workflow_from_ready
+    import vibecomfy
+
+    video = tmp_path / 'synthetic.mp4'
+    video.write_bytes(b'synthetic-video-at-the-Comfy-HTTP-boundary')
+    audio = io.BytesIO()
+    with wave.open(audio, 'wb') as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(48000)
+        stream.writeframes(b'\0\0' * 4800)
+    output_bytes = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "wav", "-i", "pipe:0", "-f", "flac", "pipe:1"],
+        input=audio.getvalue(), check=True, capture_output=True, timeout=15).stdout
+    workflow = workflow_from_ready('audio/hunyuan_video_foley')
+    schema = {}
+    for node in workflow.runtime_nodes().values():
+        definition = get_class(node.class_type)
+        assert definition is not None
+        schema[node.class_type] = {
+            'input': copy.deepcopy(definition['inputs']),
+            'input_order': copy.deepcopy(definition['input_order']),
+            'output': [out['type'] for out in definition['outputs']],
+            'output_name': [out['name'] for out in definition['outputs']],
+            'output_is_list': [out['is_list'] for out in definition['outputs']],
+            'output_node': node.class_type == 'SaveAudio',
+        }
+    state = SimpleNamespace(schema=schema, prompts=[], uploaded=None, uploaded_ref=None, views=0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def send(self, value, media_type='application/json'):
+            body = json.dumps(value).encode() if media_type == 'application/json' else value
+            self.send_response(200)
+            self.send_header('Content-Type', media_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == '/object_info':
+                self.send(state.schema)
+            elif self.path == '/system_stats':
+                self.send({'system': {'comfyui_version': '0.36.0'}, 'devices': []})
+            elif self.path == '/queue':
+                self.send({'queue_running': [], 'queue_pending': []})
+            elif self.path.startswith('/history/'):
+                save = next(key for key, node in state.prompts[0].items() if node['class_type'] == 'SaveAudio')
+                self.send({'foley-1': {'outputs': {save: {'audio': [
+                    {'filename': 'synthetic.flac', 'subfolder': '', 'type': 'output'}]}},
+                    'status': {'completed': True, 'status_str': 'success', 'messages': []}}})
+            elif self.path.startswith('/view?'):
+                state.views += 1
+                self.send(output_bytes, 'audio/flac')
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+            if self.path == '/upload/image':
+                message = BytesParser(policy=default).parsebytes(
+                    ('Content-Type: ' + self.headers['Content-Type'] + '\r\nMIME-Version: 1.0\r\n\r\n').encode() + body)
+                parts = {part.get_param('name', header='content-disposition'): part for part in message.iter_parts()}
+                state.uploaded = parts['image'].get_payload(decode=True)
+                folder = parts['subfolder'].get_content().strip()
+                name = parts['image'].get_filename()
+                state.uploaded_ref = folder + '/' + name
+                self.send({'name': name, 'subfolder': folder, 'type': 'input'})
+            elif self.path == '/prompt':
+                state.prompts.append(json.loads(body)['prompt'])
+                self.send({'prompt_id': 'foley-1', 'number': 1, 'node_errors': {}})
+            elif self.path == '/queue' and json.loads(body) == {'delete': ['foley-1']}:
+                self.send({})
+            else:
+                self.send_error(400)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    daemon = real_runtime()
+    client = AstridClient.open(endpoint=daemon.endpoint, credential=daemon.credential_path,
+        realm_id=daemon.service.realm['id'], actor_id='owner', client_name='foley-cpu-contract',
+        client_version='test', protocol_version='workspace.v1')
+    project = client.projects.create(slug='foley', name='Foley CPU fixture', idempotency_key='foley-project')
+    assert project.ok
+    monkeypatch.setattr(host_module, '_dependency_pythonpath',
+                        lambda: (str(Path(vibecomfy.__file__).resolve().parents[1]),))
+    host = GenericPackHost(pack_roots=[Path(__file__).resolve().parents[2] / 'astrid/packs/vibecomfy'],
+        attempt_root=tmp_path / 'attempt', client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(client))
+    original_invoke = client.invoke_result
+    invocations = []
+
+    def bounded_invoke(*args, **kwargs):
+        invocations.append(kwargs)
+        return original_invoke(*args, **{**kwargs, 'timeout_seconds': 45.0, 'poll_seconds': 0.02})
+
+    monkeypatch.setattr(client, 'invoke_result', bounded_invoke)
+    try:
+        host.discover()
+        host.register()
+        if not wait:
+            import zipfile
+            from vibecomfy.workflow_bundle import load_bundle
+            from vibecomfy.security.provenance import Provenance
+            receipt_path = tmp_path / 'admission.json'
+            code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
+                '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
+                '--target', f'http://127.0.0.1:{server.server_port}',
+                '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
+            captured = capsys.readouterr()
+            assert code == 0, captured.out + captured.err
+            task_id = json.loads(receipt_path.read_text())['locator']['task_id']
+            task = client.tasks.show(task_id)
+            assert task.ok and task.data['state'] == 'queued'
+            assert len(invocations) == 1
+            inputs = invocations[0]['inputs']
+            assert inputs['generation_intent']['metadata'] == {'model': 'audio/hunyuan_video_foley', 'mode': 'sfx'}
+            folder = tmp_path / 'admitted'
+            folder.mkdir()
+            for field, filename in [('python', 'workflow.py'), ('companion', 'workflow.vibe.json')]:
+                (folder / filename).write_bytes(client.media.read_bytes(inputs[field]['digest']))
+            bundle = load_bundle(folder / 'workflow.py', trust=Provenance.USER_CONFIRMED)
+            bundle.require_canonical_authority('admitted Foley fixture')
+            api = bundle.workflow.compile('api')
+            assert next(node for node in api.values() if node['class_type'] == 'HunyuanFoleySampler')['inputs']['prompt'] == 'Copper bell at the exact frame.'
+            assert str(video) not in json.dumps(api)
+            with zipfile.ZipFile(io.BytesIO(client.media.read_bytes(inputs['managed_assets']['digest']))) as archive:
+                manifest = json.loads(archive.read('manifest.json'))
+                assert len(manifest['assets']) == 1 and manifest['assets'][0]['binding'] == 'video_ref'
+                record = manifest['assets'][0]
+                assert archive.read(record['member']) == video.read_bytes()
+                assert record['sha256'] == hashlib.sha256(video.read_bytes()).hexdigest()
+            assert not state.prompts and state.uploaded is None
+            return
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
+            try:
+                code = console.main(['generate', 'audio', '--mode', 'sfx', '--entry', 'audio/hunyuan_video_foley',
+                    '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
+                    '--target', f'http://127.0.0.1:{server.server_port}',
+                    '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
+            finally:
+                host.shutdown()
+            results = settled.result(timeout=15)
+        captured = capsys.readouterr()
+        assert code == 0, captured.out + captured.err
+        assert len(results) == 1 and results[0].state == 'succeeded'
+        assert state.uploaded == video.read_bytes() and len(state.prompts) == 1
+        by_class = {node['class_type']: node['inputs'] for node in state.prompts[0].values()}
+        assert by_class['LoadVideo']['file'] == state.uploaded_ref
+        assert by_class['HunyuanFoleySampler']['prompt'] == 'Copper bell at the exact frame.'
+        assert str(video) not in json.dumps(state.prompts)
+        receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
+        task = client.tasks.show(receipt['task_id'])
+        assert task.ok and task.data['state'] == 'succeeded'
+        digest = 'sha256:' + hashlib.sha256(output_bytes).hexdigest()
+        assert client.media.read_bytes(digest) == output_bytes and state.views > 0
+        assert any(path.read_bytes() == output_bytes for path in (tmp_path / 'delivered').rglob('*.flac'))
+    finally:
+        host.shutdown()
+        daemon.stop()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(('given', 'forwarded'), [({}, 'check'), ({'align': 'trust'}, 'trust')])
+def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, monkeypatch, tmp_path):
+    """workflow(target=...) takes align like image/video/audio and hands it to the target route."""
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    emit_bundle(workflow_from_ready('image/z_image_turbo'), tmp_path / 'workflow.py', {'operation': 'authored'})
+    seen = []
+    monkeypatch.setattr(GenerationFacade, '_generate_on_target',
+                        lambda self, **kwargs: seen.append(kwargs) or 'routed')
+    assert GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+                                       dry_run=True, **given) == 'routed'
+    assert seen[0]['align'] == forwarded
+
+
+def test_workflow_target_rejects_an_unknown_align(tmp_path):
+    from astrid.sdk.generation import GenerationInputError
+    with pytest.raises(GenerationInputError, match='align must be one of'):
+        GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', target='http://127.0.0.1:8188',
+                                    align='maybe')

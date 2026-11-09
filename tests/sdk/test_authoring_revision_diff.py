@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.packs.timeline.cli import _cmd_diff, _configure_diff
+from astrid.core.cli.domain_timelines import _configure_diff
+from astrid.packs.timeline.cli import _cmd_diff
 from astrid.sdk.contracts import DomainResult, ErrorObject
 from astrid.sdk.remote import RemoteTimelines
 from tests.timeline.test_authoring_bundle import _closure, _digest

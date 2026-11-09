@@ -246,6 +246,23 @@ def test_bootstrap_receipt_and_cleanup_failures_do_not_mask_lifecycle_error(tmp_
 @pytest.fixture
 def stub_installed_profile_binding(monkeypatch):
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda: None)
+
+
+def test_journey_installs_chiptune_from_the_pinned_source_before_the_task(monkeypatch):
+    assert shared_journey.JOURNEY_PACKS == {"chiptune": (
+        "https://github.com/banodoco/poms_packs", "2379ab54aca522019ff4f869cfdf9375bdb56dfc")}
+    calls = []
+
+    def cli(module, argv, name, **kwargs):
+        calls.append(argv)
+        return json.dumps({"packs": []}) if argv[:2] == ["packs", "list"] else "{}"
+
+    monkeypatch.setattr(journey, "cli", cli)
+    journey.install_journey_packs()
+    assert calls[-1] == ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
+                         "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
+                         "--subpath", "chiptune", "--yes"]
 
 
 def sdk_invocation(argv, task_id="task-1"):
@@ -1077,6 +1094,7 @@ def test_windows_task_admits_sdk_result_after_stderr_diagnostic(monkeypatch):
 
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
     monkeypatch.setattr(journey, "cli", fake_cli)
+    monkeypatch.setattr(journey, "install_journey_packs", lambda: None)
     monkeypatch.setitem(journey.os.environ, "ASTRID_HOST_EXECUTION_PROFILE", "installed")
     with pytest.raises(_FollowReached):
         journey.task("windows-journey")

@@ -32,6 +32,7 @@ def _fixture_repo(tmp_path: Path, *, host_entry: str = "video-editor") -> Path:
     )
     manifest = {
         "schema_version": 3,
+        "pack_api": "2.3",
         "id": "video_editing",
         "name": "Video Editing",
         "version": "1.0.0",

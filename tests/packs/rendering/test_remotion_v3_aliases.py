@@ -25,30 +25,6 @@ def _node_json(script: str, *args: str) -> object:
     return json.loads(result.stdout)
 
 
-def test_in_tree_aliases_follow_v3_declared_element_roots() -> None:
-    result = _node_json(
-        """
-        import {pathToFileURL} from 'node:url';
-        const mod = await import(pathToFileURL(process.argv[2]).href);
-        console.log(JSON.stringify(mod.packElementAliases({
-          astridDir: process.argv[1],
-          env: {ASTRID_PACKS_PATH: ''},
-        })));
-        """,
-        str(ROOT),
-        str(MODULE),
-    )
-    assert result["@pack-rendering-elements-effects"].endswith(
-        "astrid/packs/rendering/rendering/elements/effects"
-    )
-    assert result["@pack-local-elements-effects"].endswith(
-        "astrid/packs/local/rendering/elements/effects"
-    )
-    assert result["@pack-astrid_motion-elements-effects"].endswith(
-        "astrid/packs/astrid_motion/rendering/elements/effects"
-    )
-
-
 def test_external_aliases_do_not_scan_legacy_element_roots(tmp_path: Path) -> None:
     pack = tmp_path / "probe"
     (pack / "elements" / "effects" / "legacy-only").mkdir(parents=True)

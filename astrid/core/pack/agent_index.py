@@ -10,12 +10,9 @@ manifest fields, component metadata, doc paths, and bounded STAGE.md excerpts.
 
 **Resolution strategy:**
 
-1.  **Primary — pack-system canonical resolver** (``discover_packs()``):
-    Enumerates built-in packs via the pack-system's canonical discovery
-    mechanism (``packs_root()`` → ``discover_packs()``).  This is the
-    authoritative source and always runs first.
-
-External roots are supplied explicitly through the pack discovery API.
+1.  **Pack-system discovery** (``discover_pack_metadata()``): enumerates
+    admitted bundled, managed, personal, explicit and selected environment
+    layers using the same ownership and quarantine rules as the loader.
 """
 
 from __future__ import annotations
@@ -30,12 +27,11 @@ import yaml
 from astrid.core.pack import (
     EXECUTOR_MANIFEST_NAMES,
     ORCHESTRATOR_MANIFEST_NAMES,
-    discover_packs,
     pack_manifest_path,
-    packs_root,
 )
 from astrid.core.pack.alias_resolver import AliasResolutionError, AliasResolver
 from astrid.core.pack.canonical import CanonicalPackDefinition, validate_canonical_pack
+from astrid.core.pack.discovery import discover_pack_metadata
 
 # ---------------------------------------------------------------------------
 # STAGE.md excerpt helpers
@@ -345,7 +341,7 @@ def build_agent_index(*, pack_id: str | None = None) -> dict[str, Any]:
     """Build a deterministic agent-facing pack index.
 
     Enumeration uses the pack-system's canonical manifest resolver
-    (``discover_packs()``).
+    (``discover_pack_metadata()``).
 
     Parameters:
         pack_id: When set, return only the matching pack (or ``None``).
@@ -369,7 +365,8 @@ def build_agent_index(*, pack_id: str | None = None) -> dict[str, Any]:
     # ------------------------------------------------------------------
     # Primary: built-in packs via pack-system canonical resolver
     # ------------------------------------------------------------------
-    for pack_def in discover_packs(packs_root(), include_hidden=True):
+    for discovered in discover_pack_metadata(include_hidden=True):
+        pack_def = discovered.pack
         pid = pack_def.id
         if pack_id is not None and pid != pack_id:
             continue
@@ -385,7 +382,7 @@ def build_agent_index(*, pack_id: str | None = None) -> dict[str, Any]:
             if pack_def.schema_version == "3" else None
         )
         pack_map[pid] = _assemble_pack_entry(
-            pack_def.root, pid, manifest, trust, source_type="built-in", canonical=canonical,
+            pack_def.root, pid, manifest, trust, source_type="built-in" if discovered.source_kind == "source" else discovered.source_kind, canonical=canonical,
             declared_documentation=pack_def.documentation,
         )
 
@@ -500,7 +497,7 @@ def _assemble_pack_entry(
         "version": trust.get("version", manifest.get("version", "0.0.0")),
         "description": manifest.get("description", ""),
         "source_type": source_type,
-        "trust_tier": trust.get("trust_tier", "built-in"),
+        "trust_tier": trust.get("trust_tier", "built-in" if source_type == "built-in" else "unknown"),
         "purpose": str(purpose) if purpose else None,
         "normal_entrypoints": normal_entrypoints,
         "do_not_use_for": do_not_use_for,

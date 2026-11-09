@@ -6,7 +6,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/comfyui/recipe.linux-cu130.json",
-        "sha256": "d2cd318f1471342fb5c7a9347625b02187d7b867c3209b1efa313f219ce0af4d"
+        "sha256": "d40ee10a450d126fb318f483a727cfb116d14b5ac1263898313ce3e17029c3af"
       }
     },
     {
@@ -14,7 +14,7 @@
       "platform": "windows-x86_64-cu130",
       "recipe": {
         "path": "packs/vibecomfy/recipe.windows-cu130.json",
-        "sha256": "3abbef17709929bee016db7ad09874dab1ea16aec79872fc037f34685166bdb3"
+        "sha256": "2ddb83a7e07efa074392b0ee942c1a89c7a60d79f8d0ee18477bf0a3e8314513"
       }
     },
     {
@@ -22,7 +22,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/runpod/recipe.linux-cu130.json",
-        "sha256": "9367143c100b66672b07f7706ecd2773e5d2df40e831f106f72fbb132bb87572"
+        "sha256": "22b200e74b1d5ab87f4de1d47a96708bcb54c28f6123cf2af6998f74d6af6d18"
       }
     },
     {

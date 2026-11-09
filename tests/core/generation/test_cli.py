@@ -32,7 +32,7 @@ def test_bare_prompt_uses_auto_target_and_sdk_default_model(monkeypatch, capsys)
     assert calls == [{
         "model": None, "target": "auto", "dry_run": False,
         "prompt": "a dog eating an ice cream", "project": "demo",
-        "client": "runtime-client",
+        "client": "runtime-client", "align": "check",
     }]
     assert "dog.png" in capsys.readouterr().out
 
@@ -62,7 +62,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
         "dry_run": False, "prompt": "a dog", "project": "demo", "out": "export",
         "image_ref": "reference.png", dimension_input: "768x512",
         "steps": 8, "seed": 41, "guidance_scale": 1.5,
-        "client": "runtime-client",
+        "client": "runtime-client", "align": "check",
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
 
@@ -211,12 +211,16 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
     calls = _facade(monkeypatch)
     monkeypatch.setattr(listing, "main", lambda args: pytest.fail("generation reached listing parser"))
 
+    # Prompt-only video is refused before connecting; use a reference to
+    # continue exercising public forwarding for an admissible video form.
+    reference = ["--image-ref", "dog.png"] if modality == "video" else []
     assert _public_main(entrypoint)([
-        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json",
+        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json", *reference,
     ]) == 0
     assert calls == [{
         "model": None, "target": "http://127.0.0.1:8188", "dry_run": False,
-        "prompt": "a dog", "client": "runtime-client",
+        "prompt": "a dog", "client": "runtime-client", "align": "check",
+        **({"image_ref": "dog.png"} if modality == "video" else {}),
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
 
@@ -325,3 +329,49 @@ def test_launch_rejects_duplicate_selector_before_sdk(monkeypatch, capsys):
     monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('duplicate reached SDK'))
     assert cli.main(['launch', '--target', 'auto', '--target', 'managed', '--json']) == 2
     assert json.loads(capsys.readouterr().out)['issues'][0]['code'] == 'input_rejected'
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode):
+    calls = []
+    def invoke(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
+    assert cli.main(['audio', 'hello', '--mode', mode, '--target', 'runpod', '--consent', 'paid',
+        '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
+        '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
+        '--recovery-path', 'receipt.json', '--resume', '--no-wait', '--json']) == 0
+    assert calls == [{'model': None, 'mode': mode, 'target': 'runpod', 'prompt': 'hello',
+        'dry_run': False, 'client': 'runtime-client', 'wait': False, 'consent': ['paid'],
+        'max_usd': 2.0, 'deadline': '2099-01-01T00:00:00Z', 'offer_digest': 'offer',
+        'preparation_seconds': 60.0, 'execution_seconds': 60.0, 'idle_seconds': 1800.0,
+        'recovery_path': 'receipt.json', 'resume': True, 'align': 'check'}]
+    assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
+
+
+def test_audio_cli_runpod_sound_effects_admits_like_any_slot(monkeypatch, capsys):
+    calls = []
+    def invoke(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
+    assert cli.main(['audio', 'waves', '--mode', 'sfx', '--target', 'runpod', '--consent', 'paid',
+        '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
+        '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
+        '--recovery-path', 'receipt.json', '--no-wait', '--json']) == 0
+    assert calls and calls[0]['mode'] == 'sfx' and calls[0]['target'] == 'runpod'
+    assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
+
+
+@pytest.mark.parametrize('mode', ['tts', 'music', 'sfx'])
+def test_audio_cli_omitted_target_uses_auto(monkeypatch, capsys, mode):
+    calls = []
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        audio=lambda **kwargs: calls.append(kwargs) or {'status': 'preview'}))
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview connected to Runtime'))
+    assert cli.main(['audio', 'hello', '--mode', mode, '--dry-run', '--json']) == 0
+    assert calls == [{'model': None, 'mode': mode, 'target': 'auto',
+                      'prompt': 'hello', 'dry_run': True, 'align': 'check'}]
+    assert json.loads(capsys.readouterr().out) == {'status': 'preview'}

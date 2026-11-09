@@ -14,7 +14,7 @@ from astrid.packs.generation.actions.generate_image.task_adapter import (
     _decode_inputs,
     validate_shot_generation_recipe,
 )
-from astrid.packs.shots.dependencies import analyze_invalidation
+from astrid.core.shots.dependencies import analyze_invalidation
 from astrid.sdk import get_capability
 from astrid.sdk.invocation import _manifest_preview_command
 
@@ -232,7 +232,7 @@ def test_invalidation_reaches_fixed_point_independent_of_input_order() -> None:
 
 def test_deleted_surface_guard_keeps_shots_runtime_native() -> None:
     root = Path(__file__).resolve().parents[2]
-    shots = root / "astrid" / "packs" / "shots"
+    shots = root / "astrid" / "core" / "shots"
     assert not (shots / "repository.py").exists()
     assert not (shots / "schema-pack.yaml").exists()
     assert not (root / "astrid" / "sdk" / "shots.py").exists()

@@ -1,4 +1,7 @@
-"""Product timelines family CLI.
+"""Timeline execution handlers for the product CLI.
+
+The product parser is owned by ``astrid.core.cli.domain_timelines`` so CLI
+and MCP parser construction does not require the optional Timeline pack.
 
 This module is the product parser for the runtime-owned ``timelines``
 family. Every verb is **argument parsing plus exactly one SDK
@@ -12,7 +15,7 @@ contract.
 
 The parser also mounts the runtime-owned nested ``shots`` family beneath
 ``timelines``: ``astrid timelines shots <verb>`` embeds the shots
-product parser (``astrid/packs/shots/cli.py``) so project-level reusable shot
+product parser (``astrid/core/cli/domain_shots.py``) so project-level reusable shot
 ``list/create/show/add/remove/reorder`` commands are executable only beneath timelines.
 There is **no top-level shots family**.
 
@@ -56,6 +59,8 @@ product result envelope.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
 import argparse
 import copy
 import json
@@ -69,8 +74,9 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_human
-from astrid.core.cli.registration import CommandSpec, register_product_commands
+from astrid.pack_api import print_result
+from astrid.core.cli.domain_output import DomainResult, envelope_dict, render_human
+from astrid.pack_api import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
 from astrid.sdk.workspace_client import WorkspaceClientError
@@ -91,97 +97,10 @@ from astrid.packs.timeline.cli_visualize import (  # noqa: F401  (re-exported: t
 
 __all__ = ["COMMANDS", "build_parser"]
 
-_FAMILY = "timelines"
 _IN_VERB = False
 
 
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--config``/``--registry`` JSON object argument."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(f"invalid JSON object: {exc.msg}") from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
-
-
-PRESET_CHOICES = ("overview", "scan", "motion", "beat", "frame", "cut", "compare")
-
-
-class _JsonFlag(argparse.Action):
-    """Record an explicit JSON request separately from a command default."""
-
-    def __call__(self, parser, namespace, values, option_string=None) -> None:  # noqa: ANN001
-        setattr(namespace, self.dest, True)
-        setattr(namespace, "_json_explicit", True)
-
-
-def _json_object_or_path(value: str) -> Any:
-    """A JSON object given inline, or a path to the file that holds it (resolved by the verb)."""
-    from astrid.packs.timeline.cli_visualize import _lenient_json_or_path
-
-    return _lenient_json_or_path(value)
-
-
-def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) -> None:
-    subparser.set_defaults(_json_explicit=False)
-    subparser.add_argument(
-        "--json",
-        action=_JsonFlag,
-        nargs=0,
-        default=default,
-        help=(
-            "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key)."
-            if not default
-            else "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key); default output."
-        ),
-    )
-
-
-def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
-    subparser.add_argument(
-        "--idempotency-key",
-        dest="idempotency_key",
-        default=None,
-        help="Caller idempotency key (a fresh key is generated when absent).",
-    )
-
-
-def _add_project_arg(
-    subparser: argparse.ArgumentParser, *, required: bool = True
-) -> None:
-    subparser.add_argument(
-        "--project",
-        required=required,
-        default=None,
-        help=(
-            "Owning project id or immutable slug. When omitted, use the "
-            "workspace runtime's current project."
-            if not required
-            else "Owning project id or immutable slug."
-        ),
-    )
-
-
 # -- handlers (one SDK call each, no domain rules) -------------------------
-
-
-def _parse_canvas(value: str) -> tuple[int, int]:
-    match = re.fullmatch(r"\s*([1-9]\d*)[xX]([1-9]\d*)\s*", value)
-    if match is None:
-        raise argparse.ArgumentTypeError("canvas must be WIDTHxHEIGHT, e.g. 1920x1080")
-    return int(match.group(1)), int(match.group(2))
-
-
-def _positive_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a positive integer") from exc
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
 
 
 def _cmd_create(parsed: argparse.Namespace) -> int:
@@ -233,14 +152,6 @@ def _cmd_export(parsed: argparse.Namespace) -> int:
         )), as_json=parsed.json)
 
 
-def _configure_export(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Saved timeline UUID, ULID, or slug.")
-    subparser.add_argument("--out", required=True, type=Path, help="Destination .astrid archive.")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_export)
-
-
 def _cmd_import(parsed: argparse.Namespace) -> int:
     from astrid.sdk.contracts import DomainResult, ErrorObject
     from astrid.sdk.timeline_transfer import import_timeline
@@ -258,14 +169,6 @@ def _cmd_import(parsed: argparse.Namespace) -> int:
         return print_result(DomainResult.failure(ErrorObject(
             _transfer_error_code(exc), str(exc), {"file": str(parsed.file), "project": parsed.project}
         )), as_json=parsed.json)
-
-
-def _configure_import(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("file", type=Path, help=".astrid timeline archive to import.")
-    subparser.add_argument("--name", help="Display name for the imported timeline.")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_import)
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
@@ -1375,7 +1278,7 @@ def _navigation_scope(
 
 def _timeline_editing_resources() -> dict[str, Any]:
     """Locate the installed checkout recipe without depending on cwd."""
-    docs_root = Path(__file__).resolve().parents[1] / "rendering" / "docs"
+    docs_root = pack_root("rendering") / "docs"
     guide = docs_root / "references" / "document-checkout.md"
     script = docs_root / "scripts" / "timeline_document.py"
     return {
@@ -1818,17 +1721,6 @@ def _diff_presentation(parsed: argparse.Namespace, mode: str) -> DomainResult:
         receipt=after.receipt,
         idempotency_key=after.idempotency_key,
     )
-def _visualize_format_argument(value: str) -> str:
-    """Validate one bounded visualization format argument."""
-    values = [part.strip().lower() for part in value.split(",") if part.strip()]
-    if not values:
-        raise argparse.ArgumentTypeError("format must name png or md")
-    invalid = sorted(set(values) - {"png", "md"})
-    if invalid:
-        raise argparse.ArgumentTypeError(
-            f"invalid visualization format(s): {', '.join(invalid)}; choose png or md"
-        )
-    return ",".join(values)
 
 
 def _visualization_artifact_summary(outputs: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -2243,22 +2135,6 @@ def _cmd_inspect(parsed: argparse.Namespace) -> int:
     return 0 if result["ok"] else 1
 
 
-def _configure_inspect(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import INSPECTION_SECTIONS
-
-    subparser.description = "Inspect a verified materialized filmstrip offline; no runtime or render admission. Responses are capped at 8 KiB."
-    subparser.add_argument("--manifest", required=True, help="Materialized filmstrip manifest.json; bundle members are verified before reading.")
-    subparser.add_argument("--section", default="summary", help="Named section: " + ", ".join(INSPECTION_SECTIONS))
-    subparser.add_argument("--limit", type=int, default=10, help="Records per response: 1–50, default 10; byte cap may reduce the page.")
-    subparser.add_argument("--cursor", default=None, help="Opaque cursor from this bundle and identical query.")
-    subparser.add_argument("--frame", type=int, default=None, help="Exact decoded frame number.")
-    for selector in ("card", "shot", "occurrence", "clip", "track", "asset"):
-        subparser.add_argument("--" + selector, default=None, help="Exact " + selector + " identity (shot also accepts an exact name).")
-    subparser.add_argument("--range", dest="range_value", default=None, help="Half-open START..END seconds window.")
-    subparser.add_argument("--json", action="store_true", help="Compact JSON envelope is always used.")
-    subparser.set_defaults(handler=_cmd_inspect)
-
-
 def offline_inspect_main(args: list[str]) -> int:
     """Separate parser keeps argument errors bounded and skips runtime startup."""
     class OfflineParser(argparse.ArgumentParser):
@@ -2477,517 +2353,11 @@ def _render_video_handle(result: Any, project: Any) -> dict[str, str]:
 # -- parser ----------------------------------------------------------------
 
 
-def _configure_create(subparser: argparse.ArgumentParser) -> None:
-    subparser.add_argument(
-        "timeline_id",
-        nargs="?",
-        default=None,
-        help=(
-            "New timeline id (ULID). Omit to generate one; the id is printed "
-            "in the result and is what show/checkout/render accept."
-        ),
-    )
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("--name", default=None, help="Display name for the timeline.")
-    subparser.add_argument(
-        "--slug",
-        default=None,
-        help="Slug for the new timeline (passed as timeline_id); an alternative to the positional id.",
-    )
-    subparser.add_argument(
-        "--canvas",
-        type=_parse_canvas,
-        default=(1920, 1080),
-        help="Canvas size WIDTHxHEIGHT (default 1920x1080).",
-    )
-    subparser.add_argument(
-        "--fps",
-        type=_positive_int,
-        default=30,
-        help="Canvas frame rate (default 30).",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_create)
-
-
-def _configure_list(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument(
-        "--include-archived",
-        dest="include_archived",
-        action="store_true",
-        help="Include archived timelines and their archived_at state.",
-    )
-    subparser.add_argument("--recent", action="store_true", help="Show up to three timelines by latest revision time.")
-    subparser.add_argument("--all-projects", action="store_true", help="Search every project (with --recent).")
-    _add_json_flag(subparser, default=False)
-    subparser.set_defaults(handler=_cmd_list)
-
-
-def _configure_show(subparser: argparse.ArgumentParser) -> None:
-    subparser.add_argument("--native", action="store_true",
-                           help="With --as sheet: retain a pinned editable sheet in the scoped outbox. "
-                                "Supports starts, parent labels, source trim/hold, explicit asset/transition clears "
-                                "and built-in literal params in canvas units; replaces the previous export.")
-    subparser.epilog = (
-        "Next: use `timelines visualize` for composed pixels. For edits, use the "
-        "timeline_editing guide. Literal numeric moves/trims use `timelines edit`. "
-        "Use `timelines visualize --help` for the visual controls."
-    )
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument(
-        "ref", nargs="?", default=None,
-        help="Optional timeline UUID, ULID, or slug; omit to use the project's default timeline.",
-    )
-    subparser.add_argument(
-        "--summary",
-        action="store_true",
-        help="One line per chapter (name, span, cut count, first words); with a working copy, its edits too.",
-    )
-    subparser.add_argument(
-        "address", nargs="?", default=None,
-        help='One thing\'s complete record: a layer (c41.mink), a cut (c30), a word ("Building" in v27), a time, '
-        "an asset key or a layer name. Every param (long lists counted: --full prints them), moments in seconds.",
-    )
-    subparser.add_argument("--full", action="store_true", help="With an address: long params (a 41-item list) in full.")
-    subparser.add_argument("--keys", default=None, metavar="K1,K2", help="With an address: only these params, in full.")
-    subparser.add_argument("--page", type=int, default=None, help="Cut table page N (1-based); with no --page-size, 20 cuts a page.")
-    subparser.add_argument("--page-size", type=int, default=None, help="Cuts per page (default: all cuts).")
-    subparser.add_argument("--at", default=None, help="The one cut on screen at SECONDS or m:ss (or a word): its clips, the words around it, next cuts.")
-    subparser.add_argument("--clips", action="store_true", default=False, help="With --shot N: every clip in that chapter, one line each.")
-    subparser.add_argument("--published", action="store_true", default=False,
-                           help="Read published current explicitly (the default).")
-    subparser.add_argument("--draft", default=None, metavar="NAME",
-                           help="Read this named working copy explicitly; output identifies it and its base revision.")
-    subparser.add_argument(
-        "--as",
-        dest="presentation",
-        choices=("cuts", "script", "code", "sheet"),
-        default=None,
-        help="cuts (default): one row per cut. sheet: the cut sheet, an A/V script you can edit and "
-        "`timelines apply` (with --range \"word\"..\"word\" or A..B seconds or c30..c31). script: the words in "
-        "time order with cuts, layer entrances and element keyframes between them. code: shots and cuts as a "
-        "readable program of element calls with resolved keyframes and each element's source path.",
-    )
-    subparser.add_argument(
-        "--occurrence",
-        default=None,
-        help="Restrict the bounded inspection projection to one exact authored occurrence id.",
-    )
-    subparser.add_argument("--clip", default=None, help="Restrict the inspection projection to one authored clip id.")
-    subparser.add_argument("--shot", default=None, help="Restrict the inspection projection to one authored shot id.")
-    subparser.add_argument("--track", action="append", default=None, help="Restrict the inspection projection to one or more tracks.")
-    subparser.add_argument("--asset", default=None, help="Restrict the inspection projection to one canonical asset key.")
-    from astrid.packs.timeline.cli_show import JoinRanges
-
-    subparser.add_argument("--range", dest="range", default=None, action=JoinRanges,
-                           help="START..END (seconds, cut ids c10..c12 by time, or words); with --as sheet also a list "
-                                "c10,c29,c33a (repeating --range adds to it).")
-    subparser.add_argument("--limit", type=int, default=50, help="Maximum bounded inspection rows (1–100).")
-    subparser.add_argument("--cursor", default=None, help="Continue a bounded inspection page from its cursor.")
-    subparser.add_argument("--revision-id", default=None, help="Inspect an exact immutable timeline revision.")
-    subparser.add_argument("--detail", action="store_true", default=False, help="Include full bounded text for selected clips.")
-    subparser.add_argument("--layers", action="store_true", default=False,
-                           help="Use the bounded per-track Runtime inspection projection.")
-    # ``show`` is the human inspection route by default. Machine callers use
-    # the explicit stable envelope switch and keep the SDK shape unchanged.
-    _add_json_flag(subparser, default=False)
-    subparser.set_defaults(handler=_cmd_show)
-
-
 def _cmd_script(parsed: argparse.Namespace) -> int:
     return print_result(parsed.client.timelines.script(
         parsed.project, parsed.ref, revision_id=parsed.revision,
         occurrence=parsed.occurrence, kind=parsed.kind,
     ), as_json=parsed.json)
-
-
-def _configure_script(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", nargs="?", default=None)
-    subparser.add_argument("--revision", default=None, help="Exact immutable parent revision; defaults to the current head.")
-    subparser.add_argument("--occurrence", default=None, help="Read one exact placed occurrence.")
-    subparser.add_argument("--kind", default="voiceover_script")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_script)
-
-
-def _configure_elements(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument('ref',help='Exact target timeline ID or slug.')
-    subparser.add_argument('--realm',help='Canonical realm; defaults to configured launcher discovery.')
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_elements)
-
-
-def _configure_update_element(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument('ref',help='Exact target timeline ID or slug.')
-    subparser.add_argument('--realm',required=True,help='Canonical realm used by the configured project pack admission.')
-    subparser.add_argument('--clip-id',required=True)
-    subparser.add_argument('--pack',required=True)
-    subparser.add_argument('--element',required=True)
-    subparser.add_argument('--kind',choices=['effect'],default='effect')
-    subparser.add_argument('--revision',required=True)
-    subparser.add_argument('--expected-head',required=True)
-    subparser.add_argument('--duration',type=float)
-    subparser.add_argument('--params-json',type=_parse_json_object)
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_update_element)
-
-
-def _configure_place_element(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument('ref', help='Exact target timeline ID or slug.')
-    subparser.add_argument('--realm', required=True,
-                           help='Canonical realm used by the configured project-pack admission.')
-    subparser.add_argument('--target', required=True,
-                           help=('Exact occurrence shot clip: occurrence:<occurrence-id>/clip:<clip-id>. '
-                                 'First placement supports effect elements on am-discord clips only.'))
-    subparser.add_argument('--pack', required=True, help='Admitted project-pack owner (packId).')
-    subparser.add_argument('--element', required=True, help='Admitted element id.')
-    subparser.add_argument('--kind', choices=['effect'], default='effect')
-    subparser.add_argument('--revision', required=True, help='Exact admitted element revision.')
-    subparser.add_argument('--expected-head', required=True,
-                           help='Exact parent-composition revision; stale heads fail closed.')
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_place_element)
-
-
-def _configure_replace_parent_media(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    subparser.add_argument("--occurrence-id", required=True, help="Exact parent-composition occurrence to edit.")
-    subparser.add_argument("--clip-id", required=True, help="Exact internal-timeline clip id to replace.")
-    subparser.add_argument("--source-object-id", required=True, help="Admitted project-owned media digest/object id.")
-    subparser.add_argument(
-        "--expected-head",
-        required=True,
-        help="Exact parent-composition revision id read from the target; stale heads fail closed.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_replace_parent_media)
-
-
-def _configure_archive(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_archive)
-
-
-def _configure_recover(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument(
-        "ref",
-        help="Timeline UUID, ULID, or slug from list --include-archived.",
-    )
-    _add_idempotency_key(subparser)
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_recover)
-
-
-def _configure_history(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug (TL@prev etc. names an earlier revision elsewhere).")
-    subparser.add_argument("--limit", type=_positive_int, default=50, help="Newest revisions to list (default 50).")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_history)
-
-
-def _configure_diff(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    subparser.add_argument("--from", "--from-revision", dest="from_revision",
-                           help="Exact immutable parent revision before the batch.")
-    subparser.add_argument("--to", "--to-revision", dest="to_revision",
-                           help="Exact immutable parent revision after the batch.")
-    subparser.add_argument("--from-version", type=int, help="Explicit legacy integer version (not a canonical parent revision).")
-    subparser.add_argument("--to-version", type=int, help="Explicit legacy integer version (not a canonical parent revision).")
-    output = subparser.add_mutually_exclusive_group()
-    output.add_argument("--format", choices=("readable", "details", "json"),
-                        help="Group authored changes, show every raw detail, or print the exact SDK envelope (default: json).")
-    output.add_argument("--json", dest="format", action="store_const", const="json",
-                        help="Print the exact SDK envelope; equivalent to --format json (default).")
-    subparser.add_argument(
-        "--as",
-        dest="presentation",
-        choices=("cuts", "script", "code"),
-        default=None,
-        help="Present exact --from-revision/--to-revision bundles as cuts, script, or code.",
-    )
-    subparser.add_argument("--all", action="store_true", help="Every changed clip (by default the first 40, then a count).")
-    subparser.add_argument("--published", action="store_true",
-                           help="Diff saved revisions only, ignoring the working copy (no --from/--to: the head vs the working copy).")
-    subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
-    subparser.set_defaults(handler=_cmd_diff, format=None, json=False)
-
-
-def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
-    subparser.epilog = (
-        "Next: use `timelines show` for authored rows and timing. For edits, use the "
-        "timeline_editing guide. Literal numeric moves/trims use `timelines edit`. "
-        "Use this help page for component, sampling, frame, and resolution controls."
-    )
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument(
-        "timeline_ref", nargs="?", default=None,
-        help="Optional positional timeline slug, UUID, or ULID (prefer --timeline-slug).",
-    )
-    subparser.add_argument(
-        "--timeline-slug",
-        default=None,
-        help="Timeline slug, UUID, or ULID; omit to use the project default.",
-    )
-    subparser.add_argument(
-        "--shot", default=None,
-        help=(
-            "Focus an authored shot id or exact name; use 'first' or a positive "
-            "one-based authored-order ordinal (for example 1) for friendly shot selection."
-        ),
-    )
-    subparser.add_argument("--range", dest="range", default=None, help="Zoom to a closed-open START..END seconds window.")
-    subparser.add_argument("--at", default=None,
-                           help="Any address: seconds (7.2), a word ('\"Building\" in v27', viral), a cut (c30), a layer "
-                                "(c41.mink). Ambiguous words list their scoped forms. Alone: one frame; with --preset "
-                                "motion: 1 s around it, every frame.")
-    subparser.add_argument("--frame", type=int, default=None, help="Capture one exact rendered frame number.")
-    subparser.add_argument("--revision-id", default=None, help="Capture/inspect an exact immutable timeline revision.")
-    subparser.add_argument("--clip", default=None, help="Focus an authored clip id.")
-    subparser.add_argument("--occurrence", default=None, help="Focus an exact authored shot occurrence id.")
-    subparser.add_argument("--asset", default=None, help="Focus a canonical asset key.")
-    subparser.add_argument(
-        "--show", action="append", default=None, metavar="COMPONENT[,COMPONENT...]",
-        help=(
-            "Add synchronized components: inputs, output, text, or audio "
-            "(default composed view: output with synchronized inputs, text, and audio; "
-            "use --hide inputs for output-only)."
-        ),
-    )
-    subparser.add_argument(
-        "--hide", action="append", default=None, metavar="COMPONENT[,COMPONENT...]",
-        help="Hide components from the resolved surface.",
-    )
-    subparser.add_argument(
-        "--track", action="append", default=None, metavar="TRACK_ID",
-        help="Restrict input lanes; repeat for multiple tracks.",
-    )
-    subparser.add_argument(
-        "--detail", action="store_true", default=None,
-        help="Use enlarged frame, waveform, and text panels; combine with --range/--shot for a focused inspection.",
-    )
-    subparser.add_argument("--context", type=float, default=None, help="Context seconds around a focus.")
-    subparser.add_argument("--neighbors", type=int, default=None, help="Neighbor clips retained around a focus.")
-    subparser.add_argument(
-        "--format", dest="formats", action="append", default=None,
-        metavar="FORMAT[,FORMAT...]",
-        type=_visualize_format_argument,
-        help="Repeatable/comma-separated png or md (default: png,md).",
-    )
-    subparser.add_argument(
-        "--mode",
-        choices=("auto", "inputs", "composed"),
-        default="auto",
-        help=(
-            "auto always composes frames from the pinned saved revision; "
-            "inputs is render-free; composed always requests composed frames."
-        ),
-    )
-    subparser.add_argument(
-        "--view",
-        choices=("filmstrip", "contact", "overview", "motion", "diff"),
-        default=None,
-        help=(
-            "Usually leave this out and use --preset (or just give a window). filmstrip: Rendered paired filmstrip "
-            "with input lanes (the only view for drill-down pages; chosen when --show/--sample/--track is used). "
-            "contact (overview): ONE overview page of the whole video, one tile per picture cut (capped at 120), "
-            "480x270. motion: one cut (--cut N) as a motion sheet you can judge as stills: frame strip, onion skins, "
-            "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270). "
-            "diff: immutable revision diff, before/after tiles of only the cuts an edit changed, and the SCOPE "
-            "condition; needs --before-revision-id/--after-revision-id (or --from/--to)."
-        ),
-    )
-    subparser.add_argument(
-        "--preset", choices=PRESET_CHOICES, default=None,
-        help=(
-            "What you want to see, one page each: overview (whole film, one tile per cut); scan (a --range at "
-            "2 fps, 8 per row, up to 30 s); motion (<= 3 s at every 2nd frame, big 640x360 frames, 3 per row, onion "
-            "skins + curves); beat (a frame at each word onset, music hit and sfx, labelled); frame (one exact "
-            "frame, 1280x720, with --at or --frame); cut (a cut's motion sheet, with --cut); compare (--from REV: "
-            "before/after of what changed). Defaults: no window -> overview, --range -> scan, --at -> frame, "
-            "--cut -> cut."
-        ),
-    )
-    subparser.add_argument(
-        "--before-revision-id", default=None,
-        help="Required with --view diff: exact immutable before revision; no current-head fallback.",
-    )
-    subparser.add_argument(
-        "--after-revision-id", default=None,
-        help="Required with --view diff: exact immutable after revision; no current-head fallback.",
-    )
-    subparser.add_argument("--cut", default=None, help="Motion cut number, picture clip id, or @seconds.")
-    subparser.add_argument(
-        "--layer", dest="layers", action="append", default=None,
-        help="Motion/contact layer name; repeat or comma-separate registered layers.",
-    )
-    from astrid.packs.timeline.cli_verify import add_visualize_labels_flag
-    add_visualize_labels_flag(subparser)
-    subparser.add_argument(
-        "--beats", type=_json_object_or_path, default=None, metavar="BEATS_JSON",
-        help="A cue's beats.json file (or the JSON object itself) with beats/downbeats/hits in cue seconds; "
-             "overrides the beats the music clips carry (app.beats).",
-    )
-    subparser.add_argument("--frame-budget", dest="frame_budget", type=int, default=None,
-                           help="Motion frame budget (1–120; default 60).")
-    subparser.add_argument("--window", dest="window_s", type=float, default=None,
-                           help="Motion window width in seconds around --at.")
-    subparser.add_argument(
-        "--rules", type=_json_object_or_path, default=None, metavar="FILE",
-        help="motion view: project rules TOML (default: the nearest astrid-lint.toml), or the rules JSON object "
-             "(params, severity, disable, path).",
-    )
-    subparser.add_argument("--cuts", default=None, help="Contact-only positive cut numbers, comma-separated (max 120).")
-    subparser.add_argument("--preview", action="store_true", default=None,
-                           help="Motion-only GIF from the already captured frames.")
-    subparser.add_argument("--sample", choices=("interval", "clips", "cuts", "shots"), default=None,
-                           help="Filmstrip sampling: interval (default), picture clips, cut boundaries, or authored story beats.")
-    sampling = subparser.add_mutually_exclusive_group()
-    sampling.add_argument("--every", type=float, default=None,
-                          help="Filmstrip interval in seconds (default: 0.5); rerun with --range START..END to zoom.")
-    sampling.add_argument("--every-frames", type=int, default=None,
-                          help="Filmstrip interval in exact rendered frames; replaces --every (rerun for finer samples).")
-    subparser.add_argument(
-        "--include-cuts", action="store_true", default=None,
-        help="With interval sampling, also capture visual cut-neighbor frames.",
-    )
-    subparser.add_argument(
-        "--render-run", default=None,
-        help=(
-            "Explicit successful render run, or latest (filmstrip default). "
-            "An explicit run may be historical/candidate; auto reuse checks the current timeline head."
-        ),
-    )
-    subparser.add_argument("--columns", type=int, default=None,
-                           help="Filmstrip contact sheet columns (default: 5; paired pages use one row by default).")
-    subparser.add_argument("--page-size", type=int, default=None,
-                           help="Filmstrip cards per static page (default: 50 standalone; paired pages use one row, or explicitly opt into up to two rows / 10 cards).")
-    subparser.add_argument("--resolution", default=None, metavar="WIDTHxHEIGHT",
-                           help="Filmstrip frame resolution, e.g. 960x540; recorded and applied exactly by the executor.")
-    subparser.add_argument(
-        "--include-media", action="store_true", default=None,
-        help="Include a relative, digest-verified rendered video for offline filmstrip playback.",
-    )
-    subparser.add_argument(
-        "--out", default=None, metavar="DIR",
-        help=(
-            "Also copy the view's page(s) and its raw frames (frames/, frame-index.json) to DIR once it "
-            "settles; the managed copy stays where the summary says."
-        ),
-    )
-    from astrid.packs.timeline.cli_visualize import add_visualize_flags
-
-    add_visualize_flags(subparser)
-    # Human summary by default (page path, counts, timing, next commands), like show/diff; --json opts into the SDK envelope.
-    _add_json_flag(subparser, default=False)
-    subparser.set_defaults(handler=_cmd_visualize)
-
-
-def _configure_render(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    _add_idempotency_key(subparser)
-    subparser.add_argument("--review", action="store_true", default=None, help="Burn in shot names/time plus pinned authored speech captions at the bottom (Remotion/Three.js).")
-    subparser.add_argument("--audio-target", dest="audio_target", type=float, default=None, metavar="LUFS",
-                           help="Master the final mix to this integrated loudness (e.g. -14); with --true-peak (default -1 dBTP).")
-    subparser.add_argument("--true-peak", dest="true_peak", type=float, default=None, metavar="DBTP",
-                           help="The true-peak ceiling of the master (e.g. -1); alone it implies --audio-target -14.")
-    subparser.add_argument("--delivery-audio", dest="delivery_audio", default=None, metavar="JSON",
-                           help='The master as JSON, e.g. {"lufs": -14, "true_peak": -1} (same as the two flags).')
-    subparser.add_argument(
-        "--range", nargs=2, metavar=("START", "END"), default=None,
-        help="Render the half-open timeline window START END in seconds without editing the timeline.",
-    )
-    subparser.add_argument(
-        "ref",
-        nargs="?",
-        default=None,
-        help=(
-            "Canonical timeline UUID, ULID, or slug. "
-            "When omitted, the project's default timeline is rendered."
-        ),
-    )
-    subparser.add_argument(
-        "--expected-version",
-        dest="expected_version",
-        type=int,
-        default=None,
-        help="Optional exact kernel config version; stale pins fail before admission.",
-    )
-    subparser.add_argument(
-        "--draft", nargs="?", const="main", default=None, metavar="NAME",
-        help='Render the working copy (unpublished draft) instead of the published head; NAME defaults to "main".',
-    )
-    subparser.add_argument(
-        "--backend",
-        default=None,
-        help="Qualified renderer id or supported compatibility selector.",
-    )
-    subparser.add_argument(
-        "--profile",
-        type=_parse_json_object,
-        default=None,
-        metavar="JSON",
-        help=(
-            "Flat RenderProfile v1 JSON object (no video/audio nesting). "
-            "Complete Remotion MP4 example: "
-            "{\"width\": 1920, \"height\": 1080, \"fps_rational\": [30, 1], "
-            "\"time_base\": [1, 90000], \"container\": \"mp4\", "
-            "\"video_codec\": \"h264\", \"video_profile\": null, "
-            "\"video_level\": null, \"pixel_format\": \"yuv420p\", "
-            "\"audio_codec\": \"aac\", \"audio_sample_rate\": 48000, "
-            "\"audio_channel_layout\": \"stereo\", \"duration_tolerance\": 1}. "
-            "The audio trio must be supplied together or all omitted. When omitted, the "
-            "resolved theme canvas is used (default 1920x1080 at 30 fps), "
-            "not legacy config.output resolution/fps hints. Explicit profiles must "
-            "match the authoritative theme canvas; set theme_overrides.visual.canvas "
-            "for a different size."
-        ),
-    )
-    subparser.add_argument(
-        "--output-name",
-        default=None,
-        help=(
-            "Plain output filename (default hype.mp4). A canonical timeline stamped "
-            "metadata.astrid_layer.alpha=true may request .mov for ProRes 4444/PCM output."
-        ),
-    )
-    completion = subparser.add_mutually_exclusive_group()
-    completion.add_argument(
-        "--wait",
-        dest="wait",
-        action="store_true",
-        default=True,
-        help="Follow the render to completion and propagate terminal failure (default).",
-    )
-    completion.add_argument(
-        "--detach",
-        dest="wait",
-        action="store_false",
-        help="Return after admission with state=admitted; inspect the returned task/run later.",
-    )
-    subparser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=3600.0,
-        help="Maximum wait for --wait before returning a non-success result (default: 3600).",
-    )
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_cmd_render)
 
 
 def _edit_checkout(parsed: argparse.Namespace):
@@ -3333,16 +2703,6 @@ def _parse_set(items: list[str] | None) -> dict[str, Any]:
         except json.JSONDecodeError:
             out[key.strip()] = raw
     return out
-
-
-def _parse_insert(value: str) -> tuple[str, float]:
-    at, sep, seconds = value.rpartition(":")
-    if not sep or not at:
-        raise argparse.ArgumentTypeError("--insert takes TIME:SECONDS, e.g. 1:02:0.5")
-    try:
-        return at, float(seconds)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"--insert seconds must be a number: {seconds!r}") from exc
 
 
 def _edit_label(parsed: argparse.Namespace) -> str:
@@ -3855,176 +3215,6 @@ def _as_timeline_verb(handler):
     return run
 
 
-def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline id or slug to check out.")
-    subparser.add_argument("--from", dest="from_ref", help="Adopt content from another timeline into this working copy.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("--fresh", action="store_true", help="Check out the current head instead of reusing the selected working copy.")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_checkout)))
-
-
-def _configure_commit(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug named by the detached document.")
-    subparser.add_argument("--file", type=Path, required=True,
-                           help="Detached timeline JSON from the existing timeline document checkout.")
-    subparser.add_argument("-m", "--message", required=True,
-                           help="Nonempty commit label recorded in Runtime history.")
-    subparser.add_argument("--idempotency-key", required=True,
-                           help="Stable key to retry this exact document commit.")
-    subparser.add_argument("--dry-run", action="store_true",
-                           help="Preview the commit without accepting a Runtime publication.")
-    _add_json_flag(subparser, default=False)
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_commit))
-
-
-def _configure_status(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline id or slug to inspect.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("--text", "--human", dest="text", action="store_true",
-                           help="Print the human summary (changes in plain words, check, next steps) instead of the envelope.")
-    subparser.add_argument("--all", action="store_true", help="With --text: every change and the full check report.")
-    subparser.add_argument("--render", action="store_true",
-                           help="With --text: also look up the latest render of this timeline (scans the run history, ~10 s).")
-    _add_json_flag(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_status)))
-
-
-def _configure_edit(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli_native import configure_edit_options
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", nargs="?", default=None,
-                           help="Timeline id or slug with a saved working copy (or use --file).")
-    subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("--clip", help="Clip by address (c30.cover), layer name, asset key, id or prefix, element, or on-screen text.")
-    subparser.add_argument("--near", default=None, help="With --clip: the match nearest this word or time.")
-    subparser.add_argument("--add-media", dest="add_media", default=None, metavar="FILE|HANDLE|KEY",
-                           help="Add an audio media clip; audio tracks stay independent of picture cuts "
-                                "(needs --track and --on; --for/--until/--trim-in/--trim-out/--gain-db/--id optional).")
-    subparser.add_argument("--add-layer", dest="add_layer", default=None, metavar="ELEMENT",
-                           help="Add media directly through the commit door, including the first clip "
-                                "(--layer-asset FILE|HANDLE|KEY --on SECONDS --for SECONDS --track V1). "
-                                "Other layers (type, sprite, snap-plate ...) edit the cut on screen at --on MOMENT "
-                                "(--layer NAME, --layer-asset ASSET, --for/--until, --set k=v, --track optional).")
-    subparser.add_argument("--layer", default=None, metavar="NAME", help="Layer name for --add-layer (default: its asset or element name).")
-    subparser.add_argument("--layer-asset", dest="layer_asset", default=None, metavar="ASSET",
-                           help="Asset (key, file or media handle) for --add-layer.")
-    subparser.add_argument("--track", default=None, metavar="TRACK", help="Track for --add-layer, or the audio track for --add-media (music, vo, sfx ...).")
-    subparser.add_argument("--id", dest="clip_id", default=None, metavar="ID", help="Clip id for --add-media or --add-layer.")
-    subparser.add_argument("--trim-in", dest="trim_in", type=float, default=None, metavar="SECONDS",
-                           help="Set a media clip's source in point; its film start stays and its length follows.")
-    subparser.add_argument("--trim-out", dest="trim_out", type=float, default=None, metavar="SECONDS",
-                           help="Set a media clip's source out point; its film start stays and its length follows.")
-    subparser.add_argument("--slip", type=float, default=None, metavar="SECONDS",
-                           help="Move a media clip's source window while its film position and length stay fixed.")
-    subparser.add_argument("--set", dest="set_values", action="append", default=[])
-    subparser.add_argument("--swap-asset", metavar="KEY|FILE|HANDLE|KEY=HANDLE",
-                           help="Point the clip at an asset: a registry key, a local file, or project media "
-                                "(run:RUN/PORT#n, task:TASK/PORT#n, ref:NAME, sha256:DIGEST). Name new media yourself "
-                                "with KEY=HANDLE (BROOM=run:RUN/sprites#0).")
-    subparser.add_argument("--replace-asset", dest="replace_asset", default=None, metavar="KEY=HANDLE",
-                           help="Repoint every clip using KEY to new project media, keeping the key "
-                                "(run:..., task:..., ref:..., sha256:...).")
-    from astrid.packs.timeline.cli_look import add_look_flags
-    add_look_flags(subparser)
-    subparser.add_argument("--on", help='Start on a moment: "viral", after "Astrid", beat 2 after "Astrid", c22, +0.8s.')
-    subparser.add_argument("--until", help='End on a moment (its start stays): "Astrid", after "viral", c26.')
-    subparser.add_argument("--for", "--duration", dest="for_seconds", type=float, metavar="SECONDS",
-                           help="A literal length in seconds (prefer --until when the end means something).")
-    subparser.add_argument("--extend", type=float)
-    subparser.add_argument("--nudge", type=float)
-    subparser.add_argument("--nudge-frames", type=int)
-    subparser.add_argument("--close-gap-before")
-    subparser.add_argument("--at", dest="at", help="Start the clip at this time (seconds or m:ss).")
-    subparser.add_argument("--at-word", dest="at_word", default=None, help="Start the clip at this word.")
-    subparser.add_argument("--n", type=int, default=None, help="Which occurrence of --at-word (1-based).")
-    subparser.add_argument("--offset", type=float, help="Seconds after the word or time.")
-    subparser.add_argument("--split", metavar="CUT", help="Split this cut at --on MOMENT.")
-    subparser.add_argument("--add-cut", action="store_true", help="Add a cut at --on MOMENT (see --after).")
-    subparser.add_argument("--cut", help="Cut number or id; alone, the cut's picture clip.")
-    subparser.add_argument("--cut-id", dest="cut_id", default=None, metavar="ID",
-                           help="The new cut's id for --split/--add-cut (default: the next free).")
-    subparser.add_argument("--picture", default=None, metavar="KEY|FILE|HANDLE",
-                           help="The new cut's picture for --split/--add-cut.")
-    subparser.add_argument("--why", default=None, metavar="TEXT",
-                           help="With --cut: why the cut is there (the sheet's why: line).")
-    subparser.add_argument("--hold", default=None, choices=("deliberate", "off"),
-                           help="With --cut: mark the cut's hold deliberate (or off).")
-    subparser.add_argument("--fit-sequence", dest="fit_sequence", action="store_true",
-                           help="Fit the clip's whole step sequence into --on/--until as one unit.")
-    subparser.add_argument("--shape-from", dest="shape_from", default=None, metavar="TL[@REV]",
-                           help="With --fit-sequence: restore the shape of the same sequence in another timeline.")
-    from astrid.packs.timeline.cli_film import add_film_flags
-    add_film_flags(subparser)
-    subparser.add_argument("--retime", action="store_true", help="Move every anchored clip back onto its word.")
-    subparser.add_argument("--insert", type=_parse_insert, default=None, metavar="TIME:SECONDS",
-                           help="Insert silence/time at TIME (e.g. 1:02:0.5), moving everything after it later.")
-    subparser.add_argument("--keep", action="store_true", help="Accept an orphaned clip where it is (a fixed time, no moment); it stops blocking commit.")
-    subparser.add_argument("--clear-asset", dest="clear_asset", action="store_true",
-                           help="Empty the clip's asset (it stays on the timeline).")
-    subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",
-                           help="Let --set write a param the element does not declare.")
-    subparser.add_argument("--beats", default=None, metavar="FILE|HANDLE|keep",
-                           help="Attach a beat grid to the clip from a file or handle (or keep its own).")
-    subparser.add_argument("--verify", action="store_true",
-                           help="After saving, compare the published film and the working copy at the changed frames.")
-    from astrid.packs.timeline.cli_verify import add_labels_flag, add_timings_flag
-    add_labels_flag(subparser)
-    add_timings_flag(subparser)
-    subparser.add_argument("--gap-after", action="append", default=[], metavar="LINE=SECONDS",
-                           help="Set the declared silence after a line; repeat to set several lines.")
-    subparser.add_argument("--remove-line", metavar="LINE", help="Remove a narration line.")
-    narration = subparser.add_mutually_exclusive_group()
-    narration.add_argument("--replace-line", "--line", metavar="LINE", help="Replace one line's selected take and word timings.")
-    narration.add_argument("--insert-line", metavar="LINE", help="Insert a line after --after.")
-    narration.add_argument("--from-script", metavar="PATH", help="Apply a JSON narration script and its local takes.")
-    subparser.add_argument("--take", help="Selected WAV or registered take for --replace-line/--insert-line.")
-    subparser.add_argument("--words", help="Word-timing JSON for --replace-line/--insert-line.")
-    subparser.add_argument("--after", help="Existing line after which --insert-line is placed.")
-    subparser.add_argument("--insert-gap-after", "--gap", dest="insert_gap_after", type=float, help="Declared gap after a newly inserted line, in seconds.")
-    subparser.add_argument("--text", "--line-text", dest="line_text",
-                           help="Narration text to bind with a replacement or insertion.")
-    subparser.add_argument("--takes", help="Take directory used by --from-script.")
-    subparser.add_argument("--gaps", "--script-gaps", dest="script_gaps", action="store_true",
-                           help="Use script-declared gaps when applying --from-script.")
-    from astrid.packs.timeline.cli_music import add_music_flag
-    add_music_flag(subparser)
-    from astrid.core.timeline.audio_curves import names as audio_curve_names
-
-    subparser.add_argument("--crossfade", nargs="+", default=None, metavar="TOKEN",
-                           help=f"Crossfade clips A and B on one audio track; optional third token curve=NAME "
-                                f"(default: equal-power; curves: {', '.join(audio_curve_names())}). "
-                                "With --over, moves B's start to create that overlap.")
-    subparser.add_argument("--over", dest="overlap", type=float, default=None, metavar="SECONDS",
-                           help="With --crossfade: requested overlap; keeps A fixed and moves B's start.")
-    subparser.add_argument("--remove", action="store_true")
-    from astrid.packs.timeline.cli_sweep import add_edit_sweep_flags
-    add_edit_sweep_flags(subparser)
-    configure_edit_options(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_edit))
-
-
-def _configure_check(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline UUID, ULID, or slug with a saved working copy.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("--all", action="store_true", help="Print the full validation report.")
-    subparser.add_argument("--at", action="append", default=None, metavar="MOMENT",
-                           help="Compare the published timeline and working copy at this moment; repeat for multiple moments.")
-    from astrid.packs.timeline.cli_verify import add_labels_flag, add_timings_flag
-    add_labels_flag(subparser)
-    add_timings_flag(subparser)
-    from astrid.packs.timeline.cli_visualize import add_zoom_flags
-    add_zoom_flags(subparser)
-    from astrid.packs.timeline.cli_sweep import add_check_sweep_flag
-    add_check_sweep_flag(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_check))
-
-
 def _cmd_assets(parsed: argparse.Namespace) -> int:
     """List registry keys, media facts and the clips that use each key."""
     from astrid.sdk.timeline_checkout import Checkout, find_draft
@@ -4050,215 +3240,65 @@ def _cmd_assets(parsed: argparse.Namespace) -> int:
     return 0
 
 
-def _configure_assets(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline id or slug.")
-    subparser.add_argument("key", nargs="?", default=None, help="Show only this asset key.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.set_defaults(handler=_cmd_assets)
-
-
-def _configure_find(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli_find import configure_find, run_find
-
-    configure_find(subparser, _add_project_arg)
-    subparser.set_defaults(handler=run_find)
-
-
-def _configure_working_verb(name: str):
-    """Configure one of the working-copy verbs that live in cli_working (lint, lines, words, discard, duplicate)."""
-    def configure(subparser: argparse.ArgumentParser) -> None:
-        from astrid.packs.timeline import cli_working
-
-        getattr(cli_working, f"_configure_{name}")(subparser)
-    return configure
-
-
-def _configure_pending_verb(name: str):
-    """Configure the saved-edit commands owned by ``cli_pending``."""
-    def configure(subparser: argparse.ArgumentParser) -> None:
-        from astrid.packs.timeline import cli_pending
-
-        getattr(cli_pending, f"configure_{name}")(subparser)
-    return configure
-
-
-def _configure_log(subparser: argparse.ArgumentParser) -> None:
-    from astrid.packs.timeline.cli_log import configure_log
-    configure_log(subparser)
-
-
-def _configure_apply(subparser: argparse.ArgumentParser) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref", help="Timeline id or slug with a saved working copy.")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("sheet_file", type=Path, help="Path to the edited cut sheet.")
-    from astrid.packs.timeline.cli_native import configure_apply_options
-    configure_apply_options(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_apply)))
-
-
-def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None:
-    _add_project_arg(subparser, required=False)
-    subparser.add_argument("ref")
-    subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("steps", nargs="?", type=_positive_int, default=None, help="How many edits (default 1).")
-    from astrid.packs.timeline.cli_native import configure_history_options, history_steps
-
-    subparser.add_argument("--steps", dest="steps_option", type=history_steps, default=None,
-                           help="Local edit count, or with --commit a JSON map of receipt IDs to step-ID lists.")
-    configure_history_options(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _with_steps(handler))))
-
-
-COMMANDS: tuple[CommandSpec, ...] = (
-    CommandSpec("import", help="Import a validated .astrid timeline archive into a project.", configure=_configure_import),
-    CommandSpec("export", help="Export the saved head and its media into a .astrid archive.", configure=_configure_export),
-    CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
-    CommandSpec("commit", help="Commit a detached timeline document through Runtime.", configure=_configure_commit),
-    CommandSpec("edit", help="Commit a clip move or trim, or edit a legacy detached working copy.", configure=_configure_edit),
-    CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),
-    CommandSpec("find", help="Find what you hear or see: addresses and times.", configure=_configure_find),
-    CommandSpec("apply", help="Apply supported cut-sheet rows through Runtime, or edit a detached working copy.", configure=_configure_apply),
-    CommandSpec("undo", help="Undo local edits, or an accepted Runtime commit with --commit.", configure=lambda p: _configure_history_edit(p, _cmd_undo)),
-    CommandSpec("redo", help="Redo local edits, or reverse an accepted undo with --commit.", configure=lambda p: _configure_history_edit(p, _cmd_redo)),
-    CommandSpec("check", help="Validate a working copy and optionally sweep every cut.", configure=_configure_check),
-    CommandSpec("status", help="Show the canonical head, working copy, and connected commit state.", configure=_configure_status),
-    CommandSpec("discard", help="Drop recoverable working edits; retain commits with unknown outcomes.", configure=_configure_working_verb("discard")),
-    CommandSpec("pending", help="List, inspect, or drop saved edits that did not land.",
-                configure=_configure_pending_verb("pending")),
-    CommandSpec("retry", help="Preview or commit a saved edit after a timeline clash.",
-                configure=_configure_pending_verb("retry")),
-    CommandSpec("duplicate", help="Copy a timeline's published head into a new timeline, for a trial.", configure=_configure_working_verb("duplicate")),
-    CommandSpec("rename", help="Set a timeline's display name.", configure=_configure_working_verb("rename")),
-    CommandSpec("restructure", help="Store chapters as shots and music / wall-crossing clips on the film (proven equal first).", configure=_configure_working_verb("restructure")),
-    CommandSpec("lines", help="The narration line by line: id, when it is spoken, the gap after it, its text and take.", configure=_configure_working_verb("lines")),
-    CommandSpec("words", help="List the spoken words with their times, or one word in full.", configure=_configure_working_verb("words")),
-    CommandSpec(
-        "create",
-        help="Create an empty timeline with its first canonical head.",
-        configure=_configure_create,
-    ),
-    CommandSpec(
-        "list",
-        help="List active timelines in a project (slug ascending).",
-        configure=_configure_list,
-    ),
-    CommandSpec(
-        "show",
-        help="Show one timeline by UUID, ULID, or slug (use --summary for editor context).",
-        configure=_configure_show,
-    ),
-    CommandSpec(
-        "script",
-        help="Read placed narration in timeline order from pinned shot text revisions.",
-        configure=_configure_script,
-    ),
-    CommandSpec("elements",help="Inspect exact saved effect refs, editable pack files and admission/publication commands.",configure=_configure_elements),
-    CommandSpec("update-element",help="Update the same parent effect from an admitted file pack using exact-head CAS.",configure=_configure_update_element),
-    CommandSpec("place-element",help="Place an admitted effect on an am-discord occurrence shot clip using exact-head CAS.",configure=_configure_place_element),
-    CommandSpec(
-        "replace-parent-media",
-        help="Atomically replace one clip in an exact canonical parent-composition closure.",
-        configure=_configure_replace_parent_media,
-    ),
-    CommandSpec(
-        "archive",
-        help="Archive a timeline (reversible with recover).",
-        configure=_configure_archive,
-    ),
-    CommandSpec(
-        "recover",
-        help="Restore archived work; safe to repeat (changed=false when active).",
-        configure=_configure_recover,
-    ),
-    CommandSpec(
-        "history",
-        help="Ordered lifecycle event history for one timeline.",
-        configure=_configure_history,
-    ),
-    CommandSpec(
-        "log",
-        help="Read and verify the hash-chained edit journal for one timeline.",
-        configure=_configure_log,
-    ),
-    CommandSpec(
-        "diff",
-        help="Deterministic adjacent-version diffs for one timeline.",
-        configure=_configure_diff,
-    ),
-    CommandSpec(
-        "visualize",
-        help="Build a timeline evidence pack synchronously through the public SDK.",
-        configure=_configure_visualize,
-        requires_pack_host=True,
-    ),
-    CommandSpec(
-        "lint",
-        help="Run every registered check over every picture cut, from timeline data (no capture).",
-        configure=_configure_working_verb("lint"),
-    ),
-    CommandSpec(
-        "inspect",
-        help="Read bounded named sections of a verified filmstrip bundle offline.",
-        configure=_configure_inspect,
-    ),
-    CommandSpec(
-        "render",
-        help="Render a canonical kernel timeline with optional version pinning.",
-        configure=_configure_render,
-        requires_pack_host=True,
-    ),
+# The product parser is owned by astrid.core.cli.domain_timelines; these three names are the module's
+# declared public surface (__all__) and the inspect configurator used below.
+from astrid.core.cli.domain_timelines import (  # noqa: E402
+    COMMANDS,
+    _configure_inspect,
+    build_parser,
 )
 
+# PK-4R: this core pack provides the execution handlers for the core-owned
+# declarations (dependency direction pack -> core).
+from astrid.packs.timeline import cli_find as _cli_find  # noqa: E402
+from astrid.packs.timeline import cli_log as _cli_log  # noqa: E402
+from astrid.packs.timeline import cli_pending as _cli_pending  # noqa: E402
+from astrid.packs.timeline import cli_working as _cli_working  # noqa: E402
+from astrid.core.cli import domain_timelines as _core_timelines  # noqa: E402
 
-def build_parser(client: Any) -> argparse.ArgumentParser:
-    """Build the ``timelines`` product-family parser stamped with *client*.
-
-    Exactly the supported verbs above are registered — no aliases, no legacy
-    migration/push/pull/sync/audit/erase/repair verbs, and no ``copy``
-    (reserved for m6) — plus the manifest-declared nested ``shots`` mount
-    (``astrid timelines shots <verb>``) embedded from the shots product
-    parser.
-    """
-    from astrid.packs.shots import cli as shots_cli
-
-    def _configure_shots(subparser: argparse.ArgumentParser) -> None:
-        nested = subparser.add_subparsers(dest="shot_command", required=True)
-        register_product_commands(nested, shots_cli.COMMANDS, family="shots", client=client)
-
-    def _configure_transcripts(subparser: argparse.ArgumentParser) -> None:
-        from astrid.packs.timeline import cli_working
-
-        nested = subparser.add_subparsers(dest="transcript_command", required=True)
-        register_product_commands(nested, (CommandSpec("sync", help="Backfill narration transcript documents from published VO clips.",
-                                                       configure=cli_working._configure_transcripts_sync),),
-                                  family=_FAMILY, client=client)
-
-    from astrid.packs.timeline.cli_parser import TimelinesParser
-
-    parser = TimelinesParser(
-        prog="astrid timelines",
-        description=(
-            "Timeline check/create/list/show/script/replace-parent-media/archive/recover/history/log/diff/visualize/lint/render/lines/words/discard/pending/retry/duplicate "
-            "(product family); nested shots beneath 'timelines shots'."
-        ),
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    register_product_commands(
-        subparsers,
-        (
-            *COMMANDS,
-            CommandSpec(
-                "shots",
-                help="Nested project-level shot list/create/show/add/remove/reorder "
-                "(manifest-owned mount).",
-                configure=_configure_shots,
-            ),
-            CommandSpec("transcripts", help="Sync shared media transcripts from narration clips.",
-                        configure=_configure_transcripts),
-        ),
-        family=_FAMILY,
-        client=client,
-    )
-    return parser
+_core_timelines.provide_handlers({
+    '_as_timeline_verb': _as_timeline_verb,
+    '_cmd_apply': _cmd_apply,
+    '_cmd_archive': _cmd_archive,
+    '_cmd_assets': _cmd_assets,
+    '_cmd_check': _cmd_check,
+    '_cmd_checkout': _cmd_checkout,
+    '_cmd_commit': _cmd_commit,
+    '_cmd_create': _cmd_create,
+    '_cmd_diff': _cmd_diff,
+    '_cmd_edit': _cmd_edit,
+    '_cmd_elements': _cmd_elements,
+    '_cmd_export': _cmd_export,
+    '_cmd_history': _cmd_history,
+    '_cmd_import': _cmd_import,
+    '_cmd_inspect': _cmd_inspect,
+    '_cmd_list': _cmd_list,
+    '_cmd_place_element': _cmd_place_element,
+    '_cmd_recover': _cmd_recover,
+    '_cmd_redo': _cmd_redo,
+    '_cmd_render': _cmd_render,
+    '_cmd_replace_parent_media': _cmd_replace_parent_media,
+    '_cmd_script': _cmd_script,
+    '_cmd_show': _cmd_show,
+    '_cmd_status': _cmd_status,
+    '_cmd_undo': _cmd_undo,
+    '_cmd_update_element': _cmd_update_element,
+    '_cmd_visualize': _cmd_visualize,
+    '_find_run_find': _cli_find.run_find,
+    '_guarded': _guarded,
+    '_log_run_log': _cli_log.run_log,
+    '_pending_cmd_drop': _cli_pending._cmd_drop,
+    '_pending_cmd_list': _cli_pending._cmd_list,
+    '_pending_cmd_retry': _cli_pending._cmd_retry,
+    '_pending_cmd_show': _cli_pending._cmd_show,
+    '_pending_run': _cli_pending._run,
+    '_with_steps': _with_steps,
+    '_working_cmd_discard': _cli_working._cmd_discard,
+    '_working_cmd_duplicate': _cli_working._cmd_duplicate,
+    '_working_cmd_lines': _cli_working._cmd_lines,
+    '_working_cmd_lint': _cli_working._cmd_lint,
+    '_working_cmd_rename': _cli_working._cmd_rename,
+    '_working_cmd_restructure': _cli_working._cmd_restructure,
+    '_working_cmd_transcripts_sync': _cli_working._cmd_transcripts_sync,
+    '_working_cmd_words': _cli_working._cmd_words,
+})

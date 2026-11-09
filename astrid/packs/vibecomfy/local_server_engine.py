@@ -64,7 +64,8 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
     return targets
 
 
-def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
+def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path, *,
+                    client: Any = None, target_custody: Any = None) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
@@ -76,7 +77,7 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    client = client if client is not None else ComfyTargetClient(ComfyTarget(url, "attached"))
     targets = _uploaded_media_targets(bundle, run_inputs)
 
     class UploadedTargetSchema(TargetSchemaProvider):
@@ -90,21 +91,44 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                 inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
             return dataclasses.replace(schema, inputs=inputs)
 
+    def read_object_info():
+        observed = client.object_info()
+        if not isinstance(observed, Mapping):
+            raise ProductionEngineError('ComfyUI object_info is not an object')
+        for node in bundle.workflow.runtime_nodes().values():
+            if node.class_type not in observed:
+                continue  # The missing-node report below owns this case.
+            row = observed[node.class_type]
+            inputs = row.get('input', row.get('inputs')) if isinstance(row, Mapping) else None
+            outputs = row.get('output', row.get('outputs')) if isinstance(row, Mapping) else None
+            if (not isinstance(inputs, Mapping) or not isinstance(outputs, list)
+                    or any(group in inputs and not isinstance(inputs[group], Mapping)
+                           for group in ('required', 'optional'))):
+                raise ProductionEngineError(f'invalid live schema for {node.class_type}')
+        return observed
+
+    custody = {}
+    if target_custody is not None:
+        # Rows the host verified for this exact ComfyUI; approval skips the local-disk presence check.
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
     provider = UploadedTargetSchema.from_object_info(
-        client.object_info(), server_url=url, model_availability="target",
-        refresh_object_info=client.object_info,
+        read_object_info(), server_url=url, model_availability="target",
+        refresh_object_info=read_object_info, **custody,
     )
-    # Inspect an unapproved projection first, so a missing live class gets
-    # our actionable gap report before the approval gate can reject it.
-    api = bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
     # Force a fresh read, including an empty registry (which VibeComfy's
     # general validator treats as an unavailable, skippable schema).
     provider.object_info()
-    issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)]
     missing_nodes = sorted({
-        node["class_type"] for node in api.values()
-        if provider.get_schema(node["class_type"]) is None
+        node.class_type for node in bundle.workflow.runtime_nodes().values()
+        if provider.get_schema(node.class_type) is None
     })
+    # The pinned projection compiler consults per-node socket schemas even
+    # when bundle approval receives an explicit provider. Capture the selected
+    # target's schemas as transient metadata; graph values/revision stay sealed.
+    # Missing classes must fail here, before ambient/on-demand authoring lookup.
+    _capture_live_schemas(bundle, provider)
+    api = {} if missing_nodes else bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
+    issues = [*validate_api_against_schema(api, provider), *validate_api_link_shapes(api, provider)] if api else []
     missing_models: list[str] = []
     for node_id, node in api.items():
         schema = provider.get_schema(node["class_type"])
@@ -157,7 +181,21 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
     """Approve canonically against the selected target's exact model choices."""
     bundle.require_canonical_authority("attached target execution")
-    return bundle.compile(run_inputs=bindings, schema_provider=provider)
+    _capture_live_schemas(bundle, provider)
+    try:
+        return bundle.compile(run_inputs=bindings, schema_provider=provider)
+    except Exception as exc:
+        if (getattr(provider, "auxiliary_model_custody", "local") == "target"
+                and "target" in str(exc) and "auxiliary model" in str(exc)):
+            raise ProductionEngineError(f"ComfyUI at {provider.server_url}: {exc}") from exc
+        raise
+
+
+def _capture_live_schemas(bundle: Any, provider: Any) -> None:
+    for node in bundle.workflow.nodes.values():
+        schema = provider.get_schema(node.class_type)
+        if schema is not None:
+            node.metadata['schema'] = schema
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
@@ -241,6 +279,20 @@ def _staged_digest(destination: Path, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _inventory_from_environment(bundle: Any, url: str) -> tuple[dict[str, Any], ...] | None:
+    """The host's one inventory document, consumed once; none means this machine's disk is the inventory."""
+    from astrid.core.generation import target_inventory
+
+    raw = os.environ.pop(target_inventory.ENV, None)
+    if raw is None:
+        return None
+    try:
+        mode, rows = target_inventory.parse_document(raw, url)
+    except target_inventory.InventoryError as exc:
+        raise ProductionEngineError(str(exc)) from exc
+    return target_inventory.declared_rows(bundle.workflow) if mode == "trust" else rows
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
@@ -283,7 +335,8 @@ def run_local_server(
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    provider = _live_preflight(bundle, run_inputs, url, destination)
+    custody = _inventory_from_environment(bundle, url)
+    provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
     bundle = local_server_bundle(

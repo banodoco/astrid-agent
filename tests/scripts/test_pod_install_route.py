@@ -1,0 +1,115 @@
+"""One runpod install route: the Agent lock's PyPI pin, on the pod too; installed-layout pins."""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from astrid.packs.runpod import managed_sources, pod_bootstrap, pod_source_identity, remote_placement
+
+ROOT = Path(__file__).resolve().parents[2]
+LOCK = ROOT / "requirements" / "runtime.lock"
+FORBIDDEN = ("runpod-python", "runpod_python", "1.12.0+astrid", "SETUPTOOLS_SCM", "RUNPOD_PRETEND_VERSION")
+
+
+def _installed_layout(tmp_path: Path, monkeypatch, *, manifest: dict | None) -> Path:
+    """versions/<id>/{py,manifest.json}: the layout `Installer.stage()` writes."""
+    version = tmp_path / "versions" / "v1"
+    (version / "py").mkdir(parents=True)
+    if manifest is not None:
+        (version / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(managed_sources.sys, "prefix", str(version / "py"))
+    return version
+
+
+def _manifest(runtime_sha: str) -> dict:
+    return {
+        "agent": {"sha": "a" * 40},
+        "runtime": {"sha": runtime_sha},
+        "lifecycle": {"repo": "https://example.invalid/lifecycle.git", "sha": "b" * 40, "version": "0.1.0"},
+    }
+
+
+def test_pins_resolve_without_a_checkout(tmp_path, monkeypatch):
+    from astrid.core.rendering import _local_schema
+
+    # An installed product root: the lock sits where the installer put it, no checkout around it.
+    product = tmp_path / "site-packages"
+    product.mkdir()
+    (product / "runtime.lock.json").write_text(json.dumps({"source_commit": "c" * 40}))
+    seen = []
+    real = _local_schema.runtime_lock_path
+    monkeypatch.setattr(_local_schema, "runtime_lock_path", lambda root: seen.append(root) or real(root))
+    monkeypatch.setattr(managed_sources, "AGENT_ROOT", product)
+    _installed_layout(tmp_path, monkeypatch, manifest=_manifest("c" * 40))  # no "runpod" entry
+
+    pins = managed_sources._pins()
+
+    assert seen == [product]
+    assert set(pins) == {"src/astrid-agent", "src/astrid-runtime", "src/runpod-lifecycle", "src/VibeComfy"}
+    assert pins["src/astrid-runtime"][1] == "c" * 40
+    assert pins["src/astrid-agent"][1] == "a" * 40
+    assert set(pins) == set(remote_placement.SOURCE_DIRS)
+
+
+def test_pins_report_a_missing_installed_manifest(tmp_path, monkeypatch):
+    product = tmp_path / "site-packages"
+    product.mkdir()
+    (product / "runtime.lock.json").write_text(json.dumps({"source_commit": "c" * 40}))
+    monkeypatch.setattr(managed_sources, "AGENT_ROOT", product)
+    version = _installed_layout(tmp_path, monkeypatch, manifest=None)
+    with pytest.raises(managed_sources.ManagedSourcesError, match=re.escape(str(version / "manifest.json"))):
+        managed_sources._pins()
+
+
+def test_managed_sources_assume_no_checkout_and_copy_nothing():
+    text = Path(managed_sources.__file__).read_text()
+    assert "AGENT_ROOT.parent" not in text
+    assert '"runtime.lock.json"' not in text
+    assert "shutil.copy" not in text
+
+
+def test_runpod_python_source_dir_is_gone():
+    assert not any("runpod-python" in d for d in remote_placement.SOURCE_DIRS)
+    assert len(remote_placement.SOURCE_DIRS) == 4
+    assert "runpod-python" not in Path(pod_source_identity.__file__).read_text()
+    script = pod_bootstrap.SCRIPT
+    for needle in FORBIDDEN:
+        assert needle not in script, needle
+    assert "src/runpod-python" not in re.search(r"SRC_DIRS=\(([^)]*)\)", script).group(1)
+
+
+def test_pod_bootstrap_installs_runpod_from_the_lock_pin():
+    script = pod_bootstrap.SCRIPT
+    assert 'AGENT_LOCK="src/astrid-agent/requirements/runtime.lock"' in script
+    # The version is never written in the script; it is read from the lock at run time.
+    assert not re.search(r"runpod==\d", script)
+    assert not re.search(r"\b1\.1[02]\.\d", script)
+    assert script.index("install_runpod_from_lock || exit") < script.index('staged_uv_install "$mode"')
+
+
+def test_pod_bootstrap_extracts_the_lock_pin(tmp_path):
+    """Run the real extraction from the shipped script against the real Agent lock."""
+    fn = re.search(r"install_runpod_from_lock\(\) \{.*?\n\}\n", pod_bootstrap.SCRIPT, re.S).group(0)
+    (tmp_path / "src/astrid-agent/requirements").mkdir(parents=True)
+    (tmp_path / "src/astrid-agent/requirements/runtime.lock").write_bytes(LOCK.read_bytes())
+    (tmp_path / "boot").mkdir()
+    (tmp_path / "bin").mkdir()
+    uv = tmp_path / "bin" / "uv"
+    # Stub uv: record the requirements file it is given.
+    uv.write_text('#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = -r ] && cat "$2" > "$CAPTURE"; shift; done\n')
+    uv.chmod(0o755)
+    script = (f'set -euo pipefail\nVENV=/nonexistent\nBOOTSTRAP_ROOT={tmp_path}/boot\n'
+              'AGENT_LOCK="src/astrid-agent/requirements/runtime.lock"\n' + fn + "install_runpod_from_lock\n")
+    env = {"PATH": f"{tmp_path}/bin:/usr/bin:/bin", "CAPTURE": str(tmp_path / "captured.txt")}
+    done = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    captured = (tmp_path / "captured.txt").read_text()
+    lock_pins = re.findall(r"^runpod==\S+", LOCK.read_text(), re.M)
+    assert lock_pins and re.findall(r"^runpod==\S+", captured, re.M) == lock_pins
+    assert captured.count("--hash=sha256:") == LOCK.read_text().count(
+        "--hash=sha256:", LOCK.read_text().index("runpod=="), LOCK.read_text().index("s3transfer=="))
+    assert "s3transfer" not in captured

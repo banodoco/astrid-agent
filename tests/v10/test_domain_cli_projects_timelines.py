@@ -14,7 +14,7 @@ dispatch routes every timelines verb through the product boundary
 (m6 teardown removed the legacy timeline CLI and its fallback).
 
 Task T29 (plan step 26 nested shots) proves the manifest-declared nested
-``shots`` mount (``astrid/packs/shots/cli.py``): shot
+``shots`` mount (``astrid/core/cli/domain_shots.py``): shot
 ``list/create/add/remove/reorder`` are executable **only** beneath
 ``timelines`` (``astrid timelines shots <verb>``), each verb is one SDK
 call routed through the shot service, there is **no top-level shots
@@ -2247,7 +2247,7 @@ def test_dispatch_timelines_has_no_legacy_cli_fallback(monkeypatch) -> None:
 
 
 def test_shots_parser_has_exactly_eight_verbs_beneath_timelines() -> None:
-    from astrid.packs.shots.cli import COMMANDS, build_parser
+    from astrid.core.cli.domain_shots import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
         "text",

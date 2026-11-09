@@ -44,3 +44,29 @@ def test_undeclared_pack_operation_is_usage_error(capsys: pytest.CaptureFixture[
 
     assert dispatch("vibecomfy", ["search", "query"]) == 2
     assert "no declared CLI commands" in capsys.readouterr().err
+
+
+def test_public_generate_audio_uses_audio_parser_and_admits_runpod_sfx(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from astrid.core import gateway
+    from astrid.core.generation import cli
+
+    assert gateway.main(["generate", "audio", "--help"]) == 0
+    help_output = capsys.readouterr().out
+    assert "--mode {music,tts,sfx}" in help_output
+    assert "generation history" not in help_output
+
+    calls = []
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        audio=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(ok=True, kernel_task_id=None,
+            to_dict=lambda: {"status": "preview"})))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+    assert gateway.main([
+        "generate", "audio", "waves", "--mode", "sfx", "--target", "runpod", "--dry-run", "--json",
+    ]) == 0
+    assert calls and calls[0]["mode"] == "sfx" and calls[0]["target"] == "runpod"
+    capsys.readouterr()

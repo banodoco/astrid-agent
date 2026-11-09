@@ -2,7 +2,7 @@
   "schema_version": 1,
   "tools": [
     {
-      "canonical_id": "video_editing.video-editor",
+      "canonical_id": "rendering.video-editor",
       "compatibility": {
         "host": "1"
       },
@@ -20,11 +20,11 @@
       "id": "video-editor",
       "manifest": {
         "path": "pack.yaml",
-        "sha256": "53ad0207af00cd880a3e8261c03f9caab69cc59b471064d141b4e8c36c125216"
+        "sha256": "7c354e2bce0d801cd5dbd6602d6b282e2546136dc4ac99dacf17b11988478793"
       },
-      "pack_id": "video_editing",
+      "pack_id": "rendering",
       "pack_version": "1.0.0",
-      "release_sha256": "b5acb2197122161fa78bd6687b3b6f03dc588d574d9a57fade26dbd51000657c",
+      "release_sha256": "92d6b807374f8027db119b7a3808539a5a8f52b85cf9bba6eaad8fbef6414b3f",
       "resources": [],
       "target": "astrid"
     }

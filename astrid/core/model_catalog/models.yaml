@@ -58,7 +58,7 @@ models:
         backends:
           local:
             template: image/qwen_image_2_1_turbo
-            template_hash: "sha256:a47e24e6da4dfb7a41413e563fa90dd4e2d45a49a423ee132e5c00cbc27371b9"
+            template_hash: "sha256:bad6d33473d91ec6f5eb0104ad0378d0333e747144e2a7321d830bb783d414c7"
             model_roles:
               diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
               text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen3vl_8b_int8_convrot.safetensors']}
@@ -73,7 +73,7 @@ models:
         backends:
           local:
             template: edit/qwen_image_2_1_turbo_edit
-            template_hash: "sha256:502814cc614d147499768f81b9e6f68c705f0ef5902c71c19f4505539d62fa74"
+            template_hash: "sha256:0de58dc0a49643e86347d259b795bff172f5547647ee9d2e2048f0f8fe28560c"
             param_map: {prompt: prompt, negative_prompt: negative_prompt, seed: seed, count: count, image_ref: image}
             model_roles:
               diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
@@ -769,10 +769,14 @@ models:
     modality: video
     modes:
       t2v:
+        # The pinned template (video/ltx2_3_t2v) is image-conditioned with conditioning
+        # bypassed (3159 bypass=True) and needs an image file until the text-only graph
+        # lands (ledger M02-40 follow-up). The catalog matches the template.
         supports:
           - prompt
           - negative_prompt
           - seed
+          - image_ref
           - resolution
           - frames
           - fps
@@ -783,6 +787,7 @@ models:
           - enable_safety_checker
         requires:
           - prompt
+          - image_ref
         backends:
           local:
             template: video/ltx2_3_t2v

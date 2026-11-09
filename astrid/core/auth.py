@@ -25,19 +25,8 @@ class AuthCommandError(RuntimeError):
 
 
 def contributor_key_present() -> bool:
-    """Return whether a local contributor credential appears configured.
-
-    This checks only presence/size. It never exposes the secret to a prompt or
-    result envelope.
-    """
-
-    if os.environ.get("HIVEMIND_CONTRIBUTOR_KEY", "").strip():
-        return True
-    key_path = Path.home() / ".hivemind" / "key"
-    try:
-        return key_path.is_file() and key_path.stat().st_size > 0
-    except OSError:
-        return False
+    """Return whether the host injected a contributor credential."""
+    return bool(os.environ.get("HIVEMIND_CONTRIBUTOR_KEY", "").strip())
 
 
 def contributor_auth_system_notice() -> str:

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from runtime_protocol import platform
 
+from astrid.core.generation._engine_python_bootstrap import engine_process_env
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.generation.model_downloader import _download_model
 
@@ -52,10 +54,11 @@ def atomic_json(path, value):
 def download_model(row, destination, repository, deadline, *, opener=None, chunk_bytes=64 << 20):
     """Adapt the old H3 row/signature onto the shared verified downloader."""
     destination = Path(destination)
-    row_parts = Path(row["path"]).parts
-    if len(destination.parts) >= len(row_parts) and destination.parts[-len(row_parts):] == row_parts:
-        models_root = destination.parents[len(row_parts) - 1]
-        relative_destination = "/".join(row_parts)
+    # ``path`` is the repository file (the resolve URL); ``destination`` is the local install.
+    local_parts = Path(row.get("destination", row["path"])).parts
+    if len(destination.parts) >= len(local_parts) and destination.parts[-len(local_parts):] == local_parts:
+        models_root = destination.parents[len(local_parts) - 1]
+        relative_destination = "/".join(local_parts)
     else:
         models_root = destination.parent
         relative_destination = destination.name
@@ -93,7 +96,9 @@ def manifest_for(request, facts):
         "volume": request["volume"], "candidate_namespace": request["root"],
         "platform": {"python": recipe["python"], "os": "linux", "cuda": "13.0",
                      "image": recipe["image"]},
-        "runtime": runtime, "models": request["lock"]["models"],
+        # The model-root inventory is the local layout: each row's local destination.
+        "runtime": runtime,
+        "models": [{**row, "path": row.get("destination", row["path"])} for row in request["lock"]["models"]],
         "model_root": request["root"] + "/models",
         "recipe_sha256": request["recipe_sha256"],
     }
@@ -113,8 +118,9 @@ class Provisioner:
                             if not k.upper().startswith(("PIP_", "UV_"))
                             and k not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}}
         self.env.update({"UV_PYTHON_INSTALL_DIR": str(self.runtime / "python"),
-                                 "UV_CACHE_DIR": str(self.runtime / "uv-cache"),
-                                 "PYTHONDONTWRITEBYTECODE": "1"})
+                                 "UV_CACHE_DIR": str(self.runtime / "uv-cache")})
+        # The engine's one process env (pycache prefix), as every engine launch uses.
+        self.env = engine_process_env(self.env, str(self.root))
         # This provisioner establishes CPU readiness even when rented hardware
         # includes a GPU. Inference qualification belongs to the later worker.
         self.env["CUDA_VISIBLE_DEVICES"] = ""
@@ -243,10 +249,13 @@ assert not torch.cuda.is_initialized()
         text += "".join(f"  {name}: {name}\n" for name in ("diffusion_models", "text_encoders", "vae", "loras"))
         configuration.write_text(text)
         launcher = self.runtime / "launch-comfy.sh"
+        # Same pycache prefix as the engine's local ComfyUI launch (start_request).
+        pycache = engine_process_env({}, str(self.root))["PYTHONPYCACHEPREFIX"]
         script = '''#!/bin/sh
 set -eu
 RUNTIME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export VIBECOMFY_HEADLESS=1
+export PYTHONPYCACHEPREFIX=''' + shlex.quote(pycache) + '''
 cd "$RUNTIME/ComfyUI"
 exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-model-paths-config "$RUNTIME/extra_model_paths.yaml" "$@"
 '''
@@ -266,7 +275,7 @@ exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-mod
                   "for p in Path(root).rglob('*.py') if '.git' not in p.parts]",
                   self.comfy, self.vibe / "vibecomfy"])
         for row in self.request["lock"]["models"]:
-            download_model(row, self.root / "models" / row["path"],
+            download_model(row, self.root / "models" / row.get("destination", row["path"]),
                            self.request["lock"]["repository"], self.request["deadline"])
         facts = json.loads((self.runtime / "environment-receipt.json").read_text())
         manifest = manifest_for(self.request, facts)

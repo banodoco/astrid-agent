@@ -131,20 +131,11 @@ def _make_admitted_standin(configured) -> tuple[_Runtime, list[dict[str, str]], 
             "at": 2,
             "hold": 1,
             "track": "picture",
-            "clipType": "am-discord",
+            "clipType": "audio-reactive-colour",
             "params": {
-                "server": "STAND-IN",
-                "channel": "# announcements",
-                "sidebar": False,
-                "badge": "",
-                "messages": [{
-                    "author": "Astrid",
-                    "tag": "BOT",
-                    "avatarColor": "#5865F2",
-                    "time": "10:00",
-                    "lines": ["The very next day"],
-                    "appearAt": 0,
-                }],
+                "schemaVersion": 1,
+                "initialColor": "#2ecc71",
+                "events": [],
             },
         },
     ]
@@ -269,7 +260,8 @@ def _write_preview_app(root: Path, sources: dict[str, str], node_modules: Path) 
     source_b = root / "revision-b.tsx"
     source_a.write_text(sources["very"], encoding="utf-8")
     source_b.write_text(sources["next"], encoding="utf-8")
-    built_in = (ROOT / "astrid/packs/astrid_motion/rendering/elements/effects/am-discord/component.tsx").as_posix()
+    # Core rendering-pack control (deterministic full-frame colour), not a moved pack.
+    built_in = (ROOT / "astrid/packs/rendering/rendering/elements/effects/audio-reactive-colour/component.tsx").as_posix()
     (root / "index.html").write_text(
         '<link rel="stylesheet" href="/style.css"><div id="root"></div>'
         '<script type="module" src="/preview.tsx"></script>',
@@ -288,12 +280,12 @@ def _write_preview_app(root: Path, sources: dict[str, str], node_modules: Path) 
         "import {AbsoluteFill, Sequence} from 'remotion';\n"
         "import RevealVery from './revision-a.tsx';\n"
         "import RevealNext from './revision-b.tsx';\n"
-        f"import AmDiscord from {json.dumps(built_in)};\n"
-        "const params={server:'STAND-IN',channel:'# announcements',sidebar:false,badge:'',messages:[{author:'Astrid',tag:'BOT',avatarColor:'#5865F2',time:'10:00',lines:['The very next day'],appearAt:0}]};\n"
+        f"import AudioReactiveColour from {json.dumps(built_in)};\n"
+        "const params={schemaVersion:1,initialColor:'#2ecc71',events:[]};\n"
         "const Scene=()=>{useEffect(()=>{document.body.dataset.ready='1';},[]);return <AbsoluteFill>"
         "<Sequence from={0} durationInFrames={10}><RevealVery params={{}}/></Sequence>"
         "<Sequence from={10} durationInFrames={10}><RevealNext params={{}}/></Sequence>"
-        "<Sequence from={20} durationInFrames={10}><AmDiscord params={params}/></Sequence>"
+        "<Sequence from={20} durationInFrames={10}><AudioReactiveColour params={params}/></Sequence>"
         "</AbsoluteFill>;};\n"
         "const frame=Number(new URLSearchParams(location.search).get('frame')||0);\n"
         "createRoot(document.getElementById('root')).render(<Player component={Scene} durationInFrames={30} fps={10} compositionWidth={1920} compositionHeight={1080} initialFrame={frame} controls={false} acknowledgeRemotionLicense style={{width:1920,height:1080}}/>);\n",
@@ -457,6 +449,9 @@ def test_pinned_element_render_proof_on_standin(
     )
     builtin_unchanged = _metrics(builtin_baseline[SAMPLES["day"]], export_frames[SAMPLES["day"]])
     assert builtin_unchanged["pass"], builtin_unchanged
+    # Non-vacuity: the control must actually render its declared colour, not two blank frames.
+    with Image.open(builtin_baseline[SAMPLES["day"]]) as day_image:
+        assert day_image.convert("RGB").getpixel((0, 0)) == (46, 204, 113)
 
     missing_rows = copy.deepcopy(runtime.documents.rows)
     runtime.documents.rows.clear()
@@ -507,10 +502,10 @@ def test_pinned_element_render_proof_on_standin(
                     "revisions_used": [ref["revision"] for ref in refs],
                     "expected_colours": COLOURS,
                     "sample_frames": SAMPLES,
-                    "observed": {"very": COLOURS["very"], "next": COLOURS["next"], "day": "built-in am-discord"},
+                    "observed": {"very": COLOURS["very"], "next": COLOURS["next"], "day": "built-in audio-reactive-colour #2ecc71"},
                 },
                 "snapshot_errors": {"missing": missing_error, "corrupt": corrupt_error, "fallback": "none"},
-                "builtin_am_discord_unchanged": builtin_unchanged,
+                "builtin_audio_reactive_colour_unchanged": builtin_unchanged,
                 "parity": {
                     "tolerance": PIXEL_TOLERANCE,
                     "samples": parity,

@@ -25,8 +25,11 @@ FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
 DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@18.12.6"
 MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
-    "runpod": "https://github.com/runpod/runpod-python.git",
 }
+# The lifecycle identity (repository, revision, version) has one source: packs/runpod/pins.json.
+LIFECYCLE_VERSION = json.loads(
+    (Path(__file__).resolve().parents[1] / "packs" / "runpod" / "pins.json").read_text(encoding="utf-8")
+)["sources"]["lifecycle"]["version"]
 
 
 def omp_source(pin: dict) -> str | dict:
@@ -66,21 +69,19 @@ def validate_manifest(value: dict) -> dict:
     if type(release) is not int or release < 0:
         raise ValueError("The install manifest release must be a nonnegative integer.")
     sources = ("agent", "runtime") + (("vibecomfy",) if "vibecomfy" in value else ())
-    runpod_sources = ("lifecycle", "runpod")
-    if any(name in value for name in runpod_sources):
-        if not all(name in value for name in runpod_sources):
-            raise ValueError("The manifest must pin both lifecycle and runpod sources together.")
-        for name in runpod_sources:
-            pin = value[name]
-            if (not isinstance(pin, dict) or set(pin) != {"repo", "sha", "version"}
-                    or not isinstance(pin["sha"], str)
-                    or not re.fullmatch(r"[0-9a-f]{40}", pin["sha"])
-                    or not isinstance(pin["version"], str)
-                    or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
-                raise ValueError(f"The {name} source must include a full git SHA and exact version.")
-            repository = source_repo(pin["repo"])
-            if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES[name]:
-                raise ValueError(f"The {name} source repository does not match its reviewed identity.")
+    if "runpod" in value:
+        raise ValueError("The runpod SDK installs from the hashed runtime lock, not a manifest source.")
+    if "lifecycle" in value:
+        pin = value["lifecycle"]
+        if (not isinstance(pin, dict) or set(pin) != {"repo", "sha", "version"}
+                or not isinstance(pin["sha"], str)
+                or not re.fullmatch(r"[0-9a-f]{40}", pin["sha"])
+                or not isinstance(pin["version"], str)
+                or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
+            raise ValueError("The lifecycle source must include a full git SHA and exact version.")
+        repository = source_repo(pin["repo"])
+        if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES["lifecycle"]:
+            raise ValueError("The lifecycle source repository does not match its reviewed identity.")
     for name in sources:
         pin = value[name]
         if (not isinstance(pin, dict) or not isinstance(pin.get("sha"), str)
@@ -96,7 +97,34 @@ def validate_manifest(value: dict) -> dict:
     omp_source(value["tools"]["omp"])
     if value["tools"]["node"]["version"] != "20.19.4":
         raise ValueError("Remotion requires Node 20.19.4.")
+    if "pack_build" in value:
+        validate_pack_build(value["pack_build"])
     return value
+
+
+def validate_pack_build(spec: object) -> dict:
+    """Validate the optional App release's selected compiler contract."""
+    if (not isinstance(spec, dict)
+            or set(spec) != {"version", "esbuild_version", "app_release_sha256", "shared_modules"}
+            or type(spec["version"]) is not int or spec["version"] != 1
+            or spec["esbuild_version"] != "0.27.7"
+            or not isinstance(spec["app_release_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", spec["app_release_sha256"])):
+        raise ValueError("Invalid release pack-build specification.")
+    shared = spec["shared_modules"]
+    if (not isinstance(shared, dict) or set(shared) != {"url", "sha256"}
+            or not isinstance(shared["url"], str) or not isinstance(shared["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", shared["sha256"])):
+        raise ValueError("Invalid release shared-module specification.")
+    try:
+        url = urllib.parse.urlsplit(shared["url"])
+        if (url.scheme != "https" or not url.hostname or url.username is not None
+                or url.password is not None or url.fragment or url.port == 0
+                or any(ord(c) <= 32 or ord(c) == 127 for c in shared["url"])):
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError("Shared-module lock requires a valid HTTPS URL.") from exc
+    return spec
 
 
 def asset_downloads(asset: dict) -> list[tuple[str, str | None]]:

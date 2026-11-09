@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("rendering.timeline_storyboard")
 
@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.atomic_io import write_json_atomic, write_text_atomic
-from astrid.core.media import require_runtime_materialized_file
+from astrid.pack_api import load_registry, load_timeline
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AstridError
+from astrid.pack_api import write_json_atomic
+from astrid.core.foundation.atomic_io import write_text_atomic
+from astrid.pack_api import require_runtime_materialized_file
 
 _DISCORD_INPUT_RE = re.compile(r"^input_media(?:_([2-9]|10))?$")
 CONTACT_SHEET_COLUMNS = 2
@@ -724,8 +725,8 @@ def build_storyboard(
     assets_registry_path = assets_registry_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
 
-    timeline_config = timeline.load_timeline(timeline_path)
-    asset_registry = timeline.load_registry(assets_registry_path)
+    timeline_config = load_timeline(timeline_path)
+    asset_registry = load_registry(assets_registry_path)
     view_model = build_view_model(
         timeline_config,
         asset_registry,

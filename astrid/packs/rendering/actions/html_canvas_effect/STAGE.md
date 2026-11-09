@@ -20,13 +20,20 @@ result = sdk.invoke(
 )
 ```
 
-Internal runner form (not a public entrypoint):
+Equivalent SDK call:
 
-```bash
-ASTRID_INTERNAL_INVOCATION=1 python3 -m astrid.packs.rendering.actions.html_canvas_effect.run \
-  --effect-id glass-product-card \
-  --label "Glass Product Card" \
-  --out runs/html-canvas-effect/report.json
+```python
+import astrid.sdk as sdk
+result = sdk.invoke(
+    "rendering.html_canvas_effect",
+    kind="executor",
+    project="demo",
+    inputs={
+        "effect_id": 'glass-product-card',
+        "label": 'Glass Product Card',
+    },
+    dry_run=True,
+)
 ```
 
 Output:

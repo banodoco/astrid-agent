@@ -23,6 +23,58 @@ from astrid.core.generation.preflight import GenerationReadinessError, generatio
 DATA = b'locked CPU fake model bytes'
 
 
+def _locked_model_rows(monkeypatch, rows_by_lock):
+    indexed = tuple(SimpleNamespace(engine=f'engine-{i}', platform='test')
+                    for i in range(len(rows_by_lock)))
+    monkeypatch.setattr(alignment, 'load_recipe_index',
+                        lambda: SimpleNamespace(entries=indexed))
+    monkeypatch.setattr(alignment, 'load_recipe',
+                        lambda engine, _platform: SimpleNamespace(
+                            models_lock=f'lock-{engine.removeprefix("engine-")}'))
+    monkeypatch.setattr(alignment, 'load_model_lock',
+                        lambda lock: SimpleNamespace(models=rows_by_lock[lock]))
+
+
+def _artifact(name='qwen-a', **changes):
+    facts = {
+        'name': name,
+        'repository': 'Comfy-Org/Qwen-Image-2.1',
+        'revision': 'a' * 40,
+        'path': 'diffusion_models/qwen.safetensors',
+        'url': None,
+        'destination': 'diffusion_models/qwen.safetensors',
+        'bytes': 123,
+        'sha256': 'b' * 64,
+    }
+    facts.update(changes)
+    return ModelSpec(**facts)
+
+
+def test_packaged_model_locks_deduplicate_same_artifact_with_different_names(monkeypatch):
+    first = _artifact(name='qwen_image_2.1_turbo_int8_convrot')
+    alias = _artifact(name='qwen-image-edit-diffusion-models-qwen-image-2-1-turbo-int8-convrot')
+    _locked_model_rows(monkeypatch, {'lock-0': (first,), 'lock-1': (alias,)})
+
+    assert alignment._locked_models()[first.destination] == alias
+
+
+@pytest.mark.parametrize('field,value', [
+    ('repository', 'other/repository'),
+    ('revision', 'c' * 40),
+    ('path', 'other/path.safetensors'),
+    ('url', 'https://models.invalid/other'),
+    ('bytes', 124),
+    ('sha256', 'd' * 64),
+])
+def test_packaged_model_locks_still_reject_different_artifact_facts(monkeypatch, field, value):
+    first = _artifact()
+    conflicting = _artifact(name='alias', **{field: value})
+    _locked_model_rows(monkeypatch, {'lock-0': (first,), 'lock-1': (conflicting,)})
+
+    with pytest.raises(IntegrityError, match='conflicting packaged model locks'):
+        alignment._locked_models()
+
+
 class Workflow:
     def compile(self, _format):
         return {'1': {'class_type': 'UNETLoader', 'inputs': {'unet_name': 'fake.safetensors'}}}
@@ -531,3 +583,44 @@ def test_catalog_without_model_roles_retains_original_fail_closed_gate(fake):
     assert caught.value.code == 'missing_model'
     assert caught.value.readiness['fixes'][0]['argv'][-2:] == ['--entry', 'z-image']
     assert not fake.target.root.exists()
+
+
+def test_foley_alignment_projects_the_real_complete_declaration_without_downloads(tmp_path, monkeypatch):
+    """Proven pattern: test_target_asset_declaration's canonical ready loader."""
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.model_assets import _referenced_model_values
+    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **k: pytest.fail('offline declaration made a request'))
+    monkeypatch.setattr('socket.socket.connect', lambda *a, **k: pytest.fail('offline declaration opened a socket'))
+    entry_id = 'audio/hunyuan_video_foley'
+    workflow = workflow_from_ready(entry_id)
+    assets = workflow.metadata['model_assets']
+    manifests = alignment.catalog_manifests(entry_id)
+    models = manifests[0]['modes'][0]['models']
+    assert [(model.name, model.destination, model.url, model.bytes, model.sha256) for model in models] == [
+        (asset['name'], f"{asset['subdir']}/{asset['name']}", asset['url'], asset['size_bytes'], asset['sha256'])
+        for asset in assets]
+    picked = {row['value'] for row in _referenced_model_values(workflow)}
+    assert any(model.name not in picked for model in models), 'must include non-picker auxiliary declarations'
+    target = alignment.ManagedAssetTarget(tmp_path / 'engine', tmp_path / 'engine/models',
+        tmp_path / 'engine/nodes', sys.executable, 'http://127.0.0.1:8188', 'a' * 64,
+        tmp_path / 'engine/cache.json')
+    report = alignment.align(entry_id=entry_id, target=target,
+        opener=lambda *a, **k: pytest.fail('declaration inspection downloaded weights'))
+    assert report['entries'][0]['status'] == 'not_ready'
+    assert report['total_missing_bytes'] == sum(asset['size_bytes'] for asset in assets)
+    assert len(report['entries'][0]['modes'][0]['models']) == len(assets)
+    assert not target.root.exists()
+
+
+@pytest.mark.parametrize('damage', [
+    {'name': 'windows\\model.bin'}, {'subdir': None}, {'size_bytes': True},
+    {'sha256': 'g' * 64}, {'url': 'http://fixture.invalid/model.bin'},
+])
+def test_invalid_unselected_declarations_grant_no_inventory_authority(damage):
+    from astrid.core.generation.asset_gaps import declared_model_specs
+    from astrid.core.generation.engine_contracts import EngineError
+    asset = {'name': 'model.bin', 'subdir': 'models', 'url': 'https://fixture.invalid/model.bin',
+             'sha256': 'a' * 64, 'size_bytes': 20, **damage}
+    assert declared_model_specs([asset], require_complete=False) == ()
+    with pytest.raises(EngineError):
+        declared_model_specs([asset])

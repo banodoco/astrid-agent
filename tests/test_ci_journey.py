@@ -70,6 +70,7 @@ def test_direct_windows_failure_snapshot_prints_recursive_logs_and_matching_proc
 def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatch):
     evidence = tmp_path / "release1-working-task"
     evidence.mkdir()
+    monkeypatch.setattr(journey, "install_journey_packs", lambda run_cli: None)
     monkeypatch.setattr(
         journey, "installed_cli_with_capture",
         lambda *args, **kwargs: json.dumps({"ok": False, "error": {"code": "not_found"}}),
@@ -77,6 +78,28 @@ def test_task_reports_sdk_error_code_before_empty_task_refs(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match="invocation failed: not_found"):
         journey.task({}, evidence, "fresh-project", create_project=False)
+
+
+def test_journey_packs_install_from_the_pinned_source_through_packs_add():
+    assert journey.JOURNEY_PACKS == {"chiptune": (
+        "https://github.com/banodoco/poms_packs", "2379ab54aca522019ff4f869cfdf9375bdb56dfc")}
+    calls = []
+
+    def run_cli(argv, name):
+        calls.append(argv)
+        return json.dumps({"packs": [{"id": "other"}]})
+
+    journey.install_journey_packs(run_cli)
+    assert calls == [
+        ["packs", "list", "--json"],
+        ["packs", "add", "https://github.com/banodoco/poms_packs", "--revision",
+         "2379ab54aca522019ff4f869cfdf9375bdb56dfc", "--pack-id", "chiptune",
+         "--subpath", "chiptune", "--yes"],
+    ]
+    calls.clear()
+    journey.install_journey_packs(lambda argv, name: (calls.append(argv), json.dumps(
+        {"packs": [{"id": "chiptune"}]}))[1])
+    assert calls == [["packs", "list", "--json"]]
 
 
 def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(tmp_path):

@@ -14,6 +14,10 @@ The cloud path requires FAL_KEY to be resolvable.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('generation')
+
 import json
 import sys
 from pathlib import Path
@@ -24,12 +28,9 @@ from tempfile import TemporaryDirectory
 # ---------------------------------------------------------------------------
 
 _THIS_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _THIS_DIR.parents[4]  # astrid/packs/generation/generate_image/golden → repo
-
-
 def _resolve_image_ref() -> str:
     """Return a path to a tiny input image for i2i tests."""
-    fixtures = _THIS_DIR.parents[1] / "fixtures"
+    fixtures = PACK_ROOT / "actions" / "generate_image" / "fixtures"
     input_png = fixtures / "input.png"
     if input_png.exists():
         return str(input_png.resolve())

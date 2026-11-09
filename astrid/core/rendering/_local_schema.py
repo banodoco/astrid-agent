@@ -148,14 +148,19 @@ def _windows_installed_source(root: Path) -> Path | None:
     return prefix.parent / "a" / SCHEMA_RELATIVE_PATH
 
 
+def runtime_lock_path(root: Path) -> Path:
+    """The one resolution of the Runtime pin: the installer secures exactly this path."""
+    return product_resource("runtime.lock.json", installed=root / "runtime.lock.json",
+                            source=root / "runtime.lock.json",
+                            package_root=root / "astrid/resources")
+
+
 def verified_schema_path(source_root: Path, configured: str) -> Path:
     root = source_root.absolute()
     expected = root / SCHEMA_RELATIVE_PATH
     if configured != str(expected):
         raise ValueError("local timeline schema origin differs from selected Agent source")
-    lock_path = product_resource("runtime.lock.json", installed=root / "runtime.lock.json",
-                                 source=root / "runtime.lock.json",
-                                 package_root=root / "astrid/resources")
+    lock_path = runtime_lock_path(root)
     installed_source = _windows_installed_source(root) if sys.platform == "win32" else None
     if installed_source is not None:
         source_root = Path(sys.prefix).absolute().parent / "a"
@@ -176,7 +181,13 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
             else:
                 safe = owned_by_current_user(path, facts, forbidden=0o022)
             if not safe:
-                raise ValueError(f"local timeline schema input has a foreign owner/mode: {path.name}")
+                detail = ""
+                if (sys.platform != "win32" and stat.S_ISDIR(facts.st_mode)
+                        and facts.st_mode & 0o022):
+                    detail = (f"; timeline schema input directory {path} is group- or "
+                              f"world-writable; run: chmod 755 {path}")
+                raise ValueError(
+                    f"local timeline schema input has a foreign owner/mode: {path.name}{detail}")
             if path == root:
                 break
         facts = leaf.stat()

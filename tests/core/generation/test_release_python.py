@@ -228,7 +228,8 @@ def test_shared_helper_is_stdlib_only_effect_free_and_strict():
     tree = ast.parse((GENERATION / '_engine_python_bootstrap.py').read_text())
     imported = {a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert imported <= {'__future__', 're'}
+    # glob supplies the helper's standard-library CUDA path discovery.
+    assert imported <= {'__future__', 'glob', 're'}
     good = dict(install_root='/r', uv_version='0.11.32', python_version='3.12.10', venv_relative_path='runtime/venv')
     for change in ({'install_root': 'relative'}, {'install_root': '/a/../b'}, {'install_root': '/'},
                    {'install_root': '/a/'}, {'install_root': '//a'}, {'install_root': '/a:b'},

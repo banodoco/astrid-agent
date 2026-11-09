@@ -28,7 +28,7 @@ root = pathlib.Path(sys.argv[1])
 expected = json.loads(pathlib.Path('expected-source.json').read_bytes(), object_pairs_hook=unique)
 selected = json.loads(pathlib.Path('selection.json').read_bytes(), object_pairs_hook=unique)
 assert set(expected) == {'heads','runtime_lock_sha256'}
-assert set(expected['heads']) == {'astrid-agent','astrid-runtime','runpod-python','runpod-lifecycle','VibeComfy'}
+assert set(expected['heads']) == {'astrid-agent','astrid-runtime','runpod-lifecycle','VibeComfy'}
 for key in list(os.environ):
     if key.upper().startswith('GIT_'): del os.environ[key]
 os.environ.update(GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)

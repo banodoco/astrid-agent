@@ -58,7 +58,9 @@ def test_pure_target_paths_and_canonical_launch(recipe):
         request = adapter.start_request(recipe, ROOT, deadline=deadline)
         assert request.argv == tuple(v.format_map(values) for v in recipe.start.argv)
         assert request.cwd == recipe.start.cwd.format_map(values)
-        assert request.env == {k: v.format_map(values) for k, v in recipe.start.env.items()}
+        # The recipe's own overrides, inside the engine's one process env (pycache prefix included).
+        assert request.env == {**{k: v.format_map(values) for k, v in recipe.start.env.items()},
+                               'PYTHONPYCACHEPREFIX': ROOT + '/.astrid-engine/pycache'}
         assert request.deadline == deadline
         runner = engine_runner._Runner.__new__(engine_runner._Runner)
         runner.adapter, runner.recipe, runner.deadline = adapter, recipe, deadline

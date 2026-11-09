@@ -15,9 +15,6 @@ from astrid.core.media import (
     ffprobe_metadata,
     ffprobe_metadata_strict,
 )
-from astrid.packs.editorial.actions.editor_review.run import (
-    _probe_duration as editor_probe_duration,
-)
 from astrid.core.verify.checks import ffprobe_duration_seconds as checks_ffprobe_duration_seconds
 
 
@@ -74,7 +71,6 @@ def test_updated_duration_helpers_preserve_float_parsing(tmp_path: Path) -> None
         return subprocess.CompletedProcess(cmd, 0, stdout="7.25\n", stderr="")
 
     assert ffprobe_duration_seconds(media, runner=fake_runner) == 7.25
-    assert editor_probe_duration(media, ffprobe_runner=fake_runner) == 7.25
 
 
 def test_verify_uses_canonical_media_helper() -> None:

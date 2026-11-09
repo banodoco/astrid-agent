@@ -97,3 +97,31 @@ def test_windows_chat_binds_to_selected_launcher_and_preserves_override(tmp_path
     override = str(tmp_path / "custom agent" / "astrid.cmd")
     monkeypatch.setenv("ASTRID_ACP_COMMAND", override)
     assert service_declaration(**options)["services"][1]["env"]["ASTRID_ACP_COMMAND"] == override
+
+
+def test_unmanaged_host_shutdown_retires_with_the_locked_support_root(tmp_path, monkeypatch):
+    from astrid.sdk import host_bootstrap as hosts
+    from astrid.services import prepare_pack_host_shutdown
+
+    support = (tmp_path / "support").resolve()
+    support.mkdir()
+    source = (tmp_path / "source").resolve()
+    source.mkdir()
+    from runtime_protocol import platform
+
+    state = {"pid": 4242, "runtime_instance_id": "rt-1", "support_root": str(support), "source_checkout": str(source)}
+    (support / "generic-host.json").write_text(json.dumps(state), encoding="utf-8")
+    calls: dict[str, object] = {}
+    # Alive until the old host is terminated, then gone.
+    monkeypatch.setattr(platform, "process_identity",
+                        lambda _pid: None if "terminated" in calls else {"pid": 4242, "birth_id": "b1"})
+    monkeypatch.setattr(platform, "process_birth_matches", lambda *_a: True)
+    monkeypatch.setattr(hosts, "_registered_host_status", lambda _state: "ours")
+    monkeypatch.setattr(hosts, "_terminate_old_host", lambda value, **_kw: calls.setdefault("terminated", value))
+    monkeypatch.setattr(hosts, "_retire_host_locked", lambda value, root, **_kw: calls.update(retired=(value, root)))
+
+    stop = prepare_pack_host_shutdown(support_root=support, source_checkout=source, runtime_instance_id="rt-1")
+    stop()
+
+    assert calls["terminated"] == state
+    assert calls["retired"] == (state, support)

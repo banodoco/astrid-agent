@@ -106,36 +106,3 @@ def test_no_urllib_in_pack_run_py() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_logo_ideas_dry_run(tmp_path: Path) -> None:
-    """logo_ideas --dry-run succeeds without import errors."""
-    from astrid.packs.video_editing.actions.logo_ideas.run import main
-
-    out = tmp_path / "logo_out"
-    code = main(
-        [
-            "--ideas", "A modern tech startup",
-            "--out", str(out),
-            "--count", "1",
-            "--dry-run",
-        ]
-    )
-    assert code == 0
-
-
-def test_fal_foley_dry_run(tmp_path: Path) -> None:
-    """fal_foley --dry-run succeeds without import errors."""
-    from astrid.packs.fal.actions.fal_foley.run import main
-
-    out = tmp_path / "foley_out"
-    # fal_foley requires --clip, --prompt, and --out
-    dummy_clip = tmp_path / "dummy.mp4"
-    dummy_clip.touch()
-    code = main(
-        [
-            "--clip", str(dummy_clip),
-            "--prompt", "footsteps on gravel",
-            "--out", str(out),
-            "--dry-run",
-        ]
-    )
-    assert code == 0

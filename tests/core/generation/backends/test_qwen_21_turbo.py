@@ -12,6 +12,7 @@ import pytest
 
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from astrid.core.model_catalog.registry import ModelRegistry
 from vibecomfy.porting.object_info import get_class
 from vibecomfy.registry.ready import workflow_from_ready
@@ -195,9 +196,9 @@ def test_generate_and_h3_share_vibecomfy_pin():
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
+        'https://github.com/banodoco/VibeComfy.git', VIBECOMFY_ENGINE_REVISION)
     assert h3_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
+        'https://github.com/banodoco/VibeComfy.git', VIBECOMFY_ENGINE_REVISION)
     assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
         k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 

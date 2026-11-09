@@ -32,6 +32,7 @@ from astrid.core.execution import generic_host as generic_host_module
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid_runtime_client import ApiError, WorkspaceClient
+from astrid.pack_api import VERSION as PACK_API_VERSION
 from tests.helpers.runtime import runtime_checkout
 
 # The Runtime realm these proofs run against is a second checkout (tests/lanes.py).
@@ -40,6 +41,20 @@ INTEGRATION_FIXTURES = ("world",)
 PARENT = "bridge.parent"
 CHILD = "bridge.child"
 SECRET = "worker-secret-must-not-cross-bridge"
+# Schema v3 fixture packs must declare the pack API they target, or discovery
+# quarantines them and their capabilities never register.
+V3_FIXTURE_HEADER = {"pack_api": "%d.%d" % PACK_API_VERSION}
+# Test harness, not pack behaviour: scope the parent's nested invoke() discovery
+# to the fixture roots exactly as before (core packs stay out, so core training's
+# editorial.* dependencies never resolve against the stand-in editorial fixture).
+# It must patch private core registries inside the parent action process, which
+# the static import policy for external pack files rightly forbids, so it runs
+# from a string, the same way the -c parent form already carries it in argv.
+SCOPE_PARENT_DISCOVERY = "exec(" + repr(
+    "from astrid.core.execution.executor import registry as er\n"
+    "from astrid.core.execution.orchestrator import registry as ore\n"
+    "from astrid.core.pack import discovery as pd\n"
+    "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n") + ")\n"
 
 
 def digest(data):
@@ -1085,11 +1100,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
     root = world.root
     (root / "actions").mkdir(exist_ok=True)
     inputs = input_ports if input_ports is not None else [{"name": "value", "type": "file" if derived else "string", "required": True}]
-    invoke = ("from astrid.core.execution.executor import registry as er\n"
-              "from astrid.core.execution.orchestrator import registry as ore\n"
-              "from astrid.core.pack import discovery as pd\n"
-              "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-              "from astrid import invoke\n"
+    invoke = (SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
               f"r = invoke('{CHILD}', kind='action', extra_pack_roots=({str(root)!r},), inputs={{'value': "
               + ("{'filename': 'generated.txt', 'output_port': 'source', 'media_type': 'text/plain'}" if derived else "'scalar'")
               + "}, child_key='logical-child', wait=True, timeout_seconds=2, poll_seconds=0.01)\n"
@@ -1110,7 +1121,8 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
             args = ["-c", "exec(__import__('base64').b64decode(" + repr(base64.b64encode(body.encode()).decode()) + "))"]
         else:
             (root / "command.py").write_text(body)
-            args = ["-m", "command"] if form == "-m" else [str(root / "command.py")]
+            # v3 external -m commands run inside the selected pack namespace.
+            args = ["-m", "astrid.packs.bridge.command"] if form == "-m" else [str(root / "command.py")]
         parent_invocation = {"kind": "command", "command": {"argv": argv_override or ["{python_exec}", *flags, *args]}}
         parent_invocation["command"].update(parent_command_fields or {})
     child_code = "def run(value):\n    import os\n    assert 'ASTRID_RUNTIME_CREDENTIAL' not in os.environ\n"
@@ -1118,7 +1130,7 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
         child_code += "    from pathlib import Path\n    Path('outputs').mkdir(exist_ok=True)\n    Path('outputs/answer.txt').write_text('managed-child-bytes')\n"
     child_code += "    return {'answer': " + ("__import__('pathlib').Path(value).read_text()" if derived else "value") + "}\n"
     (root / "actions/child.py").write_text(child_code_override if child_code_override is not None else child_code)
-    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "bridge", "name": "Bridge", "version": "1.0.0", "actions": {
+    (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": "bridge", "name": "Bridge", "version": "1.0.0", "actions": {
         "parent": {"description": "Parent", "invocation": parent_invocation, "inputs": parent_inputs or [], "outputs": parent_outputs if parent_outputs is not None else {},
                    **({"isolation": {"mode": "subprocess", "network": True},
                        "metadata": {"network_policy": network_policy}} if network_policy else {})},
@@ -1243,36 +1255,28 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
         generic_host_module, "_terminate_process_group",
         lambda process, **_kwargs: process.wait(timeout=3),
     )
-    pack_root = tmp_path / "vibecomfy"
+    # vibecomfy is a core pack: the parent fixture delegates to the shipped
+    # core vibecomfy.validate action, never to an external stand-in.
+    core_vibecomfy = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy"
+    pack_root = tmp_path / "nestedparent"
     pack_root.mkdir()
-    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/pack.yaml").read_text())
-    validate = copy.deepcopy(shipped["actions"]["validate"])
-    validate.pop("resources", None)
-    # This fixture dispatches the UI route only. Omitted optional canonical
-    # files must stay omitted instead of the SDK treating '' as an object ID.
-    for port in validate["inputs"]:
-        if port["name"] in {"python", "companion", "source"}:
-            port.pop("default", None)
     workflow_bytes = b'{"nodes":[],"links":[]}'
     workflow_id = digest(workflow_bytes)
     world.service.ingest(world.project, workflow_bytes, media_type="application/json",
                          original_name="workflow.json", idempotency_key="receipt-workflow")
     descriptor = {"object_id": workflow_id, "digest": workflow_id, "filename": "workflow.json"}
     parent_code = (
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        "from astrid.sdk import invoke\n"
         "result = invoke('vibecomfy.validate', kind='action', "
-        f"extra_pack_roots=({str(pack_root)!r},), inputs={{'workflow': {descriptor!r}}}, "
+        f"inputs={{'workflow': {descriptor!r}}}, "
         "child_key='nested-validator', wait=True, timeout_seconds=4, poll_seconds=0.01)\n"
         "assert not result.ok, result.error\n"
         "assert result.kernel_task_id\n"
     )
     pack = {
         "schema_version": 3,
-        "id": "vibecomfy",
+        **V3_FIXTURE_HEADER,
+        "id": "nestedparent",
         "name": "Nested validator receipt fixture",
         "version": "0.1.0",
         "actions": {
@@ -1283,21 +1287,20 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
                 "inputs": [],
                 "outputs": {},
             },
-            "validate": validate,
         },
     }
     (pack_root / "pack.yaml").write_text(yaml.safe_dump(pack, sort_keys=False), encoding="utf-8")
     attempt_root = tmp_path / "attempts"
     host = GenericPackHost(
-        pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+        pack_roots=[pack_root, core_vibecomfy], client=world.client, executor_id="worker", max_concurrency=2,
         attempt_root=attempt_root,
     )
     host.discover()
-    assert {"vibecomfy.parent", "vibecomfy.validate"} <= set(host.capabilities)
+    assert {"nestedparent.parent", "vibecomfy.validate"} <= set(host.capabilities)
     for record in host.capabilities.values():
         world.service.register_capability({"capability_id": record.id, "definition_digest": record.capability_digest})
     world.service.register_executor(
-        {"executor_id": "worker", "capabilities": ["vibecomfy.parent", "vibecomfy.validate"], "max_concurrency": 2},
+        {"executor_id": "worker", "capabilities": ["nestedparent.parent", "vibecomfy.validate"], "max_concurrency": 2},
         idempotency_key="nested-validator-register",
     )
     policy = {
@@ -1308,13 +1311,13 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
     }
     world.service.create_task({
         "project": world.project,
-        "capability_id": "vibecomfy.parent",
-        "capability_digest": host.capabilities["vibecomfy.parent"].capability_digest,
+        "capability_id": "nestedparent.parent",
+        "capability_digest": host.capabilities["nestedparent.parent"].capability_digest,
         "input_object_ids": [workflow_id], "spec": {"inputs": {}}, "child_delegation": policy,
         "idempotency_key": "nested-validator-parent",
     }, enforce_readiness=True)
     parent_claim = world.service.claim_next(
-        {"executor_id": "worker", "capability_ids": ["vibecomfy.parent"], "runtime_epoch": 1},
+        {"executor_id": "worker", "capability_ids": ["nestedparent.parent"], "runtime_epoch": 1},
         idempotency_key="claim-nested-validator-parent", identity=world.identity,
     )
     assert parent_claim
@@ -1333,7 +1336,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
 
     def serve_validator():
         worker = GenericPackHost(
-            pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+            pack_roots=[pack_root, core_vibecomfy], client=world.client, executor_id="worker", max_concurrency=2,
             attempt_root=attempt_root,
         )
         worker.evidence_status_path = support / "evidence-status.json"
@@ -1511,7 +1514,8 @@ def test_retained_interpreter_flags(world, flags):
     code = "import sys\n"
     if "-B" in flags:
         (world.root / "flag_probe.py").write_text("value = 42\n")
-        code += "assert sys.dont_write_bytecode\nimport flag_probe\nassert flag_probe.value == 42\n"
+        # Selected v3 pack source is importable only under its pack namespace.
+        code += "assert sys.dont_write_bytecode\nfrom astrid.packs.bridge import flag_probe\nassert flag_probe.value == 42\n"
         code += f"assert not __import__('pathlib').Path({str(world.root / '__pycache__')!r}).exists()\n"
     if "-u" in flags: code += "assert sys.stdout.write_through\n"
     code += "import __main__\nmain_value = 42\nassert __main__.main_value == 42\n"
@@ -1525,9 +1529,16 @@ def test_unsupported_flags_fail_before_command_work(world, flag):
     marker = world.tmp / "work-ran"
     setup(world, form="-c", code=f"__import__('pathlib').Path({str(marker)!r}).touch()", flags=(flag,))
     c = world.claim
-    with pytest.raises(HostError, match="unsupported delegating Python command flags"):
+    # A selected v3 pack command is refused by the host's route preflight
+    # before any launch; the refusal is a fenced, non-retryable failure.
+    with pytest.raises(HostError):
         world.host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"])
     assert not marker.exists()
+    failed = world.service.task(world.task["id"])["task"]
+    assert failed["status"] == "failed"
+    error = json.loads(failed["result_json"])["error"]
+    assert error["code"] == "executor_failed" and error["retryable"] is False
+    assert not world.service.store.delegated_children(world.task["id"], c["attempt_id"])
 
 
 def test_successful_managed_outputs_have_verified_public_projection(world):
@@ -1837,7 +1848,9 @@ def test_actual_runtime_idempotent_replay_uses_attempt_scoped_child_wire_id(worl
     wire_id = _child_wire_id(project_id=world.project, parent_task_id=world.claim["task_id"],
                              parent_attempt_id=world.claim["attempt_id"], logical_child_key="child")
     args = {"child": {"child_id": wire_id, "capability_id": CHILD, "capability_digest": world.host.capabilities[CHILD].capability_digest},
-            "inputs": {"value": "scalar"}, "ordered_inputs": [], "derived_inputs": [], **b.context}
+            "inputs": {"value": "scalar"}, "ordered_inputs": [], "derived_inputs": [], **b.context,
+            # An exact replay carries the same admitted source digest as the bridge did.
+            "admitted_source_digest": world.host.admit("executor", CHILD)[1]["source_digest"]}
     replay = world.client.admit_child(**args)
     assert replay["task"]["task_id"] == first["task_id"]
     assert replay["task"]["idempotency_key"] == wire_id
@@ -1984,15 +1997,81 @@ def test_lease_loss_revokes_channel_and_runtime_contains_descendants(world):
     assert world.service.task(child["task_id"])["task"]["status"] == "cancelled"
 
 
-def test_source_change_rejected_before_child_admission(world):
+def test_source_change_after_child_admission_rejected_before_launch(world):
+    """Admission observes live source; the child launches only that digest."""
     setup(world)
     b = bridge(world)
-    (world.root / "actions/child.py").write_text("def run(value):\n    return 'changed'\n")
+    child = b.dispatch({**request(world), "wait": False})
+    admitted = world.service.task(child["task_id"])["task"]
+    assert admitted["spec"]["spec"]["admitted_source_digest"] == world.host.admit("executor", CHILD)[1]["source_digest"]
+    marker = world.tmp / "edited-child-ran"
+    (world.root / "actions/child.py").write_text(
+        f"def run(value):\n    __import__('pathlib').Path({str(marker)!r}).touch()\n    return {{'answer': 'changed'}}\n")
     with pytest.raises(HostError, match="source digest changed"):
-        b.dispatch(request(world))
-    assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
+        serve_one(world)
+    assert not marker.exists()
+    refused = world.service.task(child["task_id"])["task"]
+    assert refused["status"] == "failed"
+    assert json.loads(refused["result_json"])["error"]["retryable"] is False
 
 
+def test_delegated_child_without_admitted_digest_refused_before_launch(world, monkeypatch):
+    """Fail closed: a child spec with no admitted_source_digest never reaches its code."""
+    marker = world.tmp / "digestless-child-ran"
+    setup(world, child_code_override=f"def run(value):\n    __import__('pathlib').Path({str(marker)!r}).touch()\n    return {{'answer': value}}\n")
+    b = bridge(world)
+    child = b.dispatch({**request(world), "wait": False})
+    real_claim_next = world.service.claim_next
+
+    def claim_without_digest(body, **kwargs):
+        claim = real_claim_next(body, **kwargs)
+        if claim:
+            claim = copy.deepcopy(claim)
+            envelope = claim["spec"].get("spec", claim["spec"])
+            envelope.pop("admitted_source_digest", None)
+        return claim
+
+    monkeypatch.setattr(world.service, "claim_next", claim_without_digest)
+    with pytest.raises(HostError, match="lacks admitted_source_digest"):
+        serve_one(world)
+    assert not marker.exists()
+    refused = world.service.task(child["task_id"])["task"]
+    assert refused["status"] == "failed"
+    assert json.loads(refused["result_json"])["error"]["retryable"] is False
+
+
+@pytest.mark.parametrize("form", ["-m", "script", "-c"])
+def test_selected_command_with_network_policy_gets_child_answer_through_bridge(world, form, monkeypatch):
+    """NOTE 6: a selected v3 command with a network policy (no runtime connection) still
+    calls back through the bridge and receives the child's answer."""
+    host = setup(world, form=form, targeted=True, network_policy={
+        "allowed_protocols": ["dns", "tcp"], "allowed_routes": [], "broker": {"host_managed": True}})
+    grant = host.request_provider_route_grant({"task": world.task})
+    original_environment = host._child_environment
+    runtime_flags = []
+
+    def spy(*args, **kwargs):
+        runtime_flags.append(kwargs.get("allow_runtime_connection", True))
+        return original_environment(*args, **kwargs)
+
+    monkeypatch.setattr(host, "_child_environment", spy)
+    from concurrent.futures import ThreadPoolExecutor
+    ready = threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(serve_one, world, ready=ready)
+        assert ready.wait(5), "independent child host did not finish discovery"
+        c = world.claim
+        try:
+            host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"],
+                          provider_route_grant=grant)
+        except Exception:
+            future.result(timeout=5)
+            raise
+        assert future.result(timeout=5)
+    assert world.service.task(c["task_id"])["task"]["status"] == "completed"
+    assert len([call for call in world.calls if call[1] == "/v1/delegated-tasks"]) == 1
+    # The selected command really ran with the forced no-runtime-connection launch.
+    assert False in runtime_flags, runtime_flags
 def test_non_python_delegating_command_rejected_before_work(world):
     marker = world.tmp / "command-ran"
     setup(world, form="-c", argv_override=["/bin/sh", "-c", f"printf done > {str(marker)!r}"])
@@ -2101,7 +2180,9 @@ def test_d18_bounded_network_context_and_contained_child(world, monkeypatch, for
     prelude = f'''import os, json, socket, time
 os.environ["ASTRID_SOURCE_STATE"] = {str(world.tmp / "absent.json")!r}
 from urllib.parse import urlsplit
-from astrid.core.execution import network_policy as np
+# The host's network startup installed this policy module; read that exact
+# instance (a static core import would quarantine the external fixture pack).
+np = __import__('sys').modules['astrid.core.execution.network_policy']
 assert 'ASTRID_NETWORK_ADMISSION' not in os.environ
 assert 'ASTRID_NETWORK_BROKER_EVIDENCE' not in os.environ
 assert 'ASTRID_RUNTIME_ENDPOINT' not in os.environ
@@ -2514,25 +2595,21 @@ def _snapshot_fixture(world, *, form="python", limits=None):
         "def run(state=None):\n"
         "    import json, os\n"
         "    from pathlib import Path\n"
-        "    from astrid.sdk import _child_bridge as bridge_sdk\n"
+        "    from astrid.sdk import inherited_child_bridge\n"
         "    assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n"
         "    data = Path(state).read_bytes() if state else b'{\"draft\":1}'\n"
         "    Path('outputs').mkdir(exist_ok=True)\n"
         "    Path('outputs/draft.json').write_bytes(data)\n"
-        "    receipt = bridge_sdk._bridge.publish_snapshot(filename='draft.json', output_port='state_result', revision=1)\n"
+        "    receipt = inherited_child_bridge().publish_snapshot(filename='draft.json', output_port='state_result', revision=1)\n"
         "    assert set(receipt) == {'association_id', 'receipt_id', 'revision', 'output_port', 'digest', 'size', 'durability'}\n"
         "    Path('outputs/answer.txt').write_bytes(b'final:' + data)\n"
         "    return {'state': json.loads(data), 'snapshot': receipt}\n")
-    (review / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": "editorial", "name": "Host review fixture", "version": "1.0.0", "actions": {
+    (review / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": "editorial", "name": "Host review fixture", "version": "1.0.0", "actions": {
         "human_review": {"description": "Bounded host fixture", "invocation": {"kind": "python", "path": "actions/review.py", "function": "run"},
             "inputs": [{"name": "state", "type": "file", "required": False}],
             "outputs": [{"name": "answer", "type": "file", "mode": "create", "path_template": "{out}/answer.txt", "artifact_type": "text/plain"}]}}}))
     body = ("from pathlib import Path\nimport hashlib, os\n"
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        + SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
         "assert isinstance(resume_state, str) and Path(resume_state).is_file()\n"
         "oid = 'sha256:' + hashlib.sha256(Path(resume_state).read_bytes()).hexdigest()\n"
         "descriptor = {'object_id': oid, 'digest': oid, 'filename': 'review-state.json'}\n"
@@ -3137,427 +3214,6 @@ def test_declared_command_output_collision_keeps_materialized_input_and_independ
         (row["output_port"], row["digest"], row["size"])]
 
 
-def _real_review_fixture(world):
-    """Only the parent is synthetic; Human Review and M17 schemas are source-owned."""
-    import io
-    import zipfile
-
-    from astrid.packs.editorial.actions.human_review import run
-    from astrid.core.foundation.hash import executor_definition_digest
-    from astrid.core.pack.loader import load_pack_manifest
-    from astrid.sdk.actions import action_executor_definition
-
-    setup(world)
-    world.service.cancel_task_canonical(world.claim["task_id"], {}, idempotency_key="discard-initial")
-    candidate = Path(__file__).resolve().parents[3]
-    review = candidate / "astrid/packs/editorial"
-    pack = load_pack_manifest(review / "pack.yaml")
-    definition = action_executor_definition(pack, "human_review", pack.actions["human_review"])
-    declared_digest = "sha256:" + executor_definition_digest(definition)
-    schemas = candidate / "astrid/packs/training/actions/dataset_build/schemas"
-    schema_bytes = io.BytesIO()
-    schema_hashes = {}
-    with zipfile.ZipFile(schema_bytes, "w") as archive:
-        for name in sorted(run._STATE_SCHEMA_FILES):
-            data = (schemas / name).read_bytes()
-            archive.writestr(name, data)
-            schema_hashes[name] = digest(data)
-    assets = io.BytesIO()
-    with zipfile.ZipFile(assets, "w") as archive:
-        archive.writestr("human-review-assets.json", json.dumps({"html_root": "html", "mounts": {"/clips": "clips"}}))
-        archive.writestr("html/index.html", "<html>actual Human Review</html>")
-        archive.writestr("clips/sample.txt", "mounted-review-media")
-    initial = run._encode_state(run.make_initial_state(
-        run_id="real-receiver", writer_id="human", status="reviewing", now="2026-10-03T00:00:00Z"))
-    payloads = {
-        "assets_bundle": ("assets.zip", assets.getvalue()),
-        "state_schema_bundle": ("schemas.zip", schema_bytes.getvalue()),
-        "data": ("data.json", json.dumps({"items": [{"item_id": "one"}, {"item_id": "two"}]}).encode()),
-        "state": ("review-state.json", initial),
-        "response_schema": ("response.schema.json", json.dumps({"type": "object", "required": ["decisions"],
-            "properties": {"decisions": {"type": "object"}}, "additionalProperties": False}).encode()),
-    }
-    inputs = {"no_open": True, "timeout": 30}
-    for name, (filename, data) in payloads.items():
-        world.service.ingest(world.project, data, media_type="application/octet-stream",
-            original_name=filename, idempotency_key="real-input-" + name)
-        inputs[name] = {"object_id": digest(data), "digest": digest(data), "filename": filename}
-    stable_inputs = {name: value for name, value in inputs.items() if name != "state"}
-    # Exercise the existing managed SDK path with the real static action
-    # projection. Whole-registry public discovery is a separate owner seam.
-    body = ("from pathlib import Path\nimport hashlib, os\n"
-        "from astrid.core.foundation.hash import executor_definition_digest\n"
-        "from astrid.core.pack.loader import load_pack_manifest\n"
-        "from astrid.core.execution.executor.registry import ExecutorRegistry\n"
-        "from astrid.sdk.actions import action_executor_definition, validate_action_inputs_definition\n"
-        "from astrid.sdk.discovery import _capability_from_executor\n"
-        "from astrid.sdk.invocation import _invoke_bridge_child\n"
-        "from astrid.sdk import _child_bridge\n"
-        f"pack = load_pack_manifest(Path({str(review)!r}) / 'pack.yaml')\n"
-        "definition = action_executor_definition(pack, 'human_review', pack.actions['human_review'])\n"
-        f"assert 'sha256:' + executor_definition_digest(definition) == {declared_digest!r}\n"
-        "registry = ExecutorRegistry([definition])\n"
-        "capability = _capability_from_executor(definition, registry)\n"
-        "assert _child_bridge._bridge is not None\n"
-        "assert isinstance(resume_state, str) and Path(resume_state).is_file()\n"
-        "oid = 'sha256:' + hashlib.sha256(Path(resume_state).read_bytes()).hexdigest()\n"
-        "descriptor = {'object_id': oid, 'digest': oid, 'filename': 'review-state.json'}\n"
-        f"inputs = {stable_inputs!r}\ninputs['state'] = descriptor\n"
-        "assert set(inputs) <= {port.name for port in definition.inputs}\n"
-        "validate_action_inputs_definition(definition, inputs)\n"
-        "r = _invoke_bridge_child(capability, registries=(registry,), inputs=inputs, bridge=_child_bridge._bridge, child_key='resumed-review', wait=True, timeout_seconds=20, poll_seconds=0.01)\n"
-        "assert r.ok, r.error\n"
-        "assert len(r.outputs['managed_outputs']) == 2\n"
-        "assert {row['output_port'] for row in r.outputs['managed_outputs']} == {'decisions', 'state_result'}\n"
-        "assert not any(k in os.environ for k in ('ASTRID_RUNTIME_CREDENTIAL', 'ASTRID_RUNTIME_ENDPOINT', 'CHILD_AUTHORITY', 'PARENT_LEASE_ID'))\n")
-    (world.root / "actions/parent.py").write_text("def run(resume_state=None):\n"
-        + "\n".join("    " + line for line in body.splitlines()) + "\n    return {'child': r.kernel_task_id}\n")
-    manifest = yaml.safe_load((world.root / "pack.yaml").read_text())
-    manifest["actions"]["parent"]["inputs"] = [{"name": "resume_state", "type": "file", "required": False}]
-    (world.root / "pack.yaml").write_text(yaml.safe_dump(manifest))
-    host = GenericPackHost(pack_roots=[world.root, review], client=world.client, executor_id="worker", max_concurrency=4)
-    host.discover()
-    record = host.capabilities[REVIEW]
-    assert record.capability_digest == declared_digest
-    declaration = yaml.safe_load((review / "pack.yaml").read_text())["actions"]["human_review"]
-    assert record.source_root.resolve() == review.resolve()
-    assert record.definition.metadata["action_invocation"] == declaration["invocation"]
-    assert declaration["invocation"]["command"]["argv"][2] == "astrid.packs.editorial.actions.human_review.run"
-    assert record.definition.metadata["runtime_file"] == "actions/human_review/run.py"
-    for capability_id in (PARENT, REVIEW):
-        record = host.capabilities[capability_id]
-        world.service.register_capability({"capability_id": record.id, "definition_digest": record.capability_digest})
-    world.service.register_executor({"executor_id": "worker", "capabilities": [PARENT, CHILD, REVIEW],
-        "max_concurrency": 4, "runtime_epoch": world.service.health()["runtime_epoch"]}, idempotency_key="real-register")
-    cap = {"capability_id": REVIEW, "capability_digest": host.capabilities[REVIEW].capability_digest}
-    object_ids = sorted(value["digest"] for value in inputs.values() if isinstance(value, dict))
-    policy = {"capabilities": [cap], "targets": [{"kind": "default"}], "input_object_ids": object_ids,
-        "recoverable_outputs": [{**cap, "output_ports": ["state_result"]}], "limits": {"max_children": 4}}
-    world.client.generated.admit_task(capability_id=PARENT, capability_digest=host.capabilities[PARENT].capability_digest,
-        input_object_ids=object_ids, project_id=world.project, spec={"inputs": {}}, child_delegation=policy,
-        idempotency_key="real-source-parent")
-    world.host, world.policy, world.review_root = host, policy, review
-    world.claim = _claim_snapshot_task(world, PARENT, key="claim-real-source-parent")
-    world.task = _snapshot_task(world, world.claim)
-    world.parent_bridge = bridge(world)
-    child = world.parent_bridge.dispatch({"v": 1, "request_id": 1, "op": "submit", "child_key": "source-review",
-        "child": cap, "inputs": inputs,
-        "input_descriptors": [{"name": port.name, "kind": "object", "object_id": inputs[port.name]["digest"]}
-            for port in host.capabilities[REVIEW].definition.inputs if port.type == "file" and port.name in inputs],
-        "wait": True, "timeout_seconds": 2, "poll_seconds": 0.01})
-    world.source_claim = _claim_snapshot_task(world, REVIEW, key="claim-real-source-review")
-    assert world.source_claim["task_id"] == child["task_id"]
-    world.source_task = _snapshot_task(world, world.source_claim)
-    world.real_inputs, world.schema_hashes, world.initial_state = stable_inputs, schema_hashes, initial
-
-
-def _real_receiver_host(world, monkeypatch, name):
-    host = GenericPackHost(pack_roots=[world.root, world.review_root], client=world.client,
-        executor_id="worker", max_concurrency=4, attempt_root=world.tmp / name)
-    host.discover()
-    launched = threading.Event()
-    processes = []
-    original = host._track_process
-    def track(process):
-        original(process)
-        processes.append(process)
-        launched.set()
-    monkeypatch.setattr(host, "_track_process", track)
-    original_environment = host._child_environment
-    def environment(*args, **kwargs):
-        env, secrets = original_environment(*args, **kwargs)
-        assert not any(key in env for key in (
-            "ASTRID_RUNTIME_CREDENTIAL", "ASTRID_RUNTIME_ENDPOINT", "CHILD_AUTHORITY", "PARENT_LEASE_ID"))
-        assert SECRET not in json.dumps(env)
-        return env, secrets
-    monkeypatch.setattr(host, "_child_environment", environment)
-    return host, launched, processes
-
-
-def _real_receiver_url(host, launched, processes, future):
-    from astrid.core.execution.generic_host import _observe_owned_review_session
-
-    assert launched.wait(8), future.result(timeout=1)
-    process = processes[0]
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        snapshot = _observe_owned_review_session(process, host.attempt_root)
-        if snapshot is not None:
-            row = json.loads(snapshot[2])
-            assert len(row["launch_nonce"]) == 64
-            return row["receiver_url"]
-        if future.done():
-            pytest.fail(f"receiver exited before startup: {future.result()}")
-        time.sleep(0.05)
-    pytest.fail("actual receiver did not publish its owned local HTTP session")
-
-
-def _real_review_http(url, route, body=None):
-    from urllib.error import HTTPError
-    from urllib.parse import parse_qs, urlsplit
-    from urllib.request import Request, urlopen
-
-    parsed = urlsplit(url)
-    request = Request(f"http://{parsed.netloc}{route}", data=None if body is None else json.dumps(body).encode(),
-        headers={"X-Session-Token": parse_qs(parsed.query)["token"][0], "Content-Type": "application/json"})
-    try:
-        response = urlopen(request, timeout=8)
-    except HTTPError as error:
-        response = error
-    with response:
-        return response.status, response.read()
-
-
-def _acknowledge_real_snapshot(world, monkeypatch, url, route, body, revision):
-    """Observe Runtime custody while the actual browser response is still gated."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    original = world.client.generated.publish_recoverable_snapshot
-    committed, release = threading.Event(), threading.Event()
-    observed = {}
-    def publish(*args, **kwargs):
-        result = original(*args, **kwargs)
-        row = resource(result)
-        with world.lock:
-            assert kwargs["revision"] == row["provenance"]["revision"] == revision
-            assert row["role"] == "recoverable_snapshot" and row["durability"] == "durable"
-            assert row["output_port"] == "state_result"
-            assert row["attempt_id"] == world.source_claim["attempt_id"]
-            stored = world.service.managed_output(row["association_id"])
-            assert resource(stored)["digest"] == row["digest"]
-            data = world.service.cas.path_for(row["digest"][7:]).read_bytes()
-            assert digest(data) == row["digest"] and len(data) == row["size"]
-            assert json.loads(data)["state_version"] == revision
-            observed.update(row=row, data=data)
-        committed.set()
-        assert release.wait(8), "HTTP publication gate was not released"
-        return result
-    monkeypatch.setattr(world.client.generated, "publish_recoverable_snapshot", publish)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        response = pool.submit(_real_review_http, url, route, body)
-        try:
-            assert committed.wait(7), response.result(timeout=1)
-            assert not response.done(), "HTTP success preceded durable publication receipt"
-        finally:
-            release.set()
-        status, raw = response.result(timeout=8)
-    monkeypatch.setattr(world.client.generated, "publish_recoverable_snapshot", original)
-    assert status == 200 and json.loads(raw)["state_version"] == revision
-    assert _real_review_http(url, "/state.json") == (200, observed["data"])
-    return {"association_id": observed["row"]["association_id"], "revision": revision}, observed["data"]
-
-
-def _real_unacknowledged_batch(world, monkeypatch, url, state_bytes):
-    original = world.client.generated.publish_recoverable_snapshot
-    committed = []
-    def lose_response(*args, **kwargs):
-        committed.append(resource(original(*args, **kwargs)))
-        raise TimeoutError("actual receiver publication response lost after Runtime commit")
-    monkeypatch.setattr(world.client.generated, "publish_recoverable_snapshot", lose_response)
-    try:
-        status, raw = _real_review_http(url, "/submit-batch", {
-            "base_state_version": 2, "item_ids": ["one"], "decision": "reject"})
-    finally:
-        monkeypatch.setattr(world.client.generated, "publish_recoverable_snapshot", original)
-    assert status == 503 and json.loads(raw)["error"] == "batch_unpublished"
-    assert len(committed) == 1 and committed[0]["provenance"]["revision"] == 3
-    assert _real_review_http(url, "/state.json") == (200, state_bytes)
-    assert world.service.cas.path_for(committed[0]["digest"][7:]).read_bytes() != state_bytes
-    return committed[0]
-
-
-@pytest.mark.parametrize("end", ["cancel", "expiry", "restart"])
-def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monkeypatch, end):
-    from concurrent.futures import ThreadPoolExecutor
-    from runtime_protocol.errors import LeaseError
-
-    _real_review_fixture(world)
-    source_host, launched, processes = _real_receiver_host(world, monkeypatch, "actual-source")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        claim = world.source_claim
-        source_future = pool.submit(source_host.run_task, {"task": world.source_task},
-            lease_token=claim["lease_id"], attempt_id=claim["attempt_id"], fence=claim["fence"])
-        try:
-            url = _real_receiver_url(source_host, launched, processes, source_future)
-            assert _real_review_http(url, "/state.json") == (200, world.initial_state)
-            assert _real_review_http(url, "/clips/sample.txt") == (200, b"mounted-review-media")
-            _, saved = _acknowledge_real_snapshot(world, monkeypatch, url, "/save", {
-                "base_state_version": 0, "revisions": {"one": {"decision": "reject"}}}, 1)
-            acknowledged, batch_bytes = _acknowledge_real_snapshot(world, monkeypatch, url, "/submit-batch", {
-                "base_state_version": 1, "item_ids": ["one", "two"], "decision": "accept", "reviewer_id": "batch-human"}, 2)
-            batch = json.loads(batch_bytes)
-            assert saved != batch_bytes and batch["state_version"] == 2
-            assert set(batch["review_decisions"]) == {"one", "two"}
-            assert all(row["decision"] == "accept" and row["state_version"] == 2
-                and row["reviewer_id"] == "batch-human" for row in batch["review_decisions"].values())
-            status, raw = _real_review_http(url, "/submit-batch", {
-                "base_state_version": 1, "item_ids": ["one"], "decision": "reject"})
-            assert status == 409 and json.loads(raw)["error"] == "stale_state"
-            assert len(world.service.store.recoverable_snapshots(attempt_id=claim["attempt_id"])) == 2
-            newer = _real_unacknowledged_batch(world, monkeypatch, url, batch_bytes)
-            assert newer["association_id"] != acknowledged["association_id"]
-            selector = _resume_selector(world, acknowledged)
-            with source_host._process_lock:
-                old_bridge, = source_host._child_bridges
-            if end == "cancel":
-                with world.lock:
-                    world.service.cancel_task_canonical(claim["task_id"], {}, idempotency_key="cancel-real-source")
-            elif end == "expiry":
-                from datetime import datetime, timedelta, timezone
-                expiry = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-                with world.lock, world.service.store._transaction():
-                    world.service.store.conn.execute("UPDATE tasks SET lease_expires_at=? WHERE id=?", (expiry, claim["task_id"]))
-                    world.service.store.conn.execute("UPDATE attempts SET lease_expires_at=? WHERE id=?", (expiry, claim["attempt_id"]))
-                    world.service.store._reap_expired_leases()
-            else:
-                from runtime_protocol.service import RuntimeService
-                with world.lock:
-                    world.service.close()
-                    world.service = RuntimeService(world.realm)
-            # A verified execution binding can retain a running task while
-            # Runtime contains uncertain placement. The normal lease pump
-            # observes the expired/stale attempt and stops this owned process.
-            if end == "cancel":
-                assert source_future.result(timeout=8)["status"] == "cancelled"
-            else:
-                # Lost authority is refused; containment cannot fabricate
-                # Runtime cancellation under an expired attempt fence.
-                with pytest.raises((HostError, LeaseError)) as stopped:
-                    source_future.result(timeout=8)
-                allowed = {"execution lease lost"}
-                if end == "restart":
-                    allowed.add("executor belongs to a stale runtime epoch")
-                assert str(stopped.value) in allowed
-            assert all(process.poll() is not None for process in processes)
-            assert not source_host._active_processes
-            with pytest.raises(ChildBridgeError):
-                old_bridge._live()
-            assert old_bridge._revoked.is_set()
-            reader = _fresh_snapshot_reader(world)
-            from runtime_protocol.errors import AuthorizationError
-            with pytest.raises(AuthorizationError):
-                _prepare_review_resume_input(_fresh_snapshot_reader(world, authorized=False), **selector)
-            descriptor = _prepare_review_resume_input(reader, **selector)
-            assert descriptor == {"object_id": digest(batch_bytes), "digest": digest(batch_bytes), "filename": "review-state.json"}
-            assert reader.get_object(descriptor["digest"][7:]) == batch_bytes
-            assert world.service.task(claim["task_id"])["task"]["status"] != "completed"
-            with world.lock:
-                world.service.cancel_task_canonical(world.claim["task_id"], {}, idempotency_key="contain-real-parent")
-        finally:
-            if not source_future.done():
-                with world.lock:
-                    world.service.cancel_task_canonical(world.claim["task_id"], {}, idempotency_key="cleanup-real-source-parent")
-                source_future.result(timeout=8)
-            source_host.shutdown()
-        if end == "cancel":
-            assert source_future.result(timeout=8)["status"] == "cancelled"
-        else:
-            with pytest.raises((HostError, LeaseError)) as stopped:
-                source_future.result(timeout=8)
-            allowed = {"execution lease lost"}
-            if end == "restart":
-                allowed.add("executor belongs to a stale runtime epoch")
-            assert str(stopped.value) in allowed
-
-        fresh = RuntimeProtocolClient("http://127.0.0.1:1", SECRET)
-        from astrid_runtime_client import WorkspaceClient
-        import inspect
-        assert type(fresh.generated) is WorkspaceClient
-        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/__init__.py"
-        from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
-        assert issubclass(WorkspaceClient, GeneratedWorkspaceClient)
-        assert Path(inspect.getfile(GeneratedWorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
-        fresh.generated._transport = world.transport
-        fresh.executor_id = "worker"
-        world.client = fresh
-        host = GenericPackHost(pack_roots=[world.root, world.review_root], client=fresh,
-            executor_id="worker", max_concurrency=4, attempt_root=world.tmp / "actual-parent")
-        host.discover()
-        policy = copy.deepcopy(world.policy)
-        policy["input_object_ids"] = sorted([descriptor["digest"], *[value["digest"]
-            for value in world.real_inputs.values() if isinstance(value, dict)]])
-        fresh.generated.admit_task(capability_id=PARENT, capability_digest=host.capabilities[PARENT].capability_digest,
-            input_object_ids=policy["input_object_ids"], project_id=world.project, spec={"inputs": {"resume_state": descriptor}},
-            child_delegation=policy, idempotency_key="actual-fresh-parent")
-        parent_claim = _claim_snapshot_task(world, PARENT, key="claim-actual-fresh-parent")
-        parent_task = _snapshot_task(world, parent_claim)
-        assert parent_task["input_object_ids"] == parent_task["spec"]["child_delegation"]["input_object_ids"] == policy["input_object_ids"]
-        assert descriptor["digest"] in parent_task["input_object_ids"]
-        parent_future = pool.submit(host.run_task, {"task": parent_task}, lease_token=parent_claim["lease_id"],
-            attempt_id=parent_claim["attempt_id"], fence=parent_claim["fence"])
-        resumed_host, launched, processes = _real_receiver_host(world, monkeypatch, "actual-resumed")
-        def serve_resumed():
-            deadline = time.monotonic() + 8
-            while time.monotonic() < deadline:
-                if parent_future.done():
-                    pytest.fail(f"ordinary parent ended before child admission: {parent_future.result()}")
-                with world.lock:
-                    queued = world.service.store.conn.execute("SELECT id FROM tasks WHERE capability=? AND status='queued' LIMIT 1", (REVIEW,)).fetchone()
-                    if queued:
-                        child_claim = _claim_snapshot_task(world, REVIEW, key="claim-actual-resumed")
-                        world.resumed_claim = child_claim
-                        child_task = _snapshot_task(world, child_claim)
-                        break
-                time.sleep(0.01)
-            else:
-                pytest.fail("ordinary parent did not admit actual resumed Human Review")
-            return resumed_host.run_task({"task": child_task}, lease_token=child_claim["lease_id"],
-                attempt_id=child_claim["attempt_id"], fence=child_claim["fence"])
-        resumed_future = pool.submit(serve_resumed)
-        try:
-            resumed_url = _real_receiver_url(resumed_host, launched, processes, resumed_future)
-            assert _real_review_http(resumed_url, "/state.json") == (200, batch_bytes)
-            state_filename = "managed-4ba69735ca53765e-" + digest(batch_bytes)[7:] + ".json"
-            assert (resumed_host.attempt_root / "inputs" / state_filename).read_bytes() == batch_bytes
-            resumed_snapshot = _real_unacknowledged_batch(world, monkeypatch, resumed_url, batch_bytes)
-            final_body = {"decisions": batch["review_decisions"]}
-            assert _real_review_http(resumed_url, "/submit", final_body) == (204, b"")
-            child_result = resumed_future.result(timeout=10)
-            parent_result = parent_future.result(timeout=10)
-        finally:
-            if not resumed_future.done() or not parent_future.done():
-                with world.lock:
-                    world.service.cancel_task_canonical(parent_claim["task_id"], {}, idempotency_key="cleanup-real-resumed-parent")
-                resumed_future.result(timeout=8)
-                parent_future.result(timeout=8)
-            resumed_host.shutdown()
-            host.shutdown()
-        assert child_result and parent_result
-        child_task = world.service.task(world.resumed_claim["task_id"])["task"]
-        assert child_task["status"] == "completed"
-        assert world.service.task(parent_claim["task_id"])["task"]["status"] == "completed"
-        rows, cursor = fresh.generated.list_managed_outputs(child_task["id"])
-        rows = [resource(row) for row in rows]
-        assert cursor is None and len(rows) == 3
-        snapshots = [row for row in rows if row["role"] == "recoverable_snapshot"]
-        assert len(snapshots) == 1 and snapshots[0]["association_id"] == resumed_snapshot["association_id"]
-        ordinary = [row for row in rows if row["role"] != "recoverable_snapshot"]
-        assert {row["output_port"] for row in ordinary} == {"decisions", "state_result"}
-        assert {(row["output_port"], row["digest"], row["size"]) for row in ordinary} == {
-            (row.get("output_port", row["name"]), row["digest"], row["size"]) for row in child_task["result"]["outputs"]}
-        for row in ordinary:
-            data = fresh.get_object(row["digest"][7:])
-            assert data == batch_bytes if row["output_port"] == "state_result" else json.loads(data) == final_body
-        delegated = [call[2]["task"] for call in world.calls if call[1] == "/v1/delegated-tasks"][-1]
-        assert delegated["spec"]["inputs"] == {**world.real_inputs, "state": descriptor}
-        assert delegated["input_object_ids"] == [delegated["spec"]["inputs"][port.name]["digest"]
-            for port in host.capabilities[REVIEW].definition.inputs
-            if port.type == "file" and port.name in delegated["spec"]["inputs"]]
-        assert set(delegated["input_object_ids"]) == set(policy["input_object_ids"])
-        assert not any(key in delegated["spec"]["inputs"] for key in selector)
-        assert SECRET not in json.dumps(parent_result)
-        evidence = os.environ.get("ASTRID_D18_REAL_RECEIVER_EVIDENCE")
-        if evidence:
-            Path(evidence, f"actual-receiver-{end}.json").write_text(json.dumps({
-                "lifecycle": end, "source_selector": selector, "acknowledged_digest": digest(batch_bytes),
-                "acknowledged_state": batch, "unacknowledged_newer_association": newer["association_id"],
-                "recovered_descriptor": descriptor, "old_bridge_revoked": True, "normal_vendor_identity": True,
-                "publication_before_http_success": [1, 2], "schema_hashes": world.schema_hashes,
-                "resumed_task_id": child_task["id"], "ordinary_output_ports": [row["output_port"] for row in ordinary],
-                "excluded_snapshot_association": resumed_snapshot["association_id"],
-            }, indent=2) + "\n")
-
-
 # D18 host materialization: retain the real generated-client/offline Runtime
 # route; corrupt only the boundary under examination.
 def _materialization_fixture(world, data=(b"child-bytes",), *, expose=True, filenames=None, limits=None):
@@ -3760,11 +3416,7 @@ def test_materialization_public_sdk_same_leaf_outputs_consumed_together_without_
     code = (
         "from pathlib import Path\n"
         "import hashlib, json\n"
-        "from astrid.core.execution.executor import registry as er\n"
-        "from astrid.core.execution.orchestrator import registry as ore\n"
-        "from astrid.core.pack import discovery as pd\n"
-        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
-        "from astrid import invoke\n"
+        + SCOPE_PARENT_DISCOVERY + "from astrid.sdk import invoke\n"
         "Path('outputs').mkdir(exist_ok=True)\n"
         "sources = []\n"
         "for index, text in enumerate(('left-bytes', 'right-bytes')):\n"
@@ -4194,12 +3846,19 @@ def _f05_runtime_review_pair(world, *, timeout=0, runtime_limit=None, before_chi
             *([{"name": name, "type": "file", "required": name == "data"}
                for name in ("data", "state", "assets_bundle", "state_schema_bundle")] if media_payloads is not None else [])]),
     ):
+        if pack_id == "training":
+            # External packs may not shadow a core pack id, and the host keys
+            # Training review accounting on training.dataset_build, so the
+            # parent is the core action (same required config/out path inputs).
+            # The parent is only admitted and claimed here, never executed.
+            continue
         root = world.root / pack_id
         root.mkdir()
-        (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, "id": pack_id, "name": pack_id,
+        (root / "pack.yaml").write_text(yaml.safe_dump({"schema_version": 3, **V3_FIXTURE_HEADER, "id": pack_id, "name": pack_id,
             "version": "1.0.0", "actions": {action: {"description": "F05 lifetime fixture", "inputs": inputs,
                 "outputs": [], "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}}}}}))
-    host = GenericPackHost(pack_roots=[world.root / parent_pack, world.root / "editorial"],
+    parent_root = Path(__file__).resolve().parents[3] / "astrid/packs/training" if training else world.root / parent_pack
+    host = GenericPackHost(pack_roots=[parent_root, world.root / "editorial"],
                            client=world.client, executor_id="worker", max_concurrency=2)
     host.discover()
     for record in host.capabilities.values():

@@ -723,11 +723,22 @@ def _host_ready(value):
             ready.get("runtime_instance_id") == value["runtime_instance_id"])
 
 
+def install_journey_packs():
+    """Install the journey's moved packs from their pinned source (see ci_journey.JOURNEY_PACKS)."""
+    try:
+        import ci_journey
+    except ImportError:  # imported as scripts.ci_windows_journey
+        from scripts import ci_journey
+
+    ci_journey.install_journey_packs(lambda argv, name: cli("astrid", argv, name, timeout=600))
+
+
 def task(project="windows-journey", *, create_project=True):
     # Exercise the installed SDK boundary against the profile written by the
     # real installer. This local SFX action has no external model/GPU needs.
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
     assert_installed_profile_binding()
+    install_journey_packs()
     if create_project:
         created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
                                  "project.json"))

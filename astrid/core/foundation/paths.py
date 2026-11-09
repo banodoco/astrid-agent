@@ -12,6 +12,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = PACKAGE_ROOT.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
+CORE_SKILLS_DIR = PACKAGE_ROOT / "core" / "resources" / "skills"
 
 
 def venv_python(venv_dir: str | Path, *, windows: bool | None = None) -> Path:

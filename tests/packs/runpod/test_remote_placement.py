@@ -178,11 +178,15 @@ class FakeProvider:
 
 
 @pytest.fixture
-def sources(tmp_path: Path) -> Path:
+def sources(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "sources"
     for directory in rp.SOURCE_DIRS:
         (root / directory).mkdir(parents=True)
         (root / directory / "mod.py").write_text(f"# {directory}\n", encoding="utf-8")
+    (root / "src/astrid-agent/runtime.lock.json").write_text('{"source_commit": "1"}', encoding="utf-8")
+    from astrid.packs.runpod import managed_sources
+    monkeypatch.setattr(managed_sources, "_pins", lambda: {
+        d: (f"https://example.invalid/{Path(d).name}", f"{i}" * 40) for i, d in enumerate(rp.SOURCE_DIRS)})
     return root
 
 
@@ -215,6 +219,24 @@ def _provider(sources, volume=None):
     return FakeProvider(f"{rp.BOOTSTRAP_ROOT}/{digest}/ok", volume)
 
 
+def test_bootstrap_archive_and_actual_extract_command_agree_on_source_layout(tmp_path, sources):
+    provider = _provider(sources)
+    pod = FakePod({}, provider.marker)
+    _wrapper(provider, sources).prepare_claimed(Claim("pod-1", pod, {}), out=tmp_path / "out", deadline_seconds=120)
+    archive = next(data for path, data in pod.files.items() if path.endswith("sources.tar.gz"))
+    work = tmp_path / "unpack"
+    work.mkdir()
+    (work / "sources.tar.gz").write_bytes(archive)
+    # Execute the production extraction command with only the expensive
+    # bootstrap body replaced by assertions over the CPU source fixture.
+    checks = "\n".join("test -f " + directory + "/mod.py" for directory in rp.SOURCE_DIRS)
+    (work / "pod_bootstrap.sh").write_text("set -eu\n" + checks + "\n")
+    command = next(command for command in pod.job_log if "pod_bootstrap.sh" in command)
+    result = subprocess.run(["bash", "-c", "tar -xzf" + command.split("tar -xzf", 1)[1]],
+                            cwd=work, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp_path, sources):
     provider = _provider(sources)
     claim = provider.claim(rp.ClaimSpec())
@@ -226,6 +248,29 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
     assert all("h3_av.transform" not in command for command in claim.ops.job_log)
     assert not any("/01-prepare/" in path for path in claim.ops.files)
+
+
+def test_prepare_claimed_install_uses_the_volume_model_cache_when_saved(tmp_path, sources):
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    cache = "/workspace/astrid/engines/comfyui/models"
+    state = _wrapper(provider, sources).prepare_claimed(
+        claim, out=tmp_path / "prepare", deadline_seconds=120, model_cache_root=cache,
+    )
+    install = next(c for c in claim.ops.job_log if "engines install" in c)
+    assert f"--model-cache-root {cache}" in install
+    assert "--model-cache-device" not in install and "--model-cache-mount-id" not in install
+    assert state.model_cache_root == cache
+    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+
+
+def test_prepare_claimed_install_has_no_cache_without_a_volume(tmp_path, sources):
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    state = _wrapper(provider, sources).prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
+    install = next(c for c in claim.ops.job_log if "engines install" in c)
+    assert "--model-cache-root" not in install
+    assert state.model_cache_root is None
 
 
 def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):
@@ -578,15 +623,52 @@ def test_transform_runpod_calls_the_wrapper(tmp_path, monkeypatch):
     assert not hasattr(transform, "PlacementNotImplemented")
 
 
-def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs):
+def test_run_remote_placement_reads_caps_from_env(tmp_path, sources, inputs, monkeypatch):
     provider = _provider(sources)
     request, asset_map = inputs
     args = SimpleNamespace(request=request, asset_map=asset_map, out=tmp_path / "o", project=None,
                            editorial_approved=False, execution_request=None, cleanup_receipt=None)
     env = {"ASTRID_RUNPOD_MAX_SPEND_EUR": "3.5", "ASTRID_RUNPOD_DEADLINE_SECONDS": "7200",
-           "ASTRID_RUNPOD_SOURCE_ROOT": str(sources), "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
+           "ASTRID_RUNPOD_LEAVE_RUNNING": "1"}
+    monkeypatch.setattr("astrid.packs.runpod.managed_sources.ensure_managed_sources", lambda: sources)
     result = rp.run_remote_placement(
         args, provider=provider, env=env, verify_fn=lambda *_: None, ffprobe_fn=lambda *_: None,
         sleep=lambda s: None)
     assert (provider.spec.max_spend_eur, provider.spec.deadline_seconds) == (3.5, 7200)
     assert result["pod"]["leave_running"] is True and provider.releases == 0
+
+
+def test_source_archive_carries_git_and_the_one_identity_manifest_the_verifier_reads(tmp_path, sources):
+    import tarfile
+    (sources / "src/astrid-runtime/.git").mkdir()
+    (sources / "src/astrid-runtime/.git/HEAD").write_text("ref")
+    (sources / "src/astrid-runtime/.gitignore").write_text("x")
+    (sources / "src/astrid-runtime/mod.pyc").write_bytes(b"x")
+    archive = rp._build_source_archive(sources, tmp_path / "a.tar.gz")
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+        manifest = json.loads(tar.extractfile("src/.pod-source.json").read())
+    assert "src/astrid-runtime/.git/HEAD" in names and "src/astrid-runtime/.gitignore" in names
+    assert "src/astrid-runtime/mod.pyc" not in names
+    # pod_source_identity._verify requires exactly these keys, resolved against root "src".
+    assert set(manifest) == {"heads", "runtime_lock_sha256"}
+    assert manifest["heads"] == {Path(d).name: f"{i}" * 40 for i, d in enumerate(rp.SOURCE_DIRS)}
+    assert set(manifest["heads"]) == {"astrid-agent", "astrid-runtime", "runpod-lifecycle", "VibeComfy"}
+    assert manifest["runtime_lock_sha256"] == rp.sha256_file(sources / "src/astrid-agent/runtime.lock.json")
+
+
+def test_engine_custody_root_is_not_on_the_workspace_fuse_mount():
+    """Engine custody needs an owner-only (0700) directory; /workspace is a FUSE mount that ignores mkdir's
+    mode, so a custody root under it fails at the first helper with unsafe_path/helper-identity
+    (attempt 06). Every pod-side engine root the wrapper hands out must live off that mount.
+    """
+    from pathlib import PurePosixPath
+
+    def on_workspace(path: str) -> bool:
+        return PurePosixPath(path).is_relative_to("/workspace")
+
+    assert not on_workspace(rp.ENGINE_ROOT)
+    assert f"ASTRID_ENGINE_ROOT:-{rp.ENGINE_ROOT}}}" in rp.POD_BOOTSTRAP_SCRIPT
+    for engine in ("comfyui", "vibecomfy-h3"):
+        assert not on_workspace(f"{rp.ENGINE_BASE}/{engine}")
+    assert not on_workspace(rp.RunPodInstallation.root)
