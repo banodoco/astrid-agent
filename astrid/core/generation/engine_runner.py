@@ -36,6 +36,7 @@ from .engine_contracts import (
     EngineReinstallRequired,
     EngineRecipe,
     ExecutionContext,
+    DownloadResult,
     HealthEvidence,
     InstallPlan,
     InstallReceipt,
@@ -867,9 +868,21 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if not isinstance(value["models"], (list, tuple)) or not isinstance(value["steps"], (list, tuple)):
             raise ValueError
-        models = ()
-        if value["models"]:
-            raise ValueError  # an install receipt carries no model rows
+        # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
+        # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
+        models_root = plan.root + "/models/"
+        models = []
+        for raw in value["models"]:
+            row = obj(raw, DownloadResult)
+            if (not isinstance(row["model"], str) or not isinstance(row["path"], str)
+                    or not row["path"].startswith(models_root) or row["verified"] is not True
+                    or row["action"] not in {"downloaded", "resumed", "skipped"}
+                    or type(row["bytes"]) is not int or row["bytes"] < 0
+                    or not isinstance(row["sha256"], str) or not _DIGEST.fullmatch(row["sha256"])
+                    or type(row["resumed_from_bytes"]) is not int or row["resumed_from_bytes"] < 0):
+                raise ValueError
+            models.append(DownloadResult(**row))
+        models = tuple(models)
         steps = tuple(StepReceipt(**obj(v, StepReceipt)) for v in value["steps"])
         health = None if value["health"] is None else HealthEvidence(**obj(value["health"], HealthEvidence))
         if len({s.id for s in steps}) != len(steps):

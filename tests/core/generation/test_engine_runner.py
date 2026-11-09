@@ -2163,3 +2163,17 @@ def test_model_free_install_receipt_binds_the_model_root_unpatched(setup):
     assert list(binding.inventory) == []
     bound = endpoint.composed_model_root_binding(receipt, ROOT, engine="comfyui", deadline=time.monotonic() + 30)
     assert list(bound.inventory) == []
+
+
+def test_legacy_receipt_with_model_rows_parses_and_binds(setup):
+    """Plan 32 T5h: a legacy receipt's verified model rows parse as the receipt's rows and bind."""
+    from astrid.core.generation import engine_local_endpoint as endpoint
+
+    plan = runner.plan_install(setup[1].recipe, root=ROOT, placement="local")
+    row = DownloadResult("synthetic-test-lora", ROOT + "/models/loras/synthetic-test-b.safetensors",
+                         "downloaded", 9, "b" * 64, True, 0)
+    legacy = replace(install(setup), models=(row,))
+    parsed = runner._parse_receipt(json.loads(json.dumps(runner._plain(legacy))), plan)
+    assert parsed.models == (row,)
+    binding = endpoint.model_root_binding_from_receipt(parsed, ROOT, engine="comfyui")
+    assert [(r["name"], r["subdir"]) for r in binding.inventory] == [("synthetic-test-b.safetensors", "loras")]
