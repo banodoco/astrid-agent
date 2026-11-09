@@ -139,16 +139,16 @@ def test_all_builtin_orchestrator_manifests_parse_through_runtime_and_registry()
     assert failures == {}
 
 
-def test_h3_transform_declares_vibecomfy_import_environment() -> None:
-    payload = load_manifest_mapping(PACKS_ROOT / "h3_av" / "pack.yaml", manifest_kind="pack")
+def test_h3_runs_through_vibecomfy_run_which_declares_the_import_environment() -> None:
+    """h3 has no actions of its own (it is the ``h3`` entry of the one generate path): the graph runs in
+    vibecomfy.run, which declares the headless flag and passes through the H3 candidate variables."""
+    payload = load_manifest_mapping(PACKS_ROOT / "vibecomfy" / "pack.yaml", manifest_kind="pack")
+    run = payload["actions"]["run"]
 
-    declared = set(payload["actions"]["transform"]["isolation"]["env_passthrough"])
-    assert {
-        "ASTRID_RUNPOD_ACCOUNT_REF",
-        "VIBECOMFY_CHECKOUT",
-        "PYTHONPATH",
-        "VIBECOMFY_HEADLESS",
-    } <= declared
+    assert "actions" not in load_manifest_mapping(PACKS_ROOT / "h3_av" / "pack.yaml", manifest_kind="pack")
+    assert run["invocation"]["command"]["env"]["VIBECOMFY_HEADLESS"] == "1"
+    assert {"ASTRID_H3_CANDIDATE_MANIFEST", "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"} <= set(
+        run["isolation"]["env_passthrough"])
 
 
 def test_h3_sdk_orchestrator_subprocess_receives_selected_runpod_account_ref(
