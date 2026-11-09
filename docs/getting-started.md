@@ -12,8 +12,8 @@ computer through Astrid Runtime.
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
 before running it. It keeps your existing workspace and credentials. Ask for
 consent once before a fresh install if it has not already been given. If an
-approved handoff already includes setup choices, keep those choices and run
-its command unchanged without asking again.
+approved handoff already includes setup choices, ask once whether to install
+with them or change one, then run its command with the chosen values.
 
 Recommended choices are startup at sign-in on, the `astrid` terminal command
 on, Astrid skills on, and skill copies off. You can select each with
