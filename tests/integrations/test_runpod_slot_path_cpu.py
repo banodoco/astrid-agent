@@ -193,7 +193,6 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
     files = [p for engine in dict.fromkeys(("comfyui", *entries.runpod_engines()))
              for p in receipt_files(provider._receipt_for(engine))]
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("ASTRID_HOST_LOCAL_ENGINE", "comfyui")
     root = str(tmp_path / "managed" / "engines" / "comfyui")
     receipt = provider._install_receipt("comfyui", root)
     path = Path(root) / ".astrid-engine" / "install.json"
