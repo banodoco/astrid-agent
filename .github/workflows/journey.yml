@@ -155,7 +155,7 @@ on:
         required: false
         type: string
       row:
-        description: Run one direct journey row, all five direct rows, one pinokio-* row, all three R1.1 Pinokio rows, or one release11-then-update row
+        description: Run one direct journey row, all nine direct rows, one pinokio-* row, all three R1.1 Pinokio rows, or one named direct row
         required: false
         default: direct
         type: choice
@@ -165,9 +165,11 @@ on:
           - direct-windows
           - direct-linux-fresh
           - direct-macos-fresh
-          - direct
+          - direct-linux-r9-install
+          - direct-macos-r9-install
           - direct-linux-r11-update
           - direct-macos-r11-update
+          - direct
           - pinokio-linux
           - pinokio-macos
           - pinokio-windows
@@ -410,7 +412,7 @@ jobs:
               matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true":
               # Keep-going diagnostics re-leg the original three direct rows.
-              matrix = [row for row in matrix if row["job_id"] not in journey_matrix.RELEASE1_DIRECT_FRESH_JOB_IDS]
+              matrix = [row for row in matrix if row["job_id"] in journey_matrix.RELEASE1_LEGACY_JOB_IDS]
           if journey_row and journey_row not in {"direct", "pinokio"}:
               matrix = [row for row in matrix if row["job_id"] == journey_row]
           if os.environ["DIAGNOSTIC_KEEP_GOING"].lower() == "true" and diagnostic_leg in {"release9-then-install", "both"}:

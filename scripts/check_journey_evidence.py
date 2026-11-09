@@ -29,7 +29,6 @@ if __package__:
         RELEASE1_MATRIX,
         RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
         RELEASE1_1_PINOKIO_MATRIX,
-        RELEASE11_UPDATE_MATRIX,
     )
 else:
     try:
@@ -51,7 +50,6 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
-            RELEASE11_UPDATE_MATRIX,
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
@@ -72,7 +70,6 @@ else:
             RELEASE1_MATRIX,
             RELEASE1_1_DEFERRED_PINOKIO_MATRIX,
             RELEASE1_1_PINOKIO_MATRIX,
-            RELEASE11_UPDATE_MATRIX,
         )
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -87,6 +84,8 @@ RELEASE9_IDENTITY = {
 }
 # The served Release 11 starts the release11-then-update leg; the candidate's
 # install --update must take it to Release 12 (the pins live in journey_version_jumps).
+RELEASE9_LEG = "release9-then-install"
+RELEASE9_CHECKS = ("release", "service", "health", "semantic_data", "task_settled", "unrelated_sentinel")
 RELEASE11_LEG = "release11-then-update"
 RELEASE11_APP_COMMIT = "57e200b45615a59181920192697a932400d985fc"
 RELEASE11_RELEASE = 11
@@ -344,6 +343,40 @@ def release1_receipt_kind(contract):
     return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
 
 
+def _release9_row_errors(job_id, row):
+    """The strict release9-then-install row: the plain install of the pinned Release 9, then the candidate.
+
+    The row must show the pinned Release 9 source, a transition from 9 to a later candidate release
+    with the candidate's Runtime instance replacing the release-9 one, and semantically identical
+    seeded data. Every release9 leg check must pass.
+    """
+    errors = []
+    source = row.get("release9_source")
+    if (not isinstance(source, dict) or source.get("app_commit") != RELEASE9_APP_COMMIT
+            or source.get("identity") != RELEASE9_IDENTITY):
+        errors.append(f"{job_id}: pinned release-9 source identity is absent or wrong")
+    transition = row.get("release_transition")
+    if (not isinstance(transition, dict) or transition.get("from") != 9
+            or type(transition.get("to")) is not int or transition["to"] <= 9
+            or transition.get("source") != "pinned-release9-plain-install"):
+        errors.append(f"{job_id}: release 9 to candidate transition is absent or wrong")
+    health = row.get("health_transition") if isinstance(row.get("health_transition"), dict) else {}
+    old_id, new_id = health.get("release9_runtime_instance_id"), health.get("candidate_runtime_instance_id")
+    if not (isinstance(old_id, str) and isinstance(new_id, str) and old_id and new_id != old_id):
+        errors.append(f"{job_id}: the candidate Runtime instance did not replace the release-9 one")
+    semantic = row.get("semantic_data")
+    if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+            or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                       for name in ("before_sha256", "after_sha256"))
+            or semantic.get("before_sha256") != semantic.get("after_sha256")):
+        errors.append(f"{job_id}: semantic data preservation is absent or unequal")
+    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    for check in RELEASE9_CHECKS:
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: {check} assertion did not pass")
+    return errors
+
+
 def _release11_row_errors(job_id, row):
     """The release11-then-update row's four assertions, each read from the leg's own receipt fields.
 
@@ -508,6 +541,8 @@ def _release1_row_errors(candidate, contract, row):
                 for check in ("refusal", "data_marker", "r0_selected", "scheduled_task"):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
+        elif contract.get("leg") == RELEASE9_LEG:
+            errors.extend(_release9_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE11_LEG:
             errors.extend(_release11_row_errors(job_id, row))
         elif not fresh:
@@ -599,15 +634,13 @@ def fresh_update_errors(job_id, update):
 
 
 def evaluate_release1_matrix(candidate, results):
-    """Reject an incomplete, skipped, or ownership-ambiguous five-job receipt set.
+    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set.
 
-    The release11-then-update rows are optional here. A receipt that carries one of
-    their job ids is validated against its own leg and kind, and is rejected unless all
-    four of that leg's assertions are present; a run without them is not an error.
+    The nine rows are the Release-1 matrix: every one is required, and each is validated
+    against its own leg, receipt kind and assertions. A missing row is named.
     """
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
-    optional = {row["job_id"]: row for row in RELEASE11_UPDATE_MATRIX}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         if path.parent.name == "before-cleanup":
@@ -618,17 +651,16 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{path}: {exc}")
             continue
         job_id = row.get("job_id")
-        if not isinstance(job_id, str) or (job_id not in expected and job_id not in optional):
+        if not isinstance(job_id, str) or job_id not in expected:
             errors.append(f"{path}: unknown or absent Release-1 job id")
         elif job_id in found:
             errors.append(f"{path}: duplicate receipt for {job_id}")
         else:
             found[job_id] = row
-    for job_id, contract in {**expected, **optional}.items():
+    for job_id, contract in expected.items():
         row = found.get(job_id)
         if row is None:
-            if job_id not in optional:
-                errors.append(f"{job_id}: missing receipt")
+            errors.append(f"{job_id}: missing receipt")
             continue
         errors.extend(_release1_row_errors(candidate, contract, row))
     return errors
