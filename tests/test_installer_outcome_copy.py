@@ -1,6 +1,51 @@
 """The run receipt's terminal copy says only what is true (owner decision 17, rule 4)."""
 
-from astrid.installer.outcome import Outcome
+import re
+from pathlib import Path
+
+from astrid import installer
+from astrid.installer.outcome import NEXT_STEPS, REASONS, Outcome
+
+# Reasons whose receipt copy is drafted in the PR body and awaits the owner's approval. Remove an entry the
+# moment its copy lands; the test below fails while an entry is left behind.
+PENDING_COPY = frozenset({"acknowledgement-unknown", "legacy-update-record"})
+
+_NAME = r'"([a-z][a-z0-9-]*)"'
+_REASON_SITES = (
+    re.compile(r"\breason\s*=\s*\(?\s*" + _NAME),                    # assignments, class attributes, keywords
+    re.compile(r"\.reason,\s*\w+\.refused\s*=\s*" + _NAME),         # run.reason, run.refused = "...", True
+    re.compile(r"\breason\s*=\s*[\w.]+\s+or\s+" + _NAME),            # reason = request.reason or "..."
+    re.compile(r"\"reason\"\s*:\s*" + _NAME),                         # receipt-shaped dictionaries
+    re.compile(r"LocalUpdateRefusal\(\"[a-z0-9-]+\",\s*" + _NAME),     # a refusal's code
+)
+_REASON_OF_RETURN = re.compile(r"\breturn\s+" + _NAME)  # outcome.reason_of's mapping
+
+
+def _emitted_reasons() -> set[str]:
+    """Every reason literal the installer package assigns, names or returns in a reason position."""
+    found: set[str] = set()
+    for path in Path(installer.__file__).parent.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for site in _REASON_SITES:
+            found.update(site.findall(text))
+        if path.name == "outcome.py":
+            found.update(_REASON_OF_RETURN.findall(text))
+    return found
+
+
+def test_the_scan_sees_the_reasons_the_installer_emits():
+    assert {"busy", "needs-repair", "autostart-off", "other-runtime-running", "installer-bug"} <= _emitted_reasons()
+
+
+def test_every_reason_the_installer_can_emit_has_receipt_copy_and_a_next_step():
+    emitted = _emitted_reasons() - PENDING_COPY
+    assert not emitted - set(REASONS), sorted(emitted - set(REASONS))
+    assert not emitted - set(NEXT_STEPS), sorted(emitted - set(NEXT_STEPS))
+
+
+def test_the_enum_and_its_next_steps_agree_and_no_pending_reason_already_has_copy():
+    assert set(REASONS) == set(NEXT_STEPS)
+    assert not (PENDING_COPY & set(REASONS))
 
 
 def test_a_release_installed_but_not_running_does_not_claim_nothing_changed():
