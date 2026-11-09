@@ -9,6 +9,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+# The one set of generation kinds, shared by every entry source.
+_KINDS = frozenset({'image', 'video', 'audio'})
+# Mode tried first when an entry declares modes but the caller names none, per kind.
+_DEFAULT_MODE_CANDIDATES = {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
+
 
 def user_entries() -> list[dict[str, Any]]:
     """Saved entries (``VIBECOMFY_ENTRIES_DIR``), then entries contributed through ``vibecomfy.workflows``."""
@@ -194,7 +199,7 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
         ports = {port.name: port for port in capability.inputs}
         local_files = declaration.get("producer_local_inputs", [])
         if (not isinstance(declaration.get("id"), str) or not declaration["id"]
-                or declaration.get("kind") not in {"image", "video", "audio"}
+                or declaration.get("kind") not in _KINDS
                 or not isinstance(declaration.get("modes"), list)
                 or not declaration["modes"]
                 or not all(isinstance(mode, str) and mode for mode in declaration["modes"])
@@ -520,7 +525,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
             raise ValueError(f'unknown generation entry {entry_id!r}')
         entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
         modes = entry['modes']
-        if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
+        if not modes or entry.get('kind') not in _KINDS:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
         base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
                 **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
@@ -717,7 +722,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         elif inputs.get('image_ref'):
             candidates = ['i2v'] if description['kind'] == 'video' else ['i2i', 'edit']
         else:
-            candidates = {'image': ['t2i'], 'video': ['t2v'], 'audio': ['music']}[description['kind']]
+            candidates = _DEFAULT_MODE_CANDIDATES[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
