@@ -575,6 +575,9 @@ EXPECTED_NEXT = {
     "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
                      "and your choice stays off.",
     "unsupported-service-manager": "Next: run the update command from a terminal instead.",
+    "acknowledgement-unknown": "Next: wait a minute, then run the same update command again. It checks the "
+                               "earlier attempt before starting a new one.",
+    "legacy-update-record": "Next: run the update command from a terminal to start a fresh update.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "

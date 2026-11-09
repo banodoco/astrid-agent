@@ -75,6 +75,8 @@ REASONS = {
     "windows-upgrade-unsupported": "upgrading from an earlier Windows version isn't supported yet.",
     "autostart-off": "start at sign-in is off, so this update has to run from a terminal.",
     "unsupported-service-manager": "in-app updates need user systemd 254 or newer on this Linux computer.",
+    "acknowledgement-unknown": "the update was started, but Astrid can't confirm yet that it was accepted.",
+    "legacy-update-record": "this update was started by an older Astrid, so this one can't continue it.",
     "pinokio-managed": "this Astrid is managed by Pinokio; use Pinokio's Update button.",
     "source-checkout": "this Astrid runs from source checkouts; update those instead.",
     "consent-required": "setup needs your consent; run the exact rerun command shown above.",
@@ -194,6 +196,9 @@ NEXT_STEPS = {
     "autostart-off": "Next: run the update command from a terminal. It updates Astrid and starts it, "
                      "and your choice stays off.",
     "unsupported-service-manager": "Next: run the update command from a terminal instead.",
+    "acknowledgement-unknown": "Next: wait a minute, then run the same update command again. It checks the "
+                               "earlier attempt before starting a new one.",
+    "legacy-update-record": "Next: run the update command from a terminal to start a fresh update.",
     "pinokio-managed": "Next: use the Update button in Pinokio.",
     "source-checkout": "Next: update the source checkout, then run the same command again.",
     "consent-required": "Next: run the install command again and accept the setup choices, "
