@@ -692,9 +692,13 @@ class _LocalEngineServer:
         write_progress("start_engine")
         from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url, validate_output_directory
         from astrid.core.generation.engine_contracts import EngineError
-        from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+        from astrid.core.generation.engine_local_endpoint import (
+            EngineNotInstalled, ensure_local_engine_server, local_engine_endpoint,
+        )
 
         try:
+            # Start the installed engine's long-lived server, or reuse the owned one; never stop it.
+            ensure_local_engine_server("comfyui")
             engine = local_engine_endpoint("comfyui")
         except EngineError as exc:
             reason = f" ({exc.reason_code})" if isinstance(exc, EngineNotInstalled) else ""
