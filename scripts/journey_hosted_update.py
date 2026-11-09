@@ -652,37 +652,117 @@ def door_origin(door_base: str) -> str:
     return f"{parts.scheme}://{parts.hostname}:{parts.port}"
 
 
-def click_update_now(*, app: Path, door_base: str, spki: str, evidence: Path, timeout: float = 300,
-                     node: str | None = None) -> dict:
-    """Open the hosted page at ``https://astrid.haus`` in Chromium and click its own Update now.
+# The open page must show the finished update ("Astrid updated: Release N → Release M") this soon after the
+# status route reports it terminal, with no reload and no click from the journey (UR-15k).
+LIVE_RESULT_SECONDS = 30
 
-    Returns what the browser saw: the POST it sent to the door and the door's answer.
-    """
-    with tempfile.TemporaryDirectory(prefix="astrid-journey-button-") as directory:
-        config_path, result_path = Path(directory) / "config.json", Path(directory) / "result.json"
-        config = {"app": str(app), "origin": ORIGIN, "entry": PAGE_ENTRY, "spki": spki,
-                  "door": door_origin(door_base), "updatePath": UPDATE_PATH, "agentMark": PAGE_AGENT_MARK,
-                  "timeoutMs": int(timeout * 1000), "result": str(result_path),
-                  "screenshot": str(evidence / "update-button.png")}
-        config_path.write_text(json.dumps(config), encoding="utf-8")
-        node = node or os.environ.get("ASTRID_CI_NODE") or shutil.which("node") or "node"
-        # The browser must reach only the intercepted host and the loopback door, never a proxy.
-        env = {key: value for key, value in os.environ.items() if key.lower() not in PROXY_VARIABLES}
-        process = subprocess.run([node, str(BUTTON_SCRIPT), str(config_path)], capture_output=True, text=True,
-                                 timeout=timeout + 180, env=env, check=False)
+
+class LiveResult:
+    """The browser still open on the page after the click, waiting for it to show the update's result."""
+
+    def __init__(self, process: subprocess.Popen, directory: Path, result_path: Path, evidence: Path, timeout: float):
+        self.process, self.directory, self.result_path = process, directory, result_path
+        self.evidence, self.timeout = evidence, timeout
+
+    def wait(self) -> dict:
+        """The browser's final result, once it saw the page's live result or gave up."""
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.process.wait(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        try:
+            result = json.loads(self.result_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            result = {"error": "the browser wrote no result: " + (process.stdout + process.stderr).strip()[-600:]}
+            result = {"error": "the browser wrote no final result"}
+        _keep_button_evidence(self.evidence, result)
+        self.close()
+        return result
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+def _keep_button_evidence(evidence: Path, result: dict) -> None:
     try:
         (evidence / "update-button.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
                                                      encoding="utf-8")
     except OSError:
         pass
-    if process.returncode or result.get("error"):
+
+
+def click_update_now(*, app: Path, door_base: str, spki: str, evidence: Path, timeout: float = 300,
+                     node: str | None = None, live_timeout: float = 0) -> dict:
+    """Open the hosted page at ``https://astrid.haus`` in Chromium and click its own Update now.
+
+    Returns what the browser saw: the POST it sent to the door and the door's answer. With ``live_timeout``
+    the browser stays open on the page after the click, and the result carries ``"live"``: a
+    :class:`LiveResult` whose ``wait()`` gives the moment the page showed the update's result by itself.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="astrid-journey-button-"))
+    config_path, result_path = directory / "config.json", directory / "result.json"
+    clicked_path = directory / "clicked.json"
+    config = {"app": str(app), "origin": ORIGIN, "entry": PAGE_ENTRY, "spki": spki,
+              "door": door_origin(door_base), "updatePath": UPDATE_PATH, "agentMark": PAGE_AGENT_MARK,
+              "timeoutMs": int(timeout * 1000), "result": str(result_path),
+              "screenshot": str(evidence / "update-button.png")}
+    if live_timeout:
+        config.update(clicked=str(clicked_path), liveTimeoutMs=int(live_timeout * 1000))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    node = node or os.environ.get("ASTRID_CI_NODE") or shutil.which("node") or "node"
+    # The browser must reach only the intercepted host and the loopback door, never a proxy.
+    env = {key: value for key, value in os.environ.items() if key.lower() not in PROXY_VARIABLES}
+    output = (directory / "node.log").open("w", encoding="utf-8")
+    process = subprocess.Popen([node, str(BUTTON_SCRIPT), str(config_path)], stdout=output, stderr=subprocess.STDOUT,
+                               text=True, env=env)
+    output.close()
+    deadline = time.monotonic() + timeout + 180
+    while process.poll() is None and not clicked_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    waiting = process.poll() is None and clicked_path.exists()
+    if not waiting and process.poll() is None:
+        process.kill()
+    if not waiting:
+        process.wait()
+    try:
+        result = json.loads((clicked_path if waiting else result_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        try:
+            log = (directory / "node.log").read_text(encoding="utf-8")
+        except OSError:
+            log = ""
+        result = {"error": "the browser wrote no result: " + log.strip()[-600:]}
+    _keep_button_evidence(evidence, result)
+    if (process.returncode if not waiting else 0) or result.get("error"):
+        if waiting:
+            process.kill()
+            process.wait()
+        shutil.rmtree(directory, ignore_errors=True)
         raise RuntimeError(f"The page's Update now was not clicked through (stage {result.get('stage')!r}): "
                            f"{result.get('error') or process.returncode}")
+    if waiting:
+        result["live"] = LiveResult(process, directory, result_path, evidence, live_timeout + 120)
+    else:
+        shutil.rmtree(directory, ignore_errors=True)
     return result
+
+
+def live_result(live: "LiveResult", terminal_at: float) -> dict:
+    """The page showed the finished update by itself within LIVE_RESULT_SECONDS of the terminal status, or raise."""
+    final = live.wait()
+    seen = final.get("live") if isinstance(final.get("live"), dict) else None
+    if not seen or not isinstance(seen.get("seen_at"), (int, float)):
+        raise RuntimeError("The open page never showed the update's result by itself: "
+                           + str(final.get("live_error") or final.get("error") or "no result")[:400])
+    after = seen["seen_at"] / 1000 - terminal_at
+    if after > LIVE_RESULT_SECONDS:
+        raise RuntimeError(f"The open page showed the update's result {after:.0f}s after it finished, "
+                           f"not within {LIVE_RESULT_SECONDS}s")
+    return {"text": seen.get("text"), "seconds_after_terminal": round(after, 1),
+            "journey_reloads": 0, "page_navigations": seen.get("navigations")}
 
 
 def accepted_click(result: dict) -> dict:
@@ -728,6 +808,7 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
         record = {"route": "hosted-button", "host": HOST, "driver": "app-button", "request": {}}
         stand_in = intercept(routes, python=python, types=types)
     failed = True
+    opened: list = []
     try:
         with stand_in:
             mark = len(stand_in.hits())
@@ -736,7 +817,11 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
                     accepted = post_update(door_base)
                     record["request"].update(status=accepted["status"], operation_id=accepted["operation_id"])
                 else:
-                    seen = click(app=app, door_base=door_base, spki=stand_in.leaf_spki, evidence=evidence)
+                    seen = click(app=app, door_base=door_base, spki=stand_in.leaf_spki, evidence=evidence,
+                                 live_timeout=timeout)
+                    live = seen.pop("live", None)
+                    if live is not None:
+                        opened.append(live)
                     record["request"] = accepted_click(seen)
                     record["page"] = {"entry": PAGE_ENTRY, "offered": True, "clicked": True,
                                       "progress_shown": seen.get("page_progress") is True,
@@ -745,6 +830,10 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
                 try:
                     record["final"] = wait_terminal(door_base, record["request"]["operation_id"], timeout=timeout,
                                                     **observed)
+                    terminal_at = time.time()
+                    if opened:
+                        # The page that sent Update now, still open and never reloaded by the journey.
+                        record["page"]["live_result"] = live_result(opened.pop(), terminal_at)
                 except RuntimeError:
                     if tick is not None:
                         tick(None, final=True)  # Keep the last observation of the wait before the failure.
@@ -763,6 +852,8 @@ def run_hosted_update(*, python: str | os.PathLike, app: Path, manifest: bytes, 
                                    + json.dumps(record["served"]))
         failed = False
     finally:
+        for live in opened:
+            live.close()
         record["intercept_reverted"] = bool(stand_in.reverted.get("clean"))
         capture_update_evidence(root, evidence, failed=failed)
     return record

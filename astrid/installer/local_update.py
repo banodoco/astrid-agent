@@ -107,6 +107,19 @@ class RecoveredEarlierUpdate(ValueError):
     """An update found an interrupted local update and restored the version before it."""
 
 
+class LocalUpdateRefusal(ValueError):
+    """Nothing was changed; ``code`` is an ``outcome.REASONS`` key. Exits 3 (not updated)."""
+
+    def __init__(self, step: str, code: str, message: str):
+        super().__init__(message)
+        self.step, self.code = step, code
+
+
+STORAGE_MOVE_REFUSAL = ("Astrid did not update: an earlier storage move on this computer is not "
+                        "finished, so nothing was changed. Run the install line once to finish it, "
+                        "then update again.")
+
+
 def _tag_step(exc: Exception, step: str) -> Exception:
     """Add a machine-readable step while retaining the original exception."""
     label = getattr(exc, "step", None) or step
@@ -208,6 +221,42 @@ def _backend(root: Path) -> Backend:
 
     # After a finished storage move the live Runtime runs under the R1 label;
     # never operate R0's retained definition from the local update.
+    return adopt_if_handed_off(backend, root)
+
+
+def _finish_storage_move(root: Path, backend: Backend) -> Backend:
+    """Normalise a finished R0 to R1 handoff once, as the installer does, or refuse.
+
+    Runs inside the installer lock, before any selection is read: until the
+    handoff is normalised the marker and selection still name R0's data root,
+    and an update read from them would back up, migrate and start R0's data.
+    A handoff that is not finished, or that cannot be normalised safely, is
+    refused with nothing changed; the install line finishes it.
+    """
+    from .boundary_handoff import normalise_completed
+    import os
+
+    from .installation import Installation, adopt_if_handed_off, handoff_journal
+
+    service = backend.service
+    try:
+        state = Installation.resolve(service.home, system=service.system, root=root,
+                                     probe=lambda *_args: None)
+    except Exception as exc:  # noqa: BLE001 - an unreadable install is refused, never guessed
+        if not os.path.lexists(handoff_journal(service.home, service.system)):
+            return backend  # no storage move; the selection check reports what is wrong
+        raise LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL) from exc
+    if state.kind not in {"handoff", "handoff-rolled-back"}:
+        return backend
+    if state.phase != "complete" or backend.managed_by == "pinokio":
+        raise LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL)
+    try:
+        normalise_completed(backend)
+    except Exception as exc:  # noqa: BLE001 - normalisation validates before it writes
+        refusal = LocalUpdateRefusal("normalise-handoff", "needs-repair", STORAGE_MOVE_REFUSAL)
+        refusal.add_note(str(exc))
+        raise refusal from exc
+    # Now a direct install: operate the R1 label, never R0's retained definition.
     return adopt_if_handed_off(backend, root)
 
 
@@ -571,6 +620,7 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
         raise LocalUpdateStepError("validate-manifest", "The target install manifest is invalid.")
     if app.get("manifest") != manifest:
         raise LocalUpdateStepError("validate-manifest", "The App and Runtime update manifests do not match.")
+    backend = _finish_storage_move(root, backend)
     hooks = HookClient(app, stdin, stdout)
     if pending_transaction(root):
         if _at_step("recover-transaction", _recover, root, backend, hooks, say=say):
@@ -674,7 +724,11 @@ class _LocalRun:
         recovered = (failure is None and (result or {}).get("status") == "recovered") or isinstance(
             failure, RecoveredEarlierUpdate)
         at_start = self.action.get("action") == "recover" and self.action.get("purpose") != "update"
-        if recovered:
+        if isinstance(failure, LocalUpdateRefusal):
+            # Refused before any change: not updated, with the refusal's own reason (exit 3).
+            request = Request("update", self.target, failure.code, refused=True)
+            failure = None
+        elif recovered:
             # As the CLI: a recovery during an update is not-updated (exit 3);
             # the launcher's start-time recovery is a repair (exit 0).
             request = Request("repair" if at_start else "update", None if at_start else self.target,
@@ -722,6 +776,10 @@ def main(argv: list[str] | None = None) -> int:
         result = execute(action, root, stdin=sys.stdin, stdout=sys.stdout,
                          say=lambda message: print(message, file=sys.stderr))
         reply, code, failure = {"result": result}, 0, None
+    except LocalUpdateRefusal as exc:
+        # Nothing was changed: the receipt settles it as "not updated" (exit 3) with its reason.
+        reply = {"error": str(exc), "step": exc.step, "code": exc.code, "details": None}
+        code, failure, result = 3, exc, None
     except Exception as exc:  # noqa: BLE001 - protocol boundary returns every failure as JSON
         reply = {"error": str(exc), "step": getattr(exc, "step", None),
                  "details": getattr(exc, "details", None)}

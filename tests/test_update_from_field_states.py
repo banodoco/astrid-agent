@@ -18,7 +18,7 @@ from runtime_protocol import platform
 
 from astrid.installer import cli
 from astrid.installer.core import Installer, current, read_json
-from tests.fixtures.field_states import R0_INSTANCE, handed_off_release1_r0_live, selection
+from tests.fixtures.field_states import R0_INSTANCE, handed_off_release1_r0_live, selection, stage_release
 from tests.test_boundary_handoff import case, snapshot  # noqa: F401 - pytest fixture
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="persistent Linux manager simulation")
@@ -518,7 +518,7 @@ def test_release1_launcher_refuses_normalised_records(case, monkeypatch):
 
 def test_every_non_zero_outcome_ends_with_next_and_details():
     """A Release 1 Runtime cannot show the receipt in the App: the terminal must say what to do."""
-    from astrid.installer.outcome import NEXT_STEP, REASONS, Outcome
+    from astrid.installer.outcome import REASONS, Outcome
 
     log = "/home/hannah/Library/Logs/Astrid Runtime/install.log"
     for kind in ("not-updated", "failed", "rolled-back"):
@@ -526,11 +526,157 @@ def test_every_non_zero_outcome_ends_with_next_and_details():
             outcome = Outcome(kind, 1, 1, 2, reason, "update", log)
             lines = outcome.headline()
             assert outcome.exit_code != 0, (kind, reason)
-            assert lines[-2:] == [NEXT_STEP, f"Details: {log}"], (kind, reason, lines)
-            assert lines.count(NEXT_STEP) == 1
+            assert lines[-2].startswith("Next: ") and lines[-1] == f"Details: {log}", (kind, reason, lines)
+            assert sum(line.startswith("Next: ") for line in lines) == 1
         rolled = Outcome("rolled-back", 1, 1, 2, "error", "update", log).headline()
         assert rolled[-3].startswith("Run the same command again")
     console = Outcome("failed", None, None, 2, "error").headline()
     assert console[-1] == "Details: shown above in this window (the installer log was not used)."
     for kind in ("updated", "already-current", "repaired"):
-        assert NEXT_STEP not in Outcome(kind, 2, 1, 2, None, "update", log).headline()
+        assert not any(line.startswith("Next: ")
+                       for line in Outcome(kind, 2, 1, 2, None, "update", log).headline())
+
+
+SUPPORT = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send it to support."
+# Owner rule (Hannah): every failure names its own next action; only a bug or an
+# unexplained error sends the person to support.
+EXPECTED_NEXT = {
+    "self-update-too-old": "Next: run the install command once; after that Update now works.",
+    "disk-space": "Next: free up at least the amount named above, then run the same command again.",
+    "busy": "Next: quit the other Astrid window (or let the other installer finish), "
+            "then run the same command again.",
+    "needs-repair": "Next: run the install command without --update to repair this installation, "
+                    "then update again.",
+    "other-runtime-running": "Next: stop the other Astrid, then run the same command again.",
+    "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
+                                   "Open astrid.haus > Settings > Updates > Download diagnostics "
+                                   "to see what is installed.",
+    "pinokio-managed": "Next: use the Update button in Pinokio.",
+    "source-checkout": "Next: update the source checkout, then run the same command again.",
+    "consent-required": "Next: run the install command again and accept the setup choices, "
+                        "or answer the prompts.",
+    "declined": "Next: nothing to do. To install later, run the install command again "
+                "and accept the setup choices.",
+    "recovered-previous-version": "Next: run the same command again to update.",
+    "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "refused": "Next: fix what the message above names, then run the same command again.",
+    "error": SUPPORT,
+    "installer-bug": SUPPORT,
+}
+
+
+@pytest.mark.parametrize("reason", sorted(EXPECTED_NEXT))
+def test_each_reason_has_its_own_next_step(reason):
+    """Plan 29 R11 card 1: the Next line is the reason's own action; support only for bugs and errors."""
+    from astrid.installer.outcome import REASONS, Outcome
+
+    assert set(REASONS) == set(EXPECTED_NEXT)  # every reason in the enum is covered, none invented
+    log = "/tmp/install.log"
+    for kind in ("not-updated", "failed", "rolled-back"):
+        lines = Outcome(kind, 1, 1, 2, reason, "update", log).headline()
+        assert lines[-2:] == [EXPECTED_NEXT[reason], f"Details: {log}"], (kind, lines)
+        mentions_support = any("to support" in line for line in lines)
+        assert mentions_support == (reason in {"installer-bug", "error"}), (kind, lines)
+
+
+def _local_update(c, monkeypatch, capsys, release):
+    """Run ``python -m astrid.installer.local_update`` in-process from the field state."""
+    import io
+
+    from astrid.installer import local_update
+    from tests.test_installer_local_update import _app
+
+    hooks = []
+
+    class Hooks:
+        def __init__(self, app, _stdin, _stdout):
+            self.app = app
+
+        def call(self, name, version, _realm, **_options):
+            hooks.append((name, version.release if version else None))
+
+    manifest = {**json.loads(c.manifest_path(release).read_text()),
+                "agent": {"sha": "b" * 40}, "runtime": {"sha": "c" * 40}}
+    app = {**_app(c.root.parent), "release": release, "manifest": manifest}
+    identities = []
+    monkeypatch.setattr(local_update, "Backend", lambda *a, **kw: c.backend)
+    monkeypatch.setattr(local_update, "validate_manifest", lambda value: value)
+    monkeypatch.setattr(local_update, "HookClient", Hooks)
+    monkeypatch.setattr(local_update, "_verify_selected_identity",
+                        lambda _backend, version, data, *_a: identities.append((version.release, data)))
+    monkeypatch.setattr(c.backend, "stage", stage_release(c, release))
+    c.migrated = []
+
+    def backup(_version, data, _realm):
+        c.migrated.append(("backup", data))
+        (c.root / "backups/local").mkdir(parents=True)
+        return {"root": str(c.root / "backups/local"), "kind": "runtime"}
+
+    monkeypatch.setattr(c.backend, "backup", backup)
+    monkeypatch.setattr(c.backend, "upgrade", lambda _version, data: c.migrated.append(("upgrade", data)))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "update", "app": app,
+                                                              "manifest": manifest}) + "\n"))
+    code = local_update.main(["--root", str(c.root)])
+    reply = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return code, reply, hooks, identities
+
+
+def test_local_update_normalises_a_finished_handoff_and_updates_r1(case, monkeypatch, capsys):
+    """UR-15l-1 (a1): the fully local Update now never runs against R0's data."""
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    r0_before = snapshot(c.data)
+    r0_unit = c.service.path
+    r0_unit_bytes = r0_unit.read_bytes()
+    code, reply, hooks, identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 0, reply
+    assert reply["result"]["status"] == "updated" and reply["result"]["release"] == 2
+    assert current(c.root).release == 2 and c.verified_releases == [2]
+    assert identities == [(2, c.destination)]
+    assert c.migrated and all(data == c.destination for _step, data in c.migrated), c.migrated
+    assert ("start-editor", 2) in hooks
+    # Normalised once, as the installer does: R1 is the data root, R0 provenance only.
+    selected = selection(c)
+    assert selected["data_root"] == str(c.destination)
+    assert selected["realm_root"] == str(c.destination / "runtime/realms/r0")
+    assert selected["retained_r0_data_root"] == str(c.data)
+    assert read_json(c.root / "install.json")["data_root"] == str(c.destination)
+    assert not c.tx.journal.exists()
+    assert read_json(c.tx.journal.with_name("astrid-r1-handoff.completed.json"))["phase"] == "complete"
+    assert read_json(c.root / "update-transaction.json")["data_root"] == str(c.destination)
+    # R0's retained data and its login definition were never written.
+    assert snapshot(c.data) == r0_before
+    assert r0_unit.read_bytes() == r0_unit_bytes and c.service.path.name == "astrid-r1.service"
+    assert ["--user", "start", "astrid-r1.service"] in c.state()["calls"]
+
+
+def _untouched(c):
+    return (c.tx.journal.read_bytes(), c.service.selection.read_bytes(),
+            (c.root / "install.json").read_bytes(), (c.root / "current").read_bytes(),
+            sorted(path.name for path in (c.root / "versions").iterdir()),
+            (c.root / "update-transaction.json").exists(), snapshot(c.data), snapshot(c.destination))
+
+
+def test_local_update_refuses_when_the_handoff_cannot_be_normalised(case, monkeypatch, capsys):
+    from astrid.installer import boundary_registration as registration
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    monkeypatch.setattr(registration, "stage_runtime_launcher", lambda *a, **k: None)
+    before = _untouched(c)
+    code, reply, hooks, identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 3, reply
+    assert reply["code"] == "needs-repair" and reply["step"] == "normalise-handoff"
+    assert "Run the install line once" in reply["error"]
+    assert hooks == [] and identities == [] and c.staged == [] and c.migrated == []
+    assert _untouched(c) == before
+
+
+def test_local_update_refuses_an_unfinished_handoff_without_changes(case, monkeypatch, capsys):
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    journal = read_json(c.tx.journal)
+    c.tx.journal.write_text(json.dumps({**journal, "phase": "switching"}))
+    before = _untouched(c)
+    code, reply, hooks, _identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 3, reply
+    assert reply["code"] == "needs-repair" and "storage move" in reply["error"]
+    assert hooks == [] and c.staged == []
+    assert _untouched(c) == before

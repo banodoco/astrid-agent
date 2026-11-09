@@ -83,7 +83,7 @@ class Outcome:
     def headline(self) -> list[str]:
         lines = self._outcome_lines()
         if self.exit_code != 0:
-            lines += next_steps(self.log)
+            lines += next_steps(self.log, self.reason)
         return lines
 
     def _outcome_lines(self) -> list[str]:
@@ -122,20 +122,54 @@ class Outcome:
                 "headline": self.headline()[0], "finished_at": int(time.time())}
 
 
-NEXT_STEP = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send the file to support."
+# The support line: only for a bug in Astrid or an unexplained error.
+NEXT_STEP = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send it to support."
+
+# One next action for each reason; every reason has its own, and only
+# installer-bug and error send the person to support.
+NEXT_STEPS = {
+    "self-update-too-old": "Next: run the install command once; after that Update now works.",
+    "disk-space": "Next: free up at least the amount named above, then run the same command again.",
+    "busy": "Next: quit the other Astrid window (or let the other installer finish), "
+            "then run the same command again.",
+    "needs-repair": "Next: run the install command without --update to repair this installation, "
+                    "then update again.",
+    "other-runtime-running": "Next: stop the other Astrid, then run the same command again.",
+    "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
+                                   "Open astrid.haus > Settings > Updates > Download diagnostics "
+                                   "to see what is installed.",
+    "pinokio-managed": "Next: use the Update button in Pinokio.",
+    "source-checkout": "Next: update the source checkout, then run the same command again.",
+    "consent-required": "Next: run the install command again and accept the setup choices, "
+                        "or answer the prompts.",
+    "declined": "Next: nothing to do. To install later, run the install command again "
+                "and accept the setup choices.",
+    "recovered-previous-version": "Next: run the same command again to update.",
+    "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "refused": "Next: fix what the message above names, then run the same command again.",
+    "error": NEXT_STEP,
+    "installer-bug": NEXT_STEP,
+}
+
+
+def next_step(reason: str | None) -> str:
+    """The next action for ``reason``; an unknown or missing reason is an installer bug."""
+    return NEXT_STEPS.get(reason or "installer-bug", NEXT_STEPS["installer-bug"])
 
 
 CONSOLE_DETAILS = "Details: shown above in this window (the installer log was not used)."
 
 
-def next_steps(log: str | Path | None = None) -> list[str]:
+def next_steps(log: str | Path | None = None, reason: str | None = None) -> list[str]:
     """The two closing lines of every non-zero outcome; the one place they are written.
+
+    The Next line is ``reason``'s own action (``next_step``).
 
     ``log`` is the absolute install.log this run wrote. When the run could not
     use it safely (before selection, or a log inside a selected root), the
     diagnostics went to this window instead, and the line says so.
     """
-    return [NEXT_STEP, f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
+    return [next_step(reason), f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
 def reason_of(failure: BaseException | None) -> str:

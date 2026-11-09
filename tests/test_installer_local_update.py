@@ -567,7 +567,7 @@ def test_local_update_reaching_the_target_exits_0_with_an_updated_receipt(tmp_pa
 
 
 def test_local_update_whose_live_runtime_did_not_move_exits_3_not_updated(tmp_path, monkeypatch, capsys):
-    from astrid.installer.outcome import NEXT_STEP, read_record
+    from astrid.installer.outcome import next_step, read_record
 
     # The transaction believes it worked, but the live Runtime still reports 13.
     env = _main_env(tmp_path, monkeypatch, live=lambda _env: 13)
@@ -578,7 +578,7 @@ def test_local_update_whose_live_runtime_did_not_move_exits_3_not_updated(tmp_pa
     assert record["kind"] == "not-updated" and record["exit_code"] == 3
     assert reply["outcome"]["kind"] == "not-updated"
     log = str((env.logs / "install.log").absolute())
-    assert reply["lines"][-2:] == [NEXT_STEP, f"Details: {log}"]
+    assert reply["lines"][-2:] == [next_step("runtime-not-running"), f"Details: {log}"]
 
 
 def _interrupted(env):
@@ -593,7 +593,7 @@ def _interrupted(env):
 
 
 def test_local_failures_end_with_next_and_details(tmp_path, monkeypatch, capsys):
-    from astrid.installer.outcome import NEXT_STEP
+    from astrid.installer.outcome import next_step
 
     env = _main_env(tmp_path, monkeypatch)
     log = str((env.logs / "install.log").absolute())
@@ -606,7 +606,7 @@ def test_local_failures_end_with_next_and_details(tmp_path, monkeypatch, capsys)
     assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 1
     failed = _reply(capsys)
     assert failed["error"] and failed["outcome"]["kind"] == "failed"
-    assert failed["lines"][-2:] == [NEXT_STEP, f"Details: {log}"]
+    assert failed["lines"][-2:] == [next_step("refused"), f"Details: {log}"]
 
     # An update that found an interrupted one restores it and is not-updated (3).
     _interrupted(env)
@@ -614,16 +614,17 @@ def test_local_failures_end_with_next_and_details(tmp_path, monkeypatch, capsys)
     recovered = _reply(capsys)
     assert recovered["outcome"]["kind"] == "not-updated"
     assert recovered["outcome"]["reason"] == "recovered-previous-version"
-    assert recovered["lines"][-2:] == [NEXT_STEP, f"Details: {log}"]
+    assert recovered["lines"][-2:] == [next_step("recovered-previous-version"), f"Details: {log}"]
 
     # npm run update's own recover step says the same, with exit 3.
     _interrupted(env)
     assert env.run({"action": "recover", "purpose": "update"}) == 3
-    assert _reply(capsys)["lines"][-2:] == [NEXT_STEP, f"Details: {log}"]
+    assert _reply(capsys)["lines"][-2:] == [next_step("recovered-previous-version"),
+                                            f"Details: {log}"]
 
 
 def test_local_failure_never_names_an_unsafe_log(tmp_path, monkeypatch, capsys):
-    from astrid.installer.outcome import CONSOLE_DETAILS, NEXT_STEP
+    from astrid.installer.outcome import CONSOLE_DETAILS, next_step
     from runtime_protocol import platform
 
     env = _main_env(tmp_path, monkeypatch)
@@ -633,7 +634,7 @@ def test_local_failure_never_names_an_unsafe_log(tmp_path, monkeypatch, capsys):
     env.backend.stage = lambda *_args: (_ for _ in ()).throw(ValueError("download failed"))
     assert env.run({"action": "update", "manifest": app["manifest"], "app": app}) == 1
     reply = _reply(capsys)
-    assert reply["lines"][-2:] == [NEXT_STEP, CONSOLE_DETAILS]
+    assert reply["lines"][-2:] == [next_step("refused"), CONSOLE_DETAILS]
     assert str(env.data) not in json.dumps(reply["lines"])
     assert not (env.data / "logs" / "last-run.json").exists()
 

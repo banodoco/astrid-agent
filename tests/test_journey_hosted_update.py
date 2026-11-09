@@ -2,6 +2,7 @@
 import hashlib
 import http.server
 import subprocess
+import time
 import json
 import threading
 from pathlib import Path
@@ -456,7 +457,7 @@ def test_the_button_row_clicks_the_page_and_records_what_the_browser_sent(tmp_pa
             super().__init__(routes, python=python)
             self.types, self.leaf_spki = types, "PIN="
 
-    def click(*, app, door_base, spki, evidence):
+    def click(*, app, door_base, spki, evidence, live_timeout=0):
         order.append(("click", spki, door_base))
         Pinned.instances[0].log += [
             {"method": "GET", "path": "/install-manifest.json", "status": 200, "page": True},
@@ -597,3 +598,89 @@ def test_the_browser_script_pins_the_leaf_and_reads_the_request_it_saw():
                            "authorization": False, "cookie": False, "status": 202}
     assert out["bare"]["content_length"] is None and out["bare"]["cookie"] is True and out["bare"]["origin"] is None
     assert out["label"] == "Update now"
+
+
+class FakeLive:
+    """The browser left open on the page after the click (UR-15k)."""
+
+    def __init__(self, final):
+        self.final, self.closed, self.waited = final, False, False
+
+    def wait(self):
+        self.waited = True
+        return self.final() if callable(self.final) else self.final
+
+    def close(self):
+        self.closed = True
+
+
+def _live_row(tmp_path, monkeypatch, live, *, wait=None):
+    make_app(tmp_path, monkeypatch)
+    FakeIntercept.instances.clear()
+
+    class Pinned(FakeIntercept):
+        def __init__(self, routes, *, python=None, types=None):
+            super().__init__(routes, python=python)
+            self.types, self.leaf_spki = types, "PIN="
+
+    def click(*, app, door_base, spki, evidence, live_timeout=0):
+        assert live_timeout == 5  # the browser waits as long as the update may take
+        Pinned.instances[0].log += [{"method": "GET", "path": "/install-manifest.json", "status": 200},
+                                    {"method": "GET", "path": "/install", "status": 200}]
+        return {**clicked(), "live": live}
+
+    monkeypatch.setattr(hosted, "wait_terminal", wait or (lambda *a, **k: terminal()))
+    return lambda: hosted.run_hosted_update(python="p", app=tmp_path, manifest=b'{"release": 2}',
+                                            door_base="http://127.0.0.1:1/x", root=tmp_path, evidence=tmp_path,
+                                            timeout=5, intercept=Pinned, dist=make_dist(tmp_path), click=click)
+
+
+def test_the_open_page_shows_the_finished_update_within_30_seconds_without_a_reload(tmp_path, monkeypatch):
+    live = FakeLive(lambda: {"live": {"text": "Astrid updated: Release 1 → Release 2", "seen_at": time.time() * 1000 + 12_000,
+                                      "navigations": 1}})
+    record = _live_row(tmp_path, monkeypatch, live)()
+    assert live.waited and live.closed is False
+    result = record["page"]["live_result"]
+    assert result["text"] == "Astrid updated: Release 1 → Release 2" and result["journey_reloads"] == 0
+    assert 0 < result["seconds_after_terminal"] <= hosted.LIVE_RESULT_SECONDS
+
+
+@pytest.mark.parametrize("final, message", [
+    (lambda: {"live": {"text": "Astrid updated: Release 1 → Release 2", "seen_at": time.time() * 1000 + 45_000}}, "45s after"),
+    (lambda: {"live_error": "TimeoutError: waiting for Astrid updated"}, "never showed"),
+])
+def test_the_row_fails_when_the_open_page_is_late_or_silent(tmp_path, monkeypatch, final, message):
+    with pytest.raises(RuntimeError, match=message):
+        _live_row(tmp_path, monkeypatch, FakeLive(final))()
+
+
+def test_the_open_browser_is_closed_when_the_update_fails(tmp_path, monkeypatch):
+    live = FakeLive({})
+
+    def failed(*_a, **_k):
+        raise RuntimeError("The Update ended as 'failed'")
+
+    with pytest.raises(RuntimeError, match="ended as 'failed'"):
+        _live_row(tmp_path, monkeypatch, live, wait=failed)()
+    assert live.closed and not live.waited
+
+
+def test_click_keeps_the_browser_open_for_the_live_result(tmp_path):
+    """The real click path: the browser writes the click at once, then its final result with the live line."""
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    final = {**clicked(), "stage": "live", "live": {"text": "Astrid updated: Release 1 → Release 2", "seen_at": 1, "navigations": 0}}
+    helper = tmp_path / "fake_live_node.py"
+    helper.write_text("import json, sys, time\n"
+                      "config = json.load(open(sys.argv[1]))\n"
+                      f"json.dump({clicked()!r}, open(config['clicked'], 'w'))\n"
+                      "time.sleep(0.5)\n"
+                      f"json.dump({final!r}, open(config['result'], 'w'))\n")
+    script = tmp_path / "node"
+    script.write_text(f"#!/bin/sh\npython3 {helper} \"$2\"\n")
+    script.chmod(0o755)
+    result = hosted.click_update_now(app=tmp_path, door_base="http://127.0.0.1:17340/x", spki="PIN=", evidence=evidence,
+                                     timeout=5, node=str(script), live_timeout=5)
+    assert result["posts"] == 1 and isinstance(result["live"], hosted.LiveResult)
+    assert result["live"].wait()["live"]["text"] == "Astrid updated: Release 1 → Release 2"
+    assert json.loads((evidence / "update-button.json").read_text())["stage"] == "live"
