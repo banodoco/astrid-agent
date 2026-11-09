@@ -301,9 +301,11 @@ class MachineProviderHTTP:
         root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
         job = json.loads(self.files[root + "/job.json"])
         assert f"export ASTRID_PACKS_PATH={root}/selection/packs" in detached
+        # The command's own listing reads the shipped selection (every job, a workflow job too).
+        shipped = self._shipped(root)
         if argv[2] != "workflow":
             # The entry resolves from the pod's built-ins or the shipped selection only.
-            assert argv[2] in [*self.listed, *self._shipped(root)], (argv[2], self.listed)
+            assert argv[2] in [*self.listed, *shipped], (argv[2], self.listed)
         assert argv[2] == (job["entry"] or "workflow") and set(job["inputs"]) >= {"python", "companion", "source"}
         for name in ("python", "companion", "source", "managed_assets", "source_video"):
             if name in job["inputs"]:
