@@ -10,8 +10,8 @@ Help the user install Astrid on this computer and reach a first image. Use
 on their computer so they can change the editor itself, follow the fully local
 path below. Both paths use the same installed Runtime and workspace.
 
-The journey has six steps, in order: 0 entry route, 1 choices, 2 install,
-3 connected, 4 what this machine can generate with, and 5 set up generation.
+The journey has four steps, in order: 0 entry route, 1 choices, 2 install,
+3 connected.
 Carry out requested checks, report their actual results, and do not claim a
 check passed when it could not be run.
 
@@ -35,8 +35,9 @@ Check the routes in this order. Use the first one that fits, and only that one:
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
    consent once, unless they have already given it. Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
-   they have already approved this run. Your saved setup choices stay as they
-   are. Tell me if you want to change one. Do not show the choices list. Run
+   they have already approved this run. Tell the user: "Your saved setup choices
+   stay as they are. Tell me if you want to change one." Do not show the choices
+   list. Run
    the install command for the user's OS with no choice flags:
    `curl -fsSL https://astrid.haus/install | sh` on macOS or Linux, or
    `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))` in
@@ -111,65 +112,9 @@ bundle it makes, and follow [Troubleshooting](troubleshooting.md#make-a-support-
 The installer checks that Astrid is healthy. Then it tries to open astrid.haus
 in the browser. If no browser opens, ask the user to open https://astrid.haus.
 If Chrome or Edge asks to reach this computer, tell the user to choose Allow.
-Confirm that astrid.haus shows Connected. When it does, go to step 4. If it
-does not, follow [Troubleshooting](troubleshooting.md#asking-for-help).
-
-## 4. What this machine can generate with
-
-This step is read-only. Install nothing. Run the probe for the user's OS.
-Report what it prints.
-
-**Linux:**
-
-```sh
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-```
-
-**macOS:**
-
-```sh
-uname -m
-```
-
-**Windows:**
-
-```powershell
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-```
-
-Succeeds when the Linux or Windows probe prints one line per GPU with a name
-and a memory total, or the macOS probe prints the machine type. The local
-engines need an NVIDIA GPU with at least 12 GB of memory. Then go to
-[Set up generation](#set-up-generation).
-
-Doctor fallback: if a probe is missing or fails, tell the user it could not be
-checked. Install nothing. Run the install command for the user's OS with
-`--doctor` added, as in [Troubleshooting](troubleshooting.md#make-a-support-bundle).
-Attach the bundle it prints. Then go to [Set up generation](#set-up-generation).
-
-Managed local engines, by platform:
-
-| Platform | Engine |
-| --- | --- |
-| `linux-x86_64-cu130` | `comfyui` |
-| `windows-x86_64-cu130` | `vibecomfy` |
-| `windows-x86_64-cu128` | `wan2gp` |
-
-No managed local engine is listed for macOS yet.
-
-## Set up generation
-
-Pick the one path that matches this machine, and follow it now:
-
-- A ComfyUI is already running on this machine: follow
-  [Find their ComfyUI](../../astrid/packs/vibecomfy/docs/SKILL.md#find-their-comfyui)
-  in the vibecomfy skill.
-- No ComfyUI is running on this machine: follow the
-  [RunPod skill](../../astrid/packs/runpod/docs/SKILL.md) to generate on a
-  cloud GPU.
-
-This setup does not install a managed engine. That install is coming, but it
-is not here today, so use one of the two paths above.
+Confirm that astrid.haus shows Connected. When it does, setup is complete.
+(Connecting local engines such as ComfyUI or Wan2GP is not covered here yet.)
+If it does not, follow [Troubleshooting](troubleshooting.md#asking-for-help).
 
 ## Run everything on this computer
 

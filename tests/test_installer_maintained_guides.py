@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 
@@ -88,16 +87,30 @@ def _block_os(body: str) -> list:
 
 def test_skill_journey_steps_run_in_order():
     headings = list(_sections(_skill()))
-    expected = ["## 0. ", "## 1. ", "## 2. ", "## 3. ", "## 4. ", "## Set up generation"]
+    expected = ["## 0. ", "## 1. ", "## 2. ", "## 3. "]
     positions = [next((i for i, h in enumerate(headings) if h.startswith(prefix)), -1) for prefix in expected]
     assert all(p >= 0 for p in positions), positions
     assert positions == sorted(positions), positions
 
 
+def test_skill_journey_ends_at_connected():
+    text = _skill()
+    assert sorted(_steps(text)) == [0, 1, 2, 3], sorted(_steps(text))
+    assert "## Set up generation" not in text
+    assert "## 4. " not in text and "## 5. " not in text
+    assert "astrid/packs/generation/docs/SKILL.md" not in text
+    assert "coming" not in text.lower()
+
+
+def test_connected_step_says_local_engines_are_not_covered_yet():
+    body = _steps(_skill())[3]
+    assert "(Connecting local engines such as ComfyUI or Wan2GP is not covered here yet.)" in body, body
+
+
 def test_skill_command_steps_have_one_block_per_os_success_line_and_doctor_fallback():
     steps = _steps(_skill())
     command_steps = {number for number, body in steps.items() if FENCE.search(body)}
-    assert command_steps == {2, 4}, command_steps
+    assert command_steps == {2}, command_steps
     for number in sorted(command_steps):
         body = steps[number]
         covered = _block_os(body)
@@ -131,33 +144,6 @@ def test_quoted_installer_first_lines_exist_in_installer_outcome():
             "Astrid was NOT installed"} <= set(quoted), quoted
     for line in quoted:
         assert line in outcome, line
-
-
-def test_managed_engine_table_equals_local_engine_index_entries():
-    rows = set()
-    for line in _steps(_skill()).get(4, "").splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [cell.strip().strip("`") for cell in line.strip()[1:-1].split("|")]
-        if cells[0] in ("Platform", "") or set(cells[0]) <= set("-: "):
-            continue
-        rows.add((cells[1], cells[0]))
-    index = json.loads((ROOT / "astrid/packs/engine-index.json").read_text(encoding="utf-8"))
-    local = {(entry["engine"], entry["platform"]) for entry in index["entries"]
-             if not entry["recipe"]["path"].startswith("packs/runpod/")}
-    assert rows == local, (rows, local)
-
-
-def test_skill_has_set_up_generation_section_routing_to_generation_skills():
-    text = _skill()
-    assert "## Set up generation" in text.splitlines()
-    body = _sections(text)["## Set up generation"]
-    assert "](../../astrid/packs/vibecomfy/docs/SKILL.md#find-their-comfyui)" in body
-    assert "](../../astrid/packs/runpod/docs/SKILL.md)" in body
-    assert "coming" in body
-    assert "not covered here yet" not in text
-    vibecomfy = (ROOT / "astrid/packs/vibecomfy/docs/SKILL.md").read_text(encoding="utf-8")
-    assert "### Find their ComfyUI" in vibecomfy
 
 
 CHOICE_FLAG_NAMES = ("--autostart", "--command", "--skills", "--skill-copies")
