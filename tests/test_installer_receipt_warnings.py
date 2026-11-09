@@ -257,3 +257,16 @@ def test_plain_install_safe_refusal_is_unchanged_failed_busy_exit_1():
     out = settle(Request("install"), before, lambda: after, failure=refusal)
     assert out.kind == "failed" and out.exit_code == 1
     assert out.reason == "busy"
+
+
+def test_unsafe_or_downstream_stop_failure_stays_failed_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    unsafe = RuntimeOperationError("the stop failed unsafely", details={"safe": None})
+    downstream = RuntimeOperationError("a later step failed", details={"cause_details": {"safe": False}})
+    for refusal in (unsafe, downstream):
+        out = settle(Request("update", 12, target_source="manifest"), _state("runtime", 11), lambda: after,
+                     failure=refusal)
+        assert out.kind == "failed" and out.exit_code == 1, refusal
+        assert out.reason == "error", refusal
