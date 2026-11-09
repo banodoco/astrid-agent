@@ -79,20 +79,20 @@ def test_release11_rows_are_accepted_by_the_release1_aggregate_when_all_four_ass
     assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
 
 
-def test_release11_rows_are_optional_and_the_five_row_contract_stays_strict(tmp_path):
+def test_release11_rows_are_required_by_the_nine_row_aggregate(tmp_path):
     candidate = rows.release1_receipts(tmp_path)
     assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
-    (tmp_path / "direct-linux" / "journey-result.json").unlink()
+    (tmp_path / "direct-linux-r11-update" / "journey-result.json").unlink()
     errors = gate.evaluate_release1_matrix(candidate, tmp_path)
-    assert errors == ["direct-linux: missing receipt"]
+    assert errors == ["direct-linux-r11-update: missing receipt"]
 
 
-def test_release1_aggregate_expects_the_five_direct_rows_including_windows_and_both_fresh_rows():
+def test_release1_aggregate_expects_the_nine_rows_including_windows_and_both_fresh_rows():
     assert set(gate.RELEASE1_JOB_IDS) == {
-        "direct-linux", "direct-macos", "direct-windows", "direct-linux-fresh", "direct-macos-fresh"}
-    assert {row["job_id"] for row in gate.RELEASE11_UPDATE_MATRIX} == {
+        "direct-linux", "direct-macos", "direct-windows", "direct-linux-fresh", "direct-macos-fresh",
+        "direct-linux-r9-install", "direct-macos-r9-install",
         "direct-linux-r11-update", "direct-macos-r11-update"}
-    assert set(gate.RELEASE1_JOB_IDS).isdisjoint(row["job_id"] for row in gate.RELEASE11_UPDATE_MATRIX)
+    assert {row["job_id"] for row in gate.RELEASE11_UPDATE_MATRIX} <= set(gate.RELEASE1_JOB_IDS)
 
 
 def test_release11_receipt_kind_is_the_leg_own_kind():

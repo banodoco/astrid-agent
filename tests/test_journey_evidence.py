@@ -44,6 +44,32 @@ def handoff_upgrade_fields():
     }
 
 
+def release9_fields():
+    """The release9-then-install row's own fields: the plain install from the pinned Release 9."""
+    bootstrap = {"public/install": "1" * 64, "public/install.sh": "2" * 64, "public/install.ps1": "3" * 64}
+    return {
+        "release9_source": {"app_commit": gate.RELEASE9_APP_COMMIT, "manifest_sha256": "f" * 64,
+                            "bootstrap_sha256": bootstrap, "identity": gate.RELEASE9_IDENTITY},
+        "release_transition": {"from": 9, "to": 12, "source": "pinned-release9-plain-install"},
+        "health_transition": {"release9_runtime_instance_id": "old", "candidate_runtime_instance_id": "new"},
+        "service_transition": {"release9": {"manager": "native"}, "candidate": {"manager": "native"}},
+    }
+
+
+def release11_fields():
+    """The release11-then-update row's own evidence for its four assertions."""
+    bootstrap = {"public/install": "1" * 64, "public/install.sh": "2" * 64, "public/install.ps1": "3" * 64}
+    return {
+        "release11_source": {"app_commit": gate.RELEASE11_APP_COMMIT, "manifest_sha256": "e" * 64,
+                             "bootstrap_sha256": bootstrap, "identity": gate.RELEASE11_IDENTITY},
+        "release_transition": {"from": 11, "to": 12, "source": "candidate-install-update"},
+        "health_transition": {"candidate_live_release": 12},
+        "update": {"command": "install --update", "exit_code": 0,
+                   "receipt": {"kind": "updated", "exit_code": 0, "start": 11, "still": 12, "target": 12}},
+        "live_runtimes": [{"data_root": "/run/data", "pid": 1, "runtime_instance_id": "new"}],
+    }
+
+
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
@@ -68,7 +94,13 @@ def release1_receipts(tmp_path):
                           "handed_off_start": "pass", "update_exit": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
-            row.update(handoff_upgrade_fields())
+            if contract.get("leg") == "release9-then-install":
+                row.update(release9_fields())
+            elif contract.get("leg") == "release11-then-update":
+                row.update(release11_fields())
+                row["checks"].update({name: "pass" for name in gate.RELEASE11_CHECKS})
+            else:
+                row.update(handoff_upgrade_fields())
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
                                     "after_sha256": "b" * 64}
         else:
@@ -333,13 +365,17 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
     assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]" in workflow
     contract_rows = {(row["job_id"], row["mode"], row["os"], row["leg"]) for row in gate.RELEASE1_MATRIX}
-    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 5
+    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 9
     assert contract_rows == {
         ("direct-linux", "direct", "linux", "r0-handoff-then-update"),
         ("direct-macos", "direct", "macos", "r0-handoff-then-update"),
         ("direct-windows", "direct", "windows", "fresh-install"),
         ("direct-linux-fresh", "direct", "linux", "fresh-install"),
         ("direct-macos-fresh", "direct", "macos", "fresh-install"),
+        ("direct-linux-r9-install", "direct", "linux", "release9-then-install"),
+        ("direct-macos-r9-install", "direct", "macos", "release9-then-install"),
+        ("direct-linux-r11-update", "direct", "linux", "release11-then-update"),
+        ("direct-macos-r11-update", "direct", "macos", "release11-then-update"),
     }
     assert not any(row["mode"] != "direct" for row in gate.RELEASE1_MATRIX)
     assert {row["mode"] for row in gate.RELEASE1_1_DEFERRED_PINOKIO_MATRIX} == {"pinokio-backend", "pinokio-fully-local"}
@@ -612,7 +648,8 @@ def test_each_release1_leg_needs_its_own_receipt_kind(tmp_path):
     assert {kinds[job] for job in ("direct-windows", "direct-linux-fresh", "direct-macos-fresh")} == {
         "release1-installed-lifecycle"}
     swapped = {"r0-handoff-then-update": "release1-installed-lifecycle",
-               "release1-installed-lifecycle": "r0-handoff-then-update"}
+               "release1-installed-lifecycle": "r0-handoff-then-update",
+               "release11-then-update": "release1-installed-lifecycle"}
     for job_id, kind in kinds.items():
         path = tmp_path / job_id / "journey-result.json"
         original = json.loads(path.read_text())

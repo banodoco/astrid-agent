@@ -1314,8 +1314,54 @@ def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatc
     assert "before-cleanup" in receipt["failure_diagnostics"]
 
 
-def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path):
-    """Run the checked-in config program; the strict gate is the five direct rows."""
+def test_row_direct_is_one_nine_row_run_and_keep_going_stays_on_the_legacy_rows(tmp_path):
+    """Row direct is one full run of the nine Release-1 rows; keep-going never admits the new legs."""
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    config_step = workflow.split("      - id: config\n", 1)[1]
+    program = textwrap.dedent(config_step.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+    (tmp_path / "driver").symlink_to(journey.ROOT, target_is_directory=True)
+    output = tmp_path / "output"
+    candidate = {key: char * 40 for key, char in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
+               WORKFLOW_REPOSITORY="banodoco/astrid-agent",
+               OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
+               STOPPED_PATH_AGENT_REF=candidate["agent"],
+               M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
+               DIAGNOSTIC_KEEP_GOING="false", DIAGNOSTIC_LEG="release9-then-install",
+               DIRECT_ONLY="true", JOURNEY_ROW="direct", M4_4A_BACKEND_ONLY="false",
+               M4_5_ENABLED="false", M4_5_ONLY="false", M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]",
+               M4_4B_ENABLED="false", M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
+
+    def matrix(**overrides):
+        output.write_text("", encoding="utf-8")
+        proc = subprocess.run([sys.executable, "-c", program], cwd=tmp_path, env=dict(env, **overrides),
+                              text=True, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+        values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+        return json.loads(values["matrix"])["include"]
+
+    nine = {row["job_id"]: (row["leg"], row["os"], row["runner"]) for row in matrix()}
+    assert nine == {
+        "direct-linux-fresh": ("fresh-install", "linux", "ubuntu-24.04"),
+        "direct-macos-fresh": ("fresh-install", "macos", "macos-15"),
+        "direct-windows": ("fresh-install", "windows", "windows-2022"),
+        "direct-linux": ("r0-handoff-then-update", "linux", "ubuntu-24.04"),
+        "direct-macos": ("r0-handoff-then-update", "macos", "macos-15"),
+        "direct-linux-r9-install": ("release9-then-install", "linux", "ubuntu-24.04"),
+        "direct-macos-r9-install": ("release9-then-install", "macos", "macos-15"),
+        "direct-linux-r11-update": ("release11-then-update", "linux", "ubuntu-24.04"),
+        "direct-macos-r11-update": ("release11-then-update", "macos", "macos-15"),
+    }
+    kept = {row["job_id"] for row in matrix(DIAGNOSTIC_KEEP_GOING="true")}
+    assert kept == {"direct-linux", "direct-macos", "direct-windows"}
+
+
+def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path):
+    """Run the checked-in config program; the strict gate is the nine direct rows."""
     import subprocess
     import sys
     import textwrap
@@ -1354,15 +1400,19 @@ def test_journey_workflow_selects_five_direct_rows_and_keeps_full_gate(tmp_path)
         ("direct-windows", "direct", "windows-2022", "fresh-install"),
         ("direct-linux-fresh", "direct", "ubuntu-24.04", "fresh-install"),
         ("direct-macos-fresh", "direct", "macos-15", "fresh-install"),
+        ("direct-linux-r9-install", "direct", "ubuntu-24.04", "release9-then-install"),
+        ("direct-macos-r9-install", "direct", "macos-15", "release9-then-install"),
+        ("direct-linux-r11-update", "direct", "ubuntu-24.04", "release11-then-update"),
+        ("direct-macos-r11-update", "direct", "macos-15", "release11-then-update"),
     }
-    assert len(unrestricted) == 5
+    assert len(unrestricted) == 9
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in unrestricted} == expected_direct
     gate = workflow.split("      - name: Aggregate the exact Release-1 receipt matrix\n", 1)[1].split("      - name:", 1)[0]
     assert "if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'" in gate
     assert "--aggregate-release1" in gate
 
     rows = matrix("true")
-    assert len(rows) == 5
+    assert len(rows) == 9
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
