@@ -1,0 +1,54 @@
+python.exe : Traceback (most recent call last):
+At line:7 char:3
++   & $exe @workerArgs *>> $log
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], Remot 
+   eException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-update-dlj3gfev\worker-39170ee6d8594fe18bef
+e0b9fd4ddffe-1-056de89454dcb9f4cae2b8daf132fc11.py", line 1, in <module>
+    import os,sys; _log=open('D:\\a\\_temp\\astrid-r1-direct-windows\\program\\logs\\astrid-update
+-39170ee6d8594fe18befe0b9fd4ddffe.log','a',encoding='utf-8',buffering=1); 
+sys.stdout=sys.stderr=_log; sys.path[:0]=['D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versio
+ns\\3d134f19-941ac44f-c7895601\\r', 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d
+134f19-941ac44f-c7895601\\py\\Lib\\site-packages']; os.environ.update({'ASTRID_BUN_EXECUTABLE': 'D
+:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\tools\\bun\\
+bun-windows-x64\\bun.exe', 'ASTRID_CAPABILITY_MATRIX_PATH': 'D:\\a\\_temp\\astrid-r1-direct-window
+s\\program\\versions\\3d134f19-941ac44f-c7895601\\a\\config\\astrid-beta-capabilities.json', 
+'ASTRID_FFMPEG_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-9
+41ac44f-c7895601\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin\\ffmpeg.exe', 
+'ASTRID_FFPROBE_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-
+941ac44f-c7895601\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin\\ffprobe.exe', 
+'ASTRID_HOST_EXECUTION_PROFILE': 'installed', 'ASTRID_INSTALL_FFMPEG_SOURCE': 'download', 
+'ASTRID_INSTALL_FFMPEG_VERSION': '7.0.2-full_build-www.gyan.dev', 
+'ASTRID_INSTALL_FFPROBE_VERSION': '7.0.2-full_build-www.gyan.dev', 'ASTRID_INSTALL_MANAGED_BY': 
+'', 'ASTRID_INSTALL_OMP_COMMIT': '78f0e0960f471c2c62b943272a48c33366f239fe', 
+'ASTRID_INSTALL_OMP_SOURCE': 'fork', 'ASTRID_INSTALL_OMP_VERSION': '18.12.6', 
+'ASTRID_INSTALL_RELEASE': '9', 'ASTRID_INSTALL_UV': 
+'C:\\Users\\runneradmin\\AppData\\Local\\Astrid Installer\\bootstrap\\uv.exe', 
+'ASTRID_NODE_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941
+ac44f-c7895601\\tools\\node\\node-v20.19.4-win-x64\\node.exe', 'ASTRID_REMOTION_PROJECT_DIR': 'D:\
+\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\a\\remotion', 
+'ASTRID_RUNTIME_DATA_ROOT': 'D:\\a\\_temp\\astrid-r1-direct-windows\\data', 
+'ASTRID_RUNTIME_DOOR_PORT': '17340', 'ASTRID_SOURCE_PROVENANCE_ROOT': 
+'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\a', 
+'ASTRID_TIMELINE_SCHEMA_PYTHONPATH': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3
+d134f19-941ac44f-c7895601\\py\\Lib\\site-packages\\astrid\\core\\timeline\\schema\\timeline-config
+.schema.json', 'BUN_INSTALL': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19
+-941ac44f-c7895601\\tools\\omp', 'BUN_INSTALL_BIN': 'D:\\a\\_temp\\astrid-r1-direct-windows\\progr
+am\\versions\\3d134f19-941ac44f-c7895601\\tools\\omp\\bin', 'PATH': 'D:\\a\\_temp\\astrid-r1-direc
+t-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\py\\Scripts;D:\\a\\_temp\\astrid-r1-dire
+ct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\tools\\omp\\bin;D:\\a\\_temp\\astrid-r1
+-direct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\tools\\bun\\bun-windows-x64;D:\\a\
+\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941ac44f-c7895601\\tools\\node\\node
+-v20.19.4-win-x64;D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3d134f19-941ac44f-c78
+95601\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin;C:\\Windows\\System32', 'PYTHONIOENCODING': 
+'utf-8'}); from astrid.installer.update_job import run_job; 
+result=run_job('D:\\a\\_temp\\astrid-r1-direct-windows\\program', 
+'39170ee6d8594fe18befe0b9fd4ddffe', 1, '056de89454dcb9f4cae2b8daf132fc11'); 
+print(__import__('json').dumps(result))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\l
+ogs\\astrid-update-39170ee6d8594fe18befe0b9fd4ddffe.log'

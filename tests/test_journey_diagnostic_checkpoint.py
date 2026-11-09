@@ -34,12 +34,13 @@ def _retained_preseed_state(tmp_path, monkeypatch):
     (root / "current").write_text("release0\n", encoding="utf-8")
     version_path = version_root / "version.json"
     journey.write_json(version_path, {"root": str(version_root), "python": sys.executable, "env": {}})
-    release0_sources = {"agent": {"sha": "1" * 40}, "runtime": {"sha": "2" * 40}}
-    release0_manifest = tmp_path / "release0-manifest.json"
-    journey.write_json(release0_manifest, {"release": 0, **release0_sources, "tools": {}})
-    journey.write_json(version_root / "manifest.json", {"release": 0, **release0_sources, "tools": {}})
+    release9_sources = {"agent": {"sha": jumps.RELEASE9_IDENTITY["agent"]},
+                        "runtime": {"sha": jumps.RELEASE9_IDENTITY["runtime"]}}
+    release0_manifest = tmp_path / "release9-manifest.json"
+    journey.write_json(release0_manifest, {"release": 9, **release9_sources, "tools": {}})
+    journey.write_json(version_root / "manifest.json", {"release": 9, **release9_sources, "tools": {}})
     target_manifest = {
-        "release": 1,
+        "release": 10,
         "agent": {"sha": "3" * 40},
         "runtime": {"sha": "4" * 40, "schema_digest": "f" * 64},
         "tools": {"python": {"version": "3.11.13"}},
@@ -70,7 +71,7 @@ def _retained_preseed_state(tmp_path, monkeypatch):
         candidate_agent_checkout=tmp_path / "agent",
         candidate_runtime_checkout=tmp_path / "runtime",
         pinokio_checkout=tmp_path / "pinokio",
-        release0_fixture=tmp_path / "fixture",
+        release9_app_checkout=tmp_path / "release9-app",
         allow_release0_to_release1=True,
         diagnostic_start_at=jumps.DIAGNOSTIC_START_STAGE,
         diagnostic_state=run_root / jumps.DIAGNOSTIC_STATE_NAME,
@@ -82,8 +83,8 @@ def _retained_preseed_state(tmp_path, monkeypatch):
         "runtime": "4" * 40,
         "pinokio": "6" * 40,
     }.items()}
-    monkeypatch.setattr(jumps, "release0_admission", lambda unused: (
-        tmp_path / "fixture", release0_manifest, fixture_receipt))
+    monkeypatch.setattr(jumps, "release9_admission", lambda unused, output: (
+        tmp_path / "source", release0_manifest, fixture_receipt))
     monkeypatch.setattr(journey, "selected_manifest", lambda *unused, **kwargs: (
         tmp_path / "selected-manifest.json", target_manifest))
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *unused: target_manifest)

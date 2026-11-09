@@ -57,6 +57,12 @@ MINIMUM_SYSTEMD_VERSION = 254
 UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
 
 
+# Actions this helper answers. Runtime reads them from the availability reply to
+# decide whether in-app update exists at all; helpers that predate the list
+# cannot be asked and read as unsupported.
+SUPPORTED_ACTIONS = ("availability", "reconcile", "prepare", "accept", "fail", "launch")
+
+
 def update_job_availability(*, system: str | None = None) -> dict:
     """Return whether the selected OS can safely run an update job."""
     actual = sys.platform if system is None else system
@@ -98,6 +104,12 @@ class _AcknowledgementUnknown(_BusyRefusal):
     """A submitted native attempt whose acknowledgement cannot be proved."""
 
     reason = "acknowledgement-unknown"
+
+
+class _LegacyUpdateRecord(_BusyRefusal):
+    """A job record without a usable home. Liveness still checks it; only the install selection read refuses."""
+
+    reason = "legacy-update-record"
 
 
 def _busy(message: str = "An update operation is already active or unresolved; try again after it finishes.") -> NoReturn:
@@ -165,7 +177,7 @@ def _confirmed_route_disposition(root: Path, job: dict, state: str, message: str
         _busy("The confirmed update result has no valid transaction binding.")
     try:
         journal_sha256 = hashlib.sha256((root / "update-transaction.json").read_bytes()).hexdigest()
-        selection_sha256 = hashlib.sha256(_selection_path().read_bytes()).hexdigest()
+        selection_sha256 = hashlib.sha256(_recorded_selection_path(job).read_bytes()).hexdigest()
     except OSError as failure:
         raise _BusyRefusal("The confirmed update evidence cannot be retained.") from failure
     confirmation = {
@@ -219,6 +231,7 @@ def _new_attempt(epoch: int) -> dict:
         "submit": "not-issued",
         "wrapper_sha256": None,
         "descriptor_sha256": None,
+        "handoff": None,
         "claim": None,
         "retirement": None,
     }
@@ -376,7 +389,7 @@ def _validate_existing_windows_worker(old: Version, job: dict) -> None:
 def _bootstrap_command(bootstrap: Path, args: list[str], *, system: str | None = None) -> list[str]:
     system = system or sys.platform
     if system == "win32":
-        return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        return [_platform_api().windows_powershell_path(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", str(bootstrap), *args]
     return ["/bin/sh", str(bootstrap), *args]
 
@@ -453,6 +466,23 @@ def autostart_off(value: object) -> bool:
 def _selection_path() -> Path:
     from .service import install_selection
     return install_selection(Path.home(), sys.platform)
+
+
+def _has_recorded_home(job: dict) -> bool:
+    recorded = job.get("home")
+    return isinstance(recorded, str) and Path(recorded).is_absolute()
+
+
+def _recorded_home(job: dict) -> Path:
+    """The home the update was accepted under. A launched job's ambient HOME is its launcher's, so it is never used."""
+    if not _has_recorded_home(job):
+        raise _LegacyUpdateRecord("The accepted update records no installation home, so its install selection cannot be read.")
+    return Path(job["home"])
+
+
+def _recorded_selection_path(job: dict) -> Path:
+    from .service import install_selection
+    return install_selection(_recorded_home(job), sys.platform)
 
 
 class _IdentityUnavailable(ValueError):
@@ -563,6 +593,7 @@ def _validate_request(request: dict, root: Path) -> dict:
         raise ValueError("The update log cannot be a link.")
     return {
         "format": JOB_FORMAT, "operation_id": operation_id, "state": "accepted",
+        "home": str(absolute(Path.home())),
         "job_name": job_name, "log_path": str(log_path), "program_root": str(root),
         "data_root": str(data_root), "old_instance_id": old_instance_id,
         "old_identity": dict(old_identity), "old_version": old.document(),
@@ -586,7 +617,7 @@ def _reconcile_request_binding(request: dict, root: Path, job: dict) -> Path:
     try:
         data_root = absolute(request.get("data_root", ""))
         selection_path = absolute(request.get("selection_path", ""))
-        if absolute(request.get("root", "")) != root or selection_path != _selection_path():
+        if absolute(request.get("root", "")) != root or selection_path != _recorded_selection_path(job):
             _busy("The update request does not match the selected installation.")
         marker = read_json(root / "install.json")
         selected = read_json(selection_path)
@@ -659,7 +690,7 @@ def _bootstrap_proof_valid(job: dict) -> bool:
             and claim.get("descriptor") == job.get("platform"))
 
 
-def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
+def _journal_is_accepted_preexisting(root: Path, job: dict, journal: dict | None) -> bool:
     """Recognize only the exact journal snapshot observed during acceptance."""
     if journal is None:
         return (job.get("prior_transaction_present") is False
@@ -667,8 +698,10 @@ def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
                 and job.get("prior_transaction_id") is None
                 and job.get("prior_transaction_sha256") is None)
     try:
-        encoded = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError):
+        if job.get("prior_transaction_hash_kind") != "raw-sha256/v1":
+            return False
+        encoded = (root / "update-transaction.json").read_bytes()
+    except OSError:
         return False
     digest = hashlib.sha256(encoded).hexdigest()
     return (job.get("prior_transaction_present") is True
@@ -692,7 +725,7 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
             _busy("The update claim state does not match its durable bootstrap proof.")
         if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
             _busy("The accepted update worker command cannot be proved.")
-        selection = read_json(_selection_path())
+        selection = read_json(_recorded_selection_path(job))
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
@@ -1041,6 +1074,25 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
                                ready_identity=ready_identity)
 
 
+def _legacy_liveness_gate(job: dict, api) -> None:
+    """Check a record without a home on its platform fields only, before any install selection is read.
+
+    A still-running object refuses as active and an uncertain query refuses unchanged. A positively
+    finished object passes; the selection read that follows then refuses as a legacy record.
+    """
+    descriptor = job.get("platform")
+    if not isinstance(descriptor, dict):
+        return
+    if not _owned_descriptor(descriptor, job.get("operation_id", "")):
+        _busy("The unresolved update native descriptor does not match its accepted command.")
+    try:
+        active = api.is_active(descriptor)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        raise _BusyRefusal("The unresolved update's native liveness is unknown.") from failure
+    if active is not False:
+        _busy("The unresolved update is still active.")
+
+
 def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict | None, bool]:
     """Resolve an existing operation, returning whether this request continued it."""
     job = marker.get("update_job")
@@ -1049,6 +1101,8 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         return None, False
     try:
         api = _platform_api()
+        if not _has_recorded_home(job):
+            _legacy_liveness_gate(job, api)
         data_root, _descriptor = _validate_reconcile_job(root, job, request, api)
         journal_path = root / "update-transaction.json"
         if journal_path.is_symlink():
@@ -1071,7 +1125,7 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
                                        disposition="confirmed-prior",
                                        ready_instance_id=ready_instance_id,
                                        ready_identity=ready_identity), False
-        if not _journal_is_accepted_preexisting(job, journal):
+        if not _journal_is_accepted_preexisting(root, job, journal):
             _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
         old = _validate_prebootstrap(root, job, data_root)
         expected = api.describe(job, _expected_worker_command(old, job))
@@ -1097,6 +1151,57 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         raise
     except (Exception, KeyboardInterrupt) as failure:
         raise _BusyRefusal("The unresolved update evidence could not be safely reconciled.") from failure
+
+
+def reconcile(request: dict) -> dict:
+    """Reconcile existing evidence under the installer lock before preparation."""
+    _require_update_job_available()
+    root = absolute(request.get("root", ""))
+    stream = _locked(root)
+    try:
+        marker = read_json(root / "install.json")
+        prior = marker.get("update_job")
+        if prior is not None and (not isinstance(prior, dict)
+                                  or prior.get("format") != JOB_FORMAT
+                                  or prior.get("state") not in JOB_STATES):
+            _busy("The prior update operation is unreadable or has an unknown state.")
+        path = root / "update-transaction.json"
+        if path.is_symlink():
+            _busy("The installer journal path cannot be trusted.")
+        try:
+            pending = read_json(path) if path.exists() else None
+        except (OSError, ValueError, TypeError) as failure:
+            raise _BusyRefusal("The installer journal cannot be read.") from failure
+        unresolved = (isinstance(prior, dict) and prior.get("state") in
+                      {"accepted", "launching", "active", "recovery-needed"})
+        unfinished = bool(isinstance(pending, dict) and pending.get("step") not in TERMINAL_STEPS)
+        if unfinished and not unresolved:
+            _busy("The installer must recover its pending update first.")
+        # Persist what the status read reported: a positively dead, attempt-bound
+        # worker ends its job here instead of being continued. Journal-bearing
+        # outcomes stay with the matching-transaction recovery below.
+        try:
+            settled = _settle_dead_worker_locked(root, _platform_api(), defer_transactions=True)
+        except (OSError, ValueError, TypeError, KeyError) as failure:
+            raise _BusyRefusal("The ended update job could not be recorded safely.") from failure
+        if settled is not None:
+            if settled.get("state") == "failed":
+                return {"disposition": "confirmed-prior", "job": settled}
+            _busy(_job_message(settled))
+        reconciled, continued = _reconcile_existing(root, marker, request)
+        if continued:
+            if reconciled is None:
+                _busy("The accepted update continuation could not be confirmed.")
+            return {"disposition": "continued-existing", "job": reconciled}
+        if unfinished and unresolved:
+            if reconciled is None:
+                _busy("The unfinished update could not be reconciled.")
+            return {"disposition": "recovered-this-request", "job": reconciled}
+        if reconciled is not None:
+            return {"disposition": "confirmed-prior", "job": reconciled}
+        return {"disposition": "prepare-new"}
+    finally:
+        _unlock(stream)
 
 
 def accept(request: dict) -> dict:
@@ -1163,8 +1268,9 @@ def accept(request: dict) -> dict:
         if pending is None or isinstance(pending, dict):
             job["prior_transaction_present"] = pending is not None
             job["prior_transaction_id"] = pending.get("operation_id") if isinstance(pending, dict) else None
+            job["prior_transaction_hash_kind"] = "raw-sha256/v1"
             job["prior_transaction_sha256"] = (
-                hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                hashlib.sha256(pending_path.read_bytes()).hexdigest()
                 if isinstance(pending, dict) else None)
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
@@ -1218,6 +1324,7 @@ def read_job(root: Path) -> dict:
         "metadata", "transaction_id", "accepted_at", "finished_at", "message",
         "platform", "launch_status", "launch_error", "cleanup_status", "cleanup_error",
         "residue", "autostart_snapshot", "route_disposition",
+        "worker_exit_code", "worker_log_tail", "worker_wrapper_log_tail",
     ) if key in job}
 
 
@@ -1265,7 +1372,7 @@ def fail(root: Path, operation_id: str, reason: object) -> dict:
 def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     from .core import current
     marker = read_json(root / "install.json")
-    selected = read_json(_selection_path())
+    selected = read_json(_recorded_selection_path(job))
     if (marker.get("owner") != LABEL or marker.get("managed_by") is not None
             or absolute(marker.get("data_root", "")) != absolute(job["data_root"])
             or selected.get("owner") != LABEL or selected.get("managed_by") is not None
@@ -1302,6 +1409,7 @@ def _worker_command_source(old: Version, job: dict) -> str:
             path = absolute(value)
             if path.is_dir():
                 source_paths.append(str(path))
+    # The worker owns the job log on every platform. On Windows the wrapper writes only to its own wrapper log.
     return (
         "import os,sys; "
         f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "
@@ -1456,6 +1564,10 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
         "submit": "spent",
         "wrapper_sha256": hashlib.sha256((_worker_command_source(old, job) + "\n").encode("utf-8")).hexdigest(),
         "descriptor_sha256": _attempt_digest(descriptor),
+        # Binds an OS-recorded run to this attempt: a continuation keeps the
+        # task/unit name, so only a run that started after this submission is
+        # this attempt's.
+        "submitted_at": int(time.time()),
     })
     # Spend the launch authority before the one manager call.  The final
     # reread in _submit_native_attempt is the epoch fence for delayed callers.
@@ -1509,6 +1621,10 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
     current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
     current_attempt = dict(_attempt(current))
     current_attempt["submit"] = "acknowledged"
+    # Publish the grant together with the acknowledgement while the
+    # coordinator still owns the installer lock. A wrapper delivered after an
+    # unknown manager reply must never acquire bootstrap authority.
+    current_attempt["handoff"] = {"epoch": epoch, "nonce": nonce}
     if current.get("state") == "launching":
         return _write_job(root, operation_id, state="launching", message="Update job launched.",
                           fields={"launch_status": "acknowledged", "launch_error": None,
@@ -1536,13 +1652,17 @@ def launch_job(root: Path, operation_id: str) -> dict:
             return job
         if job.get("state") != "accepted":
             raise ValueError("The update job is not accepted for launch.")
-        selection = read_json(_selection_path())
+        selection = read_json(_recorded_selection_path(job))
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
+            # Runtime reports a refused launch from launch_error; without it
+            # this policy refusal would read as an operating-system rejection.
             return _write_job(root, operation_id, state="failed",
                               message="Failed: saved autostart is off and the installer cannot preserve that choice.",
-                              fields={"launch_status": "refused", "cleanup_status": "not-needed"})
+                              fields={"launch_status": "refused",
+                                      "launch_error": "saved autostart is off and the installer cannot preserve that choice; no job was launched.",
+                                      "cleanup_status": "not-needed"})
         from .core import Version
         return _launch_current_attempt(root, job, Version.load(job["old_version"]), _platform_api())
     finally:
@@ -1644,6 +1764,244 @@ def _cleanup_private_inputs(job: dict, cleanup_status: str) -> None:
             directory.rmdir()
 
 
+MAX_WORKER_LOG_TAIL = 2000
+
+
+def _worker_claimed(job: dict) -> bool:
+    """Any durable sign that the worker took this attempt (the install may have begun)."""
+    proof = job.get("bootstrap_proof") if isinstance(job.get("bootstrap_proof"), dict) else {}
+    attempt = job.get("attempt") if isinstance(job.get("attempt"), dict) else {}
+    return (proof.get("claim_state") != "unclaimed" or proof.get("state") != "never-entered"
+            or proof.get("native_claim") is not None
+            or attempt.get("phase") == "claimed" or attempt.get("claim") is not None)
+
+
+def _worker_log_tail(job: dict, *, wrapper: bool = False) -> str | None:
+    """Return the last lines of the job's own private log (or its wrapper log), bounded, or None."""
+    try:
+        log = Path(job.get("log_path", ""))
+        if wrapper:
+            # The Windows wrapper writes only astrid-update-<op>.wrapper.log, so a
+            # worker that dies before run_job leaves its traceback there alone.
+            from .update_job_platform import wrapper_log_path
+            log = wrapper_log_path(log)
+        root = Path(job.get("program_root", ""))
+        if (not log.is_absolute() or not root.is_absolute() or not log.is_relative_to(root)
+                or log.is_symlink() or not log.is_file()):
+            return None
+        with log.open("rb") as stream:
+            head = stream.read(2)
+            stream.seek(max(0, log.stat().st_size - 8192))
+            raw = stream.read(8192)
+    except (OSError, ValueError, TypeError):
+        return None
+    # Windows PowerShell 5.1 *>> writes UTF-16LE with a byte-order mark; the worker writes UTF-8.
+    text = raw.decode("utf-16-le" if head == b"\xff\xfe" else "utf-8", errors="replace").lstrip("\ufeff")
+    lines = ["".join(" " if ord(char) < 32 or 127 <= ord(char) <= 159 else char for char in line).rstrip()
+             for line in text.splitlines()]
+    tail = "\n".join(line for line in lines if line.strip())[-MAX_WORKER_LOG_TAIL:]
+    return tail or None
+
+
+def _dead_worker_outcome(root: Path, job: dict, *, exit_code: int | None = None,
+                         fields: dict | None = None) -> dict:
+    """Decide, without writing, how an unresolved job with a not-running worker ends.
+
+    Any claim or transaction evidence means the install may be part way
+    through, so it is recovery-needed; otherwise nothing was changed and the
+    old Runtime still serves, so it is failed. Returns {"state", "message",
+    "transaction_id", "fields"}; the status read reports it and the locked
+    writers record it, so both always agree.
+    """
+    journal = read_json(root / "update-transaction.json")
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    transaction_started = (isinstance(binding, dict)
+                           and binding.get("operation_id") == job["operation_id"])
+    pending = bool(journal and journal.get("step") not in TERMINAL_STEPS)
+    claimed = _worker_claimed(job)
+    recorded = dict(fields or {})
+    tail = None
+    if exit_code is not None:
+        job_tail, wrapper_tail = _worker_log_tail(job), _worker_log_tail(job, wrapper=True)
+        # The job log is the worker's; when it holds nothing, the startup
+        # failure is only in the wrapper's own log.
+        tail = job_tail or wrapper_tail
+        recorded.update({"worker_exit_code": exit_code, "worker_log_tail": job_tail,
+                         "worker_wrapper_log_tail": wrapper_tail})
+    code = "" if exit_code is None else f" with code {exit_code}"
+    transaction_id = None
+    if transaction_started or pending:
+        state = "recovery-needed"
+        message = f"Recovery needed. The update worker exited{code} during the installer transaction; run the install line to recover."
+        transaction_id = journal.get("operation_id") if journal else None
+    elif claimed:
+        state = "recovery-needed"
+        message = f"Recovery needed. The update worker exited{code} after it claimed the update; run the install line to recover."
+    elif exit_code is None:
+        state, message = "failed", "Failed: the registered update job became inactive without a result."
+    else:
+        state = "failed"
+        last_line = tail.splitlines()[-1].strip() if tail else "none"
+        message = (f"Failed: the update worker exited with code {exit_code} before it started; "
+                   f"Astrid is unchanged. Last log line: {last_line}")
+    return {"state": state, "message": message, "transaction_id": transaction_id, "fields": recorded}
+
+
+def _record_dead_worker(root: Path, job: dict, *, exit_code: int | None = None,
+                        fields: dict | None = None) -> dict:
+    """Record ``_dead_worker_outcome``. Callers hold the installer lock and saw the worker inactive."""
+    outcome = _dead_worker_outcome(root, job, exit_code=exit_code, fields=fields)
+    return _write_job(root, job["operation_id"], state=outcome["state"], message=outcome["message"],
+                      transaction_id=outcome["transaction_id"], fields=outcome["fields"])
+
+
+def _acknowledged_unresolved(job: object) -> bool:
+    """An acknowledged attempt the status route reads as active (not a lost acknowledgement)."""
+    if (not isinstance(job, dict) or job.get("format") != JOB_FORMAT
+            or job.get("state") not in {"launching", "active"}
+            or job.get("launch_status") != "acknowledged"
+            or not isinstance(job.get("operation_id"), str)
+            or not _owned_descriptor(job.get("platform"), job["operation_id"])):
+        return False
+    try:
+        attempt = _attempt(job)
+    except ValueError:
+        return False
+    return (attempt.get("submit") == "acknowledged"
+            and attempt.get("handoff") == {"epoch": attempt["epoch"], "nonce": attempt["nonce"]})
+
+
+START_TIME_TOLERANCE_SECONDS = 2
+
+
+def _dead_worker_exit(job: dict, api) -> int | None:
+    """Return a non-zero exit code only on positive evidence that this attempt's worker finished."""
+    try:
+        attempt = _attempt(job)
+        result = api.finished_result(job["platform"])
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        return None
+    submitted_at = attempt.get("submitted_at")
+    if (not isinstance(result, dict) or type(submitted_at) is not int
+            or attempt.get("descriptor_sha256") != _attempt_digest(job["platform"])):
+        return None
+    code = result.get("exit_code")
+    if type(code) is not int or code == 0:
+        return None
+    bound = result.get("bound")
+    if bound == "start-time":
+        # Same machine, same clock: only a run started at or after this
+        # attempt's submission belongs to it, not a retired attempt's.
+        started = result.get("started_at")
+        if type(started) is not int or started < submitted_at - START_TIME_TOLERANCE_SECONDS:
+            return None
+    elif bound != "command":
+        # "command": the loaded object's exact argv carries this attempt's
+        # epoch and nonce (launchd keeps no start time).
+        return None
+    return code
+
+
+def _selected_job_root(root: Path | None) -> Path | None:
+    """The selected direct install's program root, or None when it is not this owner's."""
+    if root is None:
+        selected = read_json(_selection_path())
+        if (selected.get("owner") != LABEL or selected.get("managed_by") is not None
+                or selected.get("uninstalled") or not selected.get("program_root")):
+            return None
+        root = selected["program_root"]
+    root = absolute(root)
+    marker = read_json(root / "install.json")
+    if marker.get("owner") != LABEL or marker.get("managed_by") is not None:
+        return None
+    return root
+
+
+def observe_dead_worker(root: Path | None = None, api=None) -> dict | None:
+    """Status reads only observe: the outcome a locked writer would record, or None.
+
+    Runs the same attempt-bound check as the writers, but takes no lock and
+    writes nothing. It reports a failed or recovery-needed projection of the
+    job only on positive evidence that this attempt's worker finished
+    non-zero; any doubt is None, and the record reads as it is.
+    """
+    try:
+        root = _selected_job_root(root)
+        if root is None:
+            return None
+        job = read_json(root / "install.json").get("update_job")
+        if not _acknowledged_unresolved(job):
+            return None
+        exit_code = _dead_worker_exit(job, api or _platform_api())
+        if exit_code is None:
+            return None
+        outcome = _dead_worker_outcome(root, job, exit_code=exit_code)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    observed = {"operation_id": job["operation_id"], "state": outcome["state"],
+                "message": outcome["message"], "persisted": False, **outcome["fields"]}
+    if outcome["transaction_id"] is not None:
+        observed["transaction_id"] = outcome["transaction_id"]
+    return observed
+
+
+def _settle_dead_worker_locked(root: Path, api, *, observed_attempt=None,
+                               defer_transactions: bool = False) -> dict | None:
+    """Record a positively dead, attempt-bound worker's outcome. The caller holds the installer lock.
+
+    The one writer behind the install-line sweep, the POST reconciler, and
+    ``settle_dead_worker``. It re-reads the record; ``observed_attempt``, when
+    given, must still be the attempt seen before the lock. With
+    ``defer_transactions`` a journal-bearing outcome is left to the caller's
+    own transaction recovery. Returns the job after terminal cleanup, or None.
+    """
+    job = read_json(root / "install.json").get("update_job")
+    if not _acknowledged_unresolved(job):
+        return None
+    if observed_attempt is not None and _attempt_tuple(job) != observed_attempt:
+        return None
+    exit_code = _dead_worker_exit(job, api)
+    if exit_code is None:
+        return None
+    if defer_transactions:
+        # A pending journal, or one bound to this operation, is the reconciler's
+        # own matching-transaction recovery to finish.
+        journal = read_json(root / "update-transaction.json")
+        binding = journal.get("update_job") if isinstance(journal, dict) else None
+        if journal and (journal.get("step") not in TERMINAL_STEPS
+                        or (isinstance(binding, dict) and binding.get("operation_id") == job["operation_id"])):
+            return None
+    _record_dead_worker(root, job, exit_code=exit_code)
+    return _cleanup_terminal(root, job["operation_id"], locked=True)
+
+
+def settle_dead_worker(root: Path | None = None, api=None) -> dict | None:
+    """The locked writer for a caller that does not already hold the installer lock.
+
+    A lock-free first look, then the installer lock without waiting (a held
+    lock means a live worker or installer, so nothing changes), then the
+    shared locked writer with the re-read.
+    """
+    try:
+        root = _selected_job_root(root)
+        if root is None:
+            return None
+        job = read_json(root / "install.json").get("update_job")
+        if not _acknowledged_unresolved(job):
+            return None
+        api = api or _platform_api()
+        if _dead_worker_exit(job, api) is None:
+            return None
+        observed_attempt = _attempt_tuple(job)
+        stream = _locked(root)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    try:
+        return _settle_dead_worker_locked(root, api, observed_attempt=observed_attempt)
+    finally:
+        _unlock(stream)
+
+
 def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
     """Reconcile only recorded owned leftovers while the installer lock is held."""
     root = absolute(root)
@@ -1681,21 +2039,12 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
                 if active:
                     results.append(job)
                 elif state in {"launching", "active"}:
-                    journal = read_json(root / "update-transaction.json")
-                    binding = journal.get("update_job") if isinstance(journal, dict) else None
-                    transaction_started = (isinstance(binding, dict)
-                                           and binding.get("operation_id") == job["operation_id"])
-                    pending = bool(journal and journal.get("step") not in TERMINAL_STEPS)
-                    if transaction_started or pending:
-                        job = _write_job(root, job["operation_id"], state="recovery-needed",
-                                         message="Recovery needed. The update worker exited during the installer transaction; run the install line to recover.",
-                                         transaction_id=journal.get("operation_id") if journal else None,
-                                         fields={"launch_status": "unknown"})
+                    settled = _settle_dead_worker_locked(root, _platform_api())
+                    if settled is not None:
+                        results.append(settled)
                     else:
-                        job = _write_job(root, job["operation_id"], state="failed",
-                                         message="Failed: the registered update job became inactive without a result.",
-                                         fields={"launch_status": "unknown"})
-                    results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
+                        job = _record_dead_worker(root, job, fields={"launch_status": "unknown"})
+                        results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
                 else:
                     results.append(job)
             elif state == "accepted":
@@ -1884,6 +2233,11 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
         # even return/rewrite the replacement job, much less claim or enter it.
         job = _current_attempt(root, operation_id, epoch, nonce,
                                submitted=not direct_call)
+        if not direct_call:
+            attempt = _attempt(job)
+            if (attempt.get("submit") != "acknowledged"
+                    or attempt.get("handoff") != {"epoch": epoch, "nonce": nonce}):
+                _busy("The native update attempt has no acknowledged handoff.")
         if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed", "active"}:
             return job
         if job.get("state") not in {"accepted", "launching"}:
@@ -2021,9 +2375,29 @@ def main():
     if len(raw) > 65536:
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
-    action = value.get("action", "prepare")
+    if not isinstance(value, dict):
+        raise ValueError("The update helper request must be an object.")
+    # Runtime's prepare request carries no action key; only its absence means prepare.
+    action = value["action"] if "action" in value else "prepare"
     if action == "availability":
-        print(json.dumps(update_job_availability()))
+        availability = update_job_availability()
+        reply = {**availability, "actions": list(SUPPORTED_ACTIONS)}
+        # Status GETs only observe. Runtime asks for availability on every
+        # status read, so report a positively dead worker's derived outcome
+        # here; the next locked writer (POST reconcile or the install line)
+        # records exactly it. Any doubt reports nothing.
+        observed = None
+        with contextlib.suppress(Exception):
+            observed = observe_dead_worker()
+        if observed is not None:
+            reply["observed_job"] = observed
+        print(json.dumps(reply))
+    elif action == "reconcile":
+        try:
+            print(json.dumps(reconcile(value)))
+        except (_UnsupportedServiceManager, _BusyRefusal) as failure:
+            print(json.dumps({"reason": failure.reason, "message": _one_line(failure)}))
+            raise SystemExit(1)
     elif action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
