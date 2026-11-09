@@ -10108,7 +10108,7 @@ class GenericPackHost:
                 raise HostError("renderer command requires the admitted Python interpreter")
             remotion_lease = self._renderer_task_lease(env, attempt)
         import_receipt = None
-        if record.id in {"h3_av.transform", "vibecomfy.validate"}:
+        if record.id == "vibecomfy.validate":
             from ._child_import_receipt import ChildImportReceipt
 
             import_receipt = ChildImportReceipt(self, record.id, import_binding)
@@ -12237,10 +12237,6 @@ class GenericPackHost:
                     readiness_profile = None
                     vibe_session = None
                 inputs.pop("placement_policy", None)
-            if capability_id == "h3_av.transform":
-                if "host_output_root" in inputs or child_bridge is None:
-                    raise HostError("H3 parent requires host-owned output custody and delegated admission")
-                inputs["host_output_root"] = str(root / "outputs")
             _terminal["inputs"] = inputs
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -12655,10 +12651,6 @@ class GenericPackHost:
                         record, root, admission=network_admission, network_broker=network_broker,
                         comfy_invocation=comfy_invocation,
                         allow_runtime_connection=not private_runtime_context)
-                    if capability_id == "h3_av.transform":
-                        # Presence is an entrypoint guard only. Parent authority
-                        # comes exclusively from the authenticated child bridge.
-                        worker_env["ASTRID_TASK_RUN_ID"] = task_id
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -12851,13 +12843,6 @@ class GenericPackHost:
                 payload["manifest_ref"] = {
                     "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
                 }
-            if capability_id == "h3_av.transform" and child_bridge is not None:
-                action_result = payload.get("action_result")
-                if not isinstance(action_result, Mapping):
-                    raise HostError("H3 parent did not return its publication outcome")
-                for field in ("status", "overall_status", "states"):
-                    if field in action_result:
-                        payload[field] = action_result[field]
             _terminal["payload"] = payload
             if renderer_selection is not None:
                 payload["renderer_selection"] = dict(renderer_selection)

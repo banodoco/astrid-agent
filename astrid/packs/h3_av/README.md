@@ -6,7 +6,7 @@ public request uses `changes.video` and `changes.audio` schedules. The active
 H3 pack contract supports source-backed edits, native continuation, reference-guided generation,
 and explicit mask assets without creating a second project or task database.
 
-`h3_av.transform --dry-run` performs CPU planning only: it normalizes the request,
+`astrid generate video --entry h3 --dry-run` performs CPU planning only: it normalizes the request,
 resolves preparation and compile bindings, and writes `plan.json` under the
 operation output directory without submitting a local GPU or RunPod task. The
 plan records the resolved spec and bindings, requested and raw timing with trim,
@@ -109,7 +109,7 @@ the existing Turbo LoRA strength convention.
 
 The generated bundle is self-contained and portable. Reference filenames are
 managed run inputs; media defaults remain empty to preserve VibeComfy's
-emission/reload semantic identity. Submit through `h3_av.transform` with
+emission/reload semantic identity. Submit through `astrid generate video --entry h3` with
 `kind="orchestrator"`; do not hand-submit a separate VibeComfy generation.
 CPU tests cover structure, bindings, duration and managed transport. Live target
 schema/model attestation, GPU memory sufficiency, and visual acceptance remain
