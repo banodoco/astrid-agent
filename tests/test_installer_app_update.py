@@ -1059,7 +1059,7 @@ def test_cli_allows_pending_app_transaction_through_selection(tmp_path, monkeypa
         "--manifest", str(manifest), "--uv", str(uv),
     ])
 
-    assert result == 0
+    assert result == 3  # recovery-only --update-app: the release is unchanged (exit 3)
     assert len(called) == 1
     assert called[0][0][0] == root
     assert called[0][0][1] is backend

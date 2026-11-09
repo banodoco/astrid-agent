@@ -255,7 +255,7 @@ def test_regular_cli_recovers_app_journal_with_stopped_custody(
 
     monkeypatch.setattr(app_update, "recover_app", recover_app)
     assert cli.main(["--root", str(root), "--update", "--uv", str(tmp_path / "absent-uv"),
-                     "--manifest", str(tmp_path / "absent-manifest")]) == 0
+                     "--manifest", str(tmp_path / "absent-manifest")]) == 3  # recovery-only --update: the release is unchanged (exit 3)
     assert recovery == ["called"]
 
 
@@ -316,7 +316,7 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
         validate=lambda _version: None, stop=stop, start=start))
 
     first = ["--root", str(root), "--update", "--manifest", str(manifest), "--uv", str(uv)]
-    assert cli.main(first) == 0
+    assert cli.main(first) == 3  # recovery-only --update: the release is unchanged (exit 3)
     journal = read_json(root / "update-transaction.json")
     assert journal["step"] == ("complete" if step == "staged" else "rolled_back")
     assert current(root) == old
@@ -334,7 +334,7 @@ def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
     backend.preflight_stop = lambda _data: routed.append("preflight")
     monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: routed.append(
         (args[0], kwargs.get("force"))))
-    assert cli.main(first) == 0
+    assert cli.main(first) == 3  # the retry's update is stubbed, so the release is unchanged (exit 3)
     assert routed == ["preflight", (root, True)]
 
 
@@ -583,10 +583,10 @@ def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkey
     monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail(
         "recovery must not download a manifest"))
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(root),
-                     "--uv", str(tmp_path / "absent-uv")]) == 0
+                     "--uv", str(tmp_path / "absent-uv")]) == 3  # recovery-only --update-app: the release is unchanged (exit 3)
     assert recovered == [True]
-    assert capsys.readouterr().out.splitlines()[-1] == (
-        "Recovered your previous version — run Update again")
+    # The run receipt is printed after the recovery line, so the recovery line is no longer last.
+    assert "Recovered your previous version — run Update again" in capsys.readouterr().out.splitlines()
 
 
 def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_inputs(
