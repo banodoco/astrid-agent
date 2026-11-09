@@ -274,8 +274,11 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
     except Exception:  # noqa: BLE001 - an unreadable installation is an observation
         after = None
     live = _live(after)
+    # A plain install or repair that recovered an interrupted update is a repair. The pointer is
+    # not its start when no live owner was observed; --update keeps its own receipt rule.
+    recovered = request.reason == "recovered-previous-version" and request.mode != "update"
     start = _live(before)
-    if start is None and before is not None and before.kind not in {"none"}:
+    if start is None and before is not None and before.kind not in {"none"} and not recovered:
         start = before.selected_release
     target = request.target
     source = request.target_source
@@ -301,7 +304,7 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
         # A plain install or repair (including Pinokio finishing an interrupted
         # update): the target is "the selected version is live and healthy".
         # A recovery that ends healthy is repaired; its reason stays as detail.
-        kind = "repaired" if start == live else "updated"
+        kind = "repaired" if recovered or start == live else "updated"
         return Outcome(kind, live, start, live, request.reason, request.mode, warnings=success_warnings,
                        target_source=source, details=details)
     if others:
