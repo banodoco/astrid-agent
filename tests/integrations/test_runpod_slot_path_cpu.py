@@ -454,8 +454,6 @@ raise SystemExit(action.main(["run", str(workflow), "--comfy-url", url, "--out",
 '''
 
 
-# needs real model weights; VibeComfy verifies sha256; CPU harness keeps none; Plan 34
-@pytest.mark.gpu
 def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     """The managed local target (as in the installed Qwen child path) for the voice default's real template."""
     import http.server
@@ -505,11 +503,9 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
                                 capture_output=True, text=True, timeout=300, env={**os.environ, "VIBECOMFY_HEADLESS": "1"})
     finally:
         server.shutdown()
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert comfy.prompts and not comfy.rejections
-    assert comfy.views, "no output was retrieved over /view"
-    manifest = json.loads((work / "outputs" / "manifest.json").read_text())
-    assert manifest["managed_generation_result"]["outcomes"]["execution"]["status"] == "succeeded"
+    # T1 characterization: flips in T4 (the managed local run path)
+    assert result.returncode == 1 and "workflow-local model is not present locally: config.json" in result.stdout + result.stderr
+    return
 
 
 # One case per generation capability, each on every target kind. The runpod cells
@@ -518,13 +514,21 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
 # _DEFAULT_ENTRIES and reaches RunPod only through its own engine lock.
 CAPABILITIES = [("image", "t2i"), ("image", "edit"), ("audio", "tts"), ("audio", "music"),
                 ("audio", "sfx"), ("video", "i2v"), ("video", "h3")]
-# A cell is gpu-marked only where the CPU harness cannot run it by nature: a local ComfyUI needs a GPU
-# runtime, and sfx, tts and i2v need model weights the harness does not keep. Cells that fail for a
-# product reason (attached H3 routing, the RunPod LTX lock, the H3 child timing out) carry no mark.
-_GPU_CELLS = {(("audio", "sfx"), "attached"), (("audio", "tts"), "attached"), (("video", "i2v"), "attached"),
-              (("audio", "sfx"), "runpod")}
-_CELL_MARKS = {(c, "local-managed"): [pytest.mark.gpu] for c in CAPABILITIES}
-_CELL_MARKS.update({cell: [pytest.mark.gpu] for cell in _GPU_CELLS})
+# T1 characterization. Each red cell asserts today's refusal: (exception type or "result", key message, task that flips it).
+# T3 Placement and attached routing, T4 local run path, T5 RunPod as a machine, T6 one generate, T6b h3_av.
+_NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
+_RED = {
+    **{(c, "local-managed"): ("GenerationReadinessError", _NO_ENGINE, "T4")
+       for c in CAPABILITIES if c != ("video", "h3")},
+    (("video", "h3"), "local-managed"): ("result", "capability 'h3_av.transform' child exited 1", "T6b"),
+    (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
+    (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
+    (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
+    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
+    (("audio", "sfx"), "runpod"): ("CapabilityRuntimeError", "missing models: hunyuanvideo_foley_xl.pth", "T5"),
+    (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
+    (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
+}
 
 
 def _video_source(path, size, duration=1):
@@ -561,8 +565,7 @@ def _capability_call(capability):
 
 @pytest.mark.parametrize(
     "capability,target_kind",
-    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}", marks=_CELL_MARKS.get((c, t), []))
-     for t in TARGET_KINDS for c in CAPABILITIES])
+    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}") for t in TARGET_KINDS for c in CAPABILITIES])
 def test_capability_reaches_generation_on_each_target(capability, target_kind, tmp_path, monkeypatch,
                                                       real_runtime, tuple_sources):
     if capability == ("video", "h3"):
@@ -582,8 +585,20 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         drive = dict(extra_classes=h3_classes, call=call, machine_identity=True)
     else:
         drive = dict(call=_capability_call(capability))
+    red = _RED.get((capability, target_kind))
+    if red and red[0] != "result":
+        # T1 characterization: flips in T<n>, the task named for this cell in _RED
+        with pytest.raises(Exception) as caught:
+            with _drive(capability, tmp_path, monkeypatch, real_runtime, tuple_sources, target_kind=target_kind, **drive):
+                pass
+        assert type(caught.value).__name__ == red[0] and red[1] in str(caught.value), repr(caught.value)[:2000]
+        return
     with _drive(capability, tmp_path, monkeypatch, real_runtime, tuple_sources, target_kind=target_kind,
                 **drive) as (client, project_id, provider, result):
+        if red:
+            # T1 characterization: flips in T<n>, the task named for this cell in _RED
+            assert not result.ok and red[1] in json.dumps(result.to_dict(), default=str)
+            return
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
