@@ -1603,6 +1603,8 @@ class GenerationFacade:
             if is_remote_target and entry_id != 'workflow':
                 from astrid.core.generation.job_inputs import write_archive
                 public, public_values = workflow_entries.resolve_entry_inputs(entry_id, inputs, mode=mode)
+                if 'seed' in {port['name'] for port in public['inputs']} and 'seed' in (plan or {}).get('bindings', {}):
+                    public_values['seed'] = plan['bindings']['seed']
                 archive = write_archive(root / 'entry-inputs.zip', public_values, public['inputs'])
                 asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None

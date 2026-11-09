@@ -78,7 +78,8 @@ def read_archive(path: Path, destination: Path, *,
         members = [*file_inputs.values(), *(item for mapping in file_maps.values() for item in mapping.values())]
         for name in members:
             if (not isinstance(name, str) or not name.startswith('files/')
-                    or len(Path(name).parts) != 2 or '..' in Path(name).parts):
+                    or len(Path(name).parts) != 2 or '..' in Path(name).parts
+                    or name != Path(name).as_posix()):
                 raise ValueError('entry inputs archive has an unsafe file reference')
         expected = {'inputs.json', *members}
         if set(names) != expected:
