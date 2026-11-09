@@ -237,7 +237,12 @@ class ComfyUIEngine:
                 self.align(job["manifest"], "align")
             url = endpoint
         else:
-            self.align(job["manifest"], job.get("mode", "align"))
+            report = self.align(job["manifest"], job.get("mode", "align"))
+            if job.get("refuse_missing") and report.get("status") == "missing":
+                error = ValueError("local engine is missing declared models: " + ", ".join(report["missing"])
+                                   + "; run: astrid generate align --apply --consent user_env --all")
+                error.missing = report["missing"]
+                raise error
             url = local.ensure_running()  # reuses a live server (attached) or starts one
         outputs = local.submit(url, built["workflow"] if built else job["workflow"])
         return self.finish(job, outputs)

@@ -56,7 +56,7 @@ def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, t
     row = next(r for r in entries.ready_entries() if r.get("bundle") and r.get("model_assets"))
     root = tmp_path / "engine"
     (root / "models").mkdir(parents=True)
-    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.recorded_engine_root", lambda engine: str(root))
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.default_engine_root", lambda engine: str(root))
     with pytest.raises(AstridValueError, match="missing declared models"):
         action._run_and_settle(Path(row["bundle"]), tmp_path / "out", task_identity="t", attempt_identity="a")
     assert comfy.prompts == []
