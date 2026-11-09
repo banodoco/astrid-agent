@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,9 @@ import pytest
 from astrid.core.execution.generic_host import GenericPackHost, HostError
 from astrid.core.generation import gpu_environment as gpu
 from tests.test_generic_host import FakeRuntime, _write_manifest
+
+# A real, minimal UI workflow graph; the run itself is stubbed below.
+WORKFLOW_FIXTURE = Path(__file__).parent / "fixtures" / "vibecomfy_ir" / "flat.json"
 
 
 @pytest.fixture
@@ -88,8 +92,10 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
                                payload={"gpu_qualification": {"qualified": True}})
 
     monkeypatch.setattr(host, "_run_command_definition", run)
+    workflow = tmp_path / "workflow.json"
+    workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
     task = {"id": "gpu-test", "capability": "vibecomfy.run", "project_id": "project",
-            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {}}}}
+            "attempt_id": "attempt", "fence": 1, "spec": {"spec": {"inputs": {"workflow": str(workflow)}}}}
     runtime.tasks["gpu-test"] = task
     host.run_task(task, lease_token="lease")
     result = runtime.settlements[-1][2]["result"]
@@ -124,7 +130,10 @@ def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, wind
         raise RuntimeError("GPU execution failed")
 
     monkeypatch.setattr(host, "_run_command_definition", fail)
-    task = {"id": "failed", "capability": "vibecomfy.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1}
+    workflow = tmp_path / "workflow.json"
+    workflow.write_bytes(WORKFLOW_FIXTURE.read_bytes())
+    task = {"id": "failed", "capability": "vibecomfy.run", "project_id": "project", "attempt_id": "failed-attempt", "fence": 1,
+            "spec": {"spec": {"inputs": {"workflow": str(workflow)}}}}
     runtime.tasks["failed"] = task
     with pytest.raises(RuntimeError, match="GPU execution failed"):
         host.run_task(task, lease_token="lease")
