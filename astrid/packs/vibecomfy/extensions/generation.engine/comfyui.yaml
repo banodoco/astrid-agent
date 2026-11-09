@@ -1,5 +1,5 @@
 api: 1
-summary: Run generation jobs on ComfyUI (local or pod); declared, not yet called.
+summary: Run generation jobs on ComfyUI (local or pod).
 example: astrid generation engines
 effects: edit
 entry: comfyui_engine.py:ENGINE
