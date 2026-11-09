@@ -423,7 +423,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         raise ValueError(f'ambiguous generation entry {entry_id!r}')
     if actions:
         entry = actions[0]
-        base = {key: entry[key] for key in ('id', 'kind', 'action', 'requirements', 'isolation_requirements') if key in entry}
+        base = {key: entry[key] for key in ('id', 'kind', 'action', 'isolation_requirements') if key in entry}
+        base['requirements'] = requirements(entry, None) if entry['action'] == 'h3_av.transform' else None
         base['source'] = 'action'
         base['engine'] = 'comfyui' if entry['action'] == 'h3_av.transform' else None
         modes = entry['modes']
@@ -782,35 +783,53 @@ def runpod_engines() -> tuple[str, ...]:
     return tuple(row["engine"] for row in _index_rows() if row["platform"] == RUNPOD_PLATFORM)
 
 
+@lru_cache(maxsize=1)
+def engine_table() -> dict[str, Any]:
+    """Engines by name, built from the generation.engine contributions."""
+    from astrid.core.extensions.registry import ExtensionRegistry
+    registry = ExtensionRegistry().load()
+    table = {}
+    for contribution in registry.contributions("generation.engine"):
+        engine = registry.entry(contribution)
+        table[getattr(engine, "name", contribution.id.rsplit(".", 1)[-1])] = engine
+    return table
+
+
+def requirements(entry: Mapping[str, Any], inputs: Any = None) -> dict[str, Any]:
+    """The one requirements manifest: {engine, base, models[name, subdir, url, sha256, size], extra}.
+
+    The entry's engine builds it and validates its own ``extra``.
+    """
+    carried = entry.get("requirements")
+    if isinstance(carried, Mapping) and {"engine", "base", "models", "extra"} <= set(carried):
+        return dict(carried)  # a described entry already carries its manifest
+    engine = engine_table().get(entry.get("engine") or "comfyui")
+    if engine is None:
+        raise ValueError(f"no generation.engine contribution for {entry.get('engine')!r}")
+    return engine.requirements(entry, inputs)
+
+
 def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     """Model destinations (or bare loader values) the entry needs, and those it pins itself.
 
-    An action entry provisions the revision-pinned model assets its own graphs
-    declare (H3 owns its Ref2V LoRA this way), so the engine lock need not.
+    The model rows come from the entry's requirements manifest. An action entry provisions
+    the revision-pinned model assets its own graphs declare (H3 owns its Ref2V LoRA this
+    way), so the engine lock need not.
     """
     import re
-    if entry.get("action"):
-        import yaml
-        from astrid.core.pack.loader import packs_root
-        pack = packs_root() / entry["action"].split(".")[0]
-        workflows = [_load_entry_workflow({"bundle": str(pack / yaml.safe_load(
-            (pack / ref).read_text(encoding="utf-8"))["workflow"])}) for ref in entry.get("requirements") or ()]
-        from vibecomfy.model_assets import _referenced_model_values
-        sources = [(workflow.metadata.get("model_assets", []), _referenced_model_values(workflow))
-                   for workflow in workflows]
-    else:
-        sources = [(entry.get("model_assets", []), entry.get("needs", []))]
+    manifest = requirements(entry)
+    assets = manifest["models"]
+    needs = [] if entry.get("action") else entry.get("needs", [])
     required: set[str] = set()
     pinned: set[str] = set()
-    for assets, needs in sources:
-        names = {asset["name"] for asset in assets}
-        for asset in assets:
-            value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
-            required.add(value)
-            if entry.get("action") and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
-                pinned.add(value)
-        required.update(need["value"] for need in needs
-                        if need.get("value") and Path(need["value"]).name not in names)
+    names = {asset["name"] for asset in assets}
+    for asset in assets:
+        value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
+        required.add(value)
+        if entry.get("action") and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
+            pinned.add(value)
+    required.update(need["value"] for need in needs
+                    if need.get("value") and Path(need["value"]).name not in names)
     return sorted(required), pinned
 
 
