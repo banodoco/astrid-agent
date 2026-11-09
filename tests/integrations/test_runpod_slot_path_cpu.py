@@ -506,11 +506,13 @@ _RED = {
     # The managed local target now exists (T4f); these three still refuse, for reasons it cannot fix on CPU.
     (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
+    # Plan 34 (as the TTS cell above): h3's validate step re-hashes the pinned 1.9GB turbo LoRA (native_h3_continuation_refs/workflow.py), which the CPU harness cannot hold.
+    (("video", "h3"), "local-managed"): ("result", "vibecomfy.validate failed", "Plan 34"),
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
+    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
     (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
     (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
 }
