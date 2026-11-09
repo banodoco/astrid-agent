@@ -634,7 +634,7 @@ def observe(version_path, data_root):
             preflight = row.get('preflight') or {}
             failed = {k: v for k, v in preflight.items()
                       if v is False or (isinstance(v, dict) and v.get('ok') is False and not v.get('gates'))}
-            allowed = {'binaries', 'packages', 'credentials', 'gpu'}
+            allowed = {'binaries', 'packages', 'credentials', 'gpu', 'packs'}
             summary[row['id']] = failed
             if not failed or set(failed) - allowed:
                 unexpected.append(row['id'])

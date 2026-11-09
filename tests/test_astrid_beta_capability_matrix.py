@@ -14,10 +14,12 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
 
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     records = host.discover()
-    uninstalled_external_contracts = {
+    # Rows for packs that moved to poms_packs name their pack and are absent
+    # until the user installs it; every other row must be discovered.
+    external_pack_rows = {
         capability_id
-        for capability_id in host.matrix
-        if capability_id.startswith("hivemind.")
+        for capability_id, row in host.matrix.items()
+        if row.get("external_pack")
     }
     h3_pack = yaml.safe_load(Path("astrid/packs/h3_av/pack.yaml").read_text(encoding="utf-8"))
     local_orchestrators = {
@@ -30,8 +32,9 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
-        set(host.matrix) - uninstalled_external_contracts - local_orchestrators
+        set(host.matrix) - external_pack_rows - local_orchestrators
     )
+    assert host.stale_matrix_entries == ()
     assert not (set(host.stale_matrix_entries) & local_orchestrators)
     assert "h3_av.transform" not in host.stale_matrix_entries
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
@@ -64,7 +67,7 @@ def test_beta_reference_family_preflight_is_truthful_on_this_machine():
     host.discover()
     host.preflight()
 
-    cpu = host.capabilities["editorial.arrange"]
+    cpu = host.capabilities["h3_av.compile"]
     assert cpu.adapter.family == "cpu"
     assert cpu.ready
 
@@ -162,12 +165,9 @@ def test_manifest_secrets_report_missing_without_gating_readiness(monkeypatch, t
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     host.discover()
     host.preflight()
-    assert host.capabilities["media.gif_search"].preflight["credentials"]["missing"] == ["GIPHY_API_KEY"]
-    assert host.capabilities["media.gif_search"].ready is True
-    for capability_id in (
-        "media.speech_repair_lavasr", "fal.h3_video",
-        "generation.generate_image", "generation.generate_video",
-    ):
+    # media.gif_search, media.speech_repair_lavasr and fal.h3_video moved to
+    # poms_packs with their packs; their checks belong to those packs now.
+    for capability_id in ("generation.generate_image", "generation.generate_video"):
         record = host.capabilities[capability_id]
         assert record.preflight["credentials"]["missing"] == ["FAL_KEY"]
         assert record.ready is True
@@ -179,9 +179,13 @@ def test_manifest_secrets_report_missing_without_gating_readiness(monkeypatch, t
 
 
 def test_video_understanding_matrix_matches_manifest_credentials():
+    # The understanding pack moved to poms_packs, so only its matrix rows are
+    # in this tree; the manifest side is checked by the pack's own tests.
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     host.discover()
     for capability_id in ("understanding.video_understand", "understanding.scene_describe"):
-        record = host.capabilities[capability_id]
-        assert record.matrix["required_env"] == ["GEMINI_API_KEY"]
-        assert record.definition.isolation.secrets_required == ("GEMINI_API_KEY",)
+        assert capability_id not in host.capabilities
+        row = host.matrix[capability_id]
+        assert row["required_env"] == ["GEMINI_API_KEY"]
+        assert row["external_pack"] == "understanding"
+        assert row["disposition"] == "optional"

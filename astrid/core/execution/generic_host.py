@@ -6493,6 +6493,7 @@ class GenericPackHost:
         self.capabilities: dict[str, CapabilityRecord] = {}
         self._orchestrators: dict[str, _OrchestratorRecord] = {}
         self.stale_matrix_entries: tuple[str, ...] = ()
+        self.missing_required_capabilities: tuple[str, ...] = ()
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
         self._registered_runtime_state: dict[str, Any] = {}
@@ -7358,6 +7359,9 @@ class GenericPackHost:
                 capability_id
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
+                # A row that names its external pack is expected to be absent
+                # until that pack is installed with `astrid packs add`.
+                and not self.matrix[capability_id].get("external_pack")
                 and capability_id.split(".", 1)[0] not in quarantined_ids
                 # Declared local orchestrators are registered through the
                 # orchestrator registry, not executor discovery.
@@ -7367,6 +7371,17 @@ class GenericPackHost:
                 _LOGGER.warning(
                     "capability matrix rows not discovered (ignored): %s",
                     ", ".join(self.stale_matrix_entries),
+                )
+            # A required capability with no executor is a broken install, so it
+            # is named in the log, the ready file and doctor, not only dropped.
+            self.missing_required_capabilities = tuple(
+                capability_id for capability_id in self.stale_matrix_entries
+                if self.matrix[capability_id].get("disposition") == "required"
+            )
+            if self.missing_required_capabilities:
+                _LOGGER.error(
+                    "required capabilities have no installed executor: %s",
+                    ", ".join(self.missing_required_capabilities),
                 )
         # Dependencies are digested after the full corpus is known so a graph
         # or dependency source change invalidates the next registration.
@@ -7598,6 +7613,7 @@ class GenericPackHost:
 
         selected = [self.capabilities[capability_id]] if capability_id else list(self.capabilities.values())
         updated: dict[str, CapabilityRecord] = dict(self.capabilities)
+        installed_packs = {installed_id.split(".", 1)[0] for installed_id in self.capabilities}
         gpu_detection = None
         remotion_status = None
         remotion_context = self._remotion_idle_context() if any(
@@ -7746,6 +7762,14 @@ class GenericPackHost:
                     "ok": sandbox_available,
                     **({} if sandbox_available else {"reason": "host-managed provider broker requires macOS sandbox-exec"}),
                 }
+            # A capability that depends on another pack's capability cannot run
+            # until that pack is installed, so it does not read ready.
+            absent_packs = sorted({
+                dependency.split(".", 1)[0] for dependency in record.definition.graph.depends_on
+                if "." in dependency and dependency.split(".", 1)[0] not in installed_packs
+            })
+            if absent_packs:
+                checks["packs"] = {"ok": False, "missing": absent_packs}
             if _is_withdrawn(record):
                 checks["disposition"] = {
                     "ok": False,
@@ -17527,6 +17551,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             "capability_count": len(host.capabilities),
             "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
             "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
+            "missing_required_capabilities": list(host.missing_required_capabilities),
             "gated_checks": _gated_remotion_faults(host.capabilities.values()),
             "registration": registration,
             "ready_file": str(ready_path),
