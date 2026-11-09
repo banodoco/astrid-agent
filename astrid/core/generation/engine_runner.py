@@ -24,6 +24,7 @@ from typing import Mapping
 
 from . import engine_recipe as recipes
 from .engine_contracts import (
+    effective_models_root,
     CommandFailed,
     CommandRequest,
     CustodyUnresolved,
@@ -198,7 +199,21 @@ def _disk_anchor(root):
         os.close(fd)
 
 
-def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement) -> InstallPlan:
+def _models_root(root: str, models_root: str | None) -> str | None:
+    """An explicit model directory is a normalized absolute path outside the engine's own tree."""
+    if models_root is None:
+        return None
+    if not isinstance(models_root, str) or not models_root.startswith("/") or any(ord(c) < 32 for c in models_root):
+        raise UnsafePathError("models root must be a target-native absolute path")
+    if any(p in {"", ".", ".."} for p in models_root[1:].split("/")) or models_root == "/":
+        raise UnsafePathError("models root must be normalized")
+    if models_root == root or models_root.startswith(root + "/"):
+        raise UnsafePathError("models root must not be inside the engine root")
+    return models_root
+
+
+def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement,
+                 models_root: str | None = None) -> InstallPlan:
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
     if placement not in {"local", "runpod"}:
@@ -209,6 +224,7 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")
     root = _root(root, verified.platform)
+    models_root = _models_root(root, models_root)
     steps = []
     for source in verified.sources:
         parents = tuple("source:" + parent.name for parent in verified.sources
@@ -228,7 +244,8 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     steps.extend((InstallStep("start", "start", prerequisites, "Start or reuse the owned loopback engine"),
                   InstallStep("health", "health", ("start",), "Validate owned health and required nodes")))
     return InstallPlan("astrid.engine-plan.v1", verified.engine, verified.platform, placement,
-                       root, recipes.recipe_digest(verified), verified.models_lock.sha256, tuple(steps))
+                       root, recipes.recipe_digest(verified), verified.models_lock.sha256, tuple(steps),
+                       models_root=models_root)
 
 
 def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
@@ -269,7 +286,8 @@ class _Runner:
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
         self.recipe = recipes.load_recipe(plan.engine, plan.platform)
-        expected = plan_install(self.recipe, root=plan.root, placement=plan.placement)
+        expected = plan_install(self.recipe, root=plan.root, placement=plan.placement,
+                                models_root=plan.models_root)
         if plan != expected:
             raise IntegrityError("install plan differs from the recomputed verified plan")
         if (context.platform != plan.platform or adapter.key != plan.platform
@@ -360,6 +378,10 @@ class _Runner:
                 "root": self.plan.root, "recipe_sha256": self.plan.recipe_sha256,
                 "helper_sha256": self.helper_sha256, **extra}
 
+    def models_config_helper(self, operation):
+        """The extra-model-paths helper names this install's model directory, volume cache or <root>/models."""
+        return self.helper(operation, models_root=self.plan.models_root)
+
     def helper(self, operation, **extra):
         result = self.run(("python3", "-I", "-m", "astrid.core.generation.engine_runner_target",
                            operation, _json(self.payload(**extra))))
@@ -418,7 +440,8 @@ class _Runner:
         return value
 
     def launch_spec(self):
-        request = self.adapter.start_request(self.recipe, self.plan.root, deadline=self.deadline)
+        request = self.adapter.start_request(self.recipe, self.plan.root, deadline=self.deadline,
+                                             models_root=self.plan.models_root)
         if request.deadline != self.deadline or not request.argv:
             raise RecipeValidationError("adapter start request violates recipe binding", step_id=self.step_id)
         # Check all launch fields against the verified recipe's closed placeholders.
@@ -438,7 +461,8 @@ class _Runner:
         return {"install_root": self.plan.root,
                 "python": self.adapter.venv_python(self.path(environment.relative_path)),
                 "comfy_root": self.path(next(s.relative_path for s in self.recipe.sources if s.name == "comfyui")),
-                "models_root": self.path("models"), "models_config": self.path("runtime/extra_model_paths.yaml"),
+                "models_root": self.path("models") if self.plan.models_root is None else self.plan.models_root,
+                "models_config": self.path("runtime/extra_model_paths.yaml"),
                 "host": self.recipe.start.bind_host, "port": str(self.recipe.start.port)}
 
     def source(self, source, *, readonly=False):
@@ -668,12 +692,12 @@ class _Runner:
         launch = self.launch_spec()
         probe = self.service("probe", launch=launch)
         if probe["state"] == "owned":
-            if self.helper("models-config-check") != {"valid": True}:
+            if self.models_config_helper("models-config-check") != {"valid": True}:
                 raise IntegrityError("owned engine models configuration differs", step_id=self.step_id)
             return "skipped", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
         if readonly:
             raise EndpointHealthError("owned engine server is absent", step_id=self.step_id)
-        if self.helper("models-config") != {"written": True}:
+        if self.models_config_helper("models-config") != {"written": True}:
             raise IntegrityError("engine models configuration was not written", step_id=self.step_id)
         result = self.service("start", launch=launch)
         if result["state"] != "owned":
@@ -681,7 +705,7 @@ class _Runner:
         return "executed", {"owner_id": self.service_owner, "launch_sha256": _sha(launch)}
 
     def check_health(self):
-        if self.helper("models-config-check") != {"valid": True}:
+        if self.models_config_helper("models-config-check") != {"valid": True}:
             raise IntegrityError("engine models configuration differs", step_id=self.step_id)
         limit = min(self.deadline, time.monotonic() + self.recipe.health.timeout_seconds)
         value = self.service("health", launch=self.launch_spec(), deadline=limit)
@@ -716,7 +740,8 @@ class _Runner:
                               self.plan.platform, self.plan.placement, self.plan.root, status, False,
                               self.plan.recipe_sha256, self.plan.models_lock_sha256, dict(self.locks),
                               dict(self.commits), tuple(self.models), tuple(self.steps), self.health,
-                              self.started_at, None if status == "installing" else _now(), error_code)
+                              self.started_at, None if status == "installing" else _now(), error_code,
+                              models_root=self.plan.models_root)
 
 
 SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
@@ -828,7 +853,7 @@ def _parse_receipt(raw, plan):
     """Strict JSON receipt reconstruction; a receipt is evidence, never instructions."""
     def obj(value, cls):
         if cls is InstallReceipt and isinstance(value, Mapping):
-            value = {"failed_step_id": None, **value}
+            value = {"failed_step_id": None, "models_root": None, **value}
         if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
             raise IntegrityError("invalid install receipt fields")
         return dict(value)
@@ -837,6 +862,12 @@ def _parse_receipt(raw, plan):
     for key in ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256"):
         if value[key] != getattr(plan, key):
             raise IntegrityError("install receipt identity differs")
+    # The receipt records the model directory it bound. A plan that names one must match it; a plan
+    # that names none (readers of an existing install) takes the receipt's record.
+    if value["models_root"] is not None:
+        _models_root(value["root"], value["models_root"])
+    if plan.models_root is not None and value["models_root"] != plan.models_root:
+        raise IntegrityError("install receipt identity differs")
     if (value["schema"] != "astrid.engine-install.v1" or value["qualified"] is not False
             or value["status"] not in ("installing", "installed", "failed")
             or not isinstance(value["receipt_id"], str) or not 1 <= len(value["receipt_id"]) <= 256):
@@ -870,7 +901,7 @@ def _parse_receipt(raw, plan):
             raise ValueError
         # Plan 32 T5h: a new install writes no model rows; a legacy receipt's verified rows are kept
         # as the receipt's rows, under <root>/models, exactly as the installer wrote them.
-        models_root = plan.root + "/models/"
+        models_root = (value["models_root"] if value["models_root"] is not None else plan.root + "/models") + "/"
         models = []
         for model_raw in value["models"]:
             row = obj(model_raw, DownloadResult)

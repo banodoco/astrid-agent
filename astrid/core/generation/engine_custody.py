@@ -588,13 +588,28 @@ def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
         return value
 
 
+def _installed_models_root(root, recipe):
+    """The model directory the installed receipt bound; None (the default) when it records none."""
+    from .engine_runner import _models_root
+    try:
+        raw = json.loads(Path(root, ".astrid-engine", "install.json").read_bytes())
+    except (OSError, ValueError):
+        return None
+    value = raw.get("models_root") if isinstance(raw, dict) else None
+    if value is None:
+        return None
+    return _models_root(root, value)
+
+
 class _Supervisor:
     def __init__(self, identity, recipe, token):
         self.identity, self.recipe, self.token = identity, recipe, token
         self.root = identity["root"]
         self.control = self.root + "/.astrid-engine/session"
         self.adapter = LinuxPlatformAdapter(identity["platform"])
-        request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1)
+        # The model directory is the installed receipt's record (a saved volume cache, or <root>/models).
+        request = self.adapter.start_request(recipe, self.root, deadline=time.monotonic() + 1,
+                                             models_root=_installed_models_root(self.root, recipe))
         self.launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
         self.engine = None
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ._engine_target_files import _FILE_FLAGS, _TargetFiles, _check, _parts
-from .engine_contracts import EngineError
+from .engine_contracts import EngineError, effective_models_root
 
 SCHEMA = "hc03-worker-readiness.v1"
 ENGINE = "comfyui"
@@ -624,7 +624,7 @@ def canonical_status(*, root, deadline, engine=ENGINE):
                          context=context, deadline=deadline)
 
 
-def _owned_health(root, recipe, adapter, owner_id, deadline):
+def _owned_health(root, recipe, adapter, owner_id, deadline, models_root=None):
     """Existing supervisor health; never creates a supervisor or starts an engine."""
     from .engine_custody import LinuxEngineServiceClient, _SCHEMA
     from .engine_recipe import recipe_digest
@@ -633,7 +633,7 @@ def _owned_health(root, recipe, adapter, owner_id, deadline):
     client = LinuxEngineServiceClient(root=root, engine=recipe.engine, platform=PLATFORM,
                                       recipe_sha256=recipe_digest(recipe),
                                       helper_sha256=_sha(helper_manifest(recipe)))
-    request = adapter.start_request(recipe, root, deadline=deadline)
+    request = adapter.start_request(recipe, root, deadline=deadline, models_root=models_root)
     launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
     payload = {**client.identity, "schema": _SCHEMA, "launch": launch, "owner_id": owner_id,
                "timeout_seconds": recipe.health.timeout_seconds,
@@ -676,7 +676,8 @@ def _model_root_binding(root, receipt, deadline):
                              validate_model_root_binding)
 
     inventory = []
-    prefix = root + "/models/"
+    models_root = effective_models_root(root, getattr(receipt, "models_root", None))
+    prefix = models_root + "/"
     for model in getattr(receipt, "models", ()) or ():
         if getattr(model, "verified", None) is not True or not str(getattr(model, "path", "")).startswith(prefix):
             raise ReadinessError("installed receipt model is not a verified model-root row")
@@ -685,7 +686,7 @@ def _model_root_binding(root, receipt, deadline):
         inventory.append({"name": destination.name, "sha256": "sha256:" + model.sha256,
                           "size": model.bytes, "subdir": "" if subdir == "." else subdir})
     inventory.sort(key=lambda entry: (entry["subdir"], entry["name"]))
-    binding = {"schema_version": 1, "path": root + "/models", "inventory": inventory,
+    binding = {"schema_version": 1, "path": models_root, "inventory": inventory,
                "inventory_digest": canonical_model_inventory_digest(inventory),
                "qualification_identity": None}
     _check(deadline)
@@ -747,7 +748,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
             account_ref="target-local", pod_id="target-local", session_ref=engine,
             python_executable=installed["python_executable"], runtime_root=runtime_root,
             vibecomfy_root=installed["vibecomfy_root"], comfy_root=comfy_root,
-            model_root=root + "/models", output_root=installed["output_root"],
+            model_root=effective_models_root(root, receipt.models_root), output_root=installed["output_root"],
             port=recipe.start.port, config=installed["config"], config_digest=installed["config_digest"],
         )
         live = transport.status(selection)
@@ -774,7 +775,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
 
         # 3. Live owned health through the existing supervisor, bound to the receipt.
         start = next(step.facts for step in receipt.steps if step.kind == "start")
-        health, launch = _owned_health(root, recipe, adapter, token, deadline)
+        health, launch = _owned_health(root, recipe, adapter, token, deadline,
+                                       models_root=getattr(receipt, "models_root", None))
         if (health["object_info_sha256"] != receipt.health.object_info_sha256
                 or start.get("owner_id") != token or start.get("launch_sha256") != health["launch_sha256"]):
             raise ReadinessError("live engine health differs from the installed receipt")

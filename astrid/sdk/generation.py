@@ -325,6 +325,17 @@ def _runpod_status(*, client, include_quote):
     return dict(status)
 
 
+def _modality_controls(*, engine, consent, max_usd, deadline, offer_digest, preparation_seconds,
+                       execution_seconds, idle_seconds, align) -> dict[str, Any]:
+    """The controls image, video and audio all build from their public keywords."""
+    controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
+    controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+                    execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+    if align is not None:
+        controls['align'] = _align_mode(align)
+    return controls
+
+
 def _generation_boundary(method):
     """Project legacy SDK failures without changing their exception taxonomy."""
     @wraps(method)
@@ -719,6 +730,206 @@ def _asset_map(value: Any) -> Any:
                   else str((document.parent / item).resolve())) for key, item in raw.items()}
 
 
+def _no_prompt_check(**_: Any) -> None:
+    return None
+
+
+def _video_prompt_check(*, model: Any, entry: Any, inputs: dict[str, Any]) -> None:
+    if _prompt_only_video(model=model, entry=entry, inputs=inputs):
+        raise GenerationInputError(
+            "Prompt-only video requires a reference. "
+            "Use --image-ref for a video reference, or see 'generate list --kind video'."
+        )
+
+
+def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: Any, inputs: dict[str, Any],
+                        **_: Any) -> tuple[Any, bool]:
+    resolved_mode = sdk_module._infer_image_mode(mode, inputs)
+    explicit_openai = execution == "openai" or (
+        isinstance(model, str) and model.startswith("gpt-image")
+    )
+    if explicit_openai and mode is None and inputs.get("image_ref"):
+        resolved_mode = "edit"
+    if model is not None and mode is None and inputs.get("image_ref"):
+        from astrid.core.generation.entries import find_entry
+        manifest = find_entry(model)
+        if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
+            resolved_mode = "edit"
+    return resolved_mode, explicit_openai
+
+
+def _video_resolve_mode(sdk_module: Any, *, mode: Any, inputs: dict[str, Any], resume: bool,
+                        recovery_path: Any, placement: Any, **_: Any) -> tuple[Any, bool]:
+    if resume or recovery_path is not None and placement != 'runpod':
+        raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
+    return sdk_module._infer_video_mode(mode, inputs), False
+
+
+def _audio_resolve_mode(sdk_module: Any, *, mode: Any, **_: Any) -> tuple[Any, bool]:
+    # The single model mode is resolved after the model lookup (see _audio_finish_mode).
+    return mode, False
+
+
+def _image_finish_mode(sdk_module: Any, *, mode: Any, resolved_mode: Any, explicit_openai: bool,
+                       **_: Any) -> Any:
+    if mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES and not explicit_openai:
+        raise CapabilityValidationError(
+            f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
+        )
+    return resolved_mode
+
+
+def _audio_finish_mode(sdk_module: Any, *, model: Any, model_entry: Any, mode: Any, **_: Any) -> Any:
+    if mode is not None:
+        return mode
+    # Audio models currently expose one canonical mode (music). Infer it
+    # when omitted so the facade remains ergonomic while still validating
+    # the resolved model -> mode -> backend cell.
+    if len(model_entry.modes) == 1:
+        return next(iter(model_entry.modes))
+    available_modes = ", ".join(sorted(model_entry.modes))
+    raise CapabilityValidationError(
+        f"Ambiguous audio mode for model {model!r}. "
+        f"Available modes: {available_modes}. Please specify mode."
+    )
+
+
+def _no_target_mode_check(**_: Any) -> None:
+    return None
+
+
+def _audio_target_mode_check(*, mode: Any, **_: Any) -> None:
+    if mode is None:
+        raise CapabilityValidationError('mode is required for audio target generation')
+
+
+def _no_explicit_target_check(**_: Any) -> None:
+    return None
+
+
+def _audio_explicit_target_check(*, recovery_path: Any, resume: bool, wait: bool, **_: Any) -> None:
+    if recovery_path is not None or resume or not wait:
+        raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
+
+
+def _no_recipe_check(**_: Any) -> None:
+    return None
+
+
+def _image_recipe_check(*, inputs: dict[str, Any], model: Any, resolved_mode: Any, resolved_execution: Any,
+                        **_: Any) -> None:
+    recipe = inputs.get("shot_generation_recipe")
+    if recipe is None:
+        return
+    from astrid.packs.generation.actions.generate_image.task_adapter import (
+        GenerateImageAdapterError,
+        validate_shot_generation_recipe,
+    )
+
+    try:
+        validate_shot_generation_recipe(
+            recipe,
+            model=model,
+            mode=resolved_mode,
+            execution=resolved_execution,
+            resolved_settings=inputs,
+        )
+    except GenerateImageAdapterError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+
+
+def _image_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> tuple[str, ...]:
+    # Image keeps its historic deferred prompt validation (executor-owned prompt
+    # semantics, including prompt-less upscale), so it requires no features.
+    return ()
+
+
+def _video_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> tuple[str, ...]:
+    # FLF's defining frame pair is rejected before dry-run/live invocation.
+    if resolved_mode == "flf" and (inputs.get("image_ref") is not None or inputs.get("image_end_ref") is not None):
+        return ("image_ref", "image_end_ref")
+    return ()
+
+
+def _audio_required_features(*, resolved_mode: Any, inputs: dict[str, Any]) -> None:
+    # None lets validation use the mode's own declared requirements.
+    return None
+
+
+def _speech_invoke(facade: Any, *, inputs: dict[str, Any], client: Any, out: Any, project: Any,
+                   project_root: Any, extra_pack_roots: Any, banodoco_config: Any, active_theme: Any,
+                   include_missing_roots: bool, brief: Any, dry_run: bool, check_binaries: bool,
+                   python_exec: Any, verbose: bool, argv: Any) -> Any:
+    speech_inputs = _speech_inputs_from_audio_request(inputs)
+    invoke_out, invoke_project = _resolve_invoke_destination(
+        client=client,
+        out=out,
+        project=project,
+        project_root=project_root,
+    )
+    result = facade._invoke(
+        "generation.generate_speech",
+        kind="executor",
+        client=client,
+        project_root=project_root,
+        extra_pack_roots=extra_pack_roots,
+        banodoco_config=banodoco_config,
+        active_theme=active_theme,
+        include_missing_roots=include_missing_roots,
+        out=invoke_out,
+        project=invoke_project,
+        inputs=speech_inputs,
+        brief=brief,
+        dry_run=dry_run,
+        check_binaries=check_binaries,
+        python_exec=python_exec,
+        verbose=verbose,
+        argv=argv,
+    )
+    if dry_run:
+        return result
+    return _reconstruct_generation_result(result)
+
+
+@dataclass(frozen=True)
+class _MediaKind:
+    """What differs between image, video and audio. The one media body only reads these rules."""
+
+    capability: str
+    retire_inputs_first: bool
+    check_prompt: Any
+    resolve_mode: Any
+    finish_mode: Any
+    check_target_mode: Any
+    check_explicit_target: Any
+    speech_mode: str | None
+    check_recipe: Any
+    required_features: Any
+
+
+_MEDIA_KINDS: dict[str, _MediaKind] = {
+    "image": _MediaKind(
+        capability="generation.generate_image", retire_inputs_first=False,
+        check_prompt=_no_prompt_check, resolve_mode=_image_resolve_mode, finish_mode=_image_finish_mode,
+        check_target_mode=_no_target_mode_check, check_explicit_target=_no_explicit_target_check,
+        speech_mode=None, check_recipe=_image_recipe_check, required_features=_image_required_features,
+    ),
+    "video": _MediaKind(
+        capability="generation.generate_video", retire_inputs_first=False,
+        check_prompt=_video_prompt_check, resolve_mode=_video_resolve_mode,
+        finish_mode=lambda sdk_module, *, resolved_mode, **_: resolved_mode,
+        check_target_mode=_no_target_mode_check, check_explicit_target=_no_explicit_target_check,
+        speech_mode=None, check_recipe=_no_recipe_check, required_features=_video_required_features,
+    ),
+    "audio": _MediaKind(
+        capability="generation.generate_audio", retire_inputs_first=True,
+        check_prompt=_no_prompt_check, resolve_mode=_audio_resolve_mode, finish_mode=_audio_finish_mode,
+        check_target_mode=_audio_target_mode_check, check_explicit_target=_audio_explicit_target_check,
+        speech_mode="tts", check_recipe=_no_recipe_check, required_features=_audio_required_features,
+    ),
+}
+
+
 @dataclass(frozen=True)
 class GenerationFacade:
     """Public typed entrypoint for generation executors."""
@@ -939,7 +1150,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
@@ -951,7 +1162,8 @@ class GenerationFacade:
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
                             execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-            controls['align'] = _align_mode(align)
+            if align is not None:
+                controls['align'] = _align_mode(align)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
                 raise GenerationInputError('target workflow requires one local workflow path')
             if inputs is not None and not isinstance(inputs, Mapping):
@@ -1098,7 +1310,8 @@ class GenerationFacade:
         for name in ('engine', 'consent', 'max_usd', 'deadline', 'offer_digest', 'preparation_seconds',
                      'execution_seconds', 'idle_seconds'):
             controls.pop(name, None)
-        align = _align_mode(controls.pop('align', 'check'))
+        requested_align = controls.pop('align', None)  # None: not asked for; RunPod then aligns, local checks
+        align = _align_mode(requested_align or 'check')
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
@@ -1432,7 +1645,7 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry_id, "mode": mode, **({"align": align} if align != "check" else {})},
+                    "metadata": {"model": entry_id, "mode": mode, **({"align": requested_align} if requested_align is not None else {})},
                 },
                 **asset_arguments, **controls,
             )
@@ -1525,15 +1738,65 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("image", **arguments, **inputs)
+
+    def _media_request(
+        self,
+        modality: str,
+        *,
+        model: str | None = None,
+        request: str | Mapping[str, Any] | None = None,
+        asset_map: str | Mapping[str, Any] | None = None,
+        resume: bool = False,
+        entry: str | None = None,
+        placement: str | None = None,
+        mode: str | None = None,
+        execution: str | None = None,
+        engine: str | None = None,
+        consent: tuple[str, ...] = (),
+        max_usd: float | None = None,
+        deadline: str | None = None,
+        offer_digest: str | None = None,
+        preparation_seconds: float | None = None,
+        execution_seconds: float | None = None,
+        idle_seconds: float | None = None,
+        wait: bool = True,
+        out: Path | str | None = None,
+        project: str | None = None,
+        client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        project_root: str | Path | None = None,
+        extra_pack_roots: tuple[str, ...] = (),
+        banodoco_config: Any | None = None,
+        active_theme: str | Path | None = None,
+        include_missing_roots: bool = False,
+        brief: Path | str | None = None,
+        dry_run: bool = False,
+        check_binaries: bool = False,
+        python_exec: str | None = None,
+        verbose: bool = False,
+        argv: tuple[str, ...] = (),
+        align: str | None = None,
+        **inputs: Any,
+    ) -> Any:
+        kind = _MEDIA_KINDS[modality]
+        if kind.retire_inputs_first:
+            _reject_retired_generation_inputs(inputs)
         inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        _reject_retired_generation_inputs(inputs)
+        controls = _modality_controls(
+            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
+            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
+        )
+        if not kind.retire_inputs_first:
+            _reject_retired_generation_inputs(inputs)
+        inputs.update({name: value for name, value in
+                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
+        kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
@@ -1541,23 +1804,16 @@ class GenerationFacade:
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
             description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="image",
+                entry=entry, model=model, mode=mode, modality=modality,
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
             if description["source"] == "workflow" and placement is None:
                 placement = "auto"
-        resolved_mode = sdk_module._infer_image_mode(mode, inputs)
-        explicit_openai = execution == "openai" or (
-            isinstance(model, str) and model.startswith("gpt-image")
+        resolved_mode, explicit_openai = kind.resolve_mode(
+            sdk_module, model=model, mode=mode, execution=execution, inputs=inputs,
+            resume=resume, recovery_path=recovery_path, placement=placement,
         )
-        if explicit_openai and mode is None and inputs.get("image_ref"):
-            resolved_mode = "edit"
-        if model is not None and mode is None and inputs.get("image_ref"):
-            from astrid.core.generation.entries import find_entry
-            manifest = find_entry(model)
-            if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
-                resolved_mode = "edit"
         if registry is None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root,
@@ -1566,8 +1822,9 @@ class GenerationFacade:
         if engine is not None and placement is None:
             placement = 'auto'
         if placement is not None:
+            kind.check_target_mode(mode=resolved_mode)
             return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="image",
+                registry=registry, model=model, mode=resolved_mode, modality=modality,
                 placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
                 client=client, out=out, project=project, project_root=project_root,
                 extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
@@ -1576,6 +1833,16 @@ class GenerationFacade:
                 verbose=verbose, argv=argv,
                 **controls, **({'wait': False} if not wait else {}),
                 **({'recovery_path': recovery_path} if recovery_path is not None else {}),
+                **({'resume': True} if resume else {}),
+            )
+        kind.check_explicit_target(recovery_path=recovery_path, resume=resume, wait=wait)
+        if kind.speech_mode is not None and resolved_mode == kind.speech_mode:
+            return _speech_invoke(
+                self, inputs=inputs, client=client, out=out, project=project,
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config, active_theme=active_theme,
+                include_missing_roots=include_missing_roots, brief=brief, dry_run=dry_run,
+                check_binaries=check_binaries, python_exec=python_exec, verbose=verbose, argv=argv,
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")
@@ -1583,56 +1850,33 @@ class GenerationFacade:
             model_entry = registry.get(model)
         except KeyError as exc:
             raise CapabilityValidationError(str(exc)) from exc
-
-        if (mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES
-                and not explicit_openai):
-            raise CapabilityValidationError(
-                f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
-            )
-
+        resolved_mode = kind.finish_mode(
+            sdk_module, model=model, model_entry=model_entry, mode=mode,
+            resolved_mode=resolved_mode, explicit_openai=explicit_openai,
+        )
         resolved_execution = sdk_module._resolve_execution(
             model_entry,
             resolved_mode,
             execution,
             model=model,
         )
-        from astrid.core.generation.preflight import validate_generation_request
+        from astrid.core.generation.preflight import (
+            require_local_generation_readiness,
+            validate_generation_request,
+        )
 
-        recipe = inputs.get("shot_generation_recipe")
-        if recipe is not None:
-            from astrid.packs.generation.actions.generate_image.task_adapter import (
-                GenerateImageAdapterError,
-                validate_shot_generation_recipe,
-            )
-
-            try:
-                validate_shot_generation_recipe(
-                    recipe,
-                    model=model,
-                    mode=resolved_mode,
-                    execution=resolved_execution,
-                    resolved_settings=inputs,
-                )
-            except GenerateImageAdapterError as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-
+        kind.check_recipe(inputs=inputs, model=model, resolved_mode=resolved_mode,
+                          resolved_execution=resolved_execution)
         validate_generation_request(
             registry,
             model=model,
             mode=resolved_mode,
             execution=resolved_execution,
             inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="image",
-            # Keep the image facade's historic deferred prompt validation:
-            # executor-owned prompt semantics (including prompt-less upscale)
-            # remain compatible while matrix/readiness checks happen here.
-            required_features=(),
+            modality=modality,
+            required_features=kind.required_features(resolved_mode=resolved_mode, inputs=inputs),
         )
         if resolved_execution == "local":
-            from astrid.core.generation.preflight import (
-                require_local_generation_readiness,
-            )
-
             # This read-only check must happen before destination resolution
             # and invoke/admission.  It reports missing local installation
             # prerequisites without creating a run, task, or staging tree.
@@ -1648,7 +1892,7 @@ class GenerationFacade:
             project_root=project_root,
         )
         result = self._invoke(
-            "generation.generate_image",
+            kind.capability,
             kind="executor",
             client=client,
             project_root=project_root,
@@ -1713,138 +1957,11 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
-        inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        _reject_retired_generation_inputs(inputs)
-        inputs.update({name: value for name, value in
-                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
-        if _prompt_only_video(model=model, entry=entry, inputs=inputs):
-            raise GenerationInputError(
-                "Prompt-only video requires a reference. "
-                "Use --image-ref for a video reference, or see 'generate list --kind video'."
-            )
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
-        if entry is not None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
-            description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="video",
-                inputs=inputs, registry=registry,
-            )
-            model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and placement is None:
-                placement = "auto"
-        if resume or recovery_path is not None and placement != 'runpod':
-            raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
-        resolved_mode = sdk_module._infer_video_mode(mode, inputs)
-        if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-            )
-        if engine is not None and placement is None:
-            placement = 'auto'
-        if placement is not None:
-            return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="video",
-                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
-                client=client, out=out, project=project, project_root=project_root,
-                extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
-                active_theme=active_theme, include_missing_roots=include_missing_roots,
-                brief=brief, check_binaries=check_binaries, python_exec=python_exec,
-                verbose=verbose, argv=argv,
-                **controls, **({'wait': False} if not wait else {}),
-                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
-            )
-        if model is None:
-            raise CapabilityValidationError("model is required when target is omitted")
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
-
-        # FLF's defining frame pair must be rejected before dry-run/live
-        # invocation.  The prompt remains executor-owned for compatibility
-        # with existing facade callers that only exercise routing.
-        flf_required = None
-        if resolved_mode == "flf" and (
-            inputs.get("image_ref") is not None
-            or inputs.get("image_end_ref") is not None
-        ):
-            flf_required = ("image_ref", "image_end_ref")
-        validate_generation_request(
-            registry,
-            model=model,
-            mode=resolved_mode,
-            execution=resolved_execution,
-            inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="video",
-            # The typed facade historically defers prompt validation to the
-            # executor; when FLF refs are supplied, however, enforce the
-            # defining frame pair before dry-run/live admission.
-            required_features=flf_required or (),
-        )
-        if resolved_execution == "local":
-            # Keep local video on the same actionable, read-only prerequisite
-            # gate as image generation. No cloud fallback is attempted.
-            require_local_generation_readiness(
-                model_entry,
-                resolved_mode,
-                python_executable=python_exec,
-            )
-        invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client,
-            out=out,
-            project=project,
-            project_root=project_root,
-        )
-        result = self._invoke(
-            "generation.generate_video",
-            kind="executor",
-            client=client,
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            active_theme=active_theme,
-            include_missing_roots=include_missing_roots,
-            out=invoke_out,
-            project=invoke_project,
-            inputs={
-                "model": model,
-                "mode": resolved_mode,
-                "execution": resolved_execution,
-                **inputs,
-            },
-            brief=brief,
-            dry_run=dry_run,
-            check_binaries=check_binaries,
-            python_exec=python_exec,
-            verbose=verbose,
-            argv=argv,
-            **({'wait': False} if not wait else {}),
-        )
-        if dry_run or not wait:
-            return result
-        return _reconstruct_generation_result(result)
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("video", **arguments, **inputs)
 
     @_generation_boundary
     def audio(
@@ -1880,159 +1997,11 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
-        align: str = 'check',
+        align: str | None = None,
         **inputs: Any,
     ) -> Any:
-        """Generate audio through the typed action or a selected workflow target."""
-        _reject_retired_generation_inputs(inputs)
-        inputs = _public_input_values(inputs)
-        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
-        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
-        controls['align'] = _align_mode(align)
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
-        if entry is not None:
-            registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
-            description, inputs = self._resolve_public_entry(entry=entry, model=model, mode=mode,
-                modality='audio', inputs=inputs, registry=registry)
-            model, mode = entry, description['mode']
-            if description['source'] == 'workflow' and placement is None:
-                placement = 'auto'
-        if engine is not None and placement is None:
-            placement = 'auto'
-        if placement is not None:
-            if mode is None:
-                raise CapabilityValidationError('mode is required for audio target generation')
-            if registry is None:
-                registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
-            return self._generate_on_target(
-                registry=registry, model=model, mode=mode, modality='audio', placement=placement,
-                execution=execution, inputs=inputs, dry_run=dry_run, client=client, out=out,
-                project=project, project_root=project_root, extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config, active_theme=active_theme,
-                include_missing_roots=include_missing_roots, brief=brief,
-                check_binaries=check_binaries, python_exec=python_exec, verbose=verbose, argv=argv,
-                **controls, **({'wait': False} if not wait else {}),
-                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
-                **({'resume': True} if resume else {}),
-            )
-        if recovery_path is not None or resume or not wait:
-            raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
-        if mode == "tts":
-            speech_inputs = _speech_inputs_from_audio_request(inputs)
-            invoke_out, invoke_project = _resolve_invoke_destination(
-                client=client,
-                out=out,
-                project=project,
-                project_root=project_root,
-            )
-            result = self._invoke(
-                "generation.generate_speech",
-                kind="executor",
-                client=client,
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config,
-                active_theme=active_theme,
-                include_missing_roots=include_missing_roots,
-                out=invoke_out,
-                project=invoke_project,
-                inputs=speech_inputs,
-                brief=brief,
-                dry_run=dry_run,
-                check_binaries=check_binaries,
-                python_exec=python_exec,
-                verbose=verbose,
-                argv=argv,
-            )
-            if dry_run:
-                return result
-            return _reconstruct_generation_result(result)
-        if model is None:
-            raise CapabilityValidationError('model is required when target is omitted')
-        if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
-        # Audio models currently expose one canonical mode (music). Infer it
-        # when omitted so the facade remains ergonomic while still validating
-        # the resolved model → mode → backend cell.
-        resolved_mode = mode
-        if resolved_mode is None:
-            if len(model_entry.modes) == 1:
-                resolved_mode = next(iter(model_entry.modes))
-            else:
-                available_modes = ", ".join(sorted(model_entry.modes))
-                raise CapabilityValidationError(
-                    f"Ambiguous audio mode for model {model!r}. "
-                    f"Available modes: {available_modes}. Please specify mode."
-                )
-
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
-
-        validate_generation_request(
-            registry,
-            model=model,
-            mode=resolved_mode,
-            execution=resolved_execution,
-            inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="audio",
-        )
-        if resolved_execution == "local":
-            require_local_generation_readiness(
-                model_entry,
-                resolved_mode,
-                python_executable=python_exec,
-            )
-
-        invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client,
-            out=out,
-            project=project,
-            project_root=project_root,
-        )
-        result = self._invoke(
-            "generation.generate_audio",
-            kind="executor",
-            client=client,
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            active_theme=active_theme,
-            include_missing_roots=include_missing_roots,
-            out=invoke_out,
-            project=invoke_project,
-            inputs={
-                "model": model,
-                "mode": resolved_mode,
-                "execution": resolved_execution,
-                **inputs,
-            },
-            brief=brief,
-            dry_run=dry_run,
-            check_binaries=check_binaries,
-            python_exec=python_exec,
-            verbose=verbose,
-            argv=argv,
-        )
-        if dry_run:
-            return result
-        return _reconstruct_generation_result(result)
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("audio", **arguments, **inputs)
 
 
 generate = GenerationFacade()

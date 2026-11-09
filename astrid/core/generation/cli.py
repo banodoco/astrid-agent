@@ -198,9 +198,9 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
-        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"), default="check",
-                             help="align: fetch what the target lacks (local run only); "
-                                  "check: judge models against the target's inventory (default); "
+        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"),
+                             help="align: fetch what the target lacks; "
+                                  "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
