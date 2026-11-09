@@ -46,6 +46,7 @@ def prepare_retained_generation(
     requested_idle_seconds: float | None = None,
     on_acquired: Callable[[RunPodLease], None] | None = None,
     entry: str | None = None,
+    runtime_check: bool = False,
     observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
 ) -> PreparedRunPodLease:
     """Prepare one machine under A3's existing lock and journal, without a worker on pod.
@@ -57,7 +58,8 @@ def prepare_retained_generation(
     is pinned by the storage probe before install, and ``entry`` is checked on
     the pod's own runtime after install.
     """
-    from .machine import CustodyChanged, custody_differences, machine_custody, pin_storage, runtime_check
+    from .machine import CustodyChanged, custody_differences, machine_custody, pin_storage
+    from .machine import runtime_check as check_runtime
 
     if (request.entry.get("engine", "comfyui") != installation.engine
             or request.max_usd != consent.max_usd or request.deadline != consent.deadline
@@ -158,8 +160,8 @@ def prepare_retained_generation(
                 reuse_snapshot=previous["installed"] if reuse else None,
                 model_cache_root=cache_root,
             )
-            if entry is not None:
-                save(runtime_check=runtime_check(placement, state, entry))
+            if runtime_check:
+                save(runtime_check=check_runtime(placement, state, entry))
             if (lease_owner.clock() >= claimed["lease"]["paid_expires_at"]
                     or source_digest(placement.source_root) != bootstrap_digest
                     or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]

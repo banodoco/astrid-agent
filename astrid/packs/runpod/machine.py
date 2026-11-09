@@ -28,7 +28,6 @@ import json
 import os
 import secrets
 import shlex
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,8 +154,12 @@ def runtime_check_command() -> str:
             + f" >/dev/null && {POD_VENV}/bin/astrid generate list --json")
 
 
-def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str) -> dict[str, Any]:
-    """After install: the entry must be listed and ready on the pod's own local Runtime."""
+def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str | None) -> dict[str, Any]:
+    """After install: the pod's own local Runtime starts and lists ``entry`` as ready.
+
+    A job without a named entry ships its workflow bundle; then only the
+    Runtime start and the listing are checked.
+    """
     code, stdout, stderr = placement._exec(state, runtime_check_command(), timeout=300)
     if code != 0:
         raise MachineError(f"pod runtime check failed (exit {code}): {(stderr or stdout)[-400:]}")
@@ -164,8 +167,10 @@ def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str) -> d
         rows = json.loads(stdout)
     except ValueError:
         raise MachineError("pod runtime check did not list entries as JSON") from None
-    rows = [row for row in rows if isinstance(row, Mapping) and row.get("id") == entry] if isinstance(rows, list) else []
-    if not rows:
+    if not isinstance(rows, list):
+        raise MachineError("pod runtime check did not list entries as JSON")
+    rows = [row for row in rows if isinstance(row, Mapping) and row.get("id") == entry]
+    if entry is not None and not rows:
         raise MachineError(f"entry {entry!r} is not listed by the pod's runtime")
     if any(row.get("ready") is False for row in rows):
         raise MachineError(f"entry {entry!r} is not ready on the pod's runtime")
@@ -174,21 +179,22 @@ def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str) -> d
             "listing_sha256": "sha256:" + hashlib.sha256(stdout.encode()).hexdigest()}
 
 
-def generation_argv(entry: str, remote_root: str, *, mode: str | None) -> list[str]:
+def generation_argv(entry: str | None, remote_root: str, *, mode: str | None) -> list[str]:
     """The ONE pod-side invocation: the same local run the controller would do.
 
     T4 STUB: ``astrid generate <entry> --placement local`` is T4's local run path
     (plan32/t4-one-run). Until it lands, this argv is the contract the CPU fake
     answers; T4's merge replaces the stub flags (``--job``/``--out``/``--json``).
+    A job with no named entry runs its shipped bundle: ``astrid generate workflow``.
     """
-    argv = [f"{POD_VENV}/bin/astrid", "generate", entry, "--placement", "local",
+    argv = [f"{POD_VENV}/bin/astrid", "generate", entry or "workflow", "--placement", "local",
             "--job", f"{remote_root}/{JOB_NAME}", "--out", f"{remote_root}/out", "--json"]
     if mode:
         argv += ["--mode", mode]
     return argv
 
 
-def generation_command(entry: str, remote_root: str, *, mode: str | None) -> str:
+def generation_command(entry: str | None, remote_root: str, *, mode: str | None) -> str:
     line = " ".join(shlex.quote(part) for part in generation_argv(entry, remote_root, mode=mode))
     result = shlex.quote(f"{remote_root}/result.json")
     return (
@@ -299,7 +305,7 @@ class RunPodMachine:
                     request, consent=consent, lease_owner=owner, placement=adapter.placement,
                     installation=adapter.installation, validate=adapter.validate,
                     requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
-                    entry=job.entry, observe_mounts=self._observe_mounts,
+                    entry=job.entry, runtime_check=True, observe_mounts=self._observe_mounts,
                 )
             except BaseException:
                 if acquired:

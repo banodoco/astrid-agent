@@ -7,9 +7,7 @@ Generation runs on the prepared pod as a remote machine
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -23,7 +21,7 @@ from astrid.packs.runpod.target_selection import (
 )
 from astrid.packs.runpod.worker_owner import _run_sync
 from astrid.packs.runpod.worker_preparation import (
-    AcquisitionUnresolvedError, RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
+    RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
 )
 
 

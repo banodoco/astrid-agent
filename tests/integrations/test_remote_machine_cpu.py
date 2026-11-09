@@ -38,7 +38,6 @@ from astrid.sdk import AstridClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
-from tests.integrations.test_runpod_cpu_path import tuple_pins
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
@@ -55,6 +54,13 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def tuple_pins(source_root):
+    """The (repository, commit) pins of the shared source tuple; no installed release manifest."""
+    return {directory: ("https://example.invalid/" + Path(directory).name, subprocess.check_output(
+        ["git", "-C", str(Path(source_root) / directory), "rev-parse", "HEAD"], text=True).strip())
+        for directory in remote_placement.SOURCE_DIRS}
+
+
 class MachineProviderHTTP:
     """RunPod GraphQL/REST and pod-agent contracts for the machine route."""
 
@@ -64,28 +70,37 @@ class MachineProviderHTTP:
         self.agent_jobs, self.detached = {}, {}
         self.deploys = 0
         self.mount_id, self.mount_path = 7, (volume or {}).get("mount_path")
+        self.expect_entry = "cpu-image"  # None: any entry, or a shipped workflow
+        self.generations = []  # job.json of every generation job the pod ran
         self.seen_controller_progress = []
         self.job_hold = threading.Event()
         self.job_hold.set()
         image = io.BytesIO()
         Image.new("RGB", (16, 16), (12, 34, 56)).save(image, format="PNG")
         self.image = image.getvalue()
-        self.receipt = self._install_receipt()
+        self.receipts = {}
+        self.receipt = self._receipt_for("comfyui")
 
     # -- evidence ------------------------------------------------------------
 
-    def _install_receipt(self):
+    def _receipt_for(self, engine):
+        """The pod's install receipt for a RunPod engine, from that engine's own recipe and lock."""
+        if engine not in self.receipts:
+            self.receipts[engine] = self._install_receipt(engine)
+        return self.receipts[engine]
+
+    def _install_receipt(self, engine):
         from dataclasses import asdict
         from astrid.core.generation.engine_contracts import (
             DownloadResult, HealthEvidence, InstallReceipt, StepReceipt,
         )
-        recipe = engine_recipe.load_recipe("comfyui", "linux-x86_64-cu130")
-        root = "/root/astrid/engines/comfyui"
+        recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
+        root = f"/root/astrid/engines/{engine}"
         plan = engine_runner.plan_install(recipe, root=root, placement="local")
         lock = engine_recipe.load_model_lock(recipe.models_lock)
         stamp = datetime.now(timezone.utc).isoformat()
         receipt = InstallReceipt(
-            "astrid.engine-install.v1", "cpu-http-install", plan.engine, plan.platform, plan.placement,
+            "astrid.engine-install.v1", f"cpu-http-install-{engine}", plan.engine, plan.platform, plan.placement,
             root, "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
             {env.name: (env.requirements.packaged_lock.sha256 if env.requirements.packaged_lock
                         else _sha(env.name.encode())) for env in recipe.environments},
@@ -175,11 +190,12 @@ class MachineProviderHTTP:
             if "pod_bootstrap.sh" in detached:
                 self.files[self._marker(detached)] = b"ok"
                 self._exit(directory, 0, b"")
-            elif "engines install comfyui --platform linux-x86_64-cu130" in detached:
+            elif re.search(r"engines install (\S+) --platform linux-x86_64-cu130", detached):
+                engine = re.search(r"engines install (\S+) --platform", detached)[1]
                 if self.volume is not None:
-                    assert "--model-cache-root /workspace/astrid/engines/comfyui/models" in detached
-                self.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = json.dumps(
-                    self.receipt).encode()
+                    assert f"--model-cache-root /workspace/astrid/engines/{engine}/models" in detached
+                self.files[f"/root/astrid/engines/{engine}/.astrid-engine/install.json"] = json.dumps(
+                    self._receipt_for(engine)).encode()
                 self._exit(directory, 0, b"")
             else:
                 self._start_generation(directory, detached)
@@ -194,17 +210,18 @@ class MachineProviderHTTP:
             self.events.append(("detached_cancel", directory))
             return 0, ""
         if "engines status" in command:
-            installed = "/root/astrid/engines/comfyui/.astrid-engine/install.json" in self.files
-            return 0, json.dumps(self.receipt if installed else None)
+            engine = re.search(r"engines status (\S+)", command)[1]
+            installed = f"/root/astrid/engines/{engine}/.astrid-engine/install.json" in self.files
+            return 0, json.dumps(self._receipt_for(engine) if installed else None)
         if command.startswith("python3 -c ") and "ASTRID_STORAGE_DIAGNOSTIC" in command:
             return self._storage_probe(command)
         if "generate list --json" in command:
             # The runtime check: ensure_runtime picks its own port; nothing pins one.
             assert "ensure_runtime" in command
             assert "17340" not in command and "--port" not in command and "8188" not in command
-            assert "/root/astrid/engines/comfyui/.astrid-engine/install.json" in self.files, "checked before install"
-            return 0, json.dumps([{"id": "cpu-image", "kind": "image", "mode": "t2i", "backend": "local",
-                                   "ready": True}])
+            assert any(path.endswith("/.astrid-engine/install.json") for path in self.files), "checked before install"
+            listed = [self.expect_entry] if self.expect_entry else list(self.listed)
+            return 0, json.dumps([{"id": entry, "backend": "local", "ready": True} for entry in listed])
         if command.startswith(("cat ", "tail ")):
             return 0, self.files.get(shlex.split(command)[-1], b"").decode()
         if command.startswith("sha256sum "):
@@ -228,7 +245,7 @@ class MachineProviderHTTP:
         assert mapping["schema"] == "runpod.provider-mounts.v1" and mapping["pod_id"] == POD
         if not [e for e in self.events if e[0] == "storage_probe"]:
             # The first probe of a pod precedes every install write (a warm reuse re-probes later).
-            assert "/root/astrid/engines/comfyui/.astrid-engine/install.json" not in self.files, "probe after install"
+            assert not any(path.endswith("/.astrid-engine/install.json") for path in self.files), "probe after install"
         self.events.append(("storage_probe", request["mount"]))
         return 0, json.dumps({**request, "cache_device": 64768, "cache_mount_id": self.mount_id,
                               "free_bytes": 10**12, "total_bytes": 2 * 10**12, "local_free_bytes": 10**12})
@@ -236,13 +253,17 @@ class MachineProviderHTTP:
     def _start_generation(self, directory, detached):
         # T4 STUB (pod side): `astrid generate <entry> --placement local` is answered here.
         argv = shlex.split(next(line for line in detached.splitlines() if " generate " in line).split(" > ")[0])
-        assert argv[1:5] == ["generate", "cpu-image", "--placement", "local"], argv
+        assert argv[1] == "generate" and argv[3:5] == ["--placement", "local"], argv
+        assert self.expect_entry is None or argv[2] == self.expect_entry, argv
         assert "17340" not in detached and "--port" not in detached
         root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
         job = json.loads(self.files[root + "/job.json"])
-        assert job["entry"] == "cpu-image" and set(job["inputs"]) >= {"python", "companion", "source"}
-        for name in ("python", "companion", "source"):
-            assert job["inputs"][name].startswith(root + "/in/") and job["inputs"][name] in self.files
+        assert argv[2] == (job["entry"] or "workflow") and set(job["inputs"]) >= {"python", "companion", "source"}
+        for name in ("python", "companion", "source", "managed_assets", "source_video"):
+            if name in job["inputs"]:
+                # Input files ship inside the job directory, digest-checked after upload.
+                assert job["inputs"][name].startswith(root + "/in/") and job["inputs"][name] in self.files
+        self.generations.append(job)
         self.detached[directory] = {"state": "running", "root": root, "polls": 0, "job": job}
         self.files[directory + "/status"] = b"running"
 
@@ -266,16 +287,17 @@ class MachineProviderHTTP:
         # The producer's own result manifest, written by the same helpers vibecomfy.run uses.
         import tempfile
         from astrid.pack_api import build_manifest, write_manifest
+        name, data, media_type = self.output_for(job["job"])
         with tempfile.TemporaryDirectory() as scratch:
             (Path(scratch) / "artifacts").mkdir()
-            (Path(scratch) / "artifacts" / "cpu.png").write_bytes(self.image)
+            (Path(scratch) / "artifacts" / name).write_bytes(data)
             write_manifest(Path(scratch) / "manifest.json", build_manifest(
                 kind="vibecomfy.run", inputs={}, created=datetime.now(timezone.utc).isoformat(),
-                outputs=[{"path": "artifacts/cpu.png", "name": "vibecomfy_run", "ordinal": 0, "role": "result",
-                          "is_primary": True, "media_type": "image/png"}],
+                outputs=[{"path": f"artifacts/{name}", "name": "vibecomfy_run", "ordinal": 0, "role": "result",
+                          "is_primary": True, "media_type": media_type}],
                 schema_version=2, warnings=[], engine_run_id=None, engine_prompt_id=None))
             manifest_bytes = (Path(scratch) / "manifest.json").read_bytes()
-        tree = {f"{out}/artifacts/cpu.png": self.image, f"{out}/manifest.json": manifest_bytes}
+        tree = {f"{out}/artifacts/{name}": data, f"{out}/manifest.json": manifest_bytes}
         self.files.update(tree)
         result = {"status": "succeeded", "manifest": f"{out}/manifest.json"}
         self.files[root + "/result.json"] = json.dumps(result).encode()
@@ -286,6 +308,12 @@ class MachineProviderHTTP:
                   f"{remote_placement.MANIFEST_MARK}{_sha(body.encode())}\n").encode()
         job["state"] = "exited"
         self._exit(directory, 0, stdout)
+
+    listed = ()
+
+    def output_for(self, job):
+        """The pod's generated file for a job (an image unless a subclass knows the modality)."""
+        return "cpu.png", self.image, "image/png"
 
     # -- HTTP ----------------------------------------------------------------
 

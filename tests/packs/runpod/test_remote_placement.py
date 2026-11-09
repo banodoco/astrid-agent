@@ -41,6 +41,7 @@ class FakePod:
         self.corrupt_get: str | None = None
         self.corrupt_manifest = False
         self.cancelled: list[str] = []
+        self.listed: list[str] = ["cpu-image"]  # entries the pod's runtime lists as ready
 
     # --- agent surface
     def exec(self, command, timeout=600):
@@ -59,6 +60,8 @@ class FakePod:
         if command.startswith("cat ") or command.startswith("tail "):
             path = command.split()[-1].strip("'")
             return 0, self.files.get(path, b"").decode(), ""
+        if "generate list --json" in command:
+            return 0, json.dumps([{"id": entry, "ready": True} for entry in self.listed]), ""
         return 0, "", ""
 
     def put(self, local, remote):
@@ -85,6 +88,8 @@ class FakePod:
                 self.installed = True
             if "action run h3_av.transform" in command:
                 stdout = self._transform(command)
+            if " generate " in command and "--placement local" in command:
+                stdout = self._generate(command)
         self.files[f"{directory}/stdout"] = stdout.encode()
         self.files[f"{directory}/stderr"] = b"boom" if rc else b""
         self.jobs[job_id] = rc
@@ -132,6 +137,26 @@ class FakePod:
         self.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
         reported = _sha(body.encode()) if not self.corrupt_manifest else "0" * 64
         return f"{rp.RESULT_MARK}{json.dumps(result)}\n{rp.MANIFEST_MARK}{reported}\n"
+
+
+def _fake_generate(pod: "FakePod", command: str) -> str:
+    """The pod-side local run (T4 STUB contract): out tree, result line and digest manifest."""
+    import shlex as _shlex
+
+    line = next(row for row in command.splitlines() if " generate " in row)
+    argv = _shlex.split(line.split(" > ")[0])
+    root = argv[argv.index("--job") + 1].rsplit("/", 1)[0]
+    out = f"{root}/out"
+    pod.files[f"{root}/progress.json"] = b'{"phase": "fetch"}'
+    tree = {f"{out}/artifacts/cpu.png": b"png-bytes", f"{out}/manifest.json": b'{"outputs": []}'}
+    pod.files.update(tree)
+    files = {path[len(out) + 1:]: {"sha256": _sha(data), "size": len(data)} for path, data in tree.items()}
+    body = json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n"
+    pod.files[f"{out}/{rp.MANIFEST_NAME}"] = body.encode()
+    return f"{rp.RESULT_MARK}{json.dumps({'status': 'succeeded'})}\n{rp.MANIFEST_MARK}{_sha(body.encode())}\n"
+
+
+FakePod._generate = _fake_generate
 
 
 class FakeProvider:

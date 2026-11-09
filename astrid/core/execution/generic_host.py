@@ -7135,9 +7135,7 @@ class GenericPackHost:
         if record.id != "vibecomfy.run":
             raise HostError("only generation runs on a rented machine")
         metadata = (_task_generation_intent(task_data) or {}).get("metadata") or {}
-        entry = metadata.get("model")
-        if not isinstance(entry, str) or not entry:
-            raise HostError("a rented machine runs a generation entry; this task names none")
+        entry = metadata.get("model") if isinstance(metadata.get("model"), str) and metadata.get("model") else None
         provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
                                       preferences=policy.get("preferences"))
         machine = resolve_machine(policy["kind"]).for_host(

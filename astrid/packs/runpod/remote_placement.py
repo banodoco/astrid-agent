@@ -1,14 +1,15 @@
-"""Remote (RunPod) placement wrapper for ``h3_av.transform --placement runpod``.
+"""RunPod pod custody helpers shared by the machine route, plus h3's legacy pod route.
 
-One module, seven steps (ROUTE-DECISION section 4):
+Generation on RunPod runs as a remote machine (``astrid.packs.runpod.machine``,
+the ``runpod`` contribution to ``generation.machine``). That route reuses this
+module's pieces on an exact existing claim: ``RemotePlacement.prepare_claimed``
+(``_bootstrap``, ``_install``, ``_canonical_installed``), ``_put_checked``,
+``manifest_command``/``_MANIFEST_SCRIPT`` and ``connect_claimed_for_preparation``.
 
-1. claim the pod         ``RemotePlacement._claim`` -> ``PodProvider.claim``
-2. bootstrap if missing  ``RemotePlacement._bootstrap``
-3. install if missing    ``RemotePlacement._install``
-4. upload inputs         ``RemotePlacement._upload_inputs``
-5. detached job + poll   ``RemotePlacement._run_job`` / ``_start_transform``
-6. download and verify   ``RemotePlacement._download`` / ``_verify``
-7. release, check 404    ``RemotePlacement._release``
+``RemotePlacement.run`` is h3_av's legacy ``--placement runpod`` route (claim,
+bootstrap, install, upload, detached transform, download, release); it imports
+no h3 code (its caller passes verify and ffprobe) and is deleted with its last
+caller in Plan 32 T6b.
 
 Money rules, enforced here and pinned by tests:
 
@@ -18,12 +19,6 @@ Money rules, enforced here and pinned by tests:
   the pod, unless the caller asked for ``leave_running`` and the run succeeded.
 * The spend cap is checked against the claimed pod's hourly cost before any
   work is sent to it, and one wall-clock deadline covers every later step.
-
-The provider boundary is the ``PodProvider``/``PodOps`` protocols. The default
-``LifecyclePodProvider`` reuses the existing claim script (``claim_runpod_5090_backup``),
-the exact-pod release helper in ``worker_preparation`` and the ``runpod-lifecycle``
-HTTPS transport (``execute_command``, ``put``, ``get``, ``detached_*``); it adds no
-provider path of its own. Tests stub the whole boundary.
 """
 
 from __future__ import annotations

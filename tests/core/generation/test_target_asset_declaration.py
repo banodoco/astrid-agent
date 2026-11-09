@@ -522,7 +522,7 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
     assert set(fixture.requests) == {'/object_info'}
 
 
-# --- interim inventory wire: receipt rows -> host document -> child -----------------------------
+# --- target custody rows (declared rows for --align trust) ---------------------------------------
 
 def _rows_for(workflow):
     from astrid.core.generation.target_inventory import declared_rows
@@ -571,29 +571,21 @@ def test_local_comfy_url_without_inventory_keeps_the_local_disk_check(tmp_path, 
         local_server_engine._approve_live(bundle, {}, provider)
 
 
-def test_host_inventory_channel_is_absent_for_local_and_strict_when_present(tmp_path, monkeypatch):
+def test_trust_flag_is_the_only_host_channel_and_is_consumed_once(monkeypatch):
+    """Plan 32 T5: no machine inventory reaches a child; --align trust uses the declared rows."""
     from astrid.core.generation import target_inventory
-    url = 'http://127.0.0.1:12345'
-    monkeypatch.delenv(target_inventory.ENV, raising=False)
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) is None
-    row = {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64}
-    for bad in ('not json', '[]', json.dumps({'mode': 'inventory', 'comfy_url': url}),
-                json.dumps({'mode': 'other', 'comfy_url': url, 'models': []}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'extra': 1}]}),
-                json.dumps({'mode': 'inventory', 'comfy_url': url, 'models': [{**row, 'size': '3'}]}),
-                json.dumps({'mode': 'trust', 'comfy_url': url, 'models': [row]})):
-        monkeypatch.setenv(target_inventory.ENV, bad)
-        with pytest.raises(local_server_engine.ProductionEngineError):
-            local_server_engine._inventory_from_environment(SimpleNamespace(), url)
-        assert target_inventory.ENV not in os.environ  # consumed, never inherited by a subprocess
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document('inventory', url, [row]))
-    assert local_server_engine._inventory_from_environment(SimpleNamespace(), url) == (row,)
+    workflow = SimpleNamespace(metadata={'model_assets': [
+        {'name': 'a.bin', 'subdir': 'x', 'sha256': 'sha256:' + 'a' * 64, 'size_bytes': 3}]})
+    bundle = SimpleNamespace(workflow=workflow)
+    monkeypatch.delenv(target_inventory.TRUST_ENV, raising=False)
+    assert local_server_engine._trust_from_environment(bundle) is None
+    for other in ('align', 'check', 'inventory', ''):
+        monkeypatch.setenv(target_inventory.TRUST_ENV, other)
+        assert local_server_engine._trust_from_environment(bundle) is None
+        assert target_inventory.TRUST_ENV not in os.environ  # consumed, never inherited by a subprocess
+    monkeypatch.setenv(target_inventory.TRUST_ENV, 'trust')
+    assert local_server_engine._trust_from_environment(bundle) == (
+        {'name': 'a.bin', 'subdir': 'x', 'size': 3, 'sha256': 'a' * 64},)
+    assert not hasattr(target_inventory, 'ENV') and not hasattr(target_inventory, 'build_document')
 
 
-def test_child_refuses_inventory_for_another_comfy_url(monkeypatch):
-    from astrid.core.generation import target_inventory
-    row = {'name': 'a.bin', 'subdir': '', 'size': 3, 'sha256': 'a' * 64}
-    monkeypatch.setenv(target_inventory.ENV, target_inventory.build_document(
-        'inventory', 'http://127.0.0.1:1111', [row]))
-    with pytest.raises(local_server_engine.ProductionEngineError, match='another ComfyUI URL'):
-        local_server_engine._inventory_from_environment(SimpleNamespace(), 'http://127.0.0.1:2222')

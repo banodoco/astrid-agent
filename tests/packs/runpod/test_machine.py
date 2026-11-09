@@ -1,0 +1,206 @@
+"""Plan 32 T5: RunPod as a machine on the real lease owner, with the pod and provider faked.
+
+Money rules ported from the remote placement wrapper: one claim per job; any
+failure after the claim releases the pod; only a successful job settles warm;
+the detached job is checkpointed before start, so a crash is cancelled by
+``recover()`` before the pod is deleted.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from astrid.core.execution.machine_run import MachineJob, MachineRunCancelled, run_on_machine
+from astrid.packs.runpod import machine as rm
+from tests.packs.runpod.test_generation_preparation import retained as retained  # noqa: F401  (fixture)
+from tests.packs.runpod.test_remote_placement import sources as sources  # noqa: F401  (fixture)
+from tests.packs.runpod.test_target_selection import case as case  # noqa: F401  (fixture)
+from tests.packs.runpod.test_warm_session import (  # noqa: F401  (fixtures)
+    lease_selection_case as lease_selection_case, small_lease as small_lease,
+)
+
+BASE = dict(account="acct", gpu_type="NVIDIA RTX 5090", image="img@sha256:" + "1" * 64,
+            volume={"id": "vol", "mount_path": "/workspace", "cache_device": 64768, "mount_id": 7},
+            source_digest="0123456789abcdef")
+
+
+# ----------------------------------------------------------------------------
+# Custody key
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field, value, expected", [
+    ("gpu_type", "NVIDIA H100", ["gpu_type"]),
+    ("image", "img@sha256:" + "2" * 64, ["image"]),
+    ("source_digest", "fedcba9876543210", ["source_digest"]),
+    ("account", "other", ["account"]),
+    ("volume", {**BASE["volume"], "id": "vol2"}, ["volume.id"]),
+    ("volume", {**BASE["volume"], "mount_id": 8}, ["volume.mount_id"]),
+    ("volume", {**BASE["volume"], "cache_device": 1}, ["volume.cache_device"]),
+    ("volume", {**BASE["volume"], "mount_path": "/mnt"}, ["volume.mount_path"]),
+])
+def test_each_custody_field_refuses_warm_reuse(field, value, expected):
+    before = rm.machine_custody(**BASE)
+    after = rm.machine_custody(**{**BASE, field: value})
+    assert rm.custody_differences(before, after) == expected
+    assert before["digest"] != after["digest"]
+
+
+def test_an_unchanged_key_allows_reuse_and_a_missing_one_refuses():
+    assert rm.custody_differences(rm.machine_custody(**BASE), rm.machine_custody(**BASE)) == []
+    assert rm.custody_differences(None, rm.machine_custody(**BASE)) == ["custody"]
+
+
+def test_the_pod_side_command_is_the_local_run_with_its_progress_path():
+    command = rm.generation_command("cpu-image", "/root/astrid/runs/abc", mode="t2i")
+    assert "export ASTRID_PROGRESS_PATH=/root/astrid/runs/abc/progress.json" in command
+    argv = rm.generation_argv("cpu-image", "/root/astrid/runs/abc", mode="t2i")
+    assert argv[1:5] == ["generate", "cpu-image", "--placement", "local"]
+    assert "--port" not in command and "17340" not in rm.runtime_check_command()
+
+
+# ----------------------------------------------------------------------------
+# The machine on the real owner (the retained fixture's adapter and fake pod)
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def machine_case(retained, tmp_path, monkeypatch):
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    c = retained
+    root = tmp_path / "canonical"
+    root.mkdir()
+    source = root / "source.json"
+    source.write_text(json.dumps({"nodes": [{"id": 1, "type": "SaveImage", "inputs": [],
+                                              "widgets_values": ["proof"]}], "links": []}))
+    workflow = VibeWorkflow("machine-proof", WorkflowSource("machine-proof"))
+    workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="proof")
+    workflow.register_input("filename_prefix", "1", "filename_prefix", "proof", type="STRING")
+    emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+    deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
+    monkeypatch.setattr("astrid.packs.runpod.adapter.prevalidate_task", lambda *a, **k: None)
+    policy = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping(),
+              "offer_digest": c.grant.offer_digest, "consent": list(c.grant.consent), "max_usd": c.grant.max_usd,
+              "deadline": c.grant.deadline, "preparation_seconds": 60, "execution_seconds": 60,
+              "idle_seconds": 1800}
+    assert deadline  # the grant's own deadline is the disclosed one
+    c.active = []
+    c.machine = rm.MACHINE.for_host(c.adapter, begin=lambda lease: c.active.append(("begin", lease.generation)),
+                                    done=lambda lease: c.active.append(("done", lease.generation)))
+
+    def job(n=1):
+        attempt = tmp_path / f"attempt-{n}"
+        attempt.mkdir(exist_ok=True)
+        return MachineJob(entry="cpu-image", mode="t2i", policy=policy,
+                          inputs={"python": str(root / "workflow.py"), "companion": str(root / "workflow.vibe.json"),
+                                  "source": str(source), "workflow_inputs": "{}"},
+                          invocation_id=f"task:attempt:{n}", task_id="task", attempt_id=f"attempt-{n}",
+                          scratch=attempt, progress_path=attempt / ".astrid-progress.json")
+    c.job = job
+    return c
+
+
+def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
+    c = machine_case
+    job = c.job()
+    fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                             sleep=lambda s: None)
+    assert (job.scratch / "outputs" / "artifacts" / "cpu.png").read_bytes() == b"png-bytes"
+    assert set(fetched["files"]) == {"artifacts/cpu.png", "manifest.json"}
+    assert json.loads(job.progress_path.read_text()) == {"phase": "fetch"}
+    record = c.read()
+    assert record["lease"]["state"] == "idle" and record["lease"]["job"]["state"] == "exited"
+    assert record["lease"]["preparation"]["runtime_check"]["entry"] == "cpu-image"
+    assert c.creates == 1 and c.deletes == []
+    assert [kind for kind, _ in c.active] == ["begin", "done"]
+    # Inputs shipped inside the job directory, each digest-checked after upload.
+    shipped = [path for path in c.pod.put_log if "/in/" in path]
+    assert len(shipped) == 3 and any(path.endswith("job.json") for path in c.pod.put_log)
+    # A second job on the warm machine fetches and installs nothing again.
+    jobs = len(c.pod.job_log)
+    second = c.job(2)
+    run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    new = c.pod.job_log[jobs:]
+    assert len(new) == 1 and " generate cpu-image " in new[0]
+    assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
+    c.host.release()
+    assert c.deletes == ["pod-1"]
+
+
+def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machine_case):
+    c = machine_case
+    c.pod.listed = []  # the pod's runtime does not list the entry
+    with pytest.raises(rm.MachineError, match="not listed by the pod's runtime"):
+        c.machine.claim(c.job())
+    record = c.read()
+    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert record["lease"]["preparation"]["state"] == "unresolved"
+    assert not [line for line in c.pod.job_log if " generate " in line]
+
+
+def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):
+    c = machine_case
+    job = c.job()
+    original = c.pod.job_poll
+    def running(job_id):  # the generation job keeps running; preparation jobs finish
+        if c.read()["lease"].get("job", {}).get("id") == job_id:
+            return {"id": job_id, "state": "running", "exit_code": ""}
+        return original(job_id)
+    c.pod.job_poll = running
+    polls = iter([False, False, True])
+    with pytest.raises(MachineRunCancelled):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: next(polls),
+                       sleep=lambda s: None)
+    c.pod.job_poll = original
+    record = c.read()
+    generation = next(line for line in c.pod.job_log if " generate " in line)
+    assert generation and c.pod.cancelled, "the remote job was not cancelled"
+    assert record["lease"]["job"] == {"id": c.pod.cancelled[0], "state": "cancelled"}
+    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_a_crash_after_job_start_is_cancelled_by_recover_before_delete(machine_case):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    run = c.machine.start(lease, c.job())
+    assert c.read()["lease"]["job"] == {"id": run.job_id, "state": "running"}
+    # The host dies here: no poll, fetch or release. A replacement owner recovers.
+    c.host.close()
+    replacement = c.fresh()
+    replacement.recover()
+    record = c.read()
+    assert c.pod.cancelled == [run.job_id]
+    assert record["lease"]["job"] == {"id": run.job_id, "state": "cancelled"}
+    assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_a_tampered_output_is_refused_and_the_pod_released(machine_case):
+    c = machine_case
+    c.pod.corrupt_get = "cpu.png"
+    job = c.job()
+    with pytest.raises(rm.DigestMismatch):
+        run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                       sleep=lambda s: None)
+    assert not (job.scratch / "outputs" / "artifacts" / "cpu.png").exists()
+    assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+
+
+def test_an_unsafe_manifest_path_is_refused(machine_case, tmp_path):
+    c = machine_case
+    lease = c.machine.claim(c.job())
+    run = c.machine.start(lease, c.job())
+    out = run.remote_root + "/out"
+    body = json.dumps({"schema_version": 1, "files": {"../escape": {"sha256": "0" * 64, "size": 1}}}) + "\n"
+    c.pod.files[f"{out}/{rm.MANIFEST_NAME}"] = body.encode()
+    import hashlib
+    stdout = f"{rm.RESULT_MARK}{{}}\n{rm.MANIFEST_MARK}{hashlib.sha256(body.encode()).hexdigest()}\n"
+    c.pod.files[run.directory + "/stdout"] = stdout.encode()
+    with pytest.raises(rm.DigestMismatch, match="unsafe path"):
+        c.machine.fetch(run, tmp_path / "dest")
+    c.machine.release(lease, False)
+    assert c.deletes == ["pod-1"]

@@ -36,7 +36,7 @@ class MachineRunCancelled(MachineRunError):
 class MachineJob:
     """One generation job, as the machine ships it."""
 
-    entry: str
+    entry: str | None  # None: run the shipped workflow bundle
     mode: str | None
     policy: Mapping[str, Any]
     inputs: Mapping[str, Any]

@@ -15,6 +15,7 @@ from runpod_lifecycle.config import RunPodConfig
 from runpod_lifecycle.https import HttpsPodTransport, read_token_file
 from runpod_lifecycle.pod import Pod
 from runpod_lifecycle.pod_agent import AgentServer
+from astrid.packs.runpod import h3_release as builder
 from astrid.packs.runpod.worker_staging import RunPodPreparationTransport
 from astrid.packs.runpod.worker_process import RunPodWorkerProcessTransport
 from scripts import claim_runpod_5090_backup as claim
@@ -72,6 +73,55 @@ def test_staging_tree_probe_and_reserved_worker_credential_over_http(http_pod, t
     asyncio.run(exercise())
 
 
+def test_builder_https_runs_existing_provisioner_receipt_wrapper(http_pod, tmp_path, monkeypatch):
+    # Exercise the production command/receipt wrapper over HTTP; provisioning
+    # itself is covered by the existing download/install/manifest tests.
+    program = tmp_path / "fake_provisioner.py"
+    program.write_text('''from pathlib import Path
+import hashlib
+
+def provision(request):
+    return {'manifest_sha256':hashlib.sha256((Path(request['root'])/'release-manifest.json').read_bytes()).hexdigest()}
+''')
+    root = tmp_path / "release"
+    root.mkdir()
+    manifest = root / "release-manifest.json"
+    manifest.write_text('{"test":true}')
+    # The cold wrapper now binds an exact source archive, not remote.__file__.
+    # Replace only the physical provisioner in this transport fixture while
+    # retaining the real archive loader, identity check and receipt wrapper.
+    source = builder.bootstrap.source_archive()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as original, zipfile.ZipFile(output, "w") as archive:
+        for entry in original.infolist():
+            body = program.read_bytes() if entry.filename == "astrid/packs/runpod/h3_release_remote.py" else original.read(entry)
+            archive.writestr(entry, body)
+    payload = output.getvalue()
+    monkeypatch.setattr(builder.bootstrap, "source_archive", lambda: payload)
+    request = {"root": str(root), "recipe": {}, "lock": {}}
+    identity = builder.bootstrap.release_digest(request["recipe"], request["lock"], payload)
+    request.update(recipe_sha256=identity, release_id="h3-cu130-" + identity)
+    transport = builder.LifecycleTransport.__new__(builder.LifecycleTransport)
+    transport.ssh = http_pod.https_transport()
+    try:
+        result = transport.provision(request, timeout=10)
+        assert __import__('base64').b64decode(result['manifest_base64']) == manifest.read_bytes()
+    finally:
+        transport.close()
+
+
+def test_builder_preflight_before_allocation_journal(tmp_path, monkeypatch):
+    provider = builder.RunPodProvider("test", transport="ssh")
+    monkeypatch.setenv("HTTPS_PROXY", "http://localhost:1")
+    path = tmp_path / "handle.json"
+    try:
+        with pytest.raises(builder.BuildError, match="SSH egress unavailable; use --transport https"):
+            builder.build_release(provider, None, volume_id="v", handle_path=path)
+        assert not path.exists()
+    finally:
+        provider.http.close()
+
+
 def test_https_claim_persists_only_token_file_reference(tmp_path, monkeypatch):
     monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
     monkeypatch.setattr(claim.RunPodConfig, "from_env", staticmethod(lambda **kw: RunPodConfig(api_key="test", **kw)))
@@ -95,6 +145,14 @@ def test_https_claim_persists_only_token_file_reference(tmp_path, monkeypatch):
     assert saved["transport"] == "https"
     token_path = Path(saved["https_token_file"])
     assert token_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_builder_cli_ssh_preflight_before_identity_requirement(monkeypatch, capsys):
+    monkeypatch.setenv("HTTPS_PROXY", "http://localhost:1")
+    monkeypatch.delenv("RUNPOD_SSH_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_SSH_KEY_PATH", raising=False)
+    assert builder.main(["--volume", "volume-id"]) == 1
+    assert "SSH egress unavailable; use --transport https" in capsys.readouterr().err
 
 
 def test_https_claim_resume_reuses_original_token_and_rejects_transport_change(tmp_path, monkeypatch):

@@ -87,10 +87,11 @@ ensure_dir "$BOOTSTRAP_ROOT"
 ensure_dir "$DATA_ROOT"
 ensure_dir "$(dirname "$REALM_ROOT")"
 
-# Headless Runtime setup: a source profile plus a configured workspace, so
-# `astrid action run` works with no manual step. It never runs `astrid-runtime up`:
-# a running Runtime holds the door port (17340) and `astrid action run` refuses to
-# start its own beside it. `action run` starts and stops its own ephemeral Runtime.
+# Headless Runtime setup: a source profile plus a configured workspace, so the
+# machine's pod-side run (`astrid generate <entry> --placement local`, and the
+# runtime check after install) works with no manual step. It never runs
+# `astrid-runtime up`: the pod-side run's ensure_runtime starts its own headless
+# Runtime and picks its own port, so nothing on the pod needs the door port (17340).
 setup_runtime() {
   local profile="$DATA_ROOT/runtime/source-profiles/astrid.json"
   local runtime_src agent_src
