@@ -744,9 +744,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         # 2. Canonical installed status re-verifies sources, locks, models, ownership, health.
         current = (status(root=root, deadline=deadline) if status is not None
                    else canonical_status(root=root, deadline=deadline, engine=engine))
-        lock = engine_recipe.load_model_lock(recipe.models_lock)
-        expected_models = tuple((m.name, root + "/models/" + m.destination, m.bytes, m.sha256)
-                                for m in lock.models)
+        # The receipt's own verified model rows (none on a model-free install), not the whole lock.
+        expected_models = tuple((m.model, m.path, m.bytes, m.sha256) for m in receipt.models)
         if (current is None or current.status != "installed" or current.qualified is not False
                 or current.receipt_id != receipt.receipt_id or current.root != root
                 or current.recipe_sha256 != receipt.recipe_sha256
