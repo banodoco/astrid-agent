@@ -81,6 +81,8 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
     monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", lambda *_a, **_k: {
         "manager": "systemd-user", "foreground_fallback": False})
     monkeypatch.setattr(jumps.journey, "verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(jumps.journey, "selected_tuple", lambda *_: {
+        "agent": "e2a7fad07e4a8bef9aa4c6e126911a1c5a29caf2", "runtime": "744cf24874ea851f95949a706725aba19d18222f"})
     monkeypatch.setattr(jumps.journey, "healthy", healthy)
     monkeypatch.setattr(jumps, "read_selection", read_selection)
     monkeypatch.setattr(jumps, "runtime_request", request)

@@ -100,6 +100,10 @@ RELEASE11_IDENTITY = {
 }
 RELEASE11_CHECKS = ("release11_install", "update_exit", "run_receipt", "release", "one_runtime", "service",
                     "health", "semantic_data", "task_settled", "unrelated_sentinel")
+AUTOSTART_LEG = "fresh-install-autostart-off"
+AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
+                    "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
+                    "unrelated_sentinel")
 RELEASE0_BOOTSTRAP_SHA256 = {
     "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
     "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
@@ -337,7 +341,7 @@ def _windows_fresh_update_errors(update, job_id):
 # The receipt kind each Release-1 matrix leg writes. The R0 handoff leg and the
 # release11-then-update leg write their own kinds; every other leg writes the shared lifecycle receipt.
 RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update",
-                          RELEASE11_LEG: RELEASE11_LEG}
+                          RELEASE11_LEG: RELEASE11_LEG, AUTOSTART_LEG: AUTOSTART_LEG}
 RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
 
 
@@ -371,6 +375,31 @@ def _upgrade_release_errors(job_id, contract, row, release):
         live = health.get("candidate_live_release")
         if live != release:
             errors.append(f"{job_id}: live Runtime release {live} is not the candidate release {release}")
+    return errors
+
+
+def _autostart_row_errors(job_id, row):
+    """The fresh-install-autostart-off row's named assertions, each read from the leg's own receipt fields."""
+    errors = []
+    selection = row.get("selection") if isinstance(row.get("selection"), dict) else {}
+    if selection.get("choices_autostart") is not False:
+        errors.append(f"{job_id}: selection record does not have choices.autostart false")
+    status = row.get("update_status") if isinstance(row.get("update_status"), dict) else {}
+    if status.get("reason") != "autostart-off":
+        errors.append(f"{job_id}: GET /update/status does not report reason autostart-off")
+    post = row.get("post_update") if isinstance(row.get("post_update"), dict) else {}
+    if not (post.get("refused") is True and post.get("unchanged") is True
+            and post.get("reason") == "autostart-off" and type(post.get("status")) is int and post["status"] >= 400):
+        errors.append(f"{job_id}: POST update was not refused with autostart-off, "
+                      "or it changed the selection, the data or the live Runtime")
+    capture = row.get("capture") if isinstance(row.get("capture"), dict) else {}
+    if (capture.get("device_scale_factor") != 2 or not isinstance(capture.get("path"), str)
+            or not DIGEST.fullmatch(str(capture.get("sha256", "")))):
+        errors.append(f"{job_id}: autostart card capture is absent or not at deviceScaleFactor 2")
+    checks = row.get("checks") if isinstance(row.get("checks"), dict) else {}
+    for check in AUTOSTART_CHECKS:
+        if checks.get(check) != "pass":
+            errors.append(f"{job_id}: {check} assertion did not pass")
     return errors
 
 
@@ -572,6 +601,8 @@ def _release1_row_errors(candidate, contract, row):
                 for check in ("refusal", "data_marker", "r0_selected", "scheduled_task"):
                     if (refusal.get("checks") or {}).get(check) != "pass":
                         errors.append(f"{job_id}: refusal {check} assertion did not pass")
+        elif contract.get("leg") == AUTOSTART_LEG:
+            errors.extend(_autostart_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE9_LEG:
             errors.extend(_release9_row_errors(job_id, row))
         elif contract.get("leg") == RELEASE11_LEG:

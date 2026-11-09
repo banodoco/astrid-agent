@@ -169,6 +169,8 @@ on:
           - direct-macos-r9-install
           - direct-linux-r11-update
           - direct-macos-r11-update
+          - direct-linux-autostart-off
+          - direct-macos-autostart-off
           - direct
           - pinokio-linux
           - pinokio-macos
@@ -808,12 +810,21 @@ jobs:
           test -f dist/index.html && test -f dist/build.json
           npx playwright install --with-deps chromium
           git status --porcelain --untracked-files=no | (! grep .)
+      - name: Install the autostart-off capture browser
+        if: matrix.leg == 'fresh-install-autostart-off'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/autostart-capture"
+          npm install --prefix "$dir" --no-audit --no-fund playwright@1.47.2
+          "$dir/node_modules/.bin/playwright" install --with-deps chromium
       - name: Run the matrix-owned lifecycle driver
         if: ${{ !startsWith(matrix.job_id, 'pinokio-') }}
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
           ASTRID_CI_HOSTED_APP_DIST: ${{ matrix.job_id == 'direct-linux-fresh' && format('{0}/app/dist', github.workspace) || '' }}
           ASTRID_CI_WAIT_READY_TIMEOUT: ${{ needs.config.outputs.wait_timeout }}
+          ASTRID_AUTOSTART_CAPTURE_DIR: ${{ matrix.leg == 'fresh-install-autostart-off' && format('{0}/autostart-capture', runner.temp) || '' }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"

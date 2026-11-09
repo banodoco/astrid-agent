@@ -16,6 +16,8 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -1260,6 +1262,205 @@ def execute_release11_then_update(args, root: Path, data: Path, evidence: Path, 
     return result
 
 
+AUTOSTART_LEG = "fresh-install-autostart-off"
+AUTOSTART_CHECKS = ("install_exit", "selection_autostart_false", "update_status_autostart_off",
+                    "post_update_refused_unchanged", "autostart_card_capture", "service", "health",
+                    "unrelated_sentinel")
+AUTOSTART_SELECTION_FILE = "astrid-install.json"
+AUTOSTART_DEVICE_SCALE_FACTOR = 2
+UPDATE_STATUS_PATH = "/update/status"
+UPDATE_PATH = "/update"
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def candidate_install_autostart_off(app: Path, manifest_path: Path, shell: str, evidence: Path,
+                                    root: Path, data: Path) -> dict:
+    """Run the candidate's public install once with ``--autostart off`` and return what it reported.
+
+    This is a real fresh install, not an update: the autostart choice is recorded as off.
+    """
+    if sys.platform == "win32":
+        raise RuntimeError(f"{AUTOSTART_LEG} is not admitted on Windows")
+    env = dict(os.environ)
+    env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+    log = evidence / "install-bootstrap.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    argv = [shell, str(app / "public" / "install"), "--manifest", str(manifest_path),
+            "--root", str(root), "--data-root", str(data), "--autostart", "off"]
+    with log.open("w", encoding="utf-8") as stream:
+        process = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                 timeout=3600, check=False)
+    lines = [line for line in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if line.strip()]
+    return {"command": "install --autostart off", "exit_code": process.returncode,
+            "log": str(log), "last_lines": lines[-8:]}
+
+
+def runtime_request(method: str, path: str) -> tuple[int, dict]:
+    """One request to the live Runtime door, at the harness health prefix. A refusal is returned, not raised."""
+    base = journey.HEALTH_URL.rsplit("/health", 1)[0]
+    request = urllib.request.Request(base + path, method=method, data=b"" if method == "POST" else None,
+                                     headers={"Origin": "https://astrid.haus"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=30) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read() or b"{}")
+        except ValueError:
+            body = {}
+        return exc.code, body
+
+
+def read_selection() -> tuple[dict, str]:
+    """The installer's selection record and its SHA-256, read beside the lock."""
+    path = journey.selection_path()
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("installer selection record is absent")
+    return journey.read_json(path), hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def capture_autostart_card(evidence: Path, data: Path) -> dict:
+    """Capture the autostart-off card from the live Runtime's App at deviceScaleFactor 2."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    png, meta = evidence / "autostart-off-card.png", evidence / "autostart-off-card.json"
+    env = dict(os.environ, ASTRID_CAPTURE_URL=journey.HEALTH_URL.rsplit("/api/", 1)[0] + "/",
+               ASTRID_CAPTURE_OUT=str(png), ASTRID_CAPTURE_META=str(meta),
+               ASTRID_CAPTURE_DPR=str(AUTOSTART_DEVICE_SCALE_FACTOR))
+    script = journey.ROOT / "scripts" / "journey_autostart_capture.mjs"
+    process = subprocess.run(["node", str(script)], env=env, capture_output=True, text=True,
+                             timeout=900, check=False)
+    if (process.returncode != 0 or png.is_symlink() or not png.is_file()
+            or meta.is_symlink() or not meta.is_file()):
+        raise RuntimeError(f"autostart card capture failed: {process.stderr.strip()[-400:]}")
+    info = journey.read_json(meta)
+    return {"path": png.name, "sha256": hashlib.sha256(png.read_bytes()).hexdigest(),
+            "device_scale_factor": info.get("device_scale_factor"), "surface": info.get("surface")}
+
+
+def execute_fresh_install_autostart_off(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """A real fresh install with --autostart off, checked against the live Runtime and the App capture.
+
+    Four assertions are recorded by name: the selection record says autostart is false; GET update/status
+    reports reason autostart-off; a POST update is refused with autostart-off and changes nothing (the
+    selection, the seeded data and the live Runtime identity); and the autostart-off card is captured at
+    deviceScaleFactor 2.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 1, "receipt_kind": AUTOSTART_LEG,
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "install": None, "installed_release": None, "selection": None, "update_status": None,
+        "post_update": None, "capture": None,
+        "checks": {key: "not-run" for key in AUTOSTART_CHECKS},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest:
+            raise RuntimeError(f"{AUTOSTART_LEG} requires a frozen candidate manifest")
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the autostart-off install")
+
+        # 1. The real fresh install with the autostart choice off.
+        install = result["install"] = candidate_install_autostart_off(
+            app, candidate_path, args.shell, evidence / "install", root, data)
+        if install["exit_code"] != 0:
+            raise RuntimeError(f"install --autostart off exited {install['exit_code']}")
+        result["checks"]["install_exit"] = "pass"
+        start_direct_runtime(evidence / "install")
+        journey.wait_ready(selected_data_root(root, data))
+        version_path, selected_data, version = journey.installation(root, data)
+        result["installed_release"] = installed_release(version)
+        if result["installed_release"] != manifest.get("release"):
+            raise RuntimeError(f"fresh install selected release {result['installed_release']}, "
+                               f"not the candidate release {manifest.get('release')}")
+        result["service_manager"] = journey.assert_direct_service_ownership(root, selected_data)
+        result["checks"]["service"] = "pass"
+        selected = journey.selected_tuple(manifest, version)
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+
+        # 2. The installer's selection record says autostart is off.
+        record, selection_digest = read_selection()
+        choices = record.get("choices") if isinstance(record.get("choices"), dict) else {}
+        result["selection"] = {"file": AUTOSTART_SELECTION_FILE, "choices_autostart": choices.get("autostart"),
+                               "sha256": selection_digest}
+        if choices.get("autostart") is not False:
+            raise RuntimeError("selection record does not have choices.autostart false")
+        result["checks"]["selection_autostart_false"] = "pass"
+
+        # 3. Seed the workspace, so the refusal is checked against real data.
+        project = "tst-autostart-off"
+        baseline = evidence / "autostart-seed"
+        keys = live_workspace(root, selected_data, baseline, "seed", {
+            "project": project, "generation": "autostart-off", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(version, baseline / "autostart-task", project)
+        before = live_workspace(root, selected_data, baseline, "snapshot", keys)
+        before_health = journey.healthy(selected_data)
+
+        # 4. The live Runtime reports the autostart-off reason on its update status.
+        status_code, status_body = runtime_request("GET", UPDATE_STATUS_PATH)
+        result["update_status"] = {"method": "GET", "path": UPDATE_STATUS_PATH, "status": status_code,
+                                   "reason": status_body.get("reason")}
+        if status_body.get("reason") != "autostart-off":
+            raise RuntimeError("GET /update/status does not report reason autostart-off")
+        result["checks"]["update_status_autostart_off"] = "pass"
+
+        # 5. The App captures the autostart-off card from the live Runtime, at deviceScaleFactor 2.
+        capture = result["capture"] = capture_autostart_card(evidence / "capture", selected_data)
+        if (capture.get("device_scale_factor") != AUTOSTART_DEVICE_SCALE_FACTOR
+                or not DIGEST_PATTERN.fullmatch(str(capture.get("sha256", "")))):
+            raise RuntimeError("autostart card capture is absent or not at deviceScaleFactor 2")
+        result["checks"]["autostart_card_capture"] = "pass"
+
+        # 6. A POST update is refused with autostart-off and changes nothing.
+        post_code, post_body = runtime_request("POST", UPDATE_PATH)
+        after_digest = read_selection()[1]
+        after_health = journey.healthy(selected_data)
+        after = live_workspace(root, selected_data, evidence / "autostart-after", "snapshot", keys)
+        semantic_keys = ("project", "timeline", "preferences", "task", "cas_sha256")
+        data_same = (semantic_digest({k: before[k] for k in semantic_keys})
+                     == semantic_digest({k: after[k] for k in semantic_keys}))
+        refused = type(post_code) is int and post_code >= 400 and post_body.get("reason") == "autostart-off"
+        unchanged = (after_digest == selection_digest
+                     and after_health["runtime_instance_id"] == before_health["runtime_instance_id"] and data_same)
+        result["post_update"] = {"method": "POST", "path": UPDATE_PATH, "status": post_code,
+                                 "reason": post_body.get("reason"), "refused": refused, "unchanged": unchanged}
+        if not (refused and unchanged):
+            raise RuntimeError("POST update was not refused with autostart-off, or it changed the selection, "
+                               "the data or the live Runtime")
+        result["checks"]["post_update_refused_unchanged"] = "pass"
+        result["checks"]["health"] = "pass"
+
+        # 7. The unrelated sentinel survives the whole leg.
+        settled = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled
+        if not settled["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the autostart-off install")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
 WINDOWS_REFUSAL = "Upgrading from an earlier Windows version isn't supported yet. Your data was kept; reinstall to get the new version."
 
 
@@ -1359,6 +1560,10 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         if sys.platform == "win32":
             raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
         return execute_release11_then_update(args, root, data, evidence, sentinel, birth)
+    if args.leg == AUTOSTART_LEG:
+        if sys.platform == "win32":
+            raise RuntimeError("Windows release-0 upgrade only admits the narrowed refusal leg")
+        return execute_fresh_install_autostart_off(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
     result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",
               "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),

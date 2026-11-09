@@ -52,8 +52,15 @@ RELEASE11_UPDATE_MATRIX: Final = (
 RELEASE11_UPDATE_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE11_UPDATE_MATRIX)
 # The Release-1 matrix is the nine direct rows of one full run: three fresh-install rows, two
 # r0-handoff-then-update rows, two release9-then-install rows and two release11-then-update rows.
+# The fresh-install-autostart-off rows are a real fresh install from the candidate tuple with the
+# autostart choice off, on Linux and macOS. They check the selection record, the Runtime's own update
+# status and refusal, and the App's capture of the autostart-off card at deviceScaleFactor 2.
+RELEASE1_AUTOSTART_MATRIX: Final = (
+    {"job_id": "direct-linux-autostart-off", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "fresh-install-autostart-off"},
+    {"job_id": "direct-macos-autostart-off", "mode": "direct", "runner": "macos-15", "shell": "sh", "os": "macos", "leg": "fresh-install-autostart-off"},
+)
 RELEASE1_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX,
-                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX)
+                          *RELEASE9_INSTALL_MATRIX, *RELEASE11_UPDATE_MATRIX, *RELEASE1_AUTOSTART_MATRIX)
 # An automatic push or schedule (no row input) runs the five rows that existed before the
 # release9 and release11 legs. row=direct runs all of RELEASE1_MATRIX.
 RELEASE1_AUTOMATIC_MATRIX: Final = (*_RELEASE1_DIRECT_LEGACY, *RELEASE1_DIRECT_FRESH_MATRIX)

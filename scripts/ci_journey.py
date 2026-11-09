@@ -62,7 +62,7 @@ OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release9-then-install", "r0-handoff-then-update", "release11-then-update",
-                     "windows-upgrade-refusal")
+                     "fresh-install-autostart-off", "windows-upgrade-refusal")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -3217,6 +3217,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Windows release-0 upgrade only admits the narrowed refusal leg")
     if args.leg == "r0-handoff-then-update" and (diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg):
         parser.error("r0-handoff-then-update requires a disposable direct qualification job")
+    if args.leg == "fresh-install-autostart-off":
+        if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
+            parser.error("fresh-install-autostart-off requires a disposable direct qualification job on Linux or macOS")
+        if not (args.job_id and args.mode == "direct" and args.candidate):
+            parser.error("fresh-install-autostart-off requires a frozen direct candidate receipt")
+        if (args.release0_fixture is not None or args.release9_app_checkout is not None
+                or args.release11_app_checkout is not None or args.allow_release0_to_release1
+                or args.allow_release11_to_candidate):
+            parser.error("fresh-install-autostart-off admits no release source")
     if args.leg == "release11-then-update":
         if sys.platform == "win32" or diagnostic or args.diagnostic_keep_going or args.retain_for_next_leg:
             parser.error("release11-then-update requires a disposable direct qualification job on Linux or macOS")
