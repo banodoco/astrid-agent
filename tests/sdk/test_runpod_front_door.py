@@ -255,7 +255,7 @@ def test_status_and_release_are_runtime_tasks(route, monkeypatch):
 
     route.client.invoke_result = invoke
     assert GenerationFacade().describe(placement='runpod', client=route.client) == {'state': 'absent'}
-    release = GenerationFacade().release(target='runpod', engine='comfyui', client=route.client, wait=False)
+    release = GenerationFacade().release(placement='runpod', engine='comfyui', client=route.client, wait=False)
     assert release.kernel_task_id == 'task-runpod.release'
     assert [capability for capability, _ in calls] == ['runpod.status', 'runpod.release']
     assert calls[0][1]['inputs']['include_quote'] is True and calls[1][1]['wait'] is False

@@ -30,7 +30,7 @@ def test_bare_prompt_uses_auto_target_and_sdk_default_model(monkeypatch, capsys)
     assert cli.main(["image", "a dog eating an ice cream", "--project", "demo"]) == 0
 
     assert calls == [{
-        "model": None, "target": "auto", "dry_run": False,
+        "model": None, "placement": "auto", "dry_run": False,
         "prompt": "a dog eating an ice cream", "project": "demo",
         "client": "runtime-client", "align": "check",
     }]
@@ -58,7 +58,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
         "--steps", "8", "--seed", "41", "--cfg", "1.5", "--json",
     ]) == 0
     assert calls == [{
-        "entry": "flux-schnell", "mode": "edit", "target": target,
+        "entry": "flux-schnell", "mode": "edit", "placement": target,
         "dry_run": False, "prompt": "a dog", "project": "demo", "out": "export",
         "image_ref": "reference.png", dimension_input: "768x512",
         "steps": 8, "seed": 41, "guidance_scale": 1.5,
@@ -73,7 +73,7 @@ def test_dry_run_is_forwarded_to_sdk_without_a_second_invocation(monkeypatch, ca
     assert cli.main(["image", "a dog", "--model", "flux-schnell", "--placement", "managed", "--dry-run"]) == 0
     assert len(calls) == 1
     assert calls[0]["model"] == "flux-schnell"
-    assert calls[0]["target"] == "managed"
+    assert calls[0]["placement"] == "managed"
     assert calls[0]["dry_run"] is True
     assert "client" not in calls[0]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
@@ -218,7 +218,7 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
         "generate", modality, "a dog", "--placement", "http://127.0.0.1:8188", "--json", *reference,
     ]) == 0
     assert calls == [{
-        "model": None, "target": "http://127.0.0.1:8188", "dry_run": False,
+        "model": None, "placement": "http://127.0.0.1:8188", "dry_run": False,
         "prompt": "a dog", "client": "runtime-client", "align": "check",
         **({"image_ref": "dog.png"} if modality == "video" else {}),
     }]
@@ -302,7 +302,7 @@ def test_public_launch_forwards_per_call_controls_without_runtime(
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('launch opened Runtime'))
     assert _public_main(entrypoint)(['generate', 'launch', '--engine', 'local',
         '--consent', 'user_env', '--timeout', '0.5', '--json']) == code
-    assert calls == [{'target': 'auto', 'engine': 'local',
+    assert calls == [{'placement': 'auto', 'engine': 'local',
                       'consent': ['user_env'], 'timeout': 0.5}]
     assert json.loads(capsys.readouterr().out) == payload
 
@@ -342,7 +342,7 @@ def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode)
         '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
         '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
         '--recovery-path', 'receipt.json', '--resume', '--no-wait', '--json']) == 0
-    assert calls == [{'model': None, 'mode': mode, 'target': 'runpod', 'prompt': 'hello',
+    assert calls == [{'model': None, 'mode': mode, 'placement': 'runpod', 'prompt': 'hello',
         'dry_run': False, 'client': 'runtime-client', 'wait': False, 'consent': ['paid'],
         'max_usd': 2.0, 'deadline': '2099-01-01T00:00:00Z', 'offer_digest': 'offer',
         'preparation_seconds': 60.0, 'execution_seconds': 60.0, 'idle_seconds': 1800.0,
@@ -361,7 +361,7 @@ def test_audio_cli_runpod_sound_effects_admits_like_any_slot(monkeypatch, capsys
         '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
         '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
         '--recovery-path', 'receipt.json', '--no-wait', '--json']) == 0
-    assert calls and calls[0]['mode'] == 'sfx' and calls[0]['target'] == 'runpod'
+    assert calls and calls[0]['mode'] == 'sfx' and calls[0]['placement'] == 'runpod'
     assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
 
 
@@ -372,6 +372,6 @@ def test_audio_cli_omitted_target_uses_auto(monkeypatch, capsys, mode):
         audio=lambda **kwargs: calls.append(kwargs) or {'status': 'preview'}))
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview connected to Runtime'))
     assert cli.main(['audio', 'hello', '--mode', mode, '--dry-run', '--json']) == 0
-    assert calls == [{'model': None, 'mode': mode, 'target': 'auto',
+    assert calls == [{'model': None, 'mode': mode, 'placement': 'auto',
                       'prompt': 'hello', 'dry_run': True, 'align': 'check'}]
     assert json.loads(capsys.readouterr().out) == {'status': 'preview'}

@@ -312,15 +312,15 @@ def _inputs(root: Path) -> dict[str, str]:
     return {IMAGE: str(image), VIDEO: str(video), H3_INPUTS: str(h3)}
 
 
-def slot_argv(slot: Slot, files: dict[str, str], *, target: str, dry_run: bool = True) -> list[str]:
+def slot_argv(slot: Slot, files: dict[str, str], *, placement: str, dry_run: bool = True) -> list[str]:
     """Full argv after ``generate`` for one slot and target. Shared with tests/installed."""
     args = [slot.command]
     for item in slot.argv:
         for placeholder, value in files.items():
             item = item.replace(placeholder, value)
         args.append(item)
-    args += ["--placement", target]
-    if target == "runpod":
+    args += ["--placement", placement]
+    if placement == "runpod":
         args += list(RUNPOD_FLAGS)
     if dry_run:
         args.append("--dry-run")

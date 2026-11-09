@@ -367,7 +367,7 @@ def test_dry_run_is_the_readiness_envelope_without_source_or_config_writes(monke
     monkeypatch.setattr(targets, 'update_config', lambda *a, **k: pytest.fail('config write'))
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     result = GenerationFacade()._generate_on_target(registry=ModelRegistry([]), model=None,
-        mode='t2i', modality='image', target=url, execution=None, inputs={'color': 12},
+        mode='t2i', modality='image', placement=url, execution=None, inputs={'color': 12},
         dry_run=True, workflow_entry=entry)
     assert set(result) == {'entry', 'target', 'status', 'issues', 'fixes'}
     assert result['status'] == 'ready' and result['target']['owner'] == 'human'
