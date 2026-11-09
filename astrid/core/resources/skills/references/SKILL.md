@@ -47,7 +47,7 @@ inputs must also be supplied through the chosen generation capability.
 
 The current public media surface has no user-facing export or download route:
 `media show` returns metadata, while runtime byte materialization is an
-attempt-host concern. `generation.generate_image` therefore requires
+attempt-host concern. Image generation therefore requires
 `image_ref` to be an existing absolute or invocation-relative image path for
 `i2i`/`edit`; do not pass a reference id or media object id as that value. If
 the original local file is still available, pass that path to generation and
