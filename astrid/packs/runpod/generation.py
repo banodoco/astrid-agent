@@ -48,6 +48,7 @@ def prepare_retained_generation(
     entry: str | None = None,
     pod_ready: bool = False,
     observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None,
+    manifest_rows: tuple[Mapping[str, Any], ...] = (),
 ) -> PreparedRunPodLease:
     """Prepare one machine under A3's existing lock and journal, without a worker on pod.
 
@@ -125,12 +126,12 @@ def prepare_retained_generation(
         save()
         try:
             claim = connect_claimed_for_preparation(claimed)
-            # Preparation (bootstrap, engine install and its model download) is
+            # Preparation (bootstrap and the model-free engine install) is
             # bounded by the disclosed --preparation-seconds, never only by the
             # longer paid claim lifetime.
             remaining = min(consent.preparation_seconds, (
                 _utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds())
-            # A saved network volume holds only the model cache; models stay on the local engine root.
+            # A saved network volume is pinned by the probe; the install is model-free and align fetches the manifest's rows.
             cache_root = None if preferences.volume_id is None else (
                 f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")
             out = lease_owner.selection.path.parent / "preparation" / invocation.operation_id
@@ -144,7 +145,7 @@ def prepare_retained_generation(
                 storage = pin_storage(
                     placement, probe_state, pod_id=claimed["pod_id"], volume_id=preferences.volume_id,
                     mount_path=preferences.mount_path, model_cache_root=cache_root, engine_root=installation.root,
-                    required_volume_bytes=installation.model_bytes(), observe_mounts=observe_mounts)
+                    required_volume_bytes=installation.model_bytes(manifest_rows), observe_mounts=observe_mounts)
             observation = claimed.get("provider_observation") or {}
             custody = machine_custody(
                 account=claimed["provider_account_ref"],
@@ -163,7 +164,6 @@ def prepare_retained_generation(
                 deadline_seconds=remaining, installation=installation,
                 checkpoint=lambda job: save(job=dict(job)),
                 reuse_snapshot=previous["installed"] if reuse else None,
-                model_cache_root=cache_root,
             )
             if pod_ready:
                 # The pod's one Runtime: ready as left by the last reset, or reset now.

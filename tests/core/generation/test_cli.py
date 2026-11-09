@@ -375,3 +375,16 @@ def test_audio_cli_omitted_target_uses_auto(monkeypatch, capsys, mode):
     assert calls == [{'model': None, 'mode': mode, 'placement': 'auto',
                       'prompt': 'hello', 'dry_run': True, 'align': 'check'}]
     assert json.loads(capsys.readouterr().out) == {'status': 'preview'}
+
+
+def test_cli_kind_table_covers_every_generation_kind_and_gates_audio_only_options():
+    from astrid.core.generation import entries
+
+    assert set(cli._KIND_SPEC) == set(entries._KINDS)
+    parser = cli._parser()
+    audio = parser._subparsers._group_actions[0].choices['audio']
+    image = parser._subparsers._group_actions[0].choices['image']
+    assert cli._KIND_SPEC['audio']['audio_modes'] == ('music', 'tts', 'sfx')
+    assert any(action.dest == 'video_ref' for action in audio._actions)
+    assert not any(action.dest == 'video_ref' for action in image._actions)
+    assert cli._KIND_SPEC['video'].get('prompt_only_guard') is True

@@ -339,9 +339,9 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "c
     from .model_root import ModelRootBindingError, canonical_model_inventory_digest, validate_model_root_binding
 
     models_root = posixpath.join(root, MODELS_RELATIVE_PATH)
+    # A model-free install (Plan 32 T5h) records no models: an empty inventory is a valid binding;
+    # align fetches the rows a job needs and each row is then verified where it is used.
     models = tuple(getattr(receipt, "models", ()) or ())
-    if not models:
-        raise EngineNotInstalled(engine, "install receipt records no verified models")
     inventory = []
     for model in models:
         name = getattr(model, "model", "?")

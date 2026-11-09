@@ -846,7 +846,7 @@ def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wa
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize(('given', 'forwarded'), [({}, 'check'), ({'align': 'trust'}, 'trust')])
+@pytest.mark.parametrize(('given', 'forwarded'), [({}, None), ({'align': 'trust'}, 'trust')])
 def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, monkeypatch, tmp_path):
     """workflow(target=...) takes align like image/video/audio and hands it to the target route."""
     from vibecomfy.registry.ready import workflow_from_ready
@@ -858,7 +858,7 @@ def test_workflow_target_forwards_align_without_a_name_error(given, forwarded, m
                         lambda self, **kwargs: seen.append(kwargs) or 'routed')
     assert GenerationFacade().workflow(workflow=tmp_path / 'workflow.py', placement='http://127.0.0.1:8188',
                                        dry_run=True, **given) == 'routed'
-    assert seen[0]['align'] == forwarded
+    assert seen[0].get('align') == forwarded  # unasked stays None: RunPod aligns, local checks
 
 
 def test_workflow_target_rejects_an_unknown_align(tmp_path):

@@ -424,6 +424,18 @@ class MachineRun:
     state: str = "running"
 
 
+def _job_manifest_rows(entry: str | None, values: Any) -> tuple[Mapping[str, Any], ...]:
+    """The job's model manifest rows: the entry's requirements, as align() reads them on the pod."""
+    if not entry or entry == "workflow":
+        return ()
+    from astrid.core.generation import entries as catalog
+
+    described = catalog.find_entry(entry)
+    if described is None:
+        return ()
+    return tuple(catalog.requirements(described, values).get("models", ()))
+
+
 class RunPodMachine:
     """``claim``/``start``/``poll``/``cancel``/``fetch``/``release`` for one host-owned adapter.
 
@@ -489,6 +501,8 @@ class RunPodMachine:
                 raise PaidSelectionError(f"no live runpod lease for machine {pinned!r}{reason}; "
                                          f"live leases: {', '.join(live) or 'none'}")
         values = json.loads(inputs.get("workflow_inputs") or "{}")
+        # The volume is sized by this job's manifest rows (the list align fetches on the pod), not the lock.
+        manifest_rows = _job_manifest_rows(job.entry, values)
         acquired: list[Any] = []
 
         def on_acquired(lease: Any) -> None:
@@ -507,6 +521,7 @@ class RunPodMachine:
                     installation=adapter.installation, validate=adapter.validate,
                     requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
                     entry=None, pod_ready=True, observe_mounts=self._observe_mounts,
+                    manifest_rows=manifest_rows,
                 )
             except BaseException:
                 if acquired:

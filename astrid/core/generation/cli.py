@@ -9,6 +9,15 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+# One table of what each generation kind needs at the CLI boundary: its help
+# noun, the SDK keyword that carries its dimensions, whether a video prompt
+# alone is refused, and (audio only) its modes.
+_KIND_SPEC: dict[str, dict[str, Any]] = {
+    'image': {'noun': 'an image', 'dimension_key': 'size'},
+    'video': {'noun': 'a video', 'dimension_key': 'resolution', 'prompt_only_guard': True},
+    'audio': {'noun': 'audio', 'dimension_key': 'resolution', 'audio_modes': ('music', 'tts', 'sfx')},
+}
+
 
 def _generate_facade() -> Any:
     """Load the SDK facade directly, avoiding astrid package lazy exports."""
@@ -158,7 +167,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--json', action='store_true')
     for name in ("image", "video", "audio"):
         modality = name
-        command = sub.add_parser(name, help=f"Generate {'an image' if modality == 'image' else 'a video' if modality == 'video' else 'audio'}.",
+        spec = _KIND_SPEC[modality]
+        command = sub.add_parser(name, help=f"Generate {spec['noun']}.",
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
             formatter_class=argparse.RawDescriptionHelpFormatter)
         command.set_defaults(modality=modality)
@@ -167,13 +177,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, choices=('music', 'tts', 'sfx') if modality == 'audio' else None,
-                             required=modality == 'audio', help=("Audio mode: music, tts, or sfx." if modality == 'audio'
+        command.add_argument("--mode", action=_Once, choices=spec.get('audio_modes'),
+                             required='audio_modes' in spec, help=("Audio mode: music, tts, or sfx." if 'audio_modes' in spec
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
             "--placement", action=_Once, default='auto', metavar="PLACEMENT",
-            help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
+            help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if 'audio_modes' in spec
                   else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
@@ -188,13 +198,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--negative-prompt", action=_Once)
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
-        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"), default="check",
-                             help="align: fetch what the target lacks (local run only); "
-                                  "check: judge models against the target's inventory (default); "
+        command.add_argument("--align", action=_Once, choices=("align", "check", "trust"),
+                             help="align: fetch what the target lacks; "
+                                  "check: judge models against the target's inventory, fetch nothing (local default); "
                                   "trust: accept the workflow's declared models as present on the target, unverified.")
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
-        if modality == 'audio':
+        if 'audio_modes' in spec:
             command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
@@ -545,7 +555,7 @@ def _main(argv: list[str]) -> int:
                     context = None
                 raise GenerationInputError(str(exc), entry=context) from exc
             parser.error(str(exc))
-    elif 'prompt' not in values and not (parsed.modality == 'audio' and values):
+    elif 'prompt' not in values and not ('audio_modes' in _KIND_SPEC[parsed.modality] and values):
         parser.error("prompt is required unless declared entry inputs are supplied")
     from astrid.sdk.exceptions import AstridSDKError
 
@@ -568,11 +578,11 @@ def _main(argv: list[str]) -> int:
     elif parsed.width is not None:
         kwargs.pop("width")
         kwargs.pop("height")
-        kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
+        kwargs[_KIND_SPEC[parsed.modality]['dimension_key']] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         from astrid.sdk.generation import _prompt_only_video
-        if parsed.dry_run or (parsed.modality == 'video' and _prompt_only_video(
+        if parsed.dry_run or (_KIND_SPEC[parsed.modality].get('prompt_only_guard') and _prompt_only_video(
                 model=parsed.model, entry=parsed.entry, inputs=values)):
             # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
