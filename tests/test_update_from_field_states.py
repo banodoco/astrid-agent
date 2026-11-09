@@ -514,3 +514,23 @@ def test_release1_launcher_refuses_normalised_records(case, monkeypatch):
         path.write_text(json.dumps(handoff._normalise_record(read_json(path), value, selection=is_selection)))
     admitted, _output = _launcher_admits(c, version.root)
     assert not admitted
+
+
+def test_every_non_zero_outcome_ends_with_next_and_details():
+    """A Release 1 Runtime cannot show the receipt in the App: the terminal must say what to do."""
+    from astrid.installer.outcome import NEXT_STEP, REASONS, Outcome
+
+    log = "/home/hannah/Library/Logs/Astrid Runtime/install.log"
+    for kind in ("not-updated", "failed", "rolled-back"):
+        for reason in (*REASONS, None):
+            outcome = Outcome(kind, 1, 1, 2, reason, "update", log)
+            lines = outcome.headline()
+            assert outcome.exit_code != 0, (kind, reason)
+            assert lines[-2:] == [NEXT_STEP, f"Details: {log}"], (kind, reason, lines)
+            assert lines.count(NEXT_STEP) == 1
+        rolled = Outcome("rolled-back", 1, 1, 2, "error", "update", log).headline()
+        assert rolled[-3].startswith("Run the same command again")
+    console = Outcome("failed", None, None, 2, "error").headline()
+    assert console[-1] == "Details: shown above in this window (the installer log was not used)."
+    for kind in ("updated", "already-current", "repaired"):
+        assert NEXT_STEP not in Outcome(kind, 2, 1, 2, None, "update", log).headline()
