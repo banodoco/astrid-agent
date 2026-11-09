@@ -442,6 +442,8 @@ def _materialize_managed_generation_result(
                 rebased_payload["warnings"].append(issue["message"])
     producer.setdefault("engine", {"id": "comfyui"})
     producer.setdefault("entry", {"id": None, "mode": None, "source": rebased_payload["inputs"].get("source")})
+    if isinstance(producer["entry"], dict) and context.get("requirements") is not None:
+        producer["entry"]["requirements"] = context["requirements"]
     producer.setdefault("models", [])
     producer.setdefault("versions", {
         "recorded": {"engine": None, "pack": None, "runtime": None},
@@ -778,14 +780,21 @@ class _LocalEngineServer:
         return self.result
 
 
-def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any] | None:
+def _entry_manifest(entry: str | None, inputs: dict[str, Any], *, workflow_path: Path | None = None) -> dict[str, Any] | None:
     """The entry's requirements manifest (what align() judges), or None for an unnamed workflow."""
     if not entry or entry == "workflow":
         return None
     from astrid.core.generation import entries
 
     described = entries.find_entry(entry)
-    return entries.requirements(described, inputs) if described is not None else None
+    if workflow_path is not None:
+        # The facade already chose the mode and ran any build hook. Read exactly its
+        # emitted graph, without carried static requirements or a second hook invocation.
+        return entries.requirements({"engine": (described or {}).get("engine") or "comfyui",
+                                     "bundle": str(workflow_path)}, inputs)
+    if described is None:
+        raise ValueError(f"entry {entry!r} needs its resolved workflow path to determine requirements")
+    return entries.requirements(described, inputs)
 
 
 class _AttachedServer(_LocalEngineServer):
@@ -866,8 +875,13 @@ def _run_and_settle(
     # A run with no comfy_url that is not the RunPod route is the engine's local run: ComfyUIEngine.run
     # starts or reuses the installed local ComfyUI and submits to it, so it is a local_server submit.
     engine_local_run = not comfy_url
-    if manifest is None and engine_local_run and entry:
-        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs))
+    # The requirements this run resolved for its entry, recorded in the attempt's producer evidence on every
+    # route (align still judges the manifest above, on the local route only).
+    admitted_requirements = None
+    if entry:
+        admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
+    if manifest is None and engine_local_run:
+        manifest = admitted_requirements
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
         # The models directory the installed engine itself uses, so align judges and fetches
         # only the rows this job lacks there.
@@ -953,6 +967,7 @@ def _run_and_settle(
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
                   or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
         "execution_binding": execution_request.get("execution_binding") if isinstance(execution_request, dict) else None,
+        "requirements": admitted_requirements,
     }
     producer_run_id = f"astrid-{uuid4().hex}"
     try:

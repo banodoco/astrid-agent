@@ -1589,6 +1589,12 @@ class GenerationFacade:
                 preview.setdefault('workflow', ready_template)
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
+            # Report the same built graph's requirements that local alignment will judge.
+            manifest = workflow_entries.engine_table()['comfyui'].requirements({'workflow': workflow}, effective_values)
+            if placement.kind == 'local':
+                from astrid.core.generation.engine_local_endpoint import default_engine_root
+                manifest = {**manifest, 'models_root': str(Path(default_engine_root('comfyui')) / 'models')}
+            readiness['entry']['requirements'] = manifest
             readiness['entry'].update(preview)
             if align == 'trust':
                 readiness['alignment'] = {'mode': 'trust', 'verified': False}

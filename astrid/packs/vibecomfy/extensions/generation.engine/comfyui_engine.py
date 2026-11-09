@@ -26,6 +26,8 @@ def _call_hook(hook: Any, *args: Any) -> Any:
 
 def _workflows(entry: Any, inputs: Any = None) -> list[Any]:
     """The workflow(s) an entry runs: its built graph, its bundle, or an action entry's profile workflows."""
+    if entry.get("workflow") is not None:
+        return [entry["workflow"]]  # the already built, bound graph (no second build or mode choice)
     build = (entry.get("hooks") or {}).get("build")
     if build is not None:  # requirements() reads the built graph's rows; build is deterministic, so not cached
         return [_call_hook(build, inputs or {}, entry.get("files") or {}, _job_dir(entry))["workflow"]]
@@ -218,7 +220,12 @@ class ComfyUIEngine:
         built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job))
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
-        return built
+        from astrid.core.generation.entries import prepare_execution_bindings
+        bindings = dict(built.get("bindings") or {})
+        prepared = prepare_execution_bindings(built["workflow"], bindings)
+        for name in prepared.keys() - bindings.keys():
+            built["workflow"].set_input(name, prepared[name])
+        return {**built, "bindings": prepared}
 
     def finish(self, job: Any, outputs: Any) -> Any:
         """Run the entry's optional after_outputs on this machine, after execute and before copy-back.
