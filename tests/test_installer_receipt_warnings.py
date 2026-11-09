@@ -223,3 +223,20 @@ def test_a_malformed_saved_choice_settles_with_the_repair_next_line():
     lines = replace(out, log="/logs/install.log").headline()
     assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
                          "then update again.")
+
+
+# --- A malformed saved choice found at admission refuses the --update, exit 3, with its repair copy.
+
+def test_malformed_choice_at_admission_settles_not_updated_exit_3_with_needs_repair():
+    from astrid.installer.update_job import _InvalidAutostartChoice
+
+    before = _state("runtime", 11)
+    refusal = _InvalidAutostartChoice("The saved autostart choice is not valid; run the install command "
+                                      "without --update to repair this installation, then update again.")
+    out = settle(Request("update", 12, target_source="manifest"), before, lambda: before, failure=refusal)
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "needs-repair"
+    lines = replace(out, log="/logs/install.log").headline()
+    assert lines[-2] == ("Next: run the install command without --update to repair this installation, "
+                         "then update again.")
+    assert lines[-1] == "Details: /logs/install.log"
