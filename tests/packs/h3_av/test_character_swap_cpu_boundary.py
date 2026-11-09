@@ -170,8 +170,8 @@ def test_installed_cpu_actions_retain_candidate_content_pins(tmp_path):
     # must carry the same bytes (a wheel built from this checkout does). The manifest is written here from the checkout.
     pinned = (
         "astrid/packs/h3_av/pack.yaml",
-        "astrid/packs/h3_av/actions/transform/run.py",
-        "astrid/packs/h3_av/actions/transform/operation.py",
+        "astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py",
+        "astrid/packs/h3_av/shared/compile.py",
         "astrid/packs/vibecomfy/pack.yaml",
         "astrid/packs/vibecomfy/actions/run/run.py",
     )
@@ -185,7 +185,7 @@ def test_installed_cpu_actions_retain_candidate_content_pins(tmp_path):
     candidate.write_text(json.dumps(manifest))
     assert helper.candidate_manifest_path_from_environment({"ASTRID_H3_CANDIDATE_MANIFEST": str(candidate)}) == candidate.resolve()
     helper._verify_installed_candidate_actions(candidate)
-    manifest["source_files"]["astrid/packs/h3_av/actions/transform/run.py"] = "0" * 64
+    manifest["source_files"]["astrid/packs/h3_av/extensions/vibecomfy.workflows/hooks.py"] = "0" * 64
     drift = tmp_path / "candidate-drift.json"
     drift.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="installed action differs"):
