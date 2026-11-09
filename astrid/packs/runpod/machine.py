@@ -292,7 +292,11 @@ def generation_argv(entry: str | None, remote_root: str, *, mode: str | None) ->
     answers; T4's merge replaces the stub flags (``--job``/``--out``/``--json``).
     A job with no named entry runs its shipped bundle: ``astrid generate workflow``.
     """
-    argv = [f"{POD_VENV}/bin/astrid", "generate", entry or "workflow", "--placement", "local",
+    from astrid.core.execution.machine_run import WORKFLOW_FILE_ENTRY
+
+    if entry == WORKFLOW_FILE_ENTRY:
+        raise MachineError("a workflow-file job has no entry; pass entry=None")
+    argv = [f"{POD_VENV}/bin/astrid", "generate", entry or WORKFLOW_FILE_ENTRY, "--placement", "local",
             "--job", f"{remote_root}/{JOB_NAME}", "--out", f"{remote_root}/out", "--json"]
     if mode:
         argv += ["--mode", mode]
