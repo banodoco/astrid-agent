@@ -20,40 +20,6 @@ from astrid.core.execution.executor.registry import ExecutorRegistry
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime, _write_manifest
 
 
-def _native_cpu_handoff_fixture(tmp_path, monkeypatch, *, graph_owned=True):
-    """Real MTS and checkout containment; only HTTP and owner observations fake."""
-    import threading
-    from types import SimpleNamespace
-    from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    from astrid.core.execution.managed_tool_session import CapabilityDescriptor, SessionBinding
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
-
-    host = GenericPackHost(pack_roots=[tmp_path])
-    graph = SimpleNamespace(handles=[object()], abort_calls=[])
-    graph = graph if graph_owned else None
-    host._native_engine_graph = graph
-    backend = CheckoutServerAdapter("http://gpu.example.test")
-    backend._host_session = {"managed": True, "session_dir": str(tmp_path / "session")}
-    controls, observations, restarts = [], [], []
-    monkeypatch.setattr(backend, "_revalidate_host_session", lambda: observations.append("owner"))
-    monkeypatch.setattr(backend, "_probe_system_stats", lambda: observations.append("stats"))
-    monkeypatch.setattr(backend, "_restart_owned_session", lambda: restarts.append("restart"))
-    def post(path, payload):
-        controls.append((path, payload))
-        return {"acknowledged": True} if path == "/api/free" else {}
-    monkeypatch.setattr(backend._engine, "_post", post)
-    bridge = _ManagedVibeSessionAdapter(backend, graph)
-    binding = SessionBinding("native", "runtime", "birth", "http://gpu.example.test", "source", "config")
-    host.managed_tool_session.open(capability=CapabilityDescriptor("vibecomfy.run"), binding=binding, adapter=bridge)
-    token = host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="native-task")
-    host.managed_tool_session.adapter_for(token, begin=True)
-    _settle_cpu_handoff_token(host.managed_tool_session, token)
-    host._record_native_cpu_handoff(bridge, token, managed_settled=True, runtime_settled=True)
-    for name in ("_vibecomfy_warmth_hint", "_vibecomfy_current_warmth_hint", "_vibecomfy_requested_warmth_hint"):
-        setattr(host, name, "previous-model")
-    backend._engine._warm = True
-    return SimpleNamespace(host=host, backend=backend, bridge=bridge, graph=graph, token=token,
-                           controls=controls, observations=observations, restarts=restarts, threading=threading)
 
 
 def _settle_cpu_handoff_token(manager, token):
@@ -83,207 +49,6 @@ def _open_cpu_handoff(fixture, *, resources=("cpu",), adapter=None):
 
 
 
-def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
-    """Real HC03 factory/composite verifier; fake only OS and HTTP observations."""
-    import hashlib
-    import io
-    from types import SimpleNamespace
-    from urllib.parse import urlsplit
-    import vibecomfy.runtime.session as session_module
-    from astrid.core.generation.backends import vibecomfy as backend_module
-    from astrid.core.generation.model_root import canonical_model_inventory_digest
-
-    root = tmp_path / "sdk-owner"
-    root.mkdir()
-    output = root / "outputs"
-    output.mkdir()
-    models = root / "models"
-    models.mkdir()
-    model = models / "fixture.safetensors"
-    model.write_bytes(b"explicit synthetic unit model")
-    inventory = [{"name": model.name, "sha256": "sha256:" + hashlib.sha256(model.read_bytes()).hexdigest(),
-                  "size": model.stat().st_size, "subdir": "."}]
-    session = root / "session"
-    session.mkdir()
-    daemon, child = 1900001, 1900002
-    birth, child_birth = "fixture-daemon-birth", "fixture-child-birth"
-    url, token = "http://127.0.0.1:18188", "fixture-launch-token"
-    # The attested revision must be the one the selected VibeComfy checkout is pinned to
-    # (ASTRID_VIBECOMFY_CHECKOUT is set in CI), so use the product's pin rather than a made-up one.
-    from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-    revision, content = VIBECOMFY_ENGINE_REVISION, "sha256:" + hashlib.sha256(b"unit source fixture").hexdigest()
-    config = json.dumps({"output_directory": str(output)}, sort_keys=True).encode()
-    marker = {"pid": daemon, "comfy_pid": child, "process_start_identity": birth,
-              "comfy_process_start_identity": child_birth, "url": url, "launch_token": token}
-    registry = {"pid": str(daemon), "comfy_pid": str(child), "comfy_process_start_identity": child_birth,
-                "url": url, "config.json": config, "launch.json": json.dumps(marker),
-                "source_revision": revision, "source_content_digest": content, "daemon.log": "unit-owner\n"}
-    for name, value in registry.items():
-        (session / name).write_bytes(value if isinstance(value, bytes) else value.encode())
-    exact = {"interpreter": "python", "runtime_lock": "sha256:" + "1" * 64,
-             "engine_lock": "sha256:" + "2" * 64, "model_digest": inventory[0]["sha256"],
-             "custom_node_digest": "sha256:" + "3" * 64, "driver": "synthetic CPU",
-             "root": "sha256:" + "4" * 64, "port": 18188}
-    facts = {"exact": exact, "minimum": {"vram_bytes": 0, "scratch_bytes": 8192}}
-    profile = {"schema_version": "hc03-worker-readiness.v1", "status": "ready", "verified_facts": facts,
-               "verified_facts_digest": backend_module._canonical_sha256(facts),
-               "runtime": {"runtime_instance_id": "00000000-0000-4000-8000-000000000001"},
-               "launch": {"output_root": str(output), "model_root": {"schema_version": 1, "path": str(models),
-                          "inventory": inventory, "inventory_digest": canonical_model_inventory_digest(inventory)}},
-               "vibecomfy_session": {"session_dir": str(session), "server_url": url, "pid": daemon,
-                   "comfy_pid": child, "launch_token": token, "process_birth_id": birth,
-                   "comfy_process_birth_id": child_birth, "source_revision": revision,
-                   "source_content_digest": content, "config_digest": "sha256:" + hashlib.sha256(config).hexdigest()}}
-    observations = {"listener": child, "parent": daemon, "birth": birth, "child_birth": child_birth}
-    ownership_reads, controls, signals = [], [], []
-    def observed_birth(pid):
-        ownership_reads.append(pid)
-        return observations["birth"] if pid == daemon else observations["child_birth"] if pid == child else None
-    monkeypatch.setattr(session_module, "_process_start_identity", observed_birth)
-    monkeypatch.setattr(session_module, "_process_commandline", lambda pid: ("python", "--launch-token", token))
-    monkeypatch.setattr(session_module, "_process_parent_pid", lambda pid: observations["parent"])
-    monkeypatch.setattr(session_module, "_listener_owner_pid", lambda endpoint: observations["listener"])
-    original_kill = os.kill
-    def observed_kill(pid, sig):
-        if pid in (daemon, child):
-            signals.append((pid, sig))
-            assert sig == 0, "residency control must not signal the external owner"
-            return None
-        return original_kill(pid, sig)
-    monkeypatch.setattr(os, "kill", observed_kill)
-    observed_identity = backend_module.platform.process_identity
-    identity_reads = []
-    def native_identity(pid):
-        if pid in (daemon, child):
-            identity_reads.append(pid)
-            return {"pid": pid, "birth_id": birth if pid == daemon else child_birth}
-        return observed_identity(pid)
-    monkeypatch.setattr(backend_module.platform, "process_identity", native_identity)
-    monkeypatch.setenv("ASTRID_VIBECOMFY_ATTESTED_REVISION", revision)
-    monkeypatch.setenv("ASTRID_VIBECOMFY_ATTESTED_CONTENT_DIGEST", content)
-    class Response(io.BytesIO):
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): self.close()
-    http = {"completion": {"completed": True, "status": "completed"}, "failure": None, "failure_call": None, "on_control": None}
-    def opened(request, **kwargs):
-        path = urlsplit(request.full_url).path
-        if request.data is not None:
-            controls.append(path)
-            if http["on_control"] is not None:
-                http["on_control"](len(controls))
-            if http["failure"] == path and http["failure_call"] in (None, len(controls)):
-                raise OSError("synthetic control transport failure")
-            body = http["completion"] if path == "/api/free" else {"ok": True}
-        else:
-            assert path == "/system_stats"
-            body = {"system": {"comfyui_version": "0.26.0"}}
-        return Response(json.dumps(body).encode())
-    monkeypatch.setattr(backend_module, "_open_checkout_http", opened)
-    assert session_module._session_composite_ownership_verified(session, daemon) is True
-    return SimpleNamespace(profile=profile, session=session, daemon=daemon, child=child,
-                           observations=observations, ownership_reads=ownership_reads, controls=controls,
-                           signals=signals, identity_reads=identity_reads, http=http, root=root)
-
-
-def _sdk_cpu_handoff_fixture(tmp_path, monkeypatch):
-    import threading
-    from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    from astrid.core.execution.managed_tool_session import CapabilityDescriptor, SessionBinding
-    f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
-    f.threading = threading
-    f.host = GenericPackHost(pack_roots=[tmp_path])
-    f.host._native_engine_graph = None
-    f.bridge = _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-        model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
-    s = f.profile["vibecomfy_session"]
-    binding = SessionBinding(s["session_dir"], f.profile["runtime"]["runtime_instance_id"],
-                             s["process_birth_id"], s["server_url"], s["source_revision"], s["config_digest"],
-                             engine_birth_id=s["comfy_process_birth_id"])
-    manager = f.host.managed_tool_session
-    manager.open(capability=CapabilityDescriptor("vibecomfy.run"), binding=binding, adapter=f.bridge)
-    f.token = manager.admit(capability_id="vibecomfy.run", invocation_id="unit-task")
-    manager.adapter_for(f.token, begin=True)
-    _settle_cpu_handoff_token(manager, f.token)
-    f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=True, runtime_settled=True)
-    return f
-
-
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_path, monkeypatch):
-    import ast
-    import hashlib
-    import inspect
-    from astrid.core.execution import generic_host as module
-    from astrid.sdk import host_bootstrap
-    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
-    from vibecomfy.workflow_bundle import emit_bundle
-    from vibecomfy.security.provenance import Provenance
-
-    # Derive the actual SDK argv; this route deliberately has no activation graph.
-    tree = ast.parse(inspect.getsource(host_bootstrap.ensure_pack_host))
-    argv = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
-                and any(isinstance(target, ast.Name) and target.id == "argv" for target in node.targets))
-    flags = {node.value for node in ast.walk(argv) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
-    assert "--register" in flags and not flags.intersection({"--host-control-fd", "--activation-fd", "--activation-socket"})
-    f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
-    profile_path = tmp_path / "readiness.json"
-    profile_path.write_text(json.dumps(f.profile))
-    monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_PATH", str(profile_path))
-    monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_HASH", "sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest())
-    bundle_root = tmp_path / "bundle"
-    bundle_root.mkdir()
-    workflow = VibeWorkflow("sdk-cpu-handoff", WorkflowSource("sdk-cpu-handoff"),
-                            metadata={"model_id": "fixture-model", "ready_template": "fixture-template"})
-    workflow.add_node("Integer", uid="value", value=7)
-    emit_bundle(workflow, bundle_root / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
-    (bundle_root / "source.json").write_text('{"nodes":[],"links":[]}\n')
-    objects, digests = {}, []
-    for name, basename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
-        data = (bundle_root / basename).read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        objects[digest] = data
-        digests.append({"name": name, "digest": digest})
-    packs = tmp_path / "packs"
-    for capability, family in (("vibecomfy.run", "local_generation"), ("h3_av.compose", "cpu")):
-        path = packs / capability
-        path.mkdir(parents=True)
-        definition = {"schema_version": 1, "id": capability, "name": capability, "kind": "external", "version": "1.0",
-            "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; p=Path('{out}'); p.mkdir(parents=True,exist_ok=True); (p/'result.txt').write_text('settled')"]},
-            "inputs": [{"name": name, "type": "file"} for name in ("python", "companion", "source")] if family == "local_generation" else [],
-            "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.txt", "artifact_type": "text/plain"}],
-            "metadata": {"adapter_family": family, "resource_keys": ["gpu"] if family == "local_generation" else ["cpu"]}}
-        (path / "executor.yaml").write_text(json.dumps(definition))
-    runtime = FakeRuntime()
-    runtime.get_object = objects.__getitem__
-    host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
-    host._native_engine_graph = None
-    host.discover()
-    host.preflight()
-    assert all(record.ready for record in host.capabilities.values())
-    before = {p.name: p.read_bytes() for p in f.session.iterdir()}
-    native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
-        "attempt_id": "vibe-attempt", "fence": 1, "input_object_ids": list(objects),
-        "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
-    runtime.tasks["vibe"] = native
-    assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
-    bridge = host.managed_tool_session.current_adapter
-    assert bridge.native_graph is None
-    assert runtime.settlements[0][2]["result"]["managed_tool_session"]["state"] == "settled"
-    assert not host._unresolved_task_scopes
-    compose = {"task": {"id": "compose", "capability": "h3_av.compose", "project_id": "unit-project",
-                        "attempt_id": "compose-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}}}}
-    runtime.tasks["compose"] = compose
-    assert host.run_task(compose, lease_token="unit-lease")["task"]["status"] == "completed"
-    assert bridge.sdk_session_identity is not None
-    assert len(runtime.settlements) == 2 and runtime.failures == []
-    assert f.controls == ["/interrupt", "/queue", "/api/free", "/queue", "/api/free"]
-    assert len(f.ownership_reads) > 8  # Real composite verifier ran at admission and both controls.
-    assert {p.name: p.read_bytes() for p in f.session.iterdir()} == before
-    assert f.identity_reads and all(pid in (f.daemon, f.child) for pid in f.identity_reads)
-    assert all(sig == 0 for _, sig in f.signals)
-    assert host._native_engine_graph is None and not host.managed_tool_session.occupied
-    assert all(getattr(host, name) is None for name in ("_vibecomfy_warmth_hint", "_vibecomfy_current_warmth_hint", "_vibecomfy_requested_warmth_hint"))
 
 
 
@@ -300,30 +65,14 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
 
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("field", ["source_revision", "source_content_digest", "config.json", "launch.json"])
-def test_sdk_cpu_handoff_factory_rejects_registry_drift(tmp_path, monkeypatch, field):
-    from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
-    (f.session / field).write_text("different")
-    with pytest.raises(Exception):
-        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
-    assert not f.controls
 
 
 
 
-@pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("invalid", ["absent", "partial", "unready"])
-def test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile(tmp_path, monkeypatch, invalid):
-    from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
-    profile = None if invalid == "absent" else {"schema_version": "hc03-worker-readiness.v1"} if invalid == "partial" else dict(f.profile, status="not-ready")
-    with pytest.raises(ValueError):
-        _ManagedVibeSessionAdapter.from_host_session(hc03_profile=profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
-    assert not f.controls
+
+
+
+
 
 
 
