@@ -255,3 +255,18 @@ def test_build_and_after_outputs_share_one_job_dir(tmp_path):
     job = {"hooks": hooks, "out": tmp_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"}
     mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(True))
     assert seen == [("build", tmp_path), ("after_outputs", tmp_path)]
+
+
+def test_prepared_random_seed_is_fresh_recorded_and_replayable(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.generation.entries import prepare_execution_bindings
+
+    fresh = iter((123, 456))
+    monkeypatch.setattr("secrets.randbelow", lambda limit: next(fresh))
+    workflow = SimpleNamespace(inputs={"seed": object()})
+    first = prepare_execution_bindings(workflow, {"prompt": "exact prompt"})
+    second = prepare_execution_bindings(workflow, {"prompt": "exact prompt"})
+    assert first == {"prompt": "exact prompt", "seed": 123}
+    assert second == {"prompt": "exact prompt", "seed": 456}
+    assert prepare_execution_bindings(workflow, first) == first
+    assert prepare_execution_bindings(workflow, {"seed": 0}) == {"seed": 0}

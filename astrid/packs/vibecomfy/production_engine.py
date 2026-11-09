@@ -7,7 +7,6 @@ import hashlib
 import importlib
 import json
 import os
-import secrets
 import shutil
 import sys
 import tempfile
@@ -780,9 +779,8 @@ def run_workflow_path(
     run_inputs = _validate_workflow_input_bindings(resolved, workflow_input_bindings)
     if profile_id == "local_server":
         bundle = _canonical_bundle_value(resolved)
-        run_inputs = dict(run_inputs or {})
-        if "seed" in bundle.workflow.inputs and "seed" not in run_inputs:
-            run_inputs["seed"] = secrets.randbelow(2**32)
+        from astrid.core.generation.entries import prepare_execution_bindings
+        run_inputs = prepare_execution_bindings(bundle.workflow, run_inputs)
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     profile_kwargs: dict[str, Any] = {}

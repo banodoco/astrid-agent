@@ -218,7 +218,12 @@ class ComfyUIEngine:
         built = _call_hook(build, job.get("inputs", {}), job.get("files", {}), _job_dir(job))
         if not isinstance(built, dict) or "workflow" not in built:
             raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
-        return built
+        from astrid.core.generation.entries import prepare_execution_bindings
+        bindings = dict(built.get("bindings") or {})
+        prepared = prepare_execution_bindings(built["workflow"], bindings)
+        for name in prepared.keys() - bindings.keys():
+            built["workflow"].set_input(name, prepared[name])
+        return {**built, "bindings": prepared}
 
     def finish(self, job: Any, outputs: Any) -> Any:
         """Run the entry's optional after_outputs on this machine, after execute and before copy-back.
