@@ -48,10 +48,18 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
     if align is not None and align not in ALIGN_MODES:
         raise JobFileError(f"align must be one of {', '.join(ALIGN_MODES)}")
     inputs = dict(job["inputs"])
+    execution = job.get("execution")
+    if execution is not None:
+        if not isinstance(execution, dict):
+            raise JobFileError("job execution must be an object")
+        execution = dict(execution)
     task = job.get("task_identity") or "pod-job"
     attempt = job.get("attempt_identity") or "-"
     if job.get("entry") not in (None, entry) and entry != "workflow":
         raise JobFileError(f"job entry {job.get('entry')!r} differs from the requested {entry!r}")
+    if execution is not None:
+        return _run_prepared_job(entry, inputs, execution, Path(out), task=task, attempt=attempt,
+                                 mode=mode or job.get("mode"), align=align or job["align"])
     if entry == "workflow":
         shipped = next((inputs.pop(name) for name in _WORKFLOW_INPUTS if name in inputs), None)
         if shipped is None:
@@ -71,6 +79,47 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
             align=align or job["align"], **files)
     return _run_named_entry(described, named, inputs, files, Path(out), task=task, attempt=attempt,
                             mode=mode or job.get("mode"), align=align or job["align"])
+
+
+def _run_prepared_job(entry: str, inputs: dict[str, Any], execution: dict[str, Any], out: Path,
+                      *, task: str, attempt: str, mode: str | None, align: str) -> dict[str, Any]:
+    """Execute a controller-prepared bundle; public inputs never include transport controls."""
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.actions.run import run as run_action
+
+    workflow = execution.get("python") or execution.get("source")
+    if not isinstance(workflow, str):
+        raise JobFileError("a prepared job must ship its workflow")
+    files = {name: str(execution[name]) for name in ("managed_assets", "source_video") if execution.get(name)}
+    if entry == "workflow":
+        named = None
+    else:
+        try:
+            description, inputs = entries.resolve_entry_inputs(entry, inputs, mode=mode)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise JobFileError(f"job inputs are not valid for entry {entry!r}: {exc}") from exc
+        mode = description.get("mode") or mode
+        described = entries.find_entry(entry)
+        named = entry
+        if described is None:
+            from astrid.core.model_catalog.registry import ModelRegistry
+            catalog = ModelRegistry.load_default().get(entry)
+            selected = catalog.modes.get(mode)
+            backend = selected.backends.get("local") if selected is not None else None
+            if backend is None or not backend.template:
+                raise JobFileError(f"entry {entry!r} has no local workflow for mode {mode!r}")
+            named = str(backend.template)
+            described = entries.find_entry(named)
+        if described is None:
+            raise JobFileError(f"entry {entry!r} is not available on this machine")
+        if entries.entry_hooks(described).get("build"):
+            return _run_named_entry(described, entry, inputs, {}, out, task=task, attempt=attempt,
+                                    mode=mode, align=align)
+        # The facade has already bound this exact graph. Rebinding or rebuilding it
+        # would discard its chosen seed, native controls and uploaded media bindings.
+    return run_action._run_and_settle(
+        Path(workflow), out, task_identity=task, attempt_identity=attempt, entry=named,
+        workflow_inputs=execution.get("workflow_inputs") or "{}", align=align, **files)
 
 
 def _run_named_entry(described: dict[str, Any], named: str, inputs: dict[str, Any], files: dict[str, str],

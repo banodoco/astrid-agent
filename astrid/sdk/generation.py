@@ -1122,6 +1122,7 @@ class GenerationFacade:
         source_video_node: str | None = None,
         source_video_widget: str | None = None,
         managed_assets: WorkflowFile | None = None,
+        entry_inputs: WorkflowFile | None = None,
         workflow_inputs: str | None = None,
         after_outputs_job: str | None = None,
         comfy_url: str | None = None,
@@ -1225,7 +1226,7 @@ class GenerationFacade:
                 "source": source, "source_video": source_video,
                 "source_video_node": source_video_node,
                 "source_video_widget": source_video_widget,
-                "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "managed_assets": managed_assets, "entry_inputs": entry_inputs, "workflow_inputs": workflow_inputs,
                 "after_outputs_job": after_outputs_job,
                 "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
                 "placement_policy": (json.dumps(dict(placement_policy), sort_keys=True, separators=(',', ':'), allow_nan=False)
@@ -1617,6 +1618,11 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            if is_remote_target and entry_id != 'workflow':
+                from astrid.core.generation.job_inputs import write_archive
+                public = workflow_entries.describe_entry(entry_id, mode=mode, _native=True)
+                archive = write_archive(root / 'entry-inputs.zip', inputs, public['inputs'])
+                asset_arguments['entry_inputs'] = import_member(archive)
             hook_job = None
             if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
                 # The hook runs where the job runs, after the outputs are written and before they are sealed.

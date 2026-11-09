@@ -52,8 +52,9 @@ def test_controller_shipped_default_job_runs_on_the_real_local_path(
     job = json.loads(job_path.read_bytes())
     assert job["entry"] == provider.generations[0]["entry"]
     assert job["align"] == "align"
-    assert {"python", "companion", "source", "workflow_inputs"} <= job["inputs"].keys()
-    assert all(Path(job["inputs"][name]).is_file() for name in ("python", "companion", "source"))
+    assert job["inputs"]["prompt"] == "A red cube on a white tabletop."
+    assert {"python", "companion", "source", "workflow_inputs"} <= job["execution"].keys()
+    assert all(Path(job["execution"][name]).is_file() for name in ("python", "companion", "source"))
 
     with _managed_local_engine(provider, tmp_path / "pod-engine", monkeypatch):
         manifest = run_job(job["entry"], job_path, root / "real-out", mode=job["mode"])

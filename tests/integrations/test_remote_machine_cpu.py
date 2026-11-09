@@ -308,11 +308,13 @@ class MachineProviderHTTP:
         if argv[2] != "workflow":
             # The entry resolves from the pod's built-ins or the shipped selection only.
             assert argv[2] in [*self.listed, *shipped], (argv[2], self.listed)
-        assert argv[2] == (job["entry"] or "workflow") and set(job["inputs"]) >= {"python", "companion", "source"}
+        assert argv[2] == (job["entry"] or "workflow")
+        execution = job["execution"]
+        assert set(execution) >= {"python", "companion", "source"}
         for name in ("python", "companion", "source", "managed_assets", "source_video"):
-            if name in job["inputs"]:
+            if name in execution:
                 # Input files ship inside the job directory, digest-checked after upload.
-                assert job["inputs"][name].startswith(root + "/in/") and job["inputs"][name] in self.files
+                assert execution[name].startswith(root + "/in/") and execution[name] in self.files
         self.generations.append(job)
         self.detached[directory] = {"state": "running", "root": root, "polls": 0, "job": job}
         self.files[directory + "/status"] = b"running"
@@ -937,7 +939,7 @@ def test_a_workflow_file_job_runs_on_the_machine_without_a_named_entry(journey):
         preparation_seconds=120, execution_seconds=60, idle_seconds=1800, wait=True)
     assert result.ok, result.to_dict()
     (job,) = provider.generations
-    assert job["entry"] is None and set(job["inputs"]) >= {"python", "companion", "source"}
+    assert job["entry"] is None and set(job["execution"]) >= {"python", "companion", "source"}
     assert provider.kinds(" generate workflow --placement local ")
     assert not provider.kinds(" generate cpu-image ")
     assert provider.selections[-1]["entry"] is None and provider.selections[-1]["entries"] == []

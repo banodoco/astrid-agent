@@ -24,7 +24,7 @@ BUILT_IN = frozenset({"local", "attached"})
 #: ``entry`` is None and the pod runs the shipped bundle (``astrid generate workflow``).
 WORKFLOW_FILE_ENTRY = "workflow"
 #: Inputs that name local files; they ship inside the job directory.
-FILE_INPUTS = frozenset({"python", "companion", "source", "managed_assets", "source_video"})
+FILE_INPUTS = frozenset({"python", "companion", "source", "managed_assets", "source_video", "entry_inputs"})
 
 
 class MachineRunError(AstridError):
