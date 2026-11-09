@@ -24,6 +24,9 @@ permissions:
   reason: The transform may target a managed RunPod worker through the existing runtime contract.
 description: Prepare, compile, execute, compose, and verify flexible MiniMax H3 audiovisual
   transformations from one bounded request contract.
+dependencies:
+  packs:
+  - vibecomfy
 keywords:
 - h3
 - minimax

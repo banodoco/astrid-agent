@@ -87,13 +87,12 @@ def test_run_aligns_then_submits_to_localhost(tmp_path, attached):
 
 
 # Files that may still download a model. model_downloader and the engine_runner model steps
-# stay until T5; asset_alignment is the Agent-side align until it calls VibeComfy fetch.
+# stay until T5; align downloads only through VibeComfy fetch (asset_alignment is not listed).
 ALLOWED = {
     "astrid/core/generation/model_downloader.py",
     "astrid/core/generation/engine_runner.py",
     "astrid/core/generation/engine_execution.py",
     "astrid/core/generation/engine_contracts.py",
-    "astrid/core/generation/asset_alignment.py",
     "astrid/packs/runpod/h3_release_remote.py",
     "astrid/packs/vibecomfy/production_engine.py",  # only a refused-key name, not a download
 }
