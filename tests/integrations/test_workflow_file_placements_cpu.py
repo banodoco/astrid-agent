@@ -33,9 +33,13 @@ def _workflow_file() -> Path:
     return Path(rows[0]["bundle"])
 
 
-# Expected-to-flip characterizations (T1 style, not xfail): each asserts today's refusal and names
-# the task row that flips it. A workflow file on these targets is not served on this build yet;
-# T4f (local run path) and T5g (pod entry listing) make both cells really run.
+# Expected-to-flip characterizations (T1 style, not xfail). Each asserts today's refusal and names
+# the task row that flips it. When that row lands, the cell's real assertion is the same one the
+# attached cell makes: the workflow file runs, reaches /prompt on the target, and delivers a result.
+#   local-managed -> T4f (local run path): the refusal above goes, and the cell asserts result.ok,
+#                    a /prompt on the managed ComfyUI, and delivery.
+#   runpod        -> T5g (pod entry listing): the pod lists the generic workflow entry, and the cell
+#                    asserts result.ok, the job ran on the machine, and delivery.
 _NO_ENGINE = "local generation requires a ComfyUI runtime; no managed engine is installed or registered"
 _RED = {
     "local-managed": ("GenerationReadinessError", _NO_ENGINE, "T4f"),
