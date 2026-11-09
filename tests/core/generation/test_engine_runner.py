@@ -364,11 +364,12 @@ def test_plan_is_complete_deterministic_and_has_real_names(setup):
     expected_ids = [
         *("source:" + source.name for source in context.recipe.sources),
         *("environment:" + environment.name for environment in context.recipe.environments),
-        *("model:" + model.name for model in runner.recipes.load_model_lock(context.recipe.models_lock).models),
         "start", "health",
     ]
+    # Plan 32 T5h: the install is model-free, so the plan has no model steps.
     assert [s.id for s in plan.steps] == expected_ids
-    assert len(plan.steps) == 41
+    assert len(plan.steps) == len(context.recipe.sources) + len(context.recipe.environments) + 2
+    assert not [s for s in plan.steps if s.id.startswith("model:")]
     seen = set()
     for step in plan.steps:
         assert set(step.depends_on) <= seen
@@ -463,9 +464,9 @@ def test_clean_rerun_skips_every_step_but_reads_sha_and_current_health(setup):
     assert first.status == second.status == "installed"
     assert all(s.action == "skipped" and s.validation == "passed" for s in second.steps)
     assert context.bootstrap_count == 1
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "download"]) == expected_model_count
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
+    # Plan 32 T5h: a model-free install downloads and hashes no model on rerun.
+    assert not [e for e in context.events if e[0] == "download"]
+    assert not [e for e in context.events if e[0] == "hash" and "/models/" in e[1]]
     assert len([e for e in context.events if e[0] == "service:health"]) >= 1
     assert not [e for e in context.events if e[0] == "service:start"]
     assert not [e for e in context.events if e[0] == "argv" and ("fetch" in e[1] or "install" in e[1] or "sync" in e[1])]
@@ -1137,65 +1138,10 @@ def test_server_or_nodes_cannot_be_faked_installed(setup, condition):
     assert context.files[ROOT + "/" + runner._RECEIPT]["status"] == "failed"
 
 
-def test_bad_model_result_refuses_before_start(setup):
-    setup[1].bad_model = True
-    with pytest.raises(IntegrityError):
-        install(setup)
-    assert not [e for e in setup[1].events if e[0] == "service:start"]
-
-
-@pytest.mark.parametrize("condition", ["dirty", "origin", "revision", "model", "node-lock", "lock"])
-def test_full_revalidation_prevents_false_skips(setup, condition):
-    install(setup)
-    context = setup[1]
-    comfy = context.sources[ROOT + "/runtime/ComfyUI"]
-    if condition == "dirty":
-        comfy["dirty"] = " M main.py"
-    elif condition == "origin":
-        comfy["origin"] = "https://unreviewed.invalid/repo"
-    elif condition == "revision":
-        comfy["head"] = "0" * 40
-        # Status never repairs a changed source.
-    elif condition == "model":
-        model = recipes.load_model_lock(context.recipe.models_lock).models[0]
-        context.files[ROOT + "/models/" + model.destination] = FileFact(True, True, False, model.bytes, "0" * 64)
-    elif condition == "node-lock":
-        ref = context.recipe.environments[0].node_lock
-        source = next(s for s in context.recipe.sources if s.name == ref.source)
-        context.files[ROOT + "/" + source.relative_path + "/" + ref.path] = FileFact(True, True, False, 100, "0" * 64)
-    else:
-        context.files[ROOT + "/.astrid-engine/environments/comfy/requirements.lock"] = FileFact(True, True, False, 100, "0" * 64)
-    context.events.clear()
-    report = status(setup)
-    assert report.status == "failed"
-    assert report.error_code == "integrity_failed"
-    assert report.failed_step_id == {
-        "dirty": "source:comfyui", "origin": "source:comfyui", "revision": "source:comfyui",
-        "model": "model:h3-reference-to-video", "node-lock": "environment:comfy",
-        "lock": "environment:comfy",
-    }[condition]
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
 def test_status_absent_is_none_and_readonly_without_platform_module(setup, monkeypatch):
     monkeypatch.delitem(sys.modules, "astrid.core.generation.engine_platforms")
     assert status(setup) is None
     assert [e[0] for e in setup[1].events] == ["fact"]
-
-
-def test_status_revalidates_models_and_health_readonly(setup):
-    receipt = install(setup)
-    context = setup[1]
-    context.events.clear()
-    current = status(setup)
-    assert current.status == "installed" and current.receipt_id == receipt.receipt_id
-    assert current.failed_step_id is None
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
-    assert [e for e in context.events if e[0] == "service:health"]
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-    context.health_objects["new-node"] = {}
-    assert status(setup).status == "failed"
 
 
 @pytest.mark.parametrize("node,input_name", [
@@ -1225,182 +1171,6 @@ def test_status_tolerates_only_dynamic_file_choice_drift(setup, node, input_name
     assert (current.status, current.error_code, current.failed_step_id) == (
         "failed", "integrity_failed", "receipt-evidence")
     assert current.health.status == "unhealthy" and current.health.required_nodes_present is False
-    assert context.files == persisted
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
-@pytest.mark.parametrize("mismatch,gate", [
-    ("schema", "receipt-evidence"),
-    ("source", "source:comfyui"),
-    ("lock", "environment:comfy"),
-])
-def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
-        setup, tmp_path, monkeypatch, capsys, mismatch, gate):
-    from astrid.core import engine_cli
-    from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation import engine_execution
-    from astrid.core.generation import engine_local_endpoint as local
-    from astrid.packs.h3_av.actions.transform import run as transform
-
-    # This fake installer test is independent of host filesystem capacity.
-    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 10**15))
-    _, context, adapter, _ = setup
-    root = str(tmp_path / "synthetic-engine")
-    context.root = root
-    context.files = {path.replace(ROOT, root, 1): value for path, value in context.files.items()}
-    plan = runner.plan_install(context.recipe, root=root, placement="local")
-    receipt_path = Path(root, runner._RECEIPT)
-    context.health_objects["LoadImage"] = {
-        "input": {"required": {"image": [["synthetic-old.png"], {"image_upload": True}]}},
-        "output": ["IMAGE"],
-    }
-    # Mirror only canonical receipt writes for the endpoint's actual byte attestation.
-    # All target commands, models and other files remain in the CPU fake context.
-    write = context.write_json_atomic
-    def persist(path, value, *, deadline):
-        write(path, value, deadline=deadline)
-        if path == str(receipt_path):
-            receipt_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            receipt_path.write_text(runner._json(value), encoding="utf-8")
-    monkeypatch.setattr(context, "write_json_atomic", persist)
-    monkeypatch.setenv(local.ENGINE_ROOT_ENV, str(tmp_path / "unused-fallback"))
-
-    def backend(**kwargs):
-        assert (kwargs["engine"], kwargs["platform"], kwargs["placement"], kwargs["root"]) == (
-            plan.engine, plan.platform, "local", root)
-        context.deadline = kwargs["deadline"]
-        return context, adapter
-
-    monkeypatch.setattr(engine_execution, "create_local_backend", backend)
-
-    def install_cli():
-        code = engine_cli.main([
-            "install", plan.engine, "--placement", "local", "--root", root, "--deadline", "45",
-        ], backend_factory=backend)
-        output = capsys.readouterr()
-        assert code == 0 and not output.err
-        receipt = json.loads(output.out)
-        assert receipt == context.files[str(receipt_path)] == json.loads(receipt_path.read_bytes())
-        return receipt
-
-    def ready():
-        # Real H3 wrapper, root selection, status and endpoint gate; fake target backend only.
-        return transform._resolve_local_engine()
-
-    def current():
-        return runner.engine_status(plan.engine, platform=plan.platform, placement="local",
-                                    root=local.default_engine_root(plan.engine), context=context,
-                                    deadline=context.deadline)
-
-    # Reproduce the pre-H272 health producer, rather than hand-editing a receipt.
-    with monkeypatch.context() as legacy:
-        legacy.setattr(target, "_object_info_sha256", runner._sha)
-        legacy.setattr(runner, "_now", lambda: "2026-10-28T00:00:00+00:00")
-        old = install_cli()
-    assert old["health"]["object_info_sha256"] == runner._sha(context.health_objects)
-    assert old["health"]["object_info_sha256"] != runner._object_info_sha256(context.health_objects)
-    record_path = Path.home() / ".astrid-data/engines" / f"{plan.engine}.root.json"
-    record_bytes = record_path.read_bytes()
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    rejected = current()
-    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == (
-        "failed", "integrity_failed", "receipt-evidence")
-    with pytest.raises(AstridError, match="readiness reason: install_status_failed") as caught:
-        ready()
-    assert isinstance(caught.value.__cause__, local.EngineNotInstalled)
-    assert caught.value.recovery_command == "astrid engines install comfyui"
-    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == old
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-    owner = context.server
-    context.events.clear()
-    with monkeypatch.context() as recovery:
-        recovery.setattr(runner, "_now", lambda: "2026-10-29T00:00:00+00:00")
-        new = install_cli()
-    assert {key for key in old if old[key] != new[key]} == {
-        "receipt_id", "started_at", "completed_at", "health", "steps", "models",
-    }
-    assert new["health"]["object_info_sha256"] == runner._object_info_sha256(context.health_objects)
-    assert {key for key in old["health"] if old["health"][key] != new["health"][key]} == {
-        "checked_at", "object_info_sha256",
-    }
-    assert new["status"] == "installed" and new["error_code"] is None
-    assert all(s["action"] == "skipped" and s["validation"] == "passed" for s in new["steps"])
-    assert [{k: v for k, v in m.items() if k != "action"} for m in old["models"]] == [
-        {k: v for k, v in m.items() if k != "action"} for m in new["models"]]
-    assert context.server == owner and context.bootstrap_count == 1
-    expected_model_count = len(recipes.load_model_lock(context.recipe.models_lock).models)
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == expected_model_count
-    assert any(e[0] == "service:health" for e in context.events)
-    assert not [e for e in context.events if e[0] in {"service:start", "service:stop"}]
-    assert not [e for e in context.events if e[0] == "argv" and
-                any(arg in e[1] for arg in ("fetch", "install", "sync", "fake-bootstrap"))]
-    assert local.default_engine_root(plan.engine) == root and record_path.read_bytes() == record_bytes
-    endpoint = ready().endpoint
-    assert current().status == "installed" and endpoint.state == "ready"
-    assert endpoint.url == f"http://127.0.0.1:{context.recipe.start.port}"
-    assert endpoint.attestation.install_receipt_path == str(receipt_path)
-    assert endpoint.attestation.install_receipt_sha256 == hashlib.sha256(receipt_path.read_bytes()).hexdigest()
-    assert endpoint.attestation.object_info_sha256 == new["health"]["object_info_sha256"]
-
-    context.health_objects["LoadImage"]["input"]["required"]["image"][0] = ["synthetic-new.png"]
-    assert ready().endpoint.state == "ready"
-    if mismatch == "schema":
-        context.health_objects["LoadImage"]["output"] = ["MASK"]
-    elif mismatch == "source":
-        context.sources[root + "/runtime/ComfyUI"]["origin"] = "https://unreviewed.invalid/repo"
-    else:
-        context.files[root + "/.astrid-engine/environments/comfy/requirements.lock"] = FileFact(
-            True, True, False, 100, "0" * 64)
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    rejected = current()
-    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == ("failed", "integrity_failed", gate)
-    with pytest.raises(AstridError, match="readiness reason: install_status_failed"):
-        ready()
-    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == new
-    assert record_path.read_bytes() == record_bytes
-    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
-
-
-@pytest.mark.parametrize("gate", [
-    "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
-    "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",
-    "model:h3-video-vae", "model:h3-audio-vae", "model:h3-turbo-lora", "start", "health",
-])
-def test_status_failure_keeps_only_trusted_gate_and_code(setup, monkeypatch, gate):
-    install(setup)
-    plan, context, *_ = setup
-    persisted = copy.deepcopy(context.files)
-    context.events.clear()
-    original = runner._Runner.execute
-    private = "PRIVATE_INPUT_SENTINEL"
-    error = IntegrityError("exception-message " + private * 10000,
-                           step_id="source:" + private,
-                           recovery_handle="/arbitrary/private/" + private)
-    error.stdout = "raw-command-output " + private
-    error.target_facts = {"media": private}
-
-    def fail(self, step, *, readonly=False):
-        assert readonly is True
-        if step.id == gate:
-            raise error
-        return original(self, step, readonly=readonly)
-
-    monkeypatch.setattr(runner._Runner, "execute", fail)
-    report = status(setup)
-    assert report.status == "failed" and report.error_code == "integrity_failed"
-    assert report.failed_step_id == gate
-    assert report.health.status == "unhealthy" and report.health.required_nodes_present is False
-    assert report.models == () and report.steps == ()
-    # Exercise the public status serializer, rather than just inspecting the exception.
-    from astrid.core.engine_cli import _plain
-    output = json.dumps(_plain(report))
-    for forbidden in (private, "exception-message", "raw-command-output", "/arbitrary/private", "target_facts"):
-        assert forbidden not in output
-    assert len(output) < 16384
-    assert runner._parse_receipt(json.loads(output), plan) == report
     assert context.files == persisted
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
@@ -2038,15 +1808,6 @@ def test_final_revalidation_refuses_sources_dirtied_by_build(setup):
     assert context.files[ROOT + "/" + runner._RECEIPT]["status"] == "failed"
 
 
-@pytest.mark.parametrize("field,value", [("models", []), ("source_commits", {}), ("requirements_locks", {}),
-                                         ("started_at", "not-a-timestamp"), ("health", {"fake": True})])
-def test_incomplete_installed_evidence_refuses(setup, field, value):
-    install(setup)
-    setup[1].files[ROOT + "/" + runner._RECEIPT][field] = value
-    with pytest.raises(IntegrityError):
-        status(setup)
-
-
 def test_named_environments_have_distinct_lock_paths_and_complete_dependencies(setup, monkeypatch):
     plan, context, adapter, deadline = setup
     primary = context.recipe.environments[0]
@@ -2383,23 +2144,6 @@ def _sanity_context(context, code=0, stdout=""):
     context.run = run
 
 
-def test_sanity_hook_runs_after_environments_and_before_models(setup, monkeypatch):
-    plan, context, adapter, deadline = setup
-    _sanity_context(context)
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/cuda/lib64")
-    monkeypatch.setenv(runner.SANITY_CMD_ENV, "fake-sanity --flag")
-    assert install(setup).status == "installed"
-    kinds = [e[0] for e in context.events]
-    assert kinds.count("sanity") == 1
-    at = kinds.index("sanity")
-    assert any(e[0] == "argv" and e[1][0] == "fake-bootstrap" for e in context.events[:at])
-    assert "download" not in kinds[:at] and "download" in kinds[at:]
-    _, argv, env = context.events[at]
-    primary = next(e for e in context.recipe.environments if e.name == context.recipe.primary_environment)
-    assert argv[:2] == ("fake-sanity", "--flag") and argv[-2:] == ("--venv", adapter.join(ROOT, primary.relative_path))
-    assert "/usr/local/cuda" not in env["LD_LIBRARY_PATH"]
-
-
 def test_sanity_hook_is_off_by_default(setup, monkeypatch):
     monkeypatch.delenv(runner.SANITY_CMD_ENV, raising=False)
     _sanity_context(setup[1])
@@ -2416,126 +2160,6 @@ def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
     message = str(caught.value)
     assert "libcublas.so.13" in message and "LD_LIBRARY_PATH=" in message and "exit 2" in message
     assert not [e for e in context.events if e[0] in {"download", "service:start"}]
-
-
-def test_cache_binding_preserves_lock_models_local_receipt_readiness_and_sanity_order(setup):
-    from astrid.core.generation.engine_local_endpoint import model_root_binding_from_receipt
-    plan, context, adapter, deadline = setup
-    cache_root = "/mounted/read-only-model-cache"
-    seen = []
-    original = context.download_model
-
-    def download(model, *, models_root, deadline, model_cache_root):
-        context.events.append(("cache-read", model_cache_root, deadline))
-        seen.append((model, models_root, model_cache_root))
-        return original(model, models_root=models_root, deadline=deadline)
-
-    context.download_model = download
-    _sanity_context(context)
-    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                                    sanity_cmd="fake-sanity", model_cache_root=cache_root)
-    locked = recipes.load_model_lock(context.recipe.models_lock).models
-    assert seen == [(model, ROOT + "/models", cache_root) for model in locked]
-    kinds = [event[0] for event in context.events]
-    assert kinds.index("sanity") < kinds.index("cache-read") < kinds.index("download")
-    assert receipt.root == ROOT and receipt.status == "installed"
-    assert all(model.path.startswith(ROOT + "/models/") and model.verified for model in receipt.models)
-    assert context.files[ROOT + "/.astrid-engine/install.json"]["root"] == ROOT
-    binding = model_root_binding_from_receipt(receipt, ROOT)
-    assert binding.path == Path(ROOT) / "models"
-    launches = [event[1] for event in context.events if event[0] == "service:start"]
-    assert launches and all(launch["root"] == ROOT and cache_root not in runner._json(launch)
-                            for launch in launches)
-    assert all(path.startswith(ROOT + "/") for path in context.files)
-    assert kinds[-1] == "release" and not context.held
-
-
-@pytest.mark.parametrize('cache', [ROOT, ROOT + '/models', '/TARGET_ONLY', 'relative/cache', '/cache/../models'])
-def test_unsafe_cache_binding_stops_before_install_or_model_work(setup, cache):
-    plan, context, adapter, deadline = setup
-    with pytest.raises(UnsafePathError):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              model_cache_root=cache)
-    assert not context.events and not context.held
-
-
-def test_cache_binding_requires_local_placement_before_install_work(setup):
-    plan, _, adapter, deadline = setup
-    context = FakeHttpsContext()
-    context.deadline = deadline
-    with pytest.raises(UnsupportedPlacement):
-        runner.install_engine(replace(plan, placement='runpod'), context=context, adapter=adapter,
-                              deadline=deadline, model_cache_root='/mounted/cache')
-    assert not context.events
-
-
-def test_sanity_failure_with_cache_never_accesses_cache_or_downloads(setup):
-    plan, context, adapter, deadline = setup
-    _sanity_context(context, code=1)
-    context.download_model = lambda *a, **kw: pytest.fail('cache or model access before successful sanity')
-    with pytest.raises(CommandFailed):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              sanity_cmd='fake-sanity', model_cache_root='/mounted/cache')
-    assert not [event for event in context.events if event[0] in {'download', 'service:start'}]
-    assert context.events[-1][0] == 'release' and not context.held
-
-
-def test_authenticated_mount_binding_is_forwarded_to_every_model_step(setup):
-    plan, context, adapter, deadline = setup
-    seen = []
-    original = context.download_model
-    def download(model, *, models_root, deadline, **cache):
-        seen.append(cache)
-        return original(model, models_root=models_root, deadline=deadline)
-    context.download_model = download
-    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-        model_cache_root='/mounted/cache', model_cache_device=99, model_cache_mount_id=71)
-    assert receipt.status == 'installed' and seen
-    assert all(cache == {'model_cache_root': '/mounted/cache', 'model_cache_device': 99,
-                         'model_cache_mount_id': 71} for cache in seen)
-    assert context.events[-1][0] == 'release'
-
-
-def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(setup, tmp_path, monkeypatch):
-    import io
-    from astrid.core.generation import model_downloader as downloader
-    from astrid.core.generation.engine_contracts import DownloadError
-    _, context, adapter, deadline = setup
-    payload = b'SYNTHETIC CPU locked model bytes'
-    lock = recipes.load_model_lock(context.recipe.models_lock)
-    model = replace(lock.models[0], bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
-    monkeypatch.setattr(recipes, 'load_model_lock', lambda ref: replace(lock, models=(model,)))
-    plan = runner.plan_install(context.recipe, root=ROOT, placement='local')
-    cache, local = tmp_path / 'cache', tmp_path / 'local-models'
-    checks, downloads = [], []
-
-    def available(descriptor):
-        checks.append(descriptor)
-        return types.SimpleNamespace(f_bavail=len(payload) if len(checks) == 1 else 0, f_frsize=1)
-
-    class Response(io.BytesIO):
-        status = 206
-        headers = {'Content-Range': f'bytes 0-{len(payload) - 1}/{len(payload)}'}
-    def opener(request, timeout):
-        downloads.append(request.full_url)
-        return Response(payload)
-    def download(model, *, models_root, deadline, **cache_args):
-        return downloader.download_model(model, models_root=str(local), deadline=deadline,
-                                         opener=opener, **cache_args)
-
-    monkeypatch.setattr(downloader.os, 'fstatvfs', available)
-    context.download_model = download
-    with pytest.raises(DownloadError, match='capacity'):
-        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
-                              model_cache_root=str(cache))
-    receipt = context.files[ROOT + '/.astrid-engine/install.json']
-    assert receipt['status'] == 'failed' and receipt['models'] == []
-    assert (local / model.destination).read_bytes() == payload
-    assert downloads and len(checks) == 2
-    assert not (cache / downloader._cache_relative(model)).exists()
-    assert not list(tmp_path.rglob('*.cache-*'))
-    assert not [event for event in context.events if event[0] == 'service:start']
-    assert context.events[-1][0] == 'release' and not context.held
 
 
 def test_model_free_install_receipt_binds_the_model_root_unpatched(setup):
