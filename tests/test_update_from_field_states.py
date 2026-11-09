@@ -18,7 +18,7 @@ from runtime_protocol import platform
 
 from astrid.installer import cli
 from astrid.installer.core import Installer, current, read_json
-from tests.fixtures.field_states import R0_INSTANCE, handed_off_release1_r0_live, selection
+from tests.fixtures.field_states import R0_INSTANCE, handed_off_release1_r0_live, selection, stage_release
 from tests.test_boundary_handoff import case, snapshot  # noqa: F401 - pytest fixture
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="persistent Linux manager simulation")
@@ -514,3 +514,106 @@ def test_release1_launcher_refuses_normalised_records(case, monkeypatch):
         path.write_text(json.dumps(handoff._normalise_record(read_json(path), value, selection=is_selection)))
     admitted, _output = _launcher_admits(c, version.root)
     assert not admitted
+
+
+def _local_update(c, monkeypatch, capsys, release):
+    """Run ``python -m astrid.installer.local_update`` in-process from the field state."""
+    import io
+
+    from astrid.installer import local_update
+    from tests.test_installer_local_update import _app
+
+    hooks = []
+
+    class Hooks:
+        def __init__(self, app, _stdin, _stdout):
+            self.app = app
+
+        def call(self, name, version, _realm, **_options):
+            hooks.append((name, version.release if version else None))
+
+    manifest = {**json.loads(c.manifest_path(release).read_text()),
+                "agent": {"sha": "b" * 40}, "runtime": {"sha": "c" * 40}}
+    app = {**_app(c.root.parent), "release": release, "manifest": manifest}
+    identities = []
+    monkeypatch.setattr(local_update, "Backend", lambda *a, **kw: c.backend)
+    monkeypatch.setattr(local_update, "validate_manifest", lambda value: value)
+    monkeypatch.setattr(local_update, "HookClient", Hooks)
+    monkeypatch.setattr(local_update, "_verify_selected_identity",
+                        lambda _backend, version, data, *_a: identities.append((version.release, data)))
+    monkeypatch.setattr(c.backend, "stage", stage_release(c, release))
+    c.migrated = []
+
+    def backup(_version, data, _realm):
+        c.migrated.append(("backup", data))
+        (c.root / "backups/local").mkdir(parents=True)
+        return {"root": str(c.root / "backups/local"), "kind": "runtime"}
+
+    monkeypatch.setattr(c.backend, "backup", backup)
+    monkeypatch.setattr(c.backend, "upgrade", lambda _version, data: c.migrated.append(("upgrade", data)))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "update", "app": app,
+                                                              "manifest": manifest}) + "\n"))
+    code = local_update.main(["--root", str(c.root)])
+    reply = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return code, reply, hooks, identities
+
+
+def test_local_update_normalises_a_finished_handoff_and_updates_r1(case, monkeypatch, capsys):
+    """UR-15l-1 (a1): the fully local Update now never runs against R0's data."""
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    r0_before = snapshot(c.data)
+    r0_unit = c.service.path
+    r0_unit_bytes = r0_unit.read_bytes()
+    code, reply, hooks, identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 0, reply
+    assert reply["result"]["status"] == "updated" and reply["result"]["release"] == 2
+    assert current(c.root).release == 2 and c.verified_releases == [2]
+    assert identities == [(2, c.destination)]
+    assert c.migrated and all(data == c.destination for _step, data in c.migrated), c.migrated
+    assert ("start-editor", 2) in hooks
+    # Normalised once, as the installer does: R1 is the data root, R0 provenance only.
+    selected = selection(c)
+    assert selected["data_root"] == str(c.destination)
+    assert selected["realm_root"] == str(c.destination / "runtime/realms/r0")
+    assert selected["retained_r0_data_root"] == str(c.data)
+    assert read_json(c.root / "install.json")["data_root"] == str(c.destination)
+    assert not c.tx.journal.exists()
+    assert read_json(c.tx.journal.with_name("astrid-r1-handoff.completed.json"))["phase"] == "complete"
+    assert read_json(c.root / "update-transaction.json")["data_root"] == str(c.destination)
+    # R0's retained data and its login definition were never written.
+    assert snapshot(c.data) == r0_before
+    assert r0_unit.read_bytes() == r0_unit_bytes and c.service.path.name == "astrid-r1.service"
+    assert ["--user", "start", "astrid-r1.service"] in c.state()["calls"]
+
+
+def _untouched(c):
+    return (c.tx.journal.read_bytes(), c.service.selection.read_bytes(),
+            (c.root / "install.json").read_bytes(), (c.root / "current").read_bytes(),
+            sorted(path.name for path in (c.root / "versions").iterdir()),
+            (c.root / "update-transaction.json").exists(), snapshot(c.data), snapshot(c.destination))
+
+
+def test_local_update_refuses_when_the_handoff_cannot_be_normalised(case, monkeypatch, capsys):
+    from astrid.installer import boundary_registration as registration
+
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    monkeypatch.setattr(registration, "stage_runtime_launcher", lambda *a, **k: None)
+    before = _untouched(c)
+    code, reply, hooks, identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 3, reply
+    assert reply["code"] == "needs-repair" and reply["step"] == "normalise-handoff"
+    assert "Run the install line once" in reply["error"]
+    assert hooks == [] and identities == [] and c.staged == [] and c.migrated == []
+    assert _untouched(c) == before
+
+
+def test_local_update_refuses_an_unfinished_handoff_without_changes(case, monkeypatch, capsys):
+    c = handed_off_release1_r0_live(case, monkeypatch, r0_runtime="none")
+    journal = read_json(c.tx.journal)
+    c.tx.journal.write_text(json.dumps({**journal, "phase": "switching"}))
+    before = _untouched(c)
+    code, reply, hooks, _identities = _local_update(c, monkeypatch, capsys, 2)
+    assert code == 3, reply
+    assert reply["code"] == "needs-repair" and "storage move" in reply["error"]
+    assert hooks == [] and c.staged == []
+    assert _untouched(c) == before
