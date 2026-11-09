@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import time
+from pathlib import Path
 
 try:  # POSIX
     import fcntl as _fcntl
@@ -15,6 +17,24 @@ try:  # Windows
     import msvcrt as _msvcrt
 except ImportError:
     _msvcrt = None
+
+
+def nofollow_flag(path: str | os.PathLike[str]) -> int:
+    """Return the open flag that refuses a symlink at ``path``.
+
+    POSIX has O_NOFOLLOW. Where it is missing (Windows), os.open would follow
+    a link silently, so the path is first checked with the installer's link
+    test (symlinks, junctions and reparse points) and refused with the same
+    ELOOP the POSIX flag raises.
+    """
+    flag = getattr(os, "O_NOFOLLOW", 0)
+    if flag:
+        return flag
+    from astrid.installer.core import linked
+
+    if linked(Path(path)):
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), os.fspath(path))
+    return 0
 
 
 def locking_supported() -> bool:

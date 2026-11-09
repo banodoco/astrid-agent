@@ -333,7 +333,7 @@ def _install_lock(root: Path):
 
         if not _filelock.locking_supported():
             raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported filesystem.")
-        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | _filelock.nofollow_flag(root / ".install.lock"), 0o600)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.fstat(descriptor).st_nlink != 1:
                 raise PackInstallError("unsafe_path", "Install lock must be a regular file with one link.")

@@ -101,9 +101,11 @@ def _json(value: Any) -> bytes:
 
 def _sync_directory(path: Path) -> None:
     if not hasattr(os, "O_DIRECTORY"):
-        # Windows cannot open a directory for fsync; NTFS journals the rename itself.
+        # The Windows directory-fsync skip is accepted: Windows cannot open a
+        # directory for fsync, and NTFS journals the metadata (including the
+        # rename) itself. Nothing is opened here, so no link is followed.
         return
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | _filelock.nofollow_flag(path))
     try:
         os.fsync(fd)
     finally:
@@ -222,7 +224,7 @@ def group_read_lock(root: str | Path, *, exclusive: bool = False):
             raise PackInstallError("transaction_busy", "Release collection custody before starting another mutation.")
         yield
         return
-    flags = getattr(os, "O_NOFOLLOW", 0) | (os.O_RDWR | os.O_CREAT if exclusive else (os.O_RDONLY if _filelock._fcntl is not None else os.O_RDWR))
+    flags = _filelock.nofollow_flag(lock) | (os.O_RDWR | os.O_CREAT if exclusive else (os.O_RDONLY if _filelock._fcntl is not None else os.O_RDWR))
     try:
         fd = os.open(lock, flags, 0o600)
     except FileNotFoundError:
