@@ -246,3 +246,14 @@ def test_update_safe_refusal_with_no_other_runtime_stays_busy_exit_3():
     lines = replace(out, log="/logs/install.log").headline()
     assert lines[-2] == BUSY_NEXT
     assert lines[-1] == "Details: /logs/install.log"
+
+
+def test_plain_install_safe_refusal_is_unchanged_failed_busy_exit_1():
+    from astrid.installer.core import RuntimeOperationError
+
+    before = _state("runtime", 11)
+    after = _with_runtimes(_state("runtime", 11), SELECTED, OTHER_COPY)
+    refusal = RuntimeOperationError("Astrid is busy (1 tasks running).", details=BUSY_REFUSAL)
+    out = settle(Request("install"), before, lambda: after, failure=refusal)
+    assert out.kind == "failed" and out.exit_code == 1
+    assert out.reason == "busy"
