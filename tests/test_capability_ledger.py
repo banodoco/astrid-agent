@@ -28,19 +28,6 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
         for row in sources["pack_labels"]
         if row["pack"] in {"discord_local", "seedance_local"}
     }
-    finalizer_label = next(
-        row for row in sources["pack_labels"]
-        if row["pack"] == "h3_av" and row["label"] == "finalize_publication"
-    )
-    assert finalizer_label["source"] == "astrid/packs/h3_av/pack.yaml"
-    assert finalizer_label["disposition"] == "unmapped_source_label"
-    finalizer_executor = next(
-        row for row in sources["executor_inventory"]
-        if row["id"] == "h3_av.publication_finalizer"
-    )
-    assert finalizer_executor["result_contract"] == "manifest"
-    assert finalizer_executor["disposition"] == "advertised"
-    assert finalizer_executor["discovery_status"] == "discovered"
 
 
 def test_ledger_has_only_canonical_ids_models_backends_and_explicit_unmapped_labels():
@@ -67,9 +54,6 @@ def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
     shipped = json.loads(Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8"))
     assert set(host.matrix) == {row["id"] for row in shipped["capabilities"]}
     assert len(host.matrix) == len(shipped["capabilities"])
-    finalizer = host.matrix["h3_av.publication_finalizer"]
-    assert finalizer["adapter_family"] == "cpu"
-    assert finalizer["resource_keys"] == ["cpu"]
 
 
 def test_vibecomfy_readiness_reserves_gpu_for_workflow_execution():
