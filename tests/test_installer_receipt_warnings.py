@@ -170,3 +170,26 @@ def test_skill_and_other_copy_warnings_stand_together():
         DETAILS,
     ]
     assert out.exit_code == 0
+
+
+# --- A plain recovery that ends healthy is a repair, never an update, even when it restores an older release.
+
+def test_plain_recovery_restoring_an_older_release_is_repaired_and_keeps_its_reason():
+    # An interrupted update stopped the Runtime and moved the pointer to 12; the recovery restored 11.
+    stopped = SimpleNamespace(kind="runtime", live_release=None, selected_release=12, live_runtimes=())
+    out = settle(Request("install", reason="recovered-previous-version"), stopped, lambda: _state("runtime", 11))
+    assert out.kind == "repaired" and out.exit_code == 0
+    assert out.reason == "recovered-previous-version"
+    assert out.start is None
+    assert "An earlier update was interrupted" in " ".join(out.headline())
+
+
+# --- The Windows upgrade refusal stops before any change: it is a refusal (exit 3), not a failure.
+
+def test_windows_upgrade_refusal_settles_as_not_updated_with_exit_3():
+    from astrid.installer.boundary_handoff import WINDOWS_UPGRADE_REFUSAL
+
+    r0 = _state("runtime", 0)
+    out = settle(Request("install"), r0, lambda: r0, failure=ValueError(WINDOWS_UPGRADE_REFUSAL))
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "windows-upgrade-unsupported"

@@ -70,6 +70,12 @@ UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or 
 SUPPORTED_ACTIONS = ("availability", "reconcile", "prepare", "accept", "fail", "launch")
 
 
+def _windows_task_query(argv, *, timeout: float = 120) -> str:
+    """The probe's run: the captured output of a Windows query; a failed query raises."""
+    return subprocess.run([str(part) for part in argv], capture_output=True, encoding="utf-8",
+                          errors="replace", check=True, timeout=timeout).stdout
+
+
 def _windows_upgrade_refused() -> bool:
     """Whether the selected direct install is one the Windows handoff refuses. Doubt reports False."""
     from .boundary_handoff import windows_upgrade_refused
@@ -79,8 +85,9 @@ def _windows_upgrade_refused() -> bool:
         root = _selected_job_root(None)
         if root is None:
             return False
-        return windows_upgrade_refused(root, Service(root, root / "install.log", None, system="win32"))
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError):
+        return windows_upgrade_refused(
+            root, Service(root, root / "install.log", _windows_task_query, system="win32"))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, subprocess.SubprocessError):
         return False
 
 
