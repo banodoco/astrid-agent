@@ -43,7 +43,7 @@ REQUIRED = (
 )
 
 
-# Default handoff remains H3. Explicit plain-ComfyUI selection uses its own
+# The default handoff stays with the audiovisual entry. Explicit plain-ComfyUI selection uses its own
 # hash-indexed recipe; expected identity always comes from the verified tree.
 HANDOFF_ENGINE = 'comfyui'
 HANDOFF_PLATFORM = 'linux-x86_64-cu130'

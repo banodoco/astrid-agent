@@ -1726,10 +1726,8 @@ class GenerationFacade:
                        (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
         if _prompt_only_video(model=model, entry=entry, inputs=inputs):
             raise GenerationInputError(
-                "Prompt-only video requires a reference or an H3 request. "
-                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
-                "with a JSON object containing request and asset_map file paths. "
-                "See generate video --entry h3 --help."
+                "Prompt-only video requires a reference. "
+                "Use --image-ref for a video reference, or see 'generate list --kind video'."
             )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
@@ -1745,7 +1743,7 @@ class GenerationFacade:
             if description["source"] == "workflow" and placement is None:
                 placement = "auto"
         if resume or recovery_path is not None and placement != 'runpod':
-            raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
+            raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
         if registry is None:
             registry = sdk_module._load_model_registry(

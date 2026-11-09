@@ -123,7 +123,7 @@ GPU_GUIDANCE = "needs a local GPU or --placement runpod"
 EDGE_TTS = "Edge TTS"
 
 # Prompt-only video refusal (astrid/sdk/generation.py:9d3bb248:1560-1566).
-PROMPT_ONLY_VIDEO = "Prompt-only video requires a reference or an H3 request"
+PROMPT_ONLY_VIDEO = "Prompt-only video requires a reference"
 
 # Not-selected families (tasks.md D2): Z-Image, LTX, Wan, and hosted (fal) rows.
 # Ids from models.yaml:9d3bb248 (z-image :102, wan-2.2 :671, ltx-2.3 :768,

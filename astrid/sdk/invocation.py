@@ -95,7 +95,7 @@ class _RetainedPreparedOwner:
                     or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
                 raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
             identity += (json.dumps(binding, sort_keys=True),)
-        # H3's parent runs on the default target. Its pack monitor verifies
+        # The audiovisual parent runs on the default target. Its pack monitor verifies
         # the delegated run child's exact binding once that child appears.
         if self.identity is not None and self.identity != identity:
             raise CapabilityInvocationError('prepared owner task or execution binding changed')

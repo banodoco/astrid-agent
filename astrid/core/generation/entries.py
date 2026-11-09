@@ -708,7 +708,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
             candidates = _DEFAULT_MODE_CANDIDATES[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
         if selected is None and description.get('default_mode') in supported:
-            selected = description['default_mode']  # the entry's graph does not depend on the mode (h3's build picks it)
+            selected = description['default_mode']  # the entry's graph does not depend on the mode (the entry's build picks it)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
@@ -875,7 +875,7 @@ def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     """Model destinations (or bare loader values) the entry needs, and those it pins itself.
 
     The model rows come from the entry's requirements manifest. A contribution with a build hook
-    provisions the revision-pinned model assets its own graphs declare (H3 owns its Ref2V LoRA
+    provisions the revision-pinned model assets its own graphs declare (the contribution owns its Ref2V LoRA
     this way), so the engine lock need not.
     """
     import re

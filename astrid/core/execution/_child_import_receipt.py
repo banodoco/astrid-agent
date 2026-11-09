@@ -189,7 +189,7 @@ def _validate(packet, pid, birth):
 
 
 class ChildImportReceipt:
-    """One bounded private channel per owned H3/validator launch, never authority."""
+    """One bounded private channel per owned audiovisual/validator launch, never authority."""
 
     def __init__(self, host, capability_id, binding=None):
         self.host = host

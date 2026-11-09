@@ -53,48 +53,6 @@ class RunPodGenerationOwner(Protocol):
     def retain(self, task: Mapping[str, Any], monitor: Callable[..., None]) -> None: ...
 
 
-def require_h3_graph_readiness(compilation: Mapping[str, Any], client: Any, destination: Any) -> dict[str, Any]:
-    """Validate the compiler's exact members/bindings using live target choices.
-
-    This observes advertised classes and filenames, not remote model bytes or
-    custom-node commits. It never asks for a local model root or installs one.
-    """
-    import hashlib
-    import json
-    from pathlib import Path
-    from vibecomfy.security.provenance import Provenance
-    from vibecomfy.workflow_bundle import load_bundle
-    from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
-    from astrid.packs.vibecomfy.invocation_preflight import (
-        _assert_no_unresolved_placeholders, _assert_no_reachable_blank_media, _assert_reachable_prompt,
-    )
-    from .engine_recipe import load_recipe_model_lock, serialize_model_lock
-
-    members = compilation['workflow']
-    for name in ('workflow.py', 'workflow.vibe.json', 'source.json'):
-        if hashlib.sha256(Path(members[name]['path']).read_bytes()).hexdigest() != members[name]['sha256']:
-            raise ValueError('H3 compiled workflow bytes changed before target readiness')
-    bundle = load_bundle(Path(members['workflow.py']['path']), trust=Provenance.USER_CONFIRMED)
-    bindings = dict(compilation['workflow_inputs'])
-    origin = (client.endpoint_transport.retained_server_url if client.endpoint_transport is not None
-              else client.http_origin)
-    provider = _live_preflight(bundle, bindings, origin, Path(destination), client=client)
-    approval = _approve_live(bundle, bindings, provider)
-    api = approval.to_dict()['api_projection']
-    if not isinstance(api, Mapping) or not api:
-        raise ValueError('H3 concrete compiled graph is empty')
-    _assert_no_unresolved_placeholders(api)
-    _assert_no_reachable_blank_media(bundle.workflow, api)
-    _assert_reachable_prompt(bundle.workflow, api, expected_prompt=bindings.get('prompt'))
-    digest = lambda value: 'sha256:' + hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
-    lock = serialize_model_lock(load_recipe_model_lock('comfyui', 'linux-x86_64-cu130'))
-    return {'api_sha256': digest(api), 'object_info_sha256': digest(provider.object_info()),
-            'workflow_inputs_sha256': digest(bindings),
-            'model_lock_sha256': 'sha256:' + hashlib.sha256(lock.encode()).hexdigest(),
-            'members': {name: members[name]['sha256'] for name in members}}
-
-
 def runpod_generation_owner(client: Any) -> RunPodGenerationOwner:
     owner = getattr(client, 'runpod_generation_owner', None)
     if owner is None:

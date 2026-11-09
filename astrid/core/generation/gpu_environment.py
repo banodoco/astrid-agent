@@ -113,13 +113,8 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
         description["source"] = {"repository": comfy.repository, "revision": comfy.revision}
         description["vibecomfy_source"] = {"repository": vibecomfy.repository,
                                              "revision": vibecomfy.revision}
-        node_sources = {
-            "ComfyUI-H3-Motion-Context-MultiRef": sources["h3-motion-context"],
-            "ComfyUI-VideoHelperSuite": sources["videohelpersuite"],
-        }
         for node in description["custom_nodes"]:
-            pin = node_sources[node["name"]]
-            node.pop("pin", None)
+            pin = sources[node.pop("pin")]
             node.update(repository=pin.repository, revision=pin.revision)
     else:
         pin = sources["wan2gp"]

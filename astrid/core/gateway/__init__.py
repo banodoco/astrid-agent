@@ -98,11 +98,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main_impl(raw: list[str]) -> int:
     first_arg = next(iter(raw), None)
-    if first_arg == "h3":
-        from astrid.packs.h3_av.cli import main as h3_main
-
-        return h3_main(raw[1:])
-
     if first_arg == "generate":
         return _dispatch_generate(raw[1:])
     if first_arg == "engines":
