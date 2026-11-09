@@ -106,8 +106,11 @@ def main(argv=None, *, backend_factory=None):
         if not math.isfinite(args.deadline) or args.deadline <= 0 or args.deadline > 604800:
             raise RecipeValidationError('deadline must be greater than zero and at most 604800 seconds')
         recipe = load_recipe(args.engine, args.platform)
-        plan = plan_install(recipe, root=_root(args), placement=args.placement,
-                            models_root=getattr(args, 'models_root', None))
+        models_root = getattr(args, 'models_root', None)
+        if models_root is not None and args.placement != 'local':
+            # The model directory is a local install's volume cache; a RunPod pod binds its own.
+            raise UnsupportedPlacement('--models-root applies only to a local install')
+        plan = plan_install(recipe, root=_root(args), placement=args.placement, models_root=models_root)
         if args.command == 'install':
             # Plan 32 T5h: an install is model-free, so no model bytes are required. Sources and
             # environments have no recorded sizes yet, so the install is gated on a policy floor:

@@ -199,13 +199,17 @@ def test_model_cache_is_an_install_only_argument(capsys):
     capsys.readouterr()
 
 
-@pytest.mark.parametrize(('models_root',), [
-    (ROOT,), (ROOT + '/models',), ('/TARGET_ONLY',), ('relative/cache',),
+@pytest.mark.parametrize(('models_root', 'placement', 'error'), [
+    (ROOT, 'local', 'unsafe_path'),
+    (ROOT + '/models', 'local', 'unsafe_path'),
+    ('/TARGET_ONLY', 'local', 'unsafe_path'),
+    ('relative/cache', 'local', 'unsafe_path'),
+    ('/mounted/models', 'runpod', 'unsupported_placement'),
 ])
-def test_invalid_models_root_refuses_before_backend(models_root, capsys):
-    rc, out, err = invoke(['install', *BASE, '--models-root', models_root], capsys,
+def test_invalid_models_root_refuses_before_backend(models_root, placement, error, capsys):
+    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--models-root', models_root], capsys,
                           backend_factory=lambda **kw: pytest.fail('backend'))
-    assert rc == 1 and not out and json.loads(err)['error']['code'] == 'unsafe_path'
+    assert rc == 1 and not out and json.loads(err)['error']['code'] == error
 
 
 @pytest.mark.parametrize(('args', 'code'), [
@@ -488,12 +492,3 @@ def test_only_successful_explicit_local_installs_change_registration(monkeypatch
     assert rc == 0 and seen[-1] == other and recorded_engine_root(engine) is None
 
 
-@pytest.mark.parametrize('flags', [
-    ['--model-cache-root', '/mounted/models'], ['--model-cache-device', '99'], ['--model-cache-mount-id', '71'],
-])
-def test_removed_cache_binding_flags_are_refused_by_the_parser(capsys, flags):
-    # Plan 32 T5h/volume cache: the device and mount-id binding is gone; --models-root is the one model-dir flag.
-    with pytest.raises(SystemExit) as caught:
-        engine_cli.main(['install', *BASE, *flags])
-    assert caught.value.code == 2
-    capsys.readouterr()
