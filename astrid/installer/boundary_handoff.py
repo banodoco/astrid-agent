@@ -36,6 +36,16 @@ WINDOWS_UPGRADE_REFUSAL = (
 )
 
 
+def windows_upgrade_refused(root, service) -> bool:
+    """Whether ``handle`` refuses this installation with WINDOWS_UPGRADE_REFUSAL.
+
+    Mirrors the order in ``handle``: a pending transaction or a non-R0 install
+    is never refused, and an R0 install on Windows always is.
+    """
+    return (service.system == "win32" and not pending_transaction(root)
+            and r0_stop.is_r0_installation(root, service))
+
+
 def journal_path(service):
     return r0_stop._marker_path(service).with_name("astrid-r1-handoff.json")
 

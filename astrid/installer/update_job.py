@@ -54,6 +54,12 @@ class _UnsupportedServiceManager(ValueError):
     reason = "unsupported-service-manager"
 
 
+class _UnsupportedWindowsUpgrade(_UnsupportedServiceManager):
+    """The selected Windows install is an earlier release, which the handoff refuses."""
+
+    reason = "windows-upgrade-unsupported"
+
+
 MINIMUM_SYSTEMD_VERSION = 254
 UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
 
@@ -64,9 +70,27 @@ UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or 
 SUPPORTED_ACTIONS = ("availability", "reconcile", "prepare", "accept", "fail", "launch")
 
 
+def _windows_upgrade_refused() -> bool:
+    """Whether the selected direct install is one the Windows handoff refuses. Doubt reports False."""
+    from .boundary_handoff import windows_upgrade_refused
+    from .service import Service
+
+    try:
+        root = _selected_job_root(None)
+        if root is None:
+            return False
+        return windows_upgrade_refused(root, Service(root, root / "install.log", None, system="win32"))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError):
+        return False
+
+
 def update_job_availability(*, system: str | None = None) -> dict:
     """Return whether the selected OS can safely run an update job."""
     actual = sys.platform if system is None else system
+    if actual == "win32":
+        if _windows_upgrade_refused():
+            return {"available": False, "reason": _UnsupportedWindowsUpgrade.reason}
+        return {"available": True}
     if actual != "linux":
         return {"available": True}
     try:
@@ -92,8 +116,13 @@ def update_job_availability(*, system: str | None = None) -> dict:
 
 
 def _require_update_job_available() -> None:
-    if not update_job_availability()["available"]:
-        raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
+    availability = update_job_availability()
+    if availability["available"]:
+        return
+    if availability.get("reason") == _UnsupportedWindowsUpgrade.reason:
+        from .boundary_handoff import WINDOWS_UPGRADE_REFUSAL
+        raise _UnsupportedWindowsUpgrade(WINDOWS_UPGRADE_REFUSAL)
+    raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
 
 class _BusyRefusal(ValueError):
     """A reconciliation refusal that must remain visible as machine reason busy."""
