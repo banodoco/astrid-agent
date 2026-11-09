@@ -61,9 +61,11 @@ def _output_reachable(graph):
 
 def _spy_child_align(monkeypatch, path):
     """Observe the real action child across its process boundary, without replacing the engine."""
-    popen = subprocess.Popen
+    from astrid.core.execution import generic_host
     bootstrap = f'''import json, runpy, sys
 from pathlib import Path
+with Path({str(path)!r}).open("a") as sink:
+    sink.write(json.dumps({{"event": "bootstrap"}}) + "\\n")
 from astrid.core.generation import entries
 from astrid.packs.vibecomfy import local_server_engine
 original_approve = local_server_engine._approve_live
@@ -107,14 +109,19 @@ entries.engine_table = table
 sys.argv = ["astrid.core.execution.generic_host_worker", *sys.argv[1:]]
 runpy.run_module("astrid.core.execution.generic_host_worker", run_name="__main__")
 '''
-    def launch(argv, *args, **kwargs):
-        env = kwargs.get("env") or {}
-        if env.get("ASTRID_GENERATION_ENTRY") and "astrid.core.execution.generic_host_worker" in argv:
-            index = argv.index("-m")
-            assert argv[index + 1] == "astrid.core.execution.generic_host_worker"
-            argv = [*argv[:index], "-c", bootstrap, *argv[index + 2:]]
-        return popen(argv, *args, **kwargs)
-    monkeypatch.setattr(subprocess, "Popen", launch)
+    def observe_launch(original):
+        def launch(argv, *args, **kwargs):
+            env = kwargs.get("env") or {}
+            if env.get("ASTRID_GENERATION_ENTRY") and "astrid.core.execution.generic_host_worker" in argv:
+                index = argv.index("-m")
+                assert argv[index + 1] == "astrid.core.execution.generic_host_worker"
+                argv = [*argv[:index], "-c", bootstrap, *argv[index + 2:]]
+            return original(argv, *args, **kwargs)
+        return launch
+    # Observe before process custody wraps the worker in its private tree launcher.
+    for name in ("spawn_task_scope", "popen_owned_group"):
+        monkeypatch.setattr(generic_host, name, observe_launch(getattr(generic_host, name)))
+
 
 
 class Recorder:
