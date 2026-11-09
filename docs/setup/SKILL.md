@@ -57,7 +57,7 @@ choices are:
 - skill copies: off (`--skill-copies on|off`)
 
 Ask the user whether they want to change any choice. If they change one, use
-its new value in step 2. If the user approved a handoff, keep its selected
+its new value in step 2. If the user approved an App brief, keep its selected
 values unchanged. Do not run the install until the choices are settled. Then
 go to step 2.
 
