@@ -12,8 +12,6 @@ from types import SimpleNamespace
 
 from . import update_job
 from .backend import Backend
-from .installation import Installation
-from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .choices import (
     CHOICE_NAMES,
     RECOMMENDED_CHOICES,
@@ -35,6 +33,8 @@ from .core import (
     separate_roots,
     write_json,
 )
+from .installation import Installation
+from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .service import (
     LABEL,
     default_program_root,
@@ -334,8 +334,8 @@ def _prepare_log(path: Path, *protected: Path) -> Path | None:
 
 
 def _retained_r0_roots(service) -> list[Path]:
-    from .boundary_registration import retained_roots
     from .boundary_handoff import retained_roots as handoff_roots
+    from .boundary_registration import retained_roots
     from .r0_stop import _marker_path
 
     intent = read_json(absolute(_marker_path(service)))

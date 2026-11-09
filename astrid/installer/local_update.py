@@ -233,9 +233,9 @@ def _finish_storage_move(root: Path, backend: Backend) -> Backend:
     A handoff that is not finished, or that cannot be normalised safely, is
     refused with nothing changed; the install line finishes it.
     """
-    from .boundary_handoff import normalise_completed
     import os
 
+    from .boundary_handoff import normalise_completed
     from .installation import Installation, adopt_if_handed_off, handoff_journal
 
     service = backend.service

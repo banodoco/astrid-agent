@@ -1,15 +1,17 @@
 """Retain source, executed bytes and native outcomes in the producer envelope."""
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass, replace
-import hashlib
-import json
 from pathlib import Path
 
 from astrid.core._shared.result_manifest import (
-    ResultManifestError, _validate_manifest, validate_result_manifest,
+    ResultManifestError,
+    _validate_manifest,
+    validate_result_manifest,
 )
 
 
@@ -42,6 +44,7 @@ def stage_executed_settings(record, destination: Path) -> dict:
     """Retain the frozen API projection passed to the runtime, never a UI graph."""
     from vibecomfy.testing.canonical import canonical_bytes
     from vibecomfy.workflow_bundle import ApprovedProjectionRecord
+
     from astrid.core.foundation.atomic_io import write_bytes_atomic
 
     if not isinstance(record, ApprovedProjectionRecord):
@@ -232,6 +235,7 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
     import mimetypes
     import shutil
     from datetime import datetime, timezone
+
     from astrid.core.foundation.atomic_io import write_json_atomic
 
     if (attempt_id is None or receipt.is_symlink()
@@ -259,9 +263,9 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
     # Use the producer's own declared-output attribution and ordinal rules.
     declarations = []
     if (workflow_path is not None or workflow_bundle is not None) and artifacts:
-        from vibecomfy.workflow_bundle import load_bundle
-        from vibecomfy.security.provenance import Provenance
         from vibecomfy.runtime.session import _artifact_manifest
+        from vibecomfy.security.provenance import Provenance
+        from vibecomfy.workflow_bundle import load_bundle
         candidates = [destination / 'local-server-workflow' / 'workflow.py', workflow_path,
                       *destination.glob('canonical-ui-*/workflow.py')]
         def bundles():
