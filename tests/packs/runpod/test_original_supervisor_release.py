@@ -27,8 +27,8 @@ def supervisor(monkeypatch):
     owner, transport, selection, _ = _owner()
     receipt = owner.start(selection)
     token = "fake-original-owner"
-    selection = replace(selection, session_ref="vibecomfy-h3")
-    receipt = replace(receipt, session_ref="vibecomfy-h3",
+    selection = replace(selection, session_ref="comfyui")
+    receipt = replace(receipt, session_ref="comfyui",
                       launch_token_digest="sha256:" + hashlib.sha256(token.encode()).hexdigest())
     transport.current.update(session_ref=selection.session_ref, config_digest=selection.config_digest,
                              launch_token_digest=receipt.launch_token_digest)
@@ -151,8 +151,8 @@ def test_original_stop_handoff_and_restart_checkpoint(release_case, monkeypatch)
     c = release_case
     owner, transport, selected, _ = _owner()
     receipt = owner.start(selected)
-    selected = replace(selected, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
-    receipt = replace(receipt, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
+    selected = replace(selected, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
+    receipt = replace(receipt, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
     record = {**c.record, "managed_session": {
         "schema": "astrid.runpod.managed-session.v1", "claim_operation_id": c.record["operation_id"],
         "session_ref": selected.session_ref, "config_digest": selected.config_digest,

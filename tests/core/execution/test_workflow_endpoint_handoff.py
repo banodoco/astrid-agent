@@ -152,7 +152,7 @@ def prepared_endpoint(installed_consumer, session, tmp_path, monkeypatch):
     monkeypatch.setattr(transport, "write_endpoint_profile", write)
     # Actual authenticated agent -> actual retained native tiny HTTP engine.
     server = AgentServer(("127.0.0.1", 0), token, state,
-                         engine_proxy={"endpoint_id": "vibecomfy-h3", "port": recipe.start.port})
+                         engine_proxy={"endpoint_id": "comfyui", "port": recipe.start.port})
     cert, key = tmp_path / "tls.crt", tmp_path / "tls.key"
     host = "pod123-8000.proxy.runpod.net"
     subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -181,7 +181,7 @@ def prepared_endpoint(installed_consumer, session, tmp_path, monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", str(cert))
     def read(path, *, deadline):
         return _run_sync(transport.read_endpoint_file(path, deadline=deadline))
-    kwargs = dict(engine="vibecomfy-h3", platform=recipe.platform, endpoint_id="vibecomfy-h3",
+    kwargs = dict(engine="comfyui", platform=recipe.platform, endpoint_id="comfyui",
                   agent_port=8000, token_ref=SecretRef("file", str(controller_token)), read_file=read,
                   deadline=time.monotonic() + 45)
     try:
@@ -204,10 +204,10 @@ def test_prefreeze_ensure_uses_original_live_session_and_actual_file_readback_on
     again = p.preparer.finalize_endpoint_readiness(p.reference, **p.kwargs)
     assert final == again
     assert p.events == ["stage", "attach", "ensure", "write-final"]
-    assert p.calls == [("GET", "/engines/vibecomfy-h3/object_info", False, False)]
+    assert p.calls == [("GET", "/engines/comfyui/object_info", False, False)]
     final_profile = read_workflow_profile(final.readiness_profile_path, final.readiness_profile_hash)
     assert final.readiness_profile_hash != p.reference.readiness_profile_hash
-    assert final_profile["workflow_endpoint"] == {"endpoint_id": "vibecomfy-h3", "token_ref": {
+    assert final_profile["workflow_endpoint"] == {"endpoint_id": "comfyui", "token_ref": {
         "kind": "file", "path": str(p.profile_path.parent / "engine-bearer.token")}}
     assert p.base == {"schema_version": "hc03-worker-readiness.v1", "status": "ready"}
     _secret_free(p.base)  # CPU staging retains its original secret-free document.
@@ -405,13 +405,13 @@ def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agen
     profile = _hc03_profile(tmp_path)
     profile["vibecomfy_session"]["server_url"] = "http://127.0.0.1:8188"
     health = HealthEvidence("healthy", "2026-10-27T23:00:00Z", "a" * 64, True)
-    profile["endpoint_evidence"] = {"schema": "astrid.runpod.endpoint-evidence.v1", "engine": "vibecomfy-h3",
+    profile["endpoint_evidence"] = {"schema": "astrid.runpod.endpoint-evidence.v1", "engine": "comfyui",
         "platform": "linux-x86_64-cu130", "claim_operation_id": "original",
         "claim_attestation": asdict(RunPodAttestation("runpod-engine.v1", "account-1", "pod123",
             "/controller/inert-snapshot", "b" * 64, "/installed/.astrid-engine/install.json", "c" * 64,
             health, "a" * 64))}
     path = tmp_path / "engine-readiness.json"
-    profile["workflow_endpoint"] = {"endpoint_id": "vibecomfy-h3", "token_ref": {
+    profile["workflow_endpoint"] = {"endpoint_id": "comfyui", "token_ref": {
         "kind": "file", "path": str(path.parent / "engine-bearer.token")}}
     path.write_bytes(encoded(profile))
     path.chmod(0o600)
@@ -506,7 +506,7 @@ def test_existing_endpoint_evidence_and_snapshot_are_retained(prepared_endpoint)
     snapshot = p.claim_path.with_name("provided-claim-snapshot.json")
     write_target_record(snapshot, p.claim)
     evidence = {
-        "schema": "astrid.runpod.endpoint-evidence.v1", "engine": "vibecomfy-h3", "platform": p.recipe.platform,
+        "schema": "astrid.runpod.endpoint-evidence.v1", "engine": "comfyui", "platform": p.recipe.platform,
         "claim_operation_id": "original", "claim_attestation": {
             "kind": "runpod-engine.v1", "provider_account_ref": "account-1", "pod_id": "pod123",
             "claim_handle_path": str(snapshot), "claim_handle_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),

@@ -96,8 +96,8 @@ def endpoint(tmp_path, captured_schema):
     health = HealthEvidence('healthy', '2026-11-01T00:00:00Z', 'a' * 64, True)
     attestation = RunPodAttestation('runpod-engine.v1', 'account-a', 'pod123',
         str(tmp_path / 'claim-snapshot'), 'b' * 64, '/engine/install.json', 'c' * 64, health, 'a' * 64)
-    record = EngineEndpoint('astrid.engine-endpoint.v1', 'vibecomfy-h3', 'vibecomfy-h3',
-        'linux-x86_64-cu130', 'runpod', 'https://pod123-8000.proxy.runpod.net/engines/vibecomfy-h3',
+    record = EngineEndpoint('astrid.engine-endpoint.v1', 'comfyui', 'comfyui',
+        'linux-x86_64-cu130', 'runpod', 'https://pod123-8000.proxy.runpod.net/engines/comfyui',
         EndpointAuth('bearer-file', SecretRef('file', str(tmp_path / 'unopened.token'))),
         'ready', health, LifecycleOwner('astrid-runpod', 'operation-a', str(tmp_path / 'claim'),
                                       None, 'pod123', False), attestation)
@@ -234,7 +234,7 @@ def test_sdk_preflight_and_parent_freeze_one_endpoint_with_all_local_stages(reta
     spec = spec.get('spec', spec)
     plan = spec['inputs']['plan']
     target = plan['controls']['placement_policy']
-    assert target == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
+    assert target == {**r.selection, **r.paid, 'engine': 'comfyui', 'consent': ['paid']}
     assert 'prepared_worker' not in spec['inputs'] and 'h3_endpoint' not in plan['controls']
     assert all(stage['target'] == {'kind': 'default'} for stage in plan['stages'])
     assert not getattr(r.client, '_generation_prepared_owners', {})

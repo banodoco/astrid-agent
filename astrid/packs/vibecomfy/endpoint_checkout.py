@@ -24,7 +24,7 @@ from astrid.core.generation.engine_endpoint import (
 from astrid.sdk.execution_request import normalize_execution_request
 
 EXECUTION_REQUEST_ENV = "ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON"
-ENDPOINT_ID = "vibecomfy-h3"
+ENDPOINT_ID = "comfyui"
 
 
 def _invalid() -> None:

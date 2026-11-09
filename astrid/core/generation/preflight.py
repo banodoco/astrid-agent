@@ -88,7 +88,7 @@ def freeze_h3_endpoint(client: Any) -> dict[str, Any]:
         raise ValueError('H3 requires the retained owner\'s attested RunPod endpoint bridge')
     endpoint = parse_endpoint(endpoint_to_dict(client.endpoint_transport.endpoint))
     if (client.target.kind != 'pod' or client.target.url != endpoint.url
-            or endpoint.engine != 'vibecomfy-h3' or endpoint.platform != 'linux-x86_64-cu130'
+            or endpoint.engine != 'comfyui' or endpoint.platform != 'linux-x86_64-cu130'
             or endpoint.state != 'ready' or not isinstance(endpoint.attestation, RunPodAttestation)):
         raise ValueError('H3 requires the exact ready RunPod endpoint')
     origin = validate_attached_url(client.endpoint_transport.retained_server_url)
@@ -135,7 +135,7 @@ def require_h3_graph_readiness(compilation: Mapping[str, Any], client: Any, dest
     _assert_reachable_prompt(bundle.workflow, api, expected_prompt=bindings.get('prompt'))
     digest = lambda value: 'sha256:' + hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
-    lock = serialize_model_lock(load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130'))
+    lock = serialize_model_lock(load_recipe_model_lock('comfyui', 'linux-x86_64-cu130'))
     return {'api_sha256': digest(api), 'object_info_sha256': digest(provider.object_info()),
             'workflow_inputs_sha256': digest(bindings),
             'model_lock_sha256': 'sha256:' + hashlib.sha256(lock.encode()).hexdigest(),

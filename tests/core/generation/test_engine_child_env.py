@@ -74,10 +74,10 @@ def test_supervisor_gives_every_spawn_the_engine_env_and_launch_fingerprint_is_s
     from astrid.core.generation.engine_custody import _Supervisor
 
     key = "linux-x86_64-cu130"
-    recipe = engine_recipe.load_recipe("vibecomfy-h3", key)
+    recipe = engine_recipe.load_recipe("comfyui", key)
     primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
     root = str(tmp_path / "engine")
-    sup = _Supervisor({"platform": key, "root": root, "engine": "vibecomfy-h3"}, recipe, "t")
+    sup = _Supervisor({"platform": key, "root": root, "engine": "comfyui"}, recipe, "t")
     before = dict(sup.launch)
     site = f"{root}/{primary.relative_path}/lib/python3.12/site-packages/nvidia/cu13/lib"
     os.makedirs(site)  # the venv appears after the supervisor computed its fingerprint

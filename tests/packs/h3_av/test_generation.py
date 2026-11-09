@@ -30,7 +30,7 @@ def test_generation_assets_use_recipe_lock_revisions():
     from astrid.core.generation.engine_recipe import load_recipe_model_lock
     from astrid.packs.h3_av.shared import generation
 
-    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    lock = load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     workflow = _locked_model_workflow(adapter_strength=0.7)
     assets = {f'{row["subdir"]}/{row["name"]}': row for row in workflow.metadata["model_assets"]}
     assert len(lock.models) == 5
@@ -60,7 +60,7 @@ def test_generation_assets_use_recipe_lock_revisions():
 def test_generation_rejects_incomplete_or_unpinned_lock_entry(monkeypatch, invalid):
     from astrid.packs.h3_av.shared import generation
 
-    lock = generation.load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    lock = generation.load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     broken = replace(lock.models[0], **invalid)
     monkeypatch.setattr(generation, "load_recipe_model_lock", lambda *_: replace(
         lock, models=(broken, *lock.models[1:]),
@@ -73,7 +73,7 @@ def test_generation_rejects_incomplete_or_unpinned_lock_entry(monkeypatch, inval
 def test_generation_rejects_missing_required_lock_destination(monkeypatch, index):
     from astrid.packs.h3_av.shared import generation
 
-    lock = generation.load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    lock = generation.load_recipe_model_lock("comfyui", "linux-x86_64-cu130")
     missing = lock.models[index]
     monkeypatch.setattr(generation, "load_recipe_model_lock", lambda *_: replace(
         lock, models=tuple(model for model in lock.models if model is not missing),

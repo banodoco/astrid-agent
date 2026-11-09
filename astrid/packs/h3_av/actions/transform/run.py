@@ -50,7 +50,7 @@ from astrid.sdk.results import InvocationResult
 UNSUPPORTED_TARGET_MESSAGE = (
     "H3 execution-request target must be default or runpod; choose where H3 runs with --placement local|runpod"
 )
-LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
+LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install comfyui"
 
 
 def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
@@ -68,7 +68,7 @@ def _resolve_local_engine() -> Any:
     from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
 
     try:
-        return local_engine_endpoint("vibecomfy-h3")
+        return local_engine_endpoint("comfyui")
     except EngineError as exc:
         if exc.code == "endpoint_ownership":
             raise AstridError(f"local H3 engine endpoint ownership error ({exc.code}): {exc}",

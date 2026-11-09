@@ -461,7 +461,7 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     import sys
     pod = SlotPod(tuple_sources, tmp_path / "claim.json", _slot_classes(("audio", "tts")))
     # The managed target's inventory is the stand-in pod's install receipt; the controller keeps no model files.
-    pod.receipts["comfyui"] = pod._receipt_for("vibecomfy-h3")
+    pod.receipts["comfyui"] = pod._receipt_for("comfyui")
     pod.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = b"{}"
     comfy = pod.comfy
     class Handler(http.server.BaseHTTPRequestHandler):

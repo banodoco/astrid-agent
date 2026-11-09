@@ -573,7 +573,7 @@ def _compile_native_masked_edit(
     (workflow_resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_native_masked_edit",
         "node": "H3V2VGranularFractionalDenoise",
-        "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"], "steps": settings["steps"], "seed": seed,
@@ -771,7 +771,7 @@ def _compile_character_swap_v2(
     (workflow_resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_character_swap_adapter",
         "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"],
@@ -1112,7 +1112,7 @@ def _compile_generation(
     emit_bundle(graph, resource / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
     (resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_reference_adapter", "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
+        "comfy_commit": engine_source_revision("comfyui", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n")
     capabilities = {
         "operation": "generate",

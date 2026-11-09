@@ -84,7 +84,7 @@ class FakeContext:
     placement = "local"
 
     def __init__(self):
-        self.recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+        self.recipe = recipes.load_recipe("comfyui", PLATFORM)
         self.adapter = FakeAdapter()
         self.root = ROOT
         self.events = []
@@ -298,7 +298,7 @@ class FakeHttpsContext(FakeContext):
 def _resolve_once_recipe():
     """The pre-lock Linux recipe: same sources/wheels, resolved by the canonical compile at install time."""
     from astrid.core.generation.engine_contracts import RequirementsSpec, SourcePath
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     requirements = RequirementsSpec(
         "resolve-once", None,
         (SourcePath("comfyui", "requirements.txt"), SourcePath("vibecomfy", "pyproject.toml"),
@@ -384,7 +384,7 @@ def test_unsafe_plan_roots_rejected(setup, root):
 
 
 def test_windows_schema_plans_but_execution_refuses_before_context_io(setup):
-    recipe = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    recipe = recipes.load_recipe("comfyui", "windows-x86_64-cu130")
     plan = runner.plan_install(recipe, root=r"C:\engines\vibe", placement="local")
     assert plan.root == r"C:\engines\vibe"
     with pytest.raises(UnsupportedPlatform):
@@ -614,15 +614,15 @@ def test_reinstall_cli_exposes_safe_clean_root_command(tmp_path, capsys, command
 
     def refuse(**kwargs):
         raise EngineReinstallRequired.for_install(
-            engine="vibecomfy-h3", platform=PLATFORM, root=root, environment=environment,
+            engine="comfyui", platform=PLATFORM, root=root, environment=environment,
             step_id="environment:comfy")
 
-    rc = engine_cli.main([command, "vibecomfy-h3", "--platform", PLATFORM,
+    rc = engine_cli.main([command, "comfyui", "--platform", PLATFORM,
                           "--placement", "local", "--root", root], backend_factory=refuse)
     assert rc == 1
     error = json.loads(capsys.readouterr().err)["error"]
     clean_root = root + "-clean"
-    expected = shlex.join(("astrid", "engines", "install", "vibecomfy-h3", "--platform",
+    expected = shlex.join(("astrid", "engines", "install", "comfyui", "--platform",
                            PLATFORM, "--placement", "local", "--root", clean_root))
     assert error["code"] == "engine_reinstall_required"
     assert error["environment"] == environment
@@ -754,7 +754,7 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     }}).encode()
     (fixture / "pins.json").write_bytes(pins_bytes)
 
-    original = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    original = recipes.load_recipe("comfyui", PLATFORM)
     base_environment = original.environments[0]
     environment = replace(
         base_environment, name="comfy", relative_path="runtime/cpu-venv",
@@ -809,14 +809,16 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     recipe_path = current_code_root / recipe_rel
     recipe_path.parent.mkdir(parents=True, exist_ok=True)
     recipe_path.write_bytes(recipe_bytes)
-    cpu_index = {"schema": "astrid.engine-index.v1", "entries": [{
-        "engine": recipe_draft.engine, "platform": recipe_draft.platform,
-        "recipe": {"path": recipe_rel, "sha256": hashlib.sha256(recipe_bytes).hexdigest()},
-    }]}
-    (current_code_root / "packs/engine-index.json").write_text(json.dumps(cpu_index, sort_keys=True))
+    declarations = current_code_root / "packs"
+    for stale in declarations.glob("*/extensions/generation.engine/*.yaml"):
+        stale.unlink()
+    declaration = declarations / f"vibecomfy/extensions/generation.engine/{recipe_draft.engine}.yaml"
+    declaration.parent.mkdir(parents=True, exist_ok=True)
+    declaration.write_text(
+        f"recipes:\n  - platform: {recipe_draft.platform}\n    path: {recipe_rel}\n"
+        f"    sha256: \"{hashlib.sha256(recipe_bytes).hexdigest()}\"\n")
     monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_code_root / "packs/engine-index.json")
-    recipe = engine_recipe.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = engine_recipe.load_recipe("comfyui", PLATFORM)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ASTRID_INSTALL_UV", uv)
 
@@ -887,7 +889,7 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
 
     # Reconstruct an older selected package from the real candidate package
     # snapshot, changing only one selected helper byte after copying it.
-    current_code_root, current_index = engine_recipe._ROOT, engine_recipe._INDEX_PATH
+    current_code_root = engine_recipe._ROOT
     source_code_root = current_code_root
     baseline_manifest = runner.helper_manifest(recipe)
     old_code_root = tmp_path / "old-python/astrid"
@@ -896,7 +898,6 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     changed_helper = old_code_root / "core/generation/engine_contracts.py"
     changed_helper.write_bytes(changed_helper.read_bytes() + b"\n# prior helper fixture\n")
     monkeypatch.setattr(engine_recipe, "_ROOT", old_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", old_code_root / "packs/engine-index.json")
 
     old_root = str(tmp_path / "old-engine")
     clean_root = old_root + "-clean"
@@ -947,7 +948,6 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
         assert runner._sha(baseline_manifest) != old_helper
 
         monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
-        monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_index)
         current_helper = runner._sha(runner.helper_manifest(recipe))
         deadline = time.monotonic() + 60
         stale = runner.engine_status(recipe.engine, platform=PLATFORM, placement="local",
@@ -1102,8 +1102,8 @@ def test_initial_helper_error_retains_code_identity_and_step_without_receipt(set
 
 
 def test_exact_workspace_sibling_roots_are_lexically_supported(setup):
-    root = "/workspace/astrid/runtime/h3/vibecomfy-h3"
-    cache = "/workspace/astrid/engines/vibecomfy-h3/models"
+    root = "/workspace/astrid/runtime/h3/comfyui"
+    cache = "/workspace/astrid/engines/comfyui/models"
     plan = runner.plan_install(setup[1].recipe, root=root, placement="local")
     assert plan.root == root
     assert runner.validate_model_cache_root(cache, engine_root=plan.root,
@@ -1309,7 +1309,7 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
     with pytest.raises(AstridError, match="readiness reason: install_status_failed") as caught:
         ready()
     assert isinstance(caught.value.__cause__, local.EngineNotInstalled)
-    assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+    assert caught.value.recovery_command == "astrid engines install comfyui"
     assert context.files == persisted and json.loads(receipt_path.read_bytes()) == old
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
@@ -1473,7 +1473,7 @@ class Block(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Block())
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import plan_install
-p=plan_install(load_recipe('vibecomfy-h3','linux-x86_64-cu130'),root='/uncreated/install',placement='local')
+p=plan_install(load_recipe('comfyui','linux-x86_64-cu130'),root='/uncreated/install',placement='local')
 assert {s.kind for s in p.steps} == {'source','environment','model','start','health'}
 assert not any(m in sys.modules for m in ('runpod_lifecycle','runpod','paramiko'))
 print(len(p.steps))
@@ -1493,12 +1493,13 @@ def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setu
     assert ROOT not in runner._json(manifest)
     for path, digest in manifest.items():
         assert hashlib.sha256((recipes._ROOT / path).read_bytes()).hexdigest() == digest
-    assert {"packs/engine-index.json", "packs/runpod/recipe.linux-cu130.json",
+    assert {"packs/vibecomfy/extensions/generation.engine/comfyui.yaml", "packs/runpod/recipe.linux-cu130.json",
             setup[1].recipe.pins.path} <= manifest.keys()
 
 
 @pytest.mark.parametrize("path", ["core/generation/engine_runner.py", "core/generation/engine_runner_target.py",
-                                  "core/generation/model_downloader.py", "packs/engine-index.json"])
+                                  "core/generation/model_downloader.py",
+                                  "packs/vibecomfy/extensions/generation.engine/comfyui.yaml"])
 def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path, monkeypatch, path):
     recipe = setup[1].recipe
     original = runner.helper_manifest(recipe)
@@ -1507,7 +1508,6 @@ def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path,
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((recipes._ROOT / relative).read_bytes())
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
-    monkeypatch.setattr(recipes, "_INDEX_PATH", tmp_path / "packs/engine-index.json")
     assert runner.helper_manifest(recipe) == original
     changed = tmp_path / path
     changed.write_bytes(changed.read_bytes() + b"\n")
@@ -1517,7 +1517,7 @@ def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path,
 
 
 def _helper_payload(root, recipe=None, **extra):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM) if recipe is None else recipe
+    recipe = recipes.load_recipe("comfyui", PLATFORM) if recipe is None else recipe
     return {"schema": runner._HELPER_SCHEMA, "engine": recipe.engine, "platform": recipe.platform,
             "root": str(root), "recipe_sha256": recipes.recipe_digest(recipe),
             "helper_sha256": runner._sha(runner.helper_manifest(recipe)), **extra}
@@ -1537,7 +1537,7 @@ HASH_LOCK = "demo==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
 
 
 def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_once, tmp_path):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
     h3_requirements = tmp_path / h3.relative_path / "requirements.txt"
@@ -1562,7 +1562,7 @@ def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_on
 
 @pytest.mark.parametrize("declared", [False, True])
 def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolve_once, tmp_path, monkeypatch, declared):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     if not declared:
         recipe = replace(recipe, environments=(replace(recipe.environments[0], source_installs=()),))
         monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
@@ -1773,7 +1773,7 @@ def test_probe_still_accepts_pip_style_archive_hash_without_receipt(receipt_envi
 
 
 def test_target_lock_commit_interruption_reuses_exact_candidate(resolve_once, tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1800,7 +1800,7 @@ def test_target_stale_identity_refuses_interrupted_lock_without_mutation(
         resolve_once, tmp_path, operation):
     from astrid.core.generation.engine_contracts import EngineReinstallRequired
 
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1841,7 +1841,7 @@ def test_target_stale_identity_refuses_interrupted_lock_without_mutation(
 @pytest.mark.parametrize("bad", ["demo==1.0\n", "demo>=1.0 --hash=sha256:" + "a" * 64,
                                  "--index-url https://unreviewed.invalid\n", "", "demo==1.0 \\"])
 def test_target_refuses_unhashed_or_unresolved_locks(resolve_once, tmp_path, bad):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -1853,7 +1853,7 @@ def test_target_refuses_unhashed_or_unresolved_locks(resolve_once, tmp_path, bad
 
 
 def test_target_refuses_modified_or_unbound_persisted_lock(resolve_once, tmp_path):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
     target.dispatch("lock-inputs", payload)
@@ -2065,7 +2065,7 @@ def test_named_environments_have_distinct_lock_paths_and_complete_dependencies(s
 
 
 def test_target_node_lock_checks_canonical_commits_after_hash(tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     comfy = next(s for s in recipe.sources if s.name == "comfyui")
     prefix = comfy.relative_path + "/custom_nodes/"
     text = "\n".join(f'[nodepacks."{s.relative_path[len(prefix):]}"]\ncommit = "{s.pin.revision}"'
@@ -2092,7 +2092,7 @@ def test_target_node_lock_checks_canonical_commits_after_hash(tmp_path, monkeypa
 
 def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatch):
     from astrid.core.generation.engine_contracts import DataRef, RequirementsSpec
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     lock_bytes = HASH_LOCK.encode()
     ref = DataRef("packs/test/requirements.lock", hashlib.sha256(lock_bytes).hexdigest())
     req = RequirementsSpec("packaged", ref, (), (), None)
@@ -2112,7 +2112,7 @@ LINUX_LOCK_SHA256 = "b501e04a13951eb00f03412e9ab5288ab8e8eaca1caf61251268a976a36
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     requirements = recipe.environments[0].requirements
     assert (requirements.mode, requirements.input_paths, requirements.constraints, requirements.exclude_newer) == (
         "packaged", (), (), None)
@@ -2133,12 +2133,12 @@ def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
     # pip is not declared by the canonical source inputs for this closure.
     assert "pip" not in by_name
     # The reviewed index digest binds the exact recipe bytes that name this lock.
-    entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("vibecomfy-h3", PLATFORM))
+    entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("comfyui", PLATFORM))
     assert hashlib.sha256((Path(recipes._ROOT) / entry.recipe.path).read_bytes()).hexdigest() == entry.recipe.sha256
 
 
 def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path, monkeypatch):
-    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
     shipped = (Path(recipes._ROOT) / LINUX_LOCK_PATH).read_bytes()
     payload = _helper_payload(tmp_path, recipe, environment="comfy")
     directory = tmp_path / ".astrid-engine/environments/comfy"
@@ -2198,7 +2198,7 @@ def test_h3_packaged_sync_allows_only_three_source_builds_and_uses_support_lock(
         "--build-constraints", support, support)
     recipe = setup[1].recipe
     assert (recipe.engine, recipe.platform, recipe.environments[0].requirements.mode) == (
-        "vibecomfy-h3", PLATFORM, "packaged")
+        "comfyui", PLATFORM, "packaged")
     sync_index = commands.index(sync)
     check = next(i for i, command in enumerate(commands) if "check" in command)
     source_installs = [i for i, command in enumerate(commands)

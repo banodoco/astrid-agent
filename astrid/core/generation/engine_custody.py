@@ -1006,7 +1006,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("_serve", "stop"))
     parser.add_argument("value")
-    parser.add_argument("--engine", default="vibecomfy-h3")
+    parser.add_argument("--engine", default="comfyui")
     parser.add_argument("--platform", default="linux-x86_64-cu130")
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--lock-fd", type=int)

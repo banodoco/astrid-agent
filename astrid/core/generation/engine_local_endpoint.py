@@ -202,7 +202,7 @@ def _installed_receipt(
 
 
 def local_engine_endpoint(
-    engine: str = "vibecomfy-h3",
+    engine: str = "comfyui",
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,
@@ -328,7 +328,7 @@ MODELS_RELATIVE_PATH = "models"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
-def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "vibecomfy-h3") -> Any:
+def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "comfyui") -> Any:
     """The model-root binding attested by an installed engine's receipt.
 
     The inventory is the receipt's verified model lock: one entry (path under ``<root>/models``,
@@ -374,7 +374,7 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "v
 
 
 def local_model_root_binding(
-    engine: str = "vibecomfy-h3",
+    engine: str = "comfyui",
     *,
     platform: str = DEFAULT_PLATFORM,
     root: str | None = None,

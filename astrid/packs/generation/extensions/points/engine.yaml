@@ -5,3 +5,4 @@ side: agent
 cardinality: many
 effects_allowed: [read, edit]
 protocol: engine_protocol.py:Engine
+schema: engine.schema.json

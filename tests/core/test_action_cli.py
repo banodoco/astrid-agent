@@ -5,7 +5,7 @@ host and invokes the real ``h3_av.transform`` action.  Inputs are the clip reque
 with ``ASTRID_CLIP_REQUEST`` / ``ASTRID_CLIP_ASSET_MAP``).
 
 Not covered here: a completed run (exit 0, receipt placement ``local``).  The action first requires an
-installed local ``vibecomfy-h3`` engine (``astrid engines install vibecomfy-h3``: git sources, locks, model
+installed local ``comfyui`` engine (``astrid engines install comfyui``: git sources, locks, model
 files), which the fake ComfyUI in ``tests/helpers/h3_cpu_runtime.py`` cannot stand in for.
 """
 from __future__ import annotations

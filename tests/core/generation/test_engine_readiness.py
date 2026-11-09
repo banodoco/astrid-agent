@@ -45,7 +45,7 @@ from astrid.core.generation.engine_runner import _json, _plain, _sha, helper_man
 from tests._checkouts import runtime_checkout, vibecomfy_checkout, vibecomfy_git_root
 
 PLATFORM = "linux-x86_64-cu130"
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = runtime_checkout()
 VIBECOMFY_SOURCE = vibecomfy_checkout()
@@ -213,10 +213,10 @@ def _script(path, body):
     return str(path)
 
 
-@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "vibecomfy-h3-a04"])
+@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "comfyui-a04"])
 def installation(tmp_path_factory, request):
-    engine = ENGINE if request.param == "vibecomfy-h3-a04" else request.param
-    a04_source = request.param == "vibecomfy-h3-a04"
+    engine = ENGINE if request.param == "comfyui-a04" else request.param
+    a04_source = request.param == "comfyui-a04"
     version = COMFY_VERSION if engine == ENGINE else "0.43.2"
     mp = pytest.MonkeyPatch()
     tmp = tmp_path_factory.mktemp("readiness")
@@ -640,12 +640,12 @@ def test_default_status_is_the_canonical_status_operation(monkeypatch):
                         lambda **kwargs: calls.append(("backend", kwargs)) or (context, object()))
     monkeypatch.setattr(engine_runner, "engine_status",
                         lambda engine, **kwargs: calls.append(("status", engine, kwargs)) or "receipt")
-    assert readiness.canonical_status(root="/workspace/astrid/engines/vibecomfy-h3", deadline=12.0) == "receipt"
+    assert readiness.canonical_status(root="/workspace/astrid/engines/comfyui", deadline=12.0) == "receipt"
     assert calls == [
         ("backend", {"engine": ENGINE, "platform": PLATFORM, "placement": "local",
-                     "root": "/workspace/astrid/engines/vibecomfy-h3", "deadline": 12.0}),
+                     "root": "/workspace/astrid/engines/comfyui", "deadline": 12.0}),
         ("status", ENGINE, {"platform": PLATFORM, "placement": "local",
-                            "root": "/workspace/astrid/engines/vibecomfy-h3", "context": context, "deadline": 12.0}),
+                            "root": "/workspace/astrid/engines/comfyui", "context": context, "deadline": 12.0}),
     ]
 
 

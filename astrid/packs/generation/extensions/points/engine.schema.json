@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "recipes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["platform", "path", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "platform": {"type": "string"},
+          "path": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

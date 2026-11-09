@@ -1040,8 +1040,8 @@ def test_install_sets_the_gpu_sanity_command(tmp_path, video):
     install = job_commands(pod, "install")[0]
     sanity = "/opt/astrid/bin/python /root/bundle/src/astrid-agent/scripts/gpu_sanity.py"
     assert f"export ASTRID_ENGINE_SANITY_CMD='{sanity}'" in install
-    assert ("--root /root/astrid/engines/vibecomfy-h3" in install and "--deadline 14400" in install
-            and "engines install vibecomfy-h3 --placement local" in install)
+    assert ("--root /root/astrid/engines/comfyui" in install and "--deadline 14400" in install
+            and "engines install comfyui --placement local" in install)
     # the export comes before the install command, and the script the command names ships in this repo
     assert install.index("ASTRID_ENGINE_SANITY_CMD") < install.index("astrid engines install")
     assert (SCRIPT.parent / "gpu_sanity.py").is_file()
@@ -1465,8 +1465,8 @@ def test_cache_mount_and_live_handshake_order_are_bound_to_claim(tmp_path, video
     assert session.state["runtime_ready"]["volume_id"] == session.state["storage"]["volume_id"]
     assert session.state["runtime_ready"]["runtime_lock_sha256"] == json.loads((session.workdir / "source-identity.json").read_text())["runtime_lock_sha256"]
     install = job_commands(pod, "install")[0]
-    assert "--model-cache-root /workspace/astrid/engines/vibecomfy-h3/models" in install
-    assert "--root /root/astrid/engines/vibecomfy-h3" in install
+    assert "--model-cache-root /workspace/astrid/engines/comfyui/models" in install
+    assert "--root /root/astrid/engines/comfyui" in install
 
 
 def test_synthetic_successful_storage_observation_is_private_and_in_progress(tmp_path, video, monkeypatch):

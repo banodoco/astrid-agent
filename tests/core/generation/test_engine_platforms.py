@@ -15,7 +15,7 @@ ROOT = "/TARGET_ONLY/engine"
 
 @pytest.fixture
 def recipe():
-    return engine_recipe.load_recipe("vibecomfy-h3", KEY)
+    return engine_recipe.load_recipe("comfyui", KEY)
 
 
 def test_keys():

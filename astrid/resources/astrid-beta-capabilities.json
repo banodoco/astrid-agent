@@ -18,20 +18,6 @@
    "required_packages": []
   },
   {
-   "id": "comfy_wrap.run",
-   "disposition": "optional",
-   "evidence_reason": "Optional local-generation wrapper; retained with truthful VibeComfy preflight.",
-   "adapter_family": "local_generation",
-   "resource_keys": [
-    "gpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": [
-    "vibecomfy"
-   ]
-  },
-  {
    "id": "capture.web_page",
    "disposition": "optional",
    "evidence_reason": "Headless Chromium capture of one https page to PNG plus provenance receipt; network limited to the requested https host through the host broker (dynamic_url_inputs).",
