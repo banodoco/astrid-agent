@@ -28,14 +28,23 @@ PATH entry. Use the path for the user's OS:
 
 Check the routes in this order. Use the first one that fits, and only that one:
 
-1. **App brief**: the brief has a yes/no line about installing with the
-   recommended choices. A yes means the choices are supplied. Go to step 1.
-   There, ask the user, "Install with these choices, or change one?"
+1. **App brief**: the brief lists the setup choices and a command. Show those
+   values back, ask "Install with these choices, or change one?", and on no
+   change run the brief's command exactly as given. If they change one, go to
+   step 1.
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
    consent once, unless they have already given it. Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
-   they have already approved this run. Then go to step 1. The install command
-   will repair or restart Astrid and keep existing work.
+   they have already approved this run. Your saved setup choices stay as they
+   are. Tell me if you want to change one. Do not show the choices list. Run
+   the install command for the user's OS with no choice flags:
+   `curl -fsSL https://astrid.haus/install | sh` on macOS or Linux, or
+   `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))` in
+   Windows PowerShell. Add a choice flag only for a choice the user names,
+   using step 2's spelling. `--yes` is not needed here: the installer asks for
+   consent only on a fresh install. The install command will repair or restart
+   Astrid and keep existing work, then follow step 2's success and failure
+   rules.
 
 ## 1. The choices
 

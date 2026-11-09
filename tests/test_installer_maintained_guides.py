@@ -170,7 +170,7 @@ EXISTING_INSTALL_COMMANDS = (
 def _routes() -> dict:
     # Map each entry route's bold name ("App brief", ...) to its text.
     body = _steps(_skill()).get(0, "")
-    return {match.group(1): match.group(0) for match in re.finditer(
+    return {match.group(1): " ".join(match.group(0).split()) for match in re.finditer(
         r"^\d\. \*\*([^*]+)\*\*:.*?(?=^\d\. \*\*|\Z)", body, re.M | re.S)}
 
 
