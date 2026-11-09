@@ -35,8 +35,9 @@ Check the routes in this order. Use the first one that fits, and only that one:
 2. **Fresh install**: no launcher exists at its path above. Ask the user for
    consent once, unless they have already given it. Then go to step 1.
 3. **Existing install**: the launcher exists. Ask the user for consent, unless
-   they have already approved this run. Your saved setup choices stay as they
-   are. Tell me if you want to change one. Do not show the choices list. Run
+   they have already approved this run. Tell the user: "Your saved setup choices
+   stay as they are. Tell me if you want to change one." Do not show the choices
+   list. Run
    the install command for the user's OS with no choice flags:
    `curl -fsSL https://astrid.haus/install | sh` on macOS or Linux, or
    `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1)))` in
