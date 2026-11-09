@@ -5,7 +5,8 @@
   {
    "id": "blender.render",
    "disposition": "optional",
-   "evidence_reason": "Optional local Blender integration; retained with truthful binary preflight.",
+   "external_pack": "blender",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add blender`. Optional local Blender integration; retained with truthful binary preflight.",
    "adapter_family": "render",
    "resource_keys": [
     "render"
@@ -34,7 +35,8 @@
   {
    "id": "capture.web_page",
    "disposition": "optional",
-   "evidence_reason": "Headless Chromium capture of one https page to PNG plus provenance receipt; network limited to the requested https host through the host broker (dynamic_url_inputs).",
+   "external_pack": "capture",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add capture`. Headless Chromium capture of one https page to PNG plus provenance receipt; network limited to the requested https host through the host broker (dynamic_url_inputs).",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -46,7 +48,8 @@
   {
    "id": "chiptune.compose",
    "disposition": "optional",
-   "evidence_reason": "Local numpy NES-style chiptune synthesis with bar-snapped sections and a beat grid; no network, no samples, no GPU.",
+   "external_pack": "chiptune",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add chiptune`. Local numpy NES-style chiptune synthesis with bar-snapped sections and a beat grid; no network, no samples, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -60,7 +63,8 @@
   {
    "id": "chiptune.midi",
    "disposition": "optional",
-   "evidence_reason": "Local numpy NES-style rendering of a Standard MIDI File (melody, arpeggio and bass voices); no network, no samples, no GPU.",
+   "external_pack": "chiptune",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add chiptune`. Local numpy NES-style rendering of a Standard MIDI File (melody, arpeggio and bass voices); no network, no samples, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -74,7 +78,8 @@
   {
    "id": "chiptune.sfx",
    "disposition": "optional",
-   "evidence_reason": "Local numpy chiptune one-shot synthesis (single and zip batch); no network, no samples, no GPU.",
+   "external_pack": "chiptune",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add chiptune`. Local numpy chiptune one-shot synthesis (single and zip batch); no network, no samples, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -87,8 +92,9 @@
   },
   {
    "id": "editorial.arrange",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -99,8 +105,9 @@
   },
   {
    "id": "editorial.boundary_candidates",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -111,8 +118,9 @@
   },
   {
    "id": "editorial.editor_review",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -122,9 +130,10 @@
    "required_packages": []
   },
   {
-   "id": "editorial.human_notes",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "id": "video_editing.human_notes",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`. Was editorial.human_notes; the action now lives in the video_editing pack.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -135,8 +144,9 @@
   },
   {
    "id": "editorial.human_review",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -147,8 +157,9 @@
   },
   {
    "id": "editorial.inspect_cut",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -159,8 +170,9 @@
   },
   {
    "id": "editorial.pacing",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -171,8 +183,9 @@
   },
   {
    "id": "editorial.quality_zones",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -183,8 +196,9 @@
   },
   {
    "id": "editorial.quote_scout",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -195,8 +209,9 @@
   },
   {
    "id": "editorial.refine",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -207,8 +222,9 @@
   },
   {
    "id": "editorial.scenes",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -220,7 +236,8 @@
   {
    "id": "editorial.script_pipeline",
    "disposition": "optional",
-   "evidence_reason": "Optional provider-backed editorial path; retained with truthful preflight.",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`. Optional provider-backed editorial path; retained with truthful preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -231,8 +248,9 @@
   },
   {
    "id": "editorial.shots",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -244,7 +262,8 @@
   {
    "id": "editorial.transcribe",
    "disposition": "optional",
-   "evidence_reason": "Optional credential-backed transcription; retained with truthful preflight.",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`. Optional credential-backed transcription; retained with truthful preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -257,8 +276,9 @@
   },
   {
    "id": "editorial.triage",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -269,8 +289,9 @@
   },
   {
    "id": "editorial.validate",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "editorial",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add editorial`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -282,7 +303,8 @@
   {
    "id": "fal.fal_foley",
    "disposition": "optional",
-   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "external_pack": "fal",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add fal`. Optional hosted FAL integration; retained with truthful credential preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -296,7 +318,8 @@
   {
    "id": "fal.h3_video",
    "disposition": "optional",
-   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "external_pack": "fal",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add fal`. Optional hosted FAL integration; retained with truthful credential preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -309,8 +332,9 @@
   },
   {
    "id": "foley.foley_map",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "foley",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add foley`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -321,8 +345,9 @@
   },
   {
    "id": "foley.foley_review",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/media capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "foley",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add foley`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -333,8 +358,9 @@
   },
   {
    "id": "foley.tile_video",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/media capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "foley",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add foley`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -542,8 +568,9 @@
   },
   {
    "id": "video_editing.sync_draft_voiceover",
-   "disposition": "required",
-   "evidence_reason": "Caller-authorized draft voiceover synchronization over the canonical timeline and generation speech route.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -554,8 +581,9 @@
   },
   {
    "id": "iteration.assemble",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "iteration",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add iteration`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -566,8 +594,9 @@
   },
   {
    "id": "iteration.experiment_import",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "iteration",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add iteration`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -578,8 +607,9 @@
   },
   {
    "id": "iteration.experiment_prepare",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "iteration",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add iteration`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -590,8 +620,9 @@
   },
   {
    "id": "iteration.experiment_review",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "iteration",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add iteration`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -602,8 +633,9 @@
   },
   {
    "id": "iteration.experiment_review_session",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/interactive iteration review capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "iteration",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add iteration`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -614,8 +646,9 @@
   },
   {
    "id": "media.clip_extract",
-   "disposition": "required",
-   "evidence_reason": "Required local FFmpeg media capability; binary preflight is explicit.",
+   "disposition": "optional",
+   "external_pack": "media",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add media`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -629,7 +662,8 @@
   {
    "id": "media.gif_search",
    "disposition": "optional",
-   "evidence_reason": "Optional network-backed media search; retained with truthful preflight.",
+   "external_pack": "media",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add media`. Optional network-backed media search; retained with truthful preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -643,7 +677,8 @@
   {
    "id": "media.speech_repair_lavasr",
    "disposition": "optional",
-   "evidence_reason": "Optional hosted speech repair; retained with truthful preflight.",
+   "external_pack": "media",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add media`. Optional hosted speech repair; retained with truthful preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -660,7 +695,8 @@
   {
    "id": "pixel.cutout",
    "disposition": "optional",
-   "evidence_reason": "Local Pillow/numpy chroma or flat-background cutout with hard alpha; no network, no GPU.",
+   "external_pack": "pixel",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add pixel`. Local Pillow/numpy chroma or flat-background cutout with hard alpha; no network, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -675,7 +711,8 @@
   {
    "id": "pixel.sprites",
    "disposition": "optional",
-   "evidence_reason": "Local Pillow/numpy sheet split, lattice snap, and hard-alpha cutout; no network or GPU.",
+   "external_pack": "pixel",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add pixel`. Local Pillow/numpy sheet split, lattice snap, and hard-alpha cutout; no network or GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -690,7 +727,8 @@
   {
    "id": "pixel.snap",
    "disposition": "optional",
-   "evidence_reason": "Local Pillow/numpy pixel-grid snap and palette quantize; no network, no GPU.",
+   "external_pack": "pixel",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add pixel`. Local Pillow/numpy pixel-grid snap and palette quantize; no network, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -705,7 +743,8 @@
   {
    "id": "pixel.strip",
    "disposition": "optional",
-   "evidence_reason": "Local Pillow/numpy join of ordered pixel-art frames into one shared-grid horizontal strip; no network, no GPU.",
+   "external_pack": "pixel",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add pixel`. Local Pillow/numpy join of ordered pixel-art frames into one shared-grid horizontal strip; no network, no GPU.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -720,7 +759,8 @@
   {
    "id": "music.align",
    "disposition": "optional",
-   "evidence_reason": "Local numpy onset/chroma alignment of MIDI or audio using ffmpeg decoding.",
+   "external_pack": "music",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add music`. Local numpy onset/chroma alignment of MIDI or audio using ffmpeg decoding.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -736,7 +776,8 @@
   {
    "id": "music.level",
    "disposition": "optional",
-   "evidence_reason": "Local ffmpeg ebur128 measurement of a used audio source span.",
+   "external_pack": "music",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add music`. Local ffmpeg ebur128 measurement of a used audio source span.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -750,7 +791,8 @@
   {
    "id": "music.beats",
    "disposition": "optional",
-   "evidence_reason": "Local numpy beat and downbeat analysis of ffmpeg-decoded music.",
+   "external_pack": "music",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add music`. Local numpy beat and downbeat analysis of ffmpeg-decoded music.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -766,7 +808,8 @@
   {
    "id": "music.duck",
    "disposition": "optional",
-   "evidence_reason": "Local ffmpeg loudness analysis and speech-keyed gain shaping for a pinned music snapshot; writes a managed ducked WAV and analysis report.",
+   "external_pack": "music",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add music`. Local ffmpeg loudness analysis and speech-keyed gain shaping for a pinned music snapshot; writes a managed ducked WAV and analysis report.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -783,7 +826,8 @@
   {
    "id": "moirae.moirae",
    "disposition": "optional",
-   "evidence_reason": "Optional terminal-video capability; retained with truthful binary preflight.",
+   "external_pack": "moirae",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add moirae`. Optional terminal-video capability; retained with truthful binary preflight.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -997,8 +1041,9 @@
   },
   {
    "id": "stream_content.clip_candidates",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "stream_content",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add stream_content`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1010,7 +1055,8 @@
   {
    "id": "stream_content.distill",
    "disposition": "optional",
-   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "external_pack": "stream_content",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add stream_content`. Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1026,7 +1072,8 @@
   {
    "id": "stream_content.segment_map",
    "disposition": "optional",
-   "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
+   "external_pack": "stream_content",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add stream_content`. Current-machine CPU/media analysis capability covered by the generic host.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1041,8 +1088,8 @@
   },
   {
    "id": "training.pool_build",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/training utility capability covered by the generic host.",
+   "disposition": "optional",
+   "evidence_reason": "Needs the editorial and understanding packs, which moved to poms_packs; ready once both are installed with `astrid packs add`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1065,8 +1112,8 @@
   },
   {
    "id": "training.pool_merge",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/training utility capability covered by the generic host.",
+   "disposition": "optional",
+   "evidence_reason": "Needs the editorial and understanding packs, which moved to poms_packs; ready once both are installed with `astrid packs add`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1106,8 +1153,9 @@
   },
   {
    "id": "typed_timeline.map",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/timeline utility capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "typed_timeline",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add typed_timeline`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1118,8 +1166,9 @@
   },
   {
    "id": "understanding.audio_understand",
-   "disposition": "required",
-   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "understanding",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add understanding`.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1132,8 +1181,9 @@
   },
   {
    "id": "understanding.scene_describe",
-   "disposition": "required",
-   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "understanding",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add understanding`.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1146,8 +1196,9 @@
   },
   {
    "id": "understanding.understand",
-   "disposition": "required",
-   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "understanding",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add understanding`.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1160,8 +1211,9 @@
   },
   {
    "id": "understanding.video_understand",
-   "disposition": "required",
-   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "understanding",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add understanding`.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1174,8 +1226,9 @@
   },
   {
    "id": "understanding.visual_understand",
-   "disposition": "required",
-   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "understanding",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add understanding`.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1244,8 +1297,9 @@
   },
   {
    "adapter_family": "provider",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.animate_image",
    "required_binaries": [
     "ffmpeg",
@@ -1261,8 +1315,9 @@
   },
   {
    "id": "video_editing.cut",
-   "disposition": "required",
-   "evidence_reason": "Current-machine CPU/video editing capability covered by the generic host.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "adapter_family": "cpu",
    "resource_keys": [
     "cpu"
@@ -1274,7 +1329,8 @@
   {
    "adapter_family": "cpu",
    "disposition": "optional",
-   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`. Required public action in the active core Video Editing pack; local binary readiness is explicit.",
    "id": "video_editing.event_talks",
    "required_binaries": [
     "ffmpeg",
@@ -1289,8 +1345,9 @@
   },
   {
    "adapter_family": "cpu",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.hype",
    "required_binaries": [
     "ffmpeg",
@@ -1304,8 +1361,9 @@
   },
   {
    "adapter_family": "cpu",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; local execution dependencies are explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.iteration_video",
    "required_binaries": [],
    "required_env": [],
@@ -1316,8 +1374,9 @@
   },
   {
    "adapter_family": "provider",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.logo_ideas",
    "required_binaries": [],
    "required_env": [
@@ -1331,8 +1390,9 @@
   },
   {
    "adapter_family": "cpu",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.thumbnail_maker",
    "required_binaries": [
     "ffmpeg",
@@ -1346,8 +1406,9 @@
   },
   {
    "adapter_family": "provider",
-   "disposition": "required",
-   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "disposition": "optional",
+   "external_pack": "video_editing",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add video_editing`.",
    "id": "video_editing.vary_grid",
    "required_binaries": [],
    "required_env": [
@@ -1362,7 +1423,8 @@
   {
    "id": "youtube.youtube_audio",
    "disposition": "optional",
-   "evidence_reason": "Optional external media import integration; retained with truthful binary preflight.",
+   "external_pack": "youtube",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add youtube`. Optional external media import integration; retained with truthful binary preflight.",
    "adapter_family": "provider",
    "resource_keys": [
     "provider"
@@ -1489,7 +1551,8 @@
   {
    "id": "seedance_local.reference_video",
    "disposition": "optional",
-   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "external_pack": "seedance_local",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add seedance_local`. Optional hosted FAL integration; retained with truthful credential preflight.",
    "adapter_family": "provider",
    "resource_keys": ["provider"],
    "required_env": ["FAL_KEY"],
@@ -1523,7 +1586,8 @@
   {
    "id": "discord_local.command",
    "disposition": "optional",
-   "evidence_reason": "Optional personal Discord adapter; retained with truthful binary preflight.",
+   "external_pack": "discord_local",
+   "evidence_reason": "Moved to poms_packs; install with `astrid packs add discord_local`. Optional personal Discord adapter; retained with truthful binary preflight.",
    "adapter_family": "provider",
    "resource_keys": ["provider"],
    "required_env": [],
