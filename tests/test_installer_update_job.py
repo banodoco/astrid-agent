@@ -656,8 +656,9 @@ def test_explicit_saved_autostart_off_refuses_acceptance_without_mutating_prefer
     selection["choices"] = {"autostart": False}
     write_json(selection_path, selection)
     before = selection_path.read_bytes()
-    with pytest.raises(ValueError, match="autostart is off"):
+    with pytest.raises(ValueError, match="autostart is off") as refusal:
         update_job.accept(request)
+    assert getattr(refusal.value, "reason", None) == "autostart-off"
     assert selection_path.read_bytes() == before
     assert startup_path.read_bytes() == startup_before
     assert "update_job" not in read_json(root / "install.json")
@@ -807,6 +808,16 @@ def test_worker_validation_failure_cleans_from_its_own_job_context(tmp_path, mon
 
 
 @pytest.mark.parametrize("terminal_state", ["updated", "rolled_back", "failed"])
+def test_legacy_selection_without_a_choice_record_snapshots_autostart_on(tmp_path, monkeypatch):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    selection_path = Path(request["selection_path"])
+    selection = read_json(selection_path)
+    selection.pop("choices", None)
+    write_json(selection_path, selection)
+    job = update_job.accept(request)
+    assert job["autostart_snapshot"] is True
+
+
 def test_worker_terminal_handoff_cleans_once_and_preserves_preferences_and_job_name(
         tmp_path, monkeypatch, terminal_state):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
