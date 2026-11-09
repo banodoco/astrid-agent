@@ -36,8 +36,8 @@ command, installs Astrid skills, and leaves skill copies off. Each choice has a
 flag: `--autostart on|off`, `--command on|off`, `--skills on|off`, and
 `--skill-copies on|off`. On a fresh install, Astrid asks for your consent once,
 unless you have already given it. After consent, run one installer command
-with your approved values. An already-approved handoff needs no second consent
-question; it keeps all its choices.
+with your approved values. An already-approved handoff
+needs no second consent question; it keeps all its choices.
 
 macOS or Linux (Terminal):
 
