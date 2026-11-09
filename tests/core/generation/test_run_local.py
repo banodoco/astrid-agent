@@ -311,3 +311,24 @@ def test_prepared_random_seed_is_fresh_recorded_and_replayable(monkeypatch):
     assert second == {"prompt": "exact prompt", "seed": 456}
     assert prepare_execution_bindings(workflow, first) == first
     assert prepare_execution_bindings(workflow, {"seed": 0}) == {"seed": 0}
+
+
+def test_run_scoped_overrides_preserve_built_graph_and_only_namespace_declared_outputs():
+    import copy
+    from types import SimpleNamespace
+    from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
+
+    class Workflow:
+        def __init__(self):
+            self.nodes = {"save": SimpleNamespace(inputs={"filename_prefix": "chosen", "images": ["decode", 0]}, widgets={}),
+                          "other": SimpleNamespace(inputs={"filename_prefix": "untouched", "seed": 7}, widgets={})}
+            self.outputs = [SimpleNamespace(node_id="save")]
+            self.metadata = {"model_assets": [{"name": "chosen.bin"}]}
+        def clone(self):
+            return copy.deepcopy(self)
+    built = Workflow()
+    scoped = run_scoped_overrides(built, "attempt-123")
+    assert built.nodes["save"].inputs["filename_prefix"] == "chosen"
+    assert scoped.nodes["save"].inputs == {"filename_prefix": "chosen_astrid_attempt-123", "images": ["decode", 0]}
+    assert scoped.nodes["other"].inputs == built.nodes["other"].inputs
+    assert scoped.metadata == built.metadata

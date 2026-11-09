@@ -65,6 +65,21 @@ def _spy_child_align(monkeypatch, path):
     bootstrap = f'''import json, runpy, sys
 from pathlib import Path
 from astrid.core.generation import entries
+from astrid.packs.vibecomfy import local_server_engine
+original_approve = local_server_engine._approve_live
+def approve(bundle, bindings, provider):
+    with Path({str(path)!r}).open("a") as sink:
+        sink.write(json.dumps({{"event": "runtime_bindings", "bindings": bindings}}) + "\\n")
+    return original_approve(bundle, bindings, provider)
+local_server_engine._approve_live = approve
+original_local_bundle = local_server_engine.local_server_bundle
+def local_bundle(*args, **kwargs):
+    identity = kwargs.get("output_identity")
+    if identity is not None:
+        with Path({str(path)!r}).open("a") as sink:
+            sink.write(json.dumps({{"event": "output_namespace", "identity": identity}}) + "\\n")
+    return original_local_bundle(*args, **kwargs)
+local_server_engine.local_server_bundle = local_bundle
 original_table = entries.engine_table
 def table():
     engines = original_table()
@@ -113,18 +128,18 @@ class Recorder:
 
         def spy_prepare(*args, **kwargs):
             workflow, plan, assets = prepare(*args, **kwargs)
-            self.sink.append(("graph", _graph(workflow), _text(plan.get("bindings", {}))))
+            self.sink.append(("graph", _graph(workflow), _text(plan.get("bindings", {})), workflow.clone()))
             return workflow, plan, assets
 
         def spy_build_entry(entry, inputs, job_dir, **kwargs):
             built = build_entry(entry, inputs, job_dir, **kwargs)
             if built is not None:
-                self.sink.append(("graph", _graph(built["workflow"]), _text(dict(built["bindings"]))))
+                self.sink.append(("graph", _graph(built["workflow"]), _text(dict(built["bindings"])), built["workflow"].clone()))
             return built
 
         def spy_catalog(*args, **kwargs):
             workflow, plan, schema, assets = catalog(*args, **kwargs)
-            self.sink.append(("graph", _graph(workflow), _text(dict(plan.get("bindings", {})))))
+            self.sink.append(("graph", _graph(workflow), _text(dict(plan.get("bindings", {}))), workflow.clone()))
             return workflow, plan, schema, assets
 
         monkeypatch.setattr(workflow_entries, "prepare", spy_prepare)
@@ -139,8 +154,8 @@ class Recorder:
 def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     """The graph and bindings a run settled on: its last built workflow."""
     assert rows, "the run built no graph"
-    _, graph, bindings = rows[-1]
-    return graph, bindings
+    _, graph, bindings, workflow = rows[-1]
+    return graph, bindings, workflow
 
 
 @pytest.mark.parametrize("cell,target_kind", CELLS)
@@ -163,11 +178,14 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
     align_log = tmp_path / "actual-align.jsonl"
     _spy_child_align(monkeypatch, align_log)
     runs = {}
+    replay_seed = None
 
     def run(facade, controls, tmp, **extra):
         if h3:
             return facade.video(entry="h3", request=str(H3_REQUEST), asset_map=str(h3_assets), **controls, **extra)
         inputs = dict(PROMPTS[cell])
+        if replay_seed is not None:
+            inputs["seed"] = replay_seed  # reproduce the concrete seed shown by the dry preparation
         if modality == "image" and mode == "edit":
             source = tmp / "source.png"
             Image.new("RGB", (64, 64), (200, 30, 30)).save(source)
@@ -176,9 +194,12 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         return method(mode=mode, **controls, **inputs, **extra)
 
     def call(facade, controls, tmp):
+        nonlocal replay_seed
         recorder.take()
         dry = run(facade, controls, tmp, dry_run=True)
         runs["dry"] = (dry, recorder.take())
+        if not h3:
+            replay_seed = dry["entry"]["bindings"].get("seed")
         live = run(facade, controls, tmp)
         runs["live"] = (live, recorder.take())
         return live
@@ -188,8 +209,8 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         assert result.ok, json.dumps(result.to_dict(), default=str)[:2000]
         (dry, dry_rows), (live, live_rows) = runs["dry"], runs["live"]
         assert isinstance(dry, dict) and dry["status"] == "ready", dry
-        dry_graph, dry_bindings = _built(dry_rows)
-        live_graph, live_bindings = _built(live_rows)
+        dry_graph, dry_bindings, dry_workflow = _built(dry_rows)
+        live_graph, live_bindings, live_workflow = _built(live_rows)
         # 1. The built graph is real, and a prompt cell binds its prompt.
         built = json.loads(live_graph)
         assert built["api"], "the built graph is empty"
@@ -199,16 +220,15 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         if not h3:
             assert json.loads(live_bindings), "a prompt cell bound no values"
         # The local child records the exact argument passed to real engine.align.
+        assert align_log.is_file(), "the real child recorded no engine events"
+        events = [json.loads(line) for line in align_log.read_text().splitlines()]
         if target_kind == "local-managed":
-            assert align_log.is_file(), "the local run never called engine.align"
-            events = [json.loads(line) for line in align_log.read_text().splitlines()]
             actual = [event["manifest"] for event in events if event["event"] == "align"]
             assert len(actual) == 1, actual
             assert actual[0] == dry["entry"]["requirements"], "dry and actual align manifests differ"
         elif h3:
             # Attached defaults to trust, so it does not align. Still prove that the real child
             # reads the emitted built graph rather than h3's static bundle or rebuilding h3.
-            events = [json.loads(line) for line in align_log.read_text().splitlines()]
             actual = [event for event in events if event["event"] == "requirements"]
             assert len(actual) == 1, actual
             assert actual[0]["manifest"] == dry["entry"]["requirements"]
@@ -216,4 +236,20 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
 
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
-        assert submitted == _output_reachable(built), "submitted graph differs in nodes, inputs, links or values"
+        namespaces = [event["identity"] for event in events if event["event"] == "output_namespace"]
+        assert len(namespaces) == 1, namespaces
+        from astrid.packs.vibecomfy.local_server_engine import run_scoped_overrides
+        scoped = run_scoped_overrides(live_workflow, namespaces[0])
+        # Uploads bind declared media inputs to the exact names returned by ComfyUI. Every
+        # non-media value must remain the prepared value, including prompt and resolved seed.
+        runtime = [event["bindings"] for event in events if event["event"] == "runtime_bindings"]
+        assert len(runtime) == 1, runtime
+        media = {name: value for name, value in runtime[0].items() if str(
+            getattr(scoped.inputs[name], "media_semantics", "") or "").lower() in {"image", "mask", "audio", "video"}}
+        for name, value in runtime[0].items():
+            if name not in media:
+                assert json.loads(live_bindings).get(name, scoped.inputs[name].value) == value, name
+        for name, value in media.items():
+            scoped.set_input(name, value)
+        expected = _output_reachable(json.loads(_graph(scoped)))
+        assert submitted == expected, "submitted graph differs in nodes, inputs, links or values"
