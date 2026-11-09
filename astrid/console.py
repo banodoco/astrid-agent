@@ -6,11 +6,6 @@ import sys
 
 def main(argv: list[str] | None = None) -> int:
     rest = list(sys.argv[1:] if argv is None else argv)
-    if rest and rest[0] == "h3":
-        from .packs.h3_av.cli import main as h3_main
-
-        return h3_main(rest[1:])
-
     if rest and rest[0] == "generate":
         from .core.gateway import main as gateway_main
 
