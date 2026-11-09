@@ -787,13 +787,14 @@ def _entry_manifest(entry: str | None, inputs: dict[str, Any], *, workflow_path:
     from astrid.core.generation import entries
 
     described = entries.find_entry(entry)
+    if workflow_path is not None:
+        # The facade already chose the mode and ran any build hook. Read exactly its
+        # emitted graph, without carried static requirements or a second hook invocation.
+        return entries.requirements({"engine": (described or {}).get("engine") or "comfyui",
+                                     "bundle": str(workflow_path)}, inputs)
     if described is None:
-        # The facade already chose the mode and emitted its bound workflow. Its executable
-        # graph is authoritative; choosing a catalog mode here would repeat that decision.
-        if workflow_path is None:
-            raise ValueError(f"entry {entry!r} needs its resolved workflow path to determine requirements")
-        return _engine_for({"engine": "comfyui"}).requirements({"bundle": str(workflow_path)}, inputs)
-    return entries.requirements(described, inputs) if described is not None else None
+        raise ValueError(f"entry {entry!r} needs its resolved workflow path to determine requirements")
+    return entries.requirements(described, inputs)
 
 
 class _AttachedServer(_LocalEngineServer):

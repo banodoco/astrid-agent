@@ -232,10 +232,32 @@ def test_catalog_requirements_use_the_resolved_workflow_not_the_first_mode(tmp_p
         def requirements(self, entry, inputs):
             seen.append((entry, inputs))
             return {"engine": "comfyui", "base": None, "models": [], "extra": {"nodes": []}}
-    monkeypatch.setattr(action, "_engine_for", lambda manifest: Engine())
+    monkeypatch.setattr(entries, "engine_table", lambda: {"comfyui": Engine()})
     resolved = tmp_path / "selected-second-mode" / "workflow.py"
     manifest = action._entry_manifest("multi-mode-catalog", {"prompt": "selected"}, workflow_path=resolved)
-    assert seen == [({"bundle": str(resolved)}, {"prompt": "selected"})]
+    assert seen == [({"engine": "comfyui", "bundle": str(resolved)}, {"prompt": "selected"})]
     assert manifest["engine"] == "comfyui"
     with pytest.raises(ValueError, match="resolved workflow path"):
         action._entry_manifest("multi-mode-catalog", {})
+
+
+def test_requirements_of_built_entries_read_selected_graph_without_rebuilding(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.generation import entries
+    from astrid.packs.vibecomfy.actions.run import run as action
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("requirements reran the build hook")
+    monkeypatch.setattr(entries, "find_entry", lambda identifier: {
+        "id": identifier, "hooks": {"build": unexpected_build},
+        "requirements": {"engine": "comfyui", "base": None, "models": ["stale"], "extra": {"nodes": []}}})
+    workflows = {str(tmp_path / f"{name}.py"): SimpleNamespace(metadata={
+        "model_assets": [{"name": f"{name}.bin", "subdir": "checkpoints", "sha256": "a" * 64, "size_bytes": 1}]})
+        for name in ("first", "second")}
+    monkeypatch.setattr(entries, "_load_entry_workflow", lambda entry: workflows[entry["bundle"]])
+    engine = entries.engine_table()["comfyui"]
+    for path, selected in workflows.items():
+        dry = engine.requirements({"workflow": selected}, {})
+        live = action._entry_manifest("input-dependent-hook", {}, workflow_path=Path(path))
+        assert live == dry
+        assert live["models"][0]["name"] == Path(path).with_suffix(".bin").name
