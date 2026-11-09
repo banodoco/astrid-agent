@@ -810,7 +810,7 @@ LocalLinuxExecutionContext.run=run
     (state / "lock.json").write_text(_json(lock_identity))
     (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
     from astrid.core.generation.engine_runner_target import dispatch
-    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1"}
+    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1", "models_root": None}
     assert dispatch("models-config", helper)["facts"] == {"written": True}
     try:
         # Installation's finite caller exits before either H3 consumer runs.

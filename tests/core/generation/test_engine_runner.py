@@ -65,7 +65,7 @@ class FakeAdapter:
     def environment_commands(self, recipe, environment, root):
         return (("fake-bootstrap", environment.name),)
 
-    def start_request(self, recipe, root, *, deadline):
+    def start_request(self, recipe, root, *, deadline, models_root=None):
         primary = next(e for e in recipe.environments if e.name == recipe.primary_environment)
         values = {"install_root": root, "python": self.venv_python(self.join(root, primary.relative_path)),
                   "comfy_root": self.join(root, "runtime/ComfyUI"), "models_root": self.join(root, "models"),
@@ -1641,16 +1641,16 @@ def test_target_helper_rejects_unknown_fields_wrong_code_and_symlink_escape(tmp_
     outside.mkdir()
     (tmp_path / "runtime").symlink_to(outside, target_is_directory=True)
     with pytest.raises(UnsafePathError):
-        target.dispatch("models-config", payload)
+        target.dispatch("models-config", {**payload, "models_root": None})
     assert list(outside.iterdir()) == []
 
 
 def test_target_models_config_is_deterministic_and_loopback_launch_is_recipe_bound(tmp_path, setup):
     payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config", payload)["facts"] == {"written": True}
+    assert target.dispatch("models-config", {**payload, "models_root": None})["facts"] == {"written": True}
     path = tmp_path / "runtime/extra_model_paths.yaml"
     before = path.read_bytes()
-    target.dispatch("models-config", payload)
+    target.dispatch("models-config", {**payload, "models_root": None})
     assert path.read_bytes() == before
     assert json.loads(before)["astrid_engine"]["base_path"] == str(tmp_path / "models")
     launch = setup[2].start_request(setup[1].recipe, ROOT, deadline=setup[3])
@@ -2041,11 +2041,11 @@ def test_changed_models_config_refuses_installed_status_without_repair(setup):
 
 def test_target_models_config_check_reads_exact_bytes(tmp_path):
     payload = _helper_payload(tmp_path)
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
-    target.dispatch("models-config", payload)
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": True}
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
+    target.dispatch("models-config", {**payload, "models_root": None})
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": True}
     (tmp_path / "runtime/extra_model_paths.yaml").write_text('{"unbound":"elsewhere"}')
-    assert target.dispatch("models-config-check", payload)["facts"] == {"valid": False}
+    assert target.dispatch("models-config-check", {**payload, "models_root": None})["facts"] == {"valid": False}
 
 
 def test_context_lock_failure_never_runs_or_writes(setup):

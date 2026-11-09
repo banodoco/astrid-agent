@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine_contracts import (
+    effective_models_root,
     EngineEndpoint, EngineError, EngineReinstallRequired, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
     LocalAttestation, UnsafePathError,
 )
@@ -338,7 +339,7 @@ def model_root_binding_from_receipt(receipt: Any, root: str, *, engine: str = "c
     """
     from .model_root import ModelRootBindingError, canonical_model_inventory_digest, validate_model_root_binding
 
-    models_root = posixpath.join(root, MODELS_RELATIVE_PATH)
+    models_root = effective_models_root(root, getattr(receipt, "models_root", None))
     # A model-free install (Plan 32 T5h) records no models: an empty inventory is a valid binding;
     # align fetches the rows a job needs and each row is then verified where it is used.
     models = tuple(getattr(receipt, "models", ()) or ())

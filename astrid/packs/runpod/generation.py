@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -134,6 +134,8 @@ def prepare_retained_generation(
             # A saved network volume is pinned by the probe; the install is model-free and align fetches the manifest's rows.
             cache_root = None if preferences.volume_id is None else (
                 f"{preferences.mount_path}/astrid/engines/{installation.engine}/models")
+            # The install binds the saved volume's model cache, so align and ComfyUI read it from there.
+            installation = replace(installation, models_root=cache_root)
             out = lease_owner.selection.path.parent / "preparation" / invocation.operation_id
             storage: dict[str, Any] = {"mode": "ephemeral"}
             if preferences.volume_id is not None:

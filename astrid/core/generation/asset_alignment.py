@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .asset_gaps import align_argv, workflow_asset_gaps
-from .engine_contracts import (DeadlineExceeded, DownloadError, DownloadResult, EngineError, IntegrityError,
+from .engine_contracts import (effective_models_root, DeadlineExceeded, DownloadError, DownloadResult, EngineError, IntegrityError,
                                ModelSpec, UnsafePathError)
 from .engine_recipe import load_model_lock, load_recipe, load_recipe_index
 from .model_downloader import _matches, _root_and_destination, _safe_relative, _validate_model
@@ -79,8 +79,9 @@ class ManagedAssetTarget:
 
         raw = json.loads(_safe_path(self.root, self.root / '.astrid-engine/install.json').read_bytes())
         recipe = load_recipe(raw['engine'], raw['platform'])
-        plan = plan_install(recipe, root=str(self.root), placement='local')
-        _parse_receipt(raw, plan)
+        # The receipt records the model directory the install bound (a volume cache, or <root>/models).
+        receipt = _parse_receipt(raw, plan_install(recipe, root=str(self.root), placement='local'))
+        plan = plan_install(recipe, root=str(self.root), placement='local', models_root=receipt.models_root)
         context, adapter = create_local_backend(engine=recipe.engine, platform=recipe.platform,
             placement='local', root=str(self.root), deadline=deadline)
         runner = _Runner(plan, context, adapter, deadline)
@@ -91,7 +92,7 @@ class ManagedAssetTarget:
                 runner.source(source, readonly=True)
         for environment in recipe.environments:
             runner.environment(environment, readonly=True)
-        if runner.helper('models-config-check') != {'valid': True}:
+        if runner.helper('models-config-check', models_root=plan.models_root) != {'valid': True}:
             raise IntegrityError('managed target models configuration differs; repair the engine installation')
 
     def install_lock(self, *, deadline: float):
@@ -248,7 +249,7 @@ def selected_target() -> ManagedAssetTarget:
         raise IntegrityError('managed target models_lock_sha256 differs from its verified recipe')
     comfy = root / next(source.relative_path for source in recipe.sources if source.name == 'comfyui')
     url = f'http://127.0.0.1:{recipe.start.port}'
-    models = root / 'models'
+    models = Path(effective_models_root(str(root), receipt.models_root))
     nodes = comfy / 'custom_nodes'
     # Validate directories without creating them; downloader validates again at use.
     for directory in (models, nodes):
