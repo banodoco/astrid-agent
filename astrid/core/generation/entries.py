@@ -595,6 +595,32 @@ def _dimension_values(description, inputs):
     return values
 
 
+def file_map_is_valid(value: Any) -> bool:
+    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+    return (isinstance(value, Mapping) and bool(value)
+            and all(isinstance(key, str) and key and '/' not in key
+                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+                    for key, path in value.items()))
+
+
+def read_file_map_document(value: Any) -> Any:
+    """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
+    if not isinstance(value, (str, Path)):
+        return value
+    document = Path(str(value)).expanduser()
+    if not document.is_file():
+        return value  # a missing path is reported by the caller's map check
+    try:
+        raw = json.loads(document.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
+    if not file_map_is_valid(raw):
+        raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
+                         '(ids without "/", non-blank string paths)')
+    return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
+            for key, item in raw.items()}
+
+
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
     """Validate declared fields before SDK custody or execution admission."""
     if not isinstance(inputs, Mapping) or any(not isinstance(key, str) for key in inputs):
@@ -648,12 +674,14 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
         elif kind == 'file_map':
             # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
-            if (not isinstance(value, Mapping) or not value
-                    or any(not isinstance(key, str) or not key or '/' in key
-                           or not isinstance(path, (str, Path)) or not str(path).strip()
-                           for key, path in value.items())):
+            if isinstance(value, (str, Path)) and Path(str(value)).expanduser().is_file():
+                # A path to the map's JSON document (h3's --asset-map): read when the job is built
+                # (``entry_job``), not here, so describing and dry-running do not open the media.
+                value = str(value)
+            elif not file_map_is_valid(value):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
-            value = {key: str(path) for key, path in value.items()}
+            else:
+                value = {key: str(path) for key, path in value.items()}
         elif kind in {'string', 'file'}:
             if not isinstance(value, str):
                 raise ValueError(f'entry input {name!r} requires a string')
@@ -708,7 +736,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
             candidates = _DEFAULT_MODE_CANDIDATES[description['kind']]
         selected = next((name for name in candidates if name in supported), None)
         if selected is None and description.get('default_mode') in supported:
-            selected = description['default_mode']  # the entry's graph does not depend on the mode (h3's build picks it)
+            selected = description['default_mode']  # the entry's graph does not depend on the mode (the entry's build picks it)
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
@@ -875,7 +903,7 @@ def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
     """Model destinations (or bare loader values) the entry needs, and those it pins itself.
 
     The model rows come from the entry's requirements manifest. A contribution with a build hook
-    provisions the revision-pinned model assets its own graphs declare (H3 owns its Ref2V LoRA
+    provisions the revision-pinned model assets its own graphs declare (the contribution owns its Ref2V LoRA
     this way), so the engine lock need not.
     """
     import re
@@ -1027,9 +1055,15 @@ def entry_hooks(entry: Mapping[str, Any], registry: Any = None) -> dict[str, Any
 
 def entry_job(entry: Mapping[str, Any], inputs: Mapping[str, Any], job_dir: Any, *, hooks: Mapping[str, Any],
               align: str = 'check') -> dict[str, Any]:
-    """The engine job for a hooked entry: its declared file inputs go in ``files``."""
-    file_names = {port['name'] for port in entry.get('inputs', []) if _input_type(port.get('type')) in {'file', 'file_map'}}
-    return {'hooks': dict(hooks), 'inputs': dict(inputs), 'files': {k: v for k, v in inputs.items() if k in file_names},
+    """The engine job for a hooked entry: its declared file inputs go in ``files``.
+
+    A ``file_map`` given as the path of its JSON document is read here, when the job is built.
+    """
+    types = {port['name']: _input_type(port.get('type')) for port in entry.get('inputs', [])}
+    inputs = {name: (read_file_map_document(value) if types.get(name) == 'file_map' else value)
+              for name, value in inputs.items()}
+    files = {name: value for name, value in inputs.items() if types.get(name) in {'file', 'file_map'}}
+    return {'hooks': dict(hooks), 'inputs': inputs, 'files': files,
             'job_dir': job_dir, 'mode': align, 'entry': entry['id']}
 
 

@@ -25,7 +25,7 @@ def test_h3_source_av_measurement_uses_loaded_frame_count(monkeypatch, tmp_path)
     source.write_bytes(b"source")
     monkeypatch.setattr(preflight, "_run_checked", _fake_decode)
 
-    measured = preflight.measure_h3_source_av(source)
+    measured = preflight.measure_source_av(source)
 
     assert measured.video_frames == 47
     assert measured.expected_audio_samples == 62667
@@ -51,7 +51,7 @@ def test_h3_source_av_rejects_short_audio_before_gpu(monkeypatch, tmp_path):
         preflight.InvocationPreflightError,
         match=r"H3_SOURCE_AV_MISMATCH.*2\.772%.*0\.500%",
     ):
-        preflight.measure_h3_source_av(source)
+        preflight.measure_source_av(source)
 
 
 @pytest.mark.parametrize(
@@ -73,7 +73,7 @@ def test_h3_source_av_rejects_non_cfr_24_input(
 
     monkeypatch.setattr(preflight, "_run_checked", probe)
     with pytest.raises(preflight.InvocationPreflightError, match="H3_SOURCE_AV_RATE"):
-        preflight.measure_h3_source_av(source)
+        preflight.measure_source_av(source)
 
 
 def test_remote_admission_uses_bundled_manifest_for_media_and_task_inputs(monkeypatch, tmp_path):

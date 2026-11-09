@@ -30,7 +30,7 @@ PROJECT_SLUG = "action-run"
 RECEIPT_NAME = "08-final-receipt.json"
 
 # Public actions this verb knows how to feed.  Each maps CLI file flags to action input ports.
-# h3_av.transform, the only one, is retired: h3 runs as the ``h3`` entry of ``astrid generate``.
+# The one pack transform that used to sit here is retired: its entry is served by ``astrid generate``.
 ACTIONS: Mapping[str, Mapping[str, str]] = {}
 PLACEMENTS = ("local",)
 LOCAL_ENGINE = "comfyui"
@@ -221,7 +221,7 @@ def run_action(args: argparse.Namespace, *, workspace: Path | None) -> dict[str,
             project=project_id,
             out=out,
             inputs={**{ports[name]: str(path) for name, path in files.items()}, "project": project_id},
-            idempotency_context={"h3_submission_id": _submission_id(files)},
+            idempotency_context={"submission_id": _submission_id(files)},
             wait=True,
             timeout_seconds=args.timeout,
             poll_seconds=0.25,
@@ -232,7 +232,7 @@ def run_action(args: argparse.Namespace, *, workspace: Path | None) -> dict[str,
         if not all((result.kernel_run_id, result.kernel_task_id, result.kernel_attempt_id)):
             ok = False
             error = {"code": "tracked_parent_unavailable",
-                     "message": "the action did not return a Runtime parent task/attempt; tracked H3 adapter is required"}
+                     "message": "the action did not return a Runtime parent task/attempt; tracked pack adapter is required"}
         elif result.raw_result.get("state") != "completed":
             ok = False
             error = {"code": "task_settlement_unproven",

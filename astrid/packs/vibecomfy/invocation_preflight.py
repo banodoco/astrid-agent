@@ -81,7 +81,7 @@ def _run_checked(argv: list[str], *, label: str) -> bytes:
     return completed.stdout
 
 
-def measure_h3_source_av(
+def measure_source_av(
     path: str | Path,
     *,
     fps: int = 24,
@@ -464,5 +464,5 @@ def preflight_invocation(
     if expected_prompt is not None:
         receipt["expected_prompt"] = expected_prompt
     if source_video_path is not None and _is_h3_workflow(api):
-        receipt["h3_source_av"] = measure_h3_source_av(source_video_path).to_dict()
+        receipt["source_av"] = measure_source_av(source_video_path).to_dict()
     return receipt

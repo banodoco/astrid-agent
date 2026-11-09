@@ -207,8 +207,8 @@ def _models_root(root: str, models_root: str | None) -> str | None:
         raise UnsafePathError("models root must be a target-native absolute path")
     if any(p in {"", ".", ".."} for p in models_root[1:].split("/")) or models_root == "/":
         raise UnsafePathError("models root must be normalized")
-    if models_root == root or models_root.startswith(root + "/"):
-        raise UnsafePathError("models root must not be inside the engine root")
+    if models_root == root or models_root.startswith(root + "/") or root.startswith(models_root + "/"):
+        raise UnsafePathError("models root must not be inside or contain the engine root")
     return models_root
 
 
@@ -224,6 +224,9 @@ def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement
     if recipes.recipe_digest(recipe) != recipes.recipe_digest(verified):
         raise IntegrityError("recipe differs from the verified packaged recipe")
     root = _root(root, verified.platform)
+    if models_root is not None and placement != "local":
+        # A mounted model cache is bound by a local install; a RunPod pod installs with --placement local.
+        raise UnsupportedPlacement("mounted model cache requires local execution")
     models_root = _models_root(root, models_root)
     steps = []
     for source in verified.sources:

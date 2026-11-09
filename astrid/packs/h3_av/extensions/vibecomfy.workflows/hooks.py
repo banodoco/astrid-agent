@@ -76,7 +76,7 @@ def build(inputs, files, out, *, engine=None):
     source_id = stages._authoritative_source_asset_id(request)
     source = paths[source_id] if source_id else None
     if source is not None and "source_video" in bindings:
-        plan["h3_source_av"] = dict(facts.measure_source_av(source))
+        plan["source_av"] = dict(facts.measure_source_av(source))
     stages.save_build_state(work, request=request, document=document, preparation=preparation, source=source, plan=plan)
     trio = Path(compilation["workflow"]["workflow.py"]["path"]).parent
     # The media the graph binds, unpacked from compile's managed-assets archive: {binding: path}.

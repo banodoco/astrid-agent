@@ -168,9 +168,10 @@ class ComfyUIEngine:
             error.unpinned = True  # a custom node ref without its repo or commit, as distinct from a loader failure
             raise error
 
-    def align(self, manifest: Any, mode: str) -> Any:
+    def align(self, manifest: Any, mode: str, *, workflow: Any = None) -> Any:
         """Align this disk to the manifest. Models arrive only through VibeComfy fetch.
 
+        ``workflow`` is the executable job path, separate from the portable requirements manifest.
         align: doctor, prepare --deps sync, nodes restore, then fetch only the missing rows.
         check: report the missing rows; touch nothing.
         trust: accept the manifest as declared; the result is marked unverified.
@@ -186,7 +187,7 @@ class ComfyUIEngine:
         if mode == "check":
             result["status"] = "ready" if not missing else "missing"
             return result
-        commands = self.commands or VibeComfyCommands(manifest.get("workflow", ""), manifest.get("lockfile"))
+        commands = self.commands or VibeComfyCommands(str(workflow or manifest.get("workflow", "")), manifest.get("lockfile"))
         commands.doctor()
         commands.prepare_deps_sync()
         commands.nodes_restore((manifest.get("extra") or {}).get("nodes", []))
@@ -247,10 +248,10 @@ class ComfyUIEngine:
             if not probed["ready"]:
                 raise ValueError(f"ComfyUI at {endpoint} is not ready: {probed['reason']}") from probed.get("exception")
             if job.get("mode") == "align":
-                self.align(job["manifest"], "align")
+                self.align(job["manifest"], "align", workflow=job.get("workflow"))
             url = endpoint
         else:
-            report = self.align(job["manifest"], job.get("mode", "align"))
+            report = self.align(job["manifest"], job.get("mode", "align"), workflow=job.get("workflow"))
             if job.get("refuse_missing") and report.get("status") == "missing":
                 error = ValueError("local engine is missing declared models: " + ", ".join(report["missing"])
                                    + "; run: astrid generate align --apply --consent user_env --all")

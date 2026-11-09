@@ -712,24 +712,6 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     return frozen
 
 
-def _asset_map(value: Any) -> Any:
-    """``asset_map`` is a ``file_map`` input ({id: path}); a path to its JSON document is read here.
-
-    Relative paths in the document are taken relative to the document.
-    """
-    if not isinstance(value, (str, Path)) or not Path(str(value)).expanduser().is_file():
-        return value  # a map, a managed digest, or a missing path (validation names it)
-    document = Path(value).expanduser()
-    try:
-        raw = json.loads(document.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise GenerationInputError(f"asset_map must be a JSON file of id to path: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise GenerationInputError("asset_map must be a JSON object of id to path")
-    return {key: (str(item) if not isinstance(item, str) or Path(item).is_absolute()
-                  else str((document.parent / item).resolve())) for key, item in raw.items()}
-
-
 def _no_prompt_check(**_: Any) -> None:
     return None
 
@@ -737,10 +719,8 @@ def _no_prompt_check(**_: Any) -> None:
 def _video_prompt_check(*, model: Any, entry: Any, inputs: dict[str, Any]) -> None:
     if _prompt_only_video(model=model, entry=entry, inputs=inputs):
         raise GenerationInputError(
-            "Prompt-only video requires a reference or an H3 request. "
-            "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
-            "with a JSON object containing request and asset_map file paths. "
-            "See generate video --entry h3 --help."
+            "Prompt-only video requires a reference. "
+            "Use --image-ref for a video reference, or see 'generate list --kind video'."
         )
 
 
@@ -763,7 +743,7 @@ def _image_resolve_mode(sdk_module: Any, *, model: Any, mode: Any, execution: An
 def _video_resolve_mode(sdk_module: Any, *, mode: Any, inputs: dict[str, Any], resume: bool,
                         recovery_path: Any, placement: Any, **_: Any) -> tuple[Any, bool]:
     if resume or recovery_path is not None and placement != 'runpod':
-        raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
+        raise CapabilityValidationError("video recovery is supported only for RunPod jobs")
     return sdk_module._infer_video_mode(mode, inputs), False
 
 
@@ -1803,7 +1783,7 @@ class GenerationFacade:
         if not kind.retire_inputs_first:
             _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
-                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
+                       (("request", request), ("asset_map", asset_map)) if value is not None})
         kind.check_prompt(model=model, entry=entry, inputs=inputs)
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None

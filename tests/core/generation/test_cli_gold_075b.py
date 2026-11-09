@@ -94,7 +94,7 @@ SLOTS: tuple[Slot, ...] = (
     # (test_public_h3_cli_and_sdk_preserve_the_same_producer_local_inputs).
     # --entry cli.py:9d3bb248:143, --inputs-json :144, --project :154.
     # Action id: test_h3_action_entry.py:9d3bb248:15 (entry["action"] == "h3_av.transform").
-    Slot("video-references", "h3", "h3_av.transform", "video",
+    Slot("video-references", "h3", "h3", "video",
          ("--entry", "h3", "--inputs-json", H3_INPUTS, "--project", "project"), None, False),
     # ("audio", "tts") -> audio/qwen3_tts_custom_voice (generation.py:9d3bb248:1017).
     # Public input "text": VibeComfy ready_templates/audio/qwen3_tts_custom_voice.py
@@ -123,7 +123,7 @@ GPU_GUIDANCE = "needs a local GPU or --placement runpod"
 EDGE_TTS = "Edge TTS"
 
 # Prompt-only video refusal (astrid/sdk/generation.py:9d3bb248:1560-1566).
-PROMPT_ONLY_VIDEO = "Prompt-only video requires a reference or an H3 request"
+PROMPT_ONLY_VIDEO = "Prompt-only video requires a reference"
 
 # Not-selected families (tasks.md D2): Z-Image, LTX, Wan, and hosted (fal) rows.
 # Ids from models.yaml:9d3bb248 (z-image :102, wan-2.2 :671, ltx-2.3 :768,
@@ -271,7 +271,9 @@ def _assert_entry_named(payload: Any, slot: Slot) -> None:
 # locally"); only a managed target with a model root declares target custody.
 # Without model bytes (Decision 10: no download) the auto dry run therefore
 # selects the default and refuses on its missing assets. Recorded as a STOP.
-AUTO_ASSET_REFUSALS = {"voice": "workflow-local model is not present locally"}
+# video-references (h3) builds its graph even on a dry run; the stand-in target has no MiniMax H3 nodes.
+AUTO_ASSET_REFUSALS = {"voice": "workflow-local model is not present locally",
+                       "video-references": "target is missing node"}
 
 
 def _workflow_named(payload: Any, workflow: str) -> bool:
@@ -304,9 +306,18 @@ def _inputs(root: Path) -> dict[str, str]:
     # if the merged tree probes it, replace this with a tiny real MP4 fixture.
     video = folder / "foley-input.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    # h3 builds its graph even on a dry run (that is how it plans), so its request and media are real.
+    import subprocess
     request, assets = folder / "request.json", folder / "assets.json"
-    request.write_text("{}\n", encoding="utf-8")
-    assets.write_text("{}\n", encoding="utf-8")
+    template = Path(__file__).resolve().parents[2] / "fixtures" / "h3_cpu" / "request.v2.json"
+    request.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    source = folder / "h3-source.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                    "-frames:v", "57", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                    str(source)], check=True, timeout=120)
+    asset_id = json.loads(request.read_text(encoding="utf-8"))["media"][0]["asset"]["id"]
+    assets.write_text(json.dumps({asset_id: str(source), "source": str(source)}), encoding="utf-8")
     h3 = folder / "h3-inputs.json"
     h3.write_text(json.dumps({"request": str(request), "asset_map": str(assets)}), encoding="utf-8")
     return {IMAGE: str(image), VIDEO: str(video), H3_INPUTS: str(h3)}

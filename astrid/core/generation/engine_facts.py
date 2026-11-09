@@ -1,6 +1,6 @@
 """Engine facts handed to a ``vibecomfy.workflows`` hook that asks for them.
 
-A contribution's modules must not import Astrid (an AST test pins this for h3_av). What
+A contribution's modules must not import Astrid (an AST test pins this for the audiovisual pack). What
 they need from the engine side (the pinned ComfyUI commit, the model lock, model-root
 binding, the managed-assets manifest, atomic JSON writes, the pre-run source checks)
 arrives as one ``EngineFacts`` object: the engine passes it to a hook that declares an
@@ -61,8 +61,8 @@ def comfyui_facts() -> EngineFacts:
         check(bindings)
 
     def measure_source_av(path: Any) -> Mapping[str, Any]:
-        from astrid.packs.vibecomfy.invocation_preflight import measure_h3_source_av
-        return measure_h3_source_av(path).to_dict()
+        from astrid.packs.vibecomfy.invocation_preflight import measure_source_av as measure
+        return measure(path).to_dict()
 
     def astrid_error(error: Exception) -> Any:
         from astrid.core.contracts.errors import coerce_astrid_error
