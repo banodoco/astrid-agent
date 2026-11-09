@@ -330,7 +330,7 @@ def test_refused_launch_is_reported_with_its_reason_not_as_an_os_rejection(world
     def autostart_turned_off_before_launch(python, agent, runtime, payload):
         if payload.get("action") == "launch":
             record = read_json(selection)
-            record["preferences"] = {"autostart": "off"}
+            record["choices"] = {"autostart": False}  # the saved choice the update guard reads (see e8f7021)
             write_json(selection, record)
         return helper(python, agent, runtime, payload)
 
