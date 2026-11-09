@@ -106,6 +106,62 @@ def test_no_code_path_outside_align_downloads_a_model():
     assert hits == []
 
 
+def test_build_and_finalize_run_once_at_the_run_site(tmp_path):
+    """Plan 32 T6: the engine's run site calls build before submit and finalize after it, once each."""
+    events = []
+
+    def build(inputs, files, out):
+        events.append(("build", dict(inputs), dict(files), out))
+        return {"workflow": {"graph": "built"}, "bindings": {}, "plan": "two steps"}
+
+    def finalize(job_dir, inputs, files, outputs):
+        events.append(("finalize", job_dir, dict(inputs), dict(files), outputs))
+        return {**outputs, "finalized": True}
+
+    class Local(FakeLocal):
+        def submit(self, url, workflow):
+            events.append(("submit", workflow))
+            return super().submit(url, workflow)
+
+    job = {"manifest": _manifest(tmp_path), "mode": "check", "workflow": {"graph": "raw"},
+           "inputs": {"prompt": "x"}, "files": {"ref": "/a/ref.png"}, "out": tmp_path / "out",
+           "job_dir": tmp_path / "job", "hooks": {"build": build, "finalize": finalize}}
+    local = Local(attached=True)
+    result = mod.ComfyUIEngine(FakeCommands()).run(job, local)
+
+    assert [e[0] for e in events] == ["build", "submit", "finalize"]
+    assert events[0][1:] == ({"prompt": "x"}, {"ref": "/a/ref.png"}, tmp_path / "out")
+    assert local.submitted == [("http://127.0.0.1:8188", {"graph": "built"})]
+    assert result == {"prompt_id": "p1", "finalized": True}
+
+    # The dry run calls build only, and prints its plan.
+    events.clear()
+    dry = mod.ComfyUIEngine(FakeCommands()).dry_run(job)
+    assert [e[0] for e in events] == ["build"] and dry["plan"] == "two steps"
+
+
+def test_finalize_failure_fails_the_job_and_no_hooks_means_no_change(tmp_path):
+    def boom(job_dir, inputs, files, outputs):
+        raise RuntimeError("finalize failed")
+
+    job = {"manifest": _manifest(tmp_path), "mode": "check", "workflow": {"graph": "raw"},
+           "hooks": {"finalize": boom}}
+    with pytest.raises(RuntimeError, match="finalize failed"):
+        mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(attached=True))
+    plain = {**job, "hooks": {}}
+    local = FakeLocal(attached=True)
+    assert mod.ComfyUIEngine(FakeCommands()).run(plain, local) == {"prompt_id": "p1"}
+    assert local.submitted[0][1] == {"graph": "raw"}
+
+
+def test_core_names_neither_build_nor_finalize():
+    core = (ROOT / "astrid/core").rglob("*.py")
+    named = [str(p.relative_to(ROOT)) for p in core
+             if re.search(r"\bhooks?\[['\"](build|finalize)['\"]\]|\.get\(['\"](build|finalize)['\"]", p.read_text())
+             and p.name != "workflows.py"]
+    assert named == []
+
+
 def test_vibecomfy_argv_parses_with_the_real_cli():
     """The argv is not assumed: each step must parse with VibeComfy's own parser."""
     cli = pytest.importorskip("vibecomfy.cli")

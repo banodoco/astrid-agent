@@ -443,3 +443,55 @@ def test_pack_shaped_points_cannot_claim_a_reserved_owner(roots, tmp_path):
     assert reg_.points() == []
     reserved = [p for p in reg_.problems() if isinstance(p, Quarantined)]
     assert any("reserved namespace" in q.error for q in reserved)
+
+
+def test_workflow_contribution_registers_ready_root_entries_build_and_finalize(roots, tmp_path):
+    """Plan 32 T6: the vibecomfy.workflows point carries a ready root, thin entries, build and finalize."""
+    from astrid.core.generation import workflows
+
+    source = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/extensions/points"
+    vibe = _pack(roots["installed"].path, "vibecomfy")
+    for name in ("workflows.yaml", "workflows.schema.json"):
+        _write(vibe / "extensions" / "points" / name, (source / name).read_text(encoding="utf-8"))
+    (vibe / "ready" / "minimax").mkdir(parents=True)
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "minimax.yaml",
+           _contribution() + "ready_root: ../../ready\n"
+           "entries:\n"
+           "  - {id: minimax-h3, kind: video, modes: [t2v], bundle: minimax, needs: [], binds: {}, defaults: {}}\n"
+           "build: hooks.py:build\nfinalize: hooks.py:finalize\n")
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "hooks.py",
+           "def build(inputs, files, out):\n    return {'workflow': 'W', 'bindings': {}, 'plan': 'p'}\n"
+           "def finalize(job_dir, inputs, files, outputs):\n    return outputs\n")
+    reg_ = _registry(roots, tmp_path, _fake_discover(_Record("vibecomfy", vibe))).load()
+    assert reg_.problems() == []
+
+    (contribution,) = workflows.contributions(reg_)
+    registered = []
+    api = SimpleNamespace(register_ready_root=registered.append)
+    assert workflows.register_ready_roots(reg_, lambda: api) == [(vibe / "ready").resolve()]
+    assert registered == [(vibe / "ready").resolve()]
+
+    (entry,) = workflows.workflow_entries(reg_)
+    assert (entry["id"], entry["kind"], entry["modes"]) == ("minimax-h3", "video", ["t2v"])
+    assert entry["bundle"] == str((vibe / "ready" / "minimax").resolve())
+    assert set(entry["hooks"]) == {"build", "finalize"}
+    assert entry["hooks"]["build"]({}, {}, None)["plan"] == "p"
+    assert entry["hooks"]["finalize"](None, {}, {}, ["o"]) == ["o"]
+    assert workflows.hook(reg_, contribution, "build") is not None
+
+
+def test_workflow_contribution_hooks_are_optional_and_refs_stay_in_the_pack(roots, tmp_path):
+    from astrid.core.generation import workflows
+
+    source = Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/extensions/points"
+    vibe = _pack(roots["installed"].path, "vibecomfy")
+    for name in ("workflows.yaml", "workflows.schema.json"):
+        _write(vibe / "extensions" / "points" / name, (source / name).read_text(encoding="utf-8"))
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "plain.yaml", _contribution() + "ready_root: ready\n")
+    _write(vibe / "extensions" / "vibecomfy.workflows" / "escape.yaml",
+           _contribution() + "ready_root: ../../../../outside\n")
+    reg_ = _registry(roots, tmp_path, _fake_discover(_Record("vibecomfy", vibe))).load()
+    by_key = {c.key: c for c in workflows.contributions(reg_)}
+    assert workflows.hooks(reg_, by_key["plain"]) == {}
+    with pytest.raises(Exception, match="escapes"):
+        workflows.ready_root(by_key["escape"])

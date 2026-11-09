@@ -16,8 +16,11 @@ MODES = ("align", "check", "trust")
 _WORKFLOWS: dict[Any, list[Any]] = {}
 
 
-def _workflows(entry: Any) -> list[Any]:
-    """The workflow(s) an entry runs: its bundle, or an action entry's profile workflows."""
+def _workflows(entry: Any, inputs: Any = None) -> list[Any]:
+    """The workflow(s) an entry runs: its built graph, its bundle, or an action entry's profile workflows."""
+    build = (entry.get("hooks") or {}).get("build")
+    if build is not None:  # requirements() reads the built graph's rows; build is deterministic, so not cached
+        return [build(inputs or {}, entry.get("files") or {}, entry.get("out"))["workflow"]]
     key = (entry.get("action"), entry.get("bundle"), tuple(entry.get("requirements") or ()) if entry.get("action") else ())
     if key not in _WORKFLOWS:
         _WORKFLOWS[key] = _load_workflows(entry)
@@ -114,7 +117,7 @@ class ComfyUIEngine:
         models: dict[tuple[str, str], dict[str, Any]] = {}
         nodes: dict[str, dict[str, Any]] = {}
         base = None
-        for workflow in _workflows(entry):
+        for workflow in _workflows(entry, inputs):
             metadata = workflow.metadata
             for asset in metadata.get("model_assets", []):
                 row = {"name": asset["name"], "subdir": asset.get("subdir") or "", "url": asset.get("url"),
@@ -174,11 +177,39 @@ class ComfyUIEngine:
         result.update(fetched=[_key(r) for r in missing], status="ready")
         return result
 
+    def prepare(self, job: Any) -> Any:
+        """Run the entry's optional build once (CPU, deterministic): {workflow, bindings, plan}, or None."""
+        build = (job.get("hooks") or {}).get("build")
+        if build is None:
+            return None
+        built = build(job.get("inputs", {}), job.get("files", {}), job.get("out"))
+        if not isinstance(built, dict) or "workflow" not in built:
+            raise ValueError("build must return {'workflow': ..., 'bindings': ..., 'plan': ...}")
+        return built
+
+    def finish(self, job: Any, outputs: Any) -> Any:
+        """Run the entry's optional finalize on this machine, after execute and before copy-back.
+
+        Not VibeComfy's template finalize. A raise fails the job; the caller never swallows it.
+        """
+        finalize = (job.get("hooks") or {}).get("finalize")
+        if finalize is None:
+            return outputs
+        return finalize(job.get("job_dir"), job.get("inputs", {}), job.get("files", {}), outputs)
+
+    def dry_run(self, job: Any) -> Any:
+        """Build only; nothing is aligned, started or submitted. The plan is what the caller prints."""
+        built = self.prepare(job)
+        return {"plan": built.get("plan") if built else None,
+                "bindings": built.get("bindings") if built else None}
+
     def run(self, job: Any, local: Any) -> Any:
-        """Align, start or reuse ComfyUI on this machine, and submit to localhost."""
+        """Build, align, start or reuse ComfyUI on this machine, submit to localhost, then finalize."""
+        built = self.prepare(job)
         self.align(job["manifest"], job.get("mode", "align"))
         url = local.ensure_running()  # reuses a live server (attached) or starts one
-        return local.submit(url, job["workflow"])
+        outputs = local.submit(url, built["workflow"] if built else job["workflow"])
+        return self.finish(job, outputs)
 
     def execute(self, job: Any) -> Any:
         raise NotImplementedError("generation.engine comfyui is not wired to a caller yet")
