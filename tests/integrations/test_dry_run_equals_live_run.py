@@ -2,8 +2,9 @@
 
 For every default slot and the h3_av entry, one CPU stand-in attached ComfyUI
 serves both calls: the dry run (``dry_run=True``) first, then the live run. The
-built graph and its bindings must be the same in both runs, and the graph the
-live run submitted to /prompt must be the graph it built.
+built graph and its bindings must be the same in both runs, the requirements manifest
+the live run's requirements step computes must equal the one for the entry the dry run
+resolved, and the graph the live run submitted to /prompt must be the graph it built.
 """
 from __future__ import annotations
 
@@ -76,6 +77,16 @@ class Recorder:
         return rows
 
 
+def _resolved_entry(entry_id: str) -> dict:
+    """The entry a dry run resolved an id to: the workflow entry, or a catalog id's local template."""
+    described = workflow_entries.find_entry(entry_id)
+    if described is None:  # a catalog id: its one local mode template owns the models
+        from astrid.core.model_catalog.registry import ModelRegistry
+        spec = ModelRegistry.load_default().get(entry_id)
+        described = workflow_entries.find_entry(next(iter(spec.modes.values())).backends["local"].template)
+    return described
+
+
 def _built(rows: list[tuple[str, str]]) -> tuple[str, str]:
     """The graph and bindings a run settled on: its last built workflow."""
     assert rows, "the run built no graph"
@@ -128,6 +139,13 @@ def test_dry_run_equals_live_run(cell, tmp_path, monkeypatch, real_runtime, tupl
         assert _built(dry_rows) == _built(live_rows), "built graph or bindings differ between dry and live"
         built = json.loads(_built(live_rows)[1])
         submitted = provider.comfy.prompts[-1]["prompt"]
+        # The requirements manifest: the live run's requirements step (run._entry_manifest) on the live
+        # bindings must equal the requirements of the entry the dry run resolved, from the dry inputs.
+        from astrid.packs.vibecomfy.actions.run import run as run_action
+        dry_id = dry["entry"]["id"]
+        expected = workflow_entries.requirements(_resolved_entry(dry_id), dict(dry["entry"]["bindings"]))
+        actual = run_action._entry_manifest(dry_id, json.loads(_built(live_rows)[2]))
+        assert expected and actual == expected, "requirements manifest differs between dry and live"
         # ComfyUI receives the output-reachable part of the built graph: every submitted class was built.
         assert not Counter(node["class_type"] for node in submitted.values()) - Counter(
             node["class_type"] for node in built.values()), "submitted graph is not part of the built graph"

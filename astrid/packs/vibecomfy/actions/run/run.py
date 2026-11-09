@@ -785,6 +785,15 @@ def _entry_manifest(entry: str | None, inputs: dict[str, Any]) -> dict[str, Any]
     from astrid.core.generation import entries
 
     described = entries.find_entry(entry)
+    if described is None:  # a catalog id: its one local mode template owns the models (as the dry run resolves it)
+        from astrid.core.model_catalog.registry import ModelRegistry
+        try:
+            spec = ModelRegistry.load_default().get(entry)
+        except KeyError:
+            spec = None
+        if spec is not None:
+            template = next(iter(spec.modes.values())).backends["local"].template
+            described = entries.find_entry(template)
     return entries.requirements(described, inputs) if described is not None else None
 
 
