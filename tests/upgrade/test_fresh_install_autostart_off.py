@@ -1,0 +1,196 @@
+"""Focused controls for the fresh-install-autostart-off leg.
+
+A real fresh install from the candidate tuple, run with ``--autostart off``. The leg
+records four named assertions: the selection record says autostart is false; GET
+update/status on the live Runtime reports reason autostart-off; a POST update is refused
+with autostart-off and changes nothing; and the App capture of the autostart-off card is
+at deviceScaleFactor 2. These tests drive the leg with fakes.
+"""
+import argparse
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scripts import ci_journey as journey
+from scripts import journey_matrix
+from scripts import journey_version_jumps as jumps
+
+LEG = "fresh-install-autostart-off"
+ROWS = ("direct-linux-autostart-off", "direct-macos-autostart-off")
+
+
+def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, status_reason="autostart-off",
+         post_status=409, post_reason="autostart-off", runtime_after="same", selection_after="same",
+         data_after_change=False, capture_dpr=2):
+    app, candidate_path, root = (tmp_path / name for name in ("app", "candidate.json", "program"))
+    data = tmp_path / "data"
+    app.mkdir(exist_ok=True)
+    candidate_path.write_text("{}", encoding="utf-8")
+    manifest = {"release": 12, "agent": {"sha": "e2a7fad07e4a8bef9aa4c6e126911a1c5a29caf2"},
+                "runtime": {"sha": "744cf24874ea851f95949a706725aba19d18222f"}}
+    args = argparse.Namespace(job_id="direct-linux-autostart-off", mode="direct", leg=LEG, shell="sh",
+                              candidate_checkouts={}, service_manager_prerequisite={},
+                              app_checkout=app, candidate=candidate_path)
+    state = {"snapshots": 0, "post": 0}
+    version = {"root": str(root / "versions/c12")}
+
+    def read_selection():
+        record = {"format": "astrid-install/v1", "choices": {"autostart": choices_autostart}}
+        changed = selection_after != "same" and state["post"] > 0
+        return record, ("b" if changed else "a") * 64
+
+    def request(method, path):
+        if method == "GET":
+            return 200, {"available": False, "reason": status_reason}
+        state["post"] += 1
+        return post_status, {"reason": post_reason}
+
+    def live_workspace(*_args, **_kwargs):
+        if _args[3] == "seed":
+            return {"project": "film"}
+        state["snapshots"] += 1
+        timeline = "changed" if data_after_change and state["snapshots"] == 2 else "kept"
+        return {"project": "film", "timeline": timeline, "preferences": "kept", "task": "settled",
+                "cas_sha256": "abc"}
+
+    def healthy(*_args):
+        instance = "after" if runtime_after != "same" and state["post"] else "before"
+        return {"runtime_instance_id": instance, "identity": {"release": 12}}
+
+    def capture(evidence, data_root):
+        return {"path": str(evidence / "autostart-off-card.png"), "sha256": "c" * 64,
+                "device_scale_factor": capture_dpr, "surface": "autostart-off card"}
+
+    monkeypatch.setattr(jumps.journey, "selected_manifest", lambda *_a, **_k: (app / "manifest.json", manifest))
+    monkeypatch.setattr(jumps.journey, "read_json", lambda path: {"manifest_sha256": "candidate",
+                                                                   "artifacts": {}}
+                        if Path(path) == candidate_path else {})
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
+    monkeypatch.setattr(jumps.journey, "git_source", lambda *_: {"sha": "app-r12"})
+    monkeypatch.setattr(jumps.journey, "sentinel_observation", lambda *_: {"alive": True})
+    monkeypatch.setattr(jumps, "candidate_install_autostart_off", lambda *_a, **_k: {
+        "command": "install --autostart off", "exit_code": install_exit, "log": "install.log", "last_lines": []})
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(jumps, "selected_data_root", lambda _root, selected, **_k: selected)
+    monkeypatch.setattr(jumps.journey, "wait_ready", lambda *_: None)
+    monkeypatch.setattr(jumps.journey, "installation", lambda *_a: (Path(version["root"]) / "version.json", data,
+                                                                     version))
+    monkeypatch.setattr(jumps, "installed_release", lambda _version: 12)
+    monkeypatch.setattr(jumps.journey, "assert_direct_service_ownership", lambda *_a, **_k: {
+        "manager": "systemd-user", "foreground_fallback": False})
+    monkeypatch.setattr(jumps.journey, "verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(jumps.journey, "healthy", healthy)
+    monkeypatch.setattr(jumps, "read_selection", read_selection)
+    monkeypatch.setattr(jumps, "runtime_request", request)
+    monkeypatch.setattr(jumps, "capture_autostart_card", capture)
+    monkeypatch.setattr(jumps, "live_workspace", live_workspace)
+    monkeypatch.setattr(jumps, "task_after_update", lambda *_args: "task-id")
+
+    def run():
+        return jumps.execute_fresh_install_autostart_off(args, root, data, tmp_path / "evidence",
+                                                         argparse.Namespace(pid=123), "birth")
+    return run, tmp_path / "evidence" / "journey-result.json", None
+
+
+def test_leg_is_selected_on_linux_and_macos_and_not_admitted_on_windows(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(jumps, "execute_fresh_install_autostart_off", lambda *args: seen.append(args) or "ok")
+    for platform in ("linux", "darwin"):
+        monkeypatch.setattr(jumps.sys, "platform", platform)
+        assert jumps.execute_owned(argparse.Namespace(leg=LEG), tmp_path / "program", tmp_path / "data",
+                                   tmp_path / "evidence", argparse.Namespace(pid=1), "birth") == "ok"
+    assert len(seen) == 2
+    monkeypatch.setattr(jumps.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="narrowed refusal"):
+        jumps.execute_owned(argparse.Namespace(leg=LEG), tmp_path / "program", tmp_path / "data",
+                            tmp_path / "evidence", argparse.Namespace(pid=1), "birth")
+
+
+def test_the_install_is_run_with_the_autostart_off_flag_and_never_update(monkeypatch, tmp_path):
+    calls = []
+
+    class Done:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        kwargs["stdout"].write("installed\n")
+        return Done()
+
+    monkeypatch.setattr(jumps.sys, "platform", "linux")
+    monkeypatch.setattr(jumps.subprocess, "run", fake_run)
+    app = tmp_path / "app"
+    report = jumps.candidate_install_autostart_off(app, tmp_path / "m.json", "sh", tmp_path / "ev",
+                                                   tmp_path / "program", tmp_path / "data")
+    assert calls == [["sh", str(app / "public" / "install"), "--manifest", str(tmp_path / "m.json"),
+                      "--root", str(tmp_path / "program"), "--data-root", str(tmp_path / "data"),
+                      "--autostart", "off"]]
+    assert "--update" not in calls[0]
+    assert report["exit_code"] == 0
+
+
+def test_leg_passes_only_when_all_four_assertions_hold(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path)
+    result = run()
+    assert result["status"] == "pass"
+    assert result["scenario"] == LEG
+    assert result["selection"]["choices_autostart"] is False
+    assert result["update_status"]["reason"] == "autostart-off"
+    assert result["post_update"]["refused"] is True and result["post_update"]["unchanged"] is True
+    assert result["capture"]["device_scale_factor"] == 2
+    for check in jumps.AUTOSTART_CHECKS:
+        assert result["checks"][check] == "pass", check
+
+
+def test_selection_record_must_say_autostart_is_false(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, choices_autostart=True)
+    with pytest.raises(RuntimeError, match="selection record does not have choices.autostart false"):
+        run()
+    recorded = json.loads(receipt.read_text())
+    assert recorded["status"] == "fail"
+    assert recorded["checks"]["selection_autostart_false"] == "not-run"
+
+
+def test_update_status_must_report_autostart_off(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, status_reason="none")
+    with pytest.raises(RuntimeError, match="GET /update/status does not report reason autostart-off"):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["update_status_autostart_off"] == "not-run"
+
+
+def test_refused_post_must_change_nothing(monkeypatch, tmp_path):
+    message = "POST update was not refused with autostart-off, or it changed the selection, the data or the live Runtime"
+    run, receipt, _ = _leg(monkeypatch, tmp_path, post_reason="busy")
+    with pytest.raises(RuntimeError, match=message):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["post_update_refused_unchanged"] == "not-run"
+    run, _, _ = _leg(monkeypatch, tmp_path, runtime_after="changed")
+    with pytest.raises(RuntimeError, match=message):
+        run()
+    run, _, _ = _leg(monkeypatch, tmp_path, data_after_change=True)
+    with pytest.raises(RuntimeError, match=message):
+        run()
+
+
+def test_the_autostart_card_capture_must_be_at_device_scale_factor_two(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, capture_dpr=1)
+    with pytest.raises(RuntimeError, match="autostart card capture is absent or not at deviceScaleFactor 2"):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["autostart_card_capture"] == "not-run"
+
+
+def test_install_exit_must_be_zero(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, install_exit=3)
+    with pytest.raises(RuntimeError, match="install --autostart off exited 3"):
+        run()
+    assert json.loads(receipt.read_text())["checks"]["install_exit"] == "not-run"
+
+
+def test_the_two_autostart_rows_are_linux_and_macos_direct_rows():
+    matrix = {row["job_id"]: row for row in journey_matrix.RELEASE1_MATRIX if row["job_id"] in ROWS}
+    assert set(matrix) == set(ROWS)
+    assert matrix["direct-linux-autostart-off"]["runner"] == "ubuntu-24.04"
+    assert matrix["direct-macos-autostart-off"]["runner"] == "macos-15"
+    assert all(row["leg"] == LEG and row["mode"] == "direct" and row["shell"] == "sh" for row in matrix.values())

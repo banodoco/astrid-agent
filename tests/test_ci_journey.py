@@ -1355,6 +1355,8 @@ def test_row_direct_is_one_nine_row_run_and_keep_going_stays_on_the_legacy_rows(
         "direct-macos-r9-install": ("release9-then-install", "macos", "macos-15"),
         "direct-linux-r11-update": ("release11-then-update", "linux", "ubuntu-24.04"),
         "direct-macos-r11-update": ("release11-then-update", "macos", "macos-15"),
+        "direct-linux-autostart-off": ("fresh-install-autostart-off", "linux", "ubuntu-24.04"),
+        "direct-macos-autostart-off": ("fresh-install-autostart-off", "macos", "macos-15"),
     }
     kept = {row["job_id"] for row in matrix(DIAGNOSTIC_KEEP_GOING="true")}
     assert kept == {"direct-linux", "direct-macos", "direct-windows"}
@@ -1404,11 +1406,14 @@ def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path)
         ("direct-macos-r9-install", "direct", "macos-15", "release9-then-install"),
         ("direct-linux-r11-update", "direct", "ubuntu-24.04", "release11-then-update"),
         ("direct-macos-r11-update", "direct", "macos-15", "release11-then-update"),
+        ("direct-linux-autostart-off", "direct", "ubuntu-24.04", "fresh-install-autostart-off"),
+        ("direct-macos-autostart-off", "direct", "macos-15", "fresh-install-autostart-off"),
     }
     # An automatic push or schedule (no row input) runs only the five previous rows, scoped as five.
     automatic_five = {row for row in expected_direct
                       if row[0] not in ("direct-linux-r9-install", "direct-macos-r9-install",
-                                        "direct-linux-r11-update", "direct-macos-r11-update")}
+                                        "direct-linux-r11-update", "direct-macos-r11-update",
+                                        "direct-linux-autostart-off", "direct-macos-autostart-off")}
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert len(unrestricted) == 5
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in unrestricted} == automatic_five

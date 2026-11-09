@@ -91,7 +91,8 @@ def test_release1_aggregate_expects_the_nine_rows_including_windows_and_both_fre
     assert set(gate.RELEASE1_JOB_IDS) == {
         "direct-linux", "direct-macos", "direct-windows", "direct-linux-fresh", "direct-macos-fresh",
         "direct-linux-r9-install", "direct-macos-r9-install",
-        "direct-linux-r11-update", "direct-macos-r11-update"}
+        "direct-linux-r11-update", "direct-macos-r11-update",
+        "direct-linux-autostart-off", "direct-macos-autostart-off"}
     assert {row["job_id"] for row in gate.RELEASE11_UPDATE_MATRIX} <= set(gate.RELEASE1_JOB_IDS)
 
 

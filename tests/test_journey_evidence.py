@@ -70,6 +70,18 @@ def release11_fields():
     }
 
 
+def autostart_fields():
+    """The fresh-install-autostart-off row's own evidence: the selection, the status, the refused POST and the capture."""
+    return {
+        "selection": {"file": "astrid-install.json", "choices_autostart": False, "sha256": "a" * 64},
+        "update_status": {"method": "GET", "path": "/update/status", "status": 200, "reason": "autostart-off"},
+        "post_update": {"method": "POST", "path": "/update", "status": 409, "reason": "autostart-off",
+                        "refused": True, "unchanged": True},
+        "capture": {"path": "autostart-off-card.png", "sha256": "c" * 64, "device_scale_factor": 2,
+                    "surface": "autostart-off card"},
+    }
+
+
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
@@ -99,6 +111,9 @@ def release1_receipts(tmp_path):
             elif contract.get("leg") == "release11-then-update":
                 row.update(release11_fields())
                 row["checks"].update({name: "pass" for name in gate.RELEASE11_CHECKS})
+            elif contract.get("leg") == "fresh-install-autostart-off":
+                row.update(autostart_fields())
+                row["checks"].update({name: "pass" for name in gate.AUTOSTART_CHECKS})
             else:
                 row.update(handoff_upgrade_fields())
             row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
@@ -366,7 +381,7 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
     assert "matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]" in workflow
     contract_rows = {(row["job_id"], row["mode"], row["os"], row["leg"]) for row in gate.RELEASE1_MATRIX}
-    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 9
+    assert len(gate.RELEASE1_MATRIX) == len({row["job_id"] for row in gate.RELEASE1_MATRIX}) == 11
     assert contract_rows == {
         ("direct-linux", "direct", "linux", "r0-handoff-then-update"),
         ("direct-macos", "direct", "macos", "r0-handoff-then-update"),
@@ -377,6 +392,8 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
         ("direct-macos-r9-install", "direct", "macos", "release9-then-install"),
         ("direct-linux-r11-update", "direct", "linux", "release11-then-update"),
         ("direct-macos-r11-update", "direct", "macos", "release11-then-update"),
+        ("direct-linux-autostart-off", "direct", "linux", "fresh-install-autostart-off"),
+        ("direct-macos-autostart-off", "direct", "macos", "fresh-install-autostart-off"),
     }
     assert not any(row["mode"] != "direct" for row in gate.RELEASE1_MATRIX)
     assert {row["mode"] for row in gate.RELEASE1_1_DEFERRED_PINOKIO_MATRIX} == {"pinokio-backend", "pinokio-fully-local"}
@@ -650,7 +667,8 @@ def test_each_release1_leg_needs_its_own_receipt_kind(tmp_path):
         "release1-installed-lifecycle"}
     swapped = {"r0-handoff-then-update": "release1-installed-lifecycle",
                "release1-installed-lifecycle": "r0-handoff-then-update",
-               "release11-then-update": "release1-installed-lifecycle"}
+               "release11-then-update": "release1-installed-lifecycle",
+               "fresh-install-autostart-off": "release1-installed-lifecycle"}
     for job_id, kind in kinds.items():
         path = tmp_path / job_id / "journey-result.json"
         original = json.loads(path.read_text())
