@@ -18,7 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 
 SAVE_KEYS = {"SaveImage": "images", "PreviewImage": "images", "SaveAudio": "audio", "SaveAudioMP3": "audio",
-             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images"}
+             "SaveAudioOpus": "audio", "PreviewAudio": "audio", "VHS_VideoCombine": "gifs", "SaveVideo": "images",
+             "MiniMaxH3StreamLiveExtensionAVToVHS": "gifs"}
 MODEL_EXT = (".safetensors", ".gguf", ".pth", ".ckpt", ".pt", ".bin", ".sft")
 # loader field -> models folder the stand-in pod keeps those files in
 FOLDERS = {"unet_name": "diffusion_models", "vae_name": "vae", "clip_name": "text_encoders",
@@ -127,31 +128,55 @@ def _link(value):
     return isinstance(value, list) and len(value) == 2 and isinstance(value[0], (str, int)) and isinstance(value[1], int)
 
 
+def _is_output(node: dict, info: dict) -> bool:
+    cls = node.get("class_type")
+    return bool(info.get(cls, {}).get("output_node")) or cls in SAVE_KEYS
+
+
 def validate_prompt(graph: dict, info: dict) -> dict:
-    """ComfyUI's /prompt validation: classes, required inputs, links and combo menus."""
+    """ComfyUI's /prompt validation: classes everywhere; required inputs, links and combo menus on what outputs reach."""
     errors = {}
+    # Every node must name a known class, reachable or not (ComfyUI checks class_type up front).
+    for node_id, node in graph.items():
+        if node.get("class_type") not in info:
+            errors[node_id] = {"errors": [{"type": "missing_node_type",
+                                           "message": f"Node '{node.get('class_type')}' not found"}],
+                               "class_type": node.get("class_type")}
+    # ComfyUI validates the inputs only of the nodes an output node reaches; the rest is never executed.
+    roots = [i for i, n in graph.items() if _is_output(n, info)]
+    reached, stack = set(), list(roots)
+    while stack:
+        current = str(stack.pop())
+        if current in reached or current not in graph:
+            continue
+        reached.add(current)
+        stack += [v[0] for v in graph[current].get("inputs", {}).values() if _link(v)]
+    if not roots:
+        reached = {str(i) for i in graph}  # no output node to prune against: check everything
     for node_id, node in graph.items():
         cls = node.get("class_type")
-        problems = []
-        if cls not in info:
-            errors[node_id] = {"errors": [{"type": "missing_node_type", "message": f"Node '{cls}' not found"}],
-                               "class_type": cls}
+        if cls not in info or str(node_id) not in reached:
             continue
+        problems = []
         spec = info[cls]["input"]
         inputs = node.get("inputs", {})
         for field, field_spec in (spec.get("required") or {}).items():
-            if field not in inputs:
+            # An autogrow input arrives as field.<name> entries; each is a plain value or a link.
+            grown = [name for name in inputs if str(name).startswith(field + ".")] \
+                if str(field_spec[0]).startswith("COMFY_AUTOGROW") else []
+            if field not in inputs and not grown:
                 problems.append({"type": "required_input_missing", "message": f"Required input is missing: {field}"})
                 continue
-            value = inputs[field]
-            if _link(value):
-                if str(value[0]) not in graph:
-                    problems.append({"type": "bad_linked_input", "message": f"{field} links to missing node {value[0]}"})
-                continue
-            menu = _combo(field_spec)
-            if menu is not None and value not in menu:
-                problems.append({"type": "value_not_in_list",
-                                 "message": f"Value not in list: {field}: '{value}' not in {menu[:8]}"})
+            for name in ([field] if field in inputs else grown):
+                value = inputs[name]
+                if _link(value):
+                    if str(value[0]) not in graph:
+                        problems.append({"type": "bad_linked_input", "message": f"{name} links to missing node {value[0]}"})
+                    continue
+                menu = _combo(field_spec) if name == field else None
+                if menu is not None and value not in menu:
+                    problems.append({"type": "value_not_in_list",
+                                     "message": f"Value not in list: {name}: '{value}' not in {menu[:8]}"})
         if problems:
             errors[node_id] = {"errors": problems, "class_type": cls}
     return errors

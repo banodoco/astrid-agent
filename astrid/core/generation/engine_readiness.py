@@ -70,6 +70,20 @@ def current_comfy_provenance():
     return _COMFY_PROVENANCE.get()
 
 
+def engine_identity(engine: str, root: str) -> dict[str, str]:
+    """Engine-neutral identity of an installed engine: its install receipt bytes.
+
+    Replaces the checkout-owned session record. It names the
+    engine, the attested receipt digest and the install root; nothing else.
+    """
+    from .engine_local_endpoint import RECEIPT_RELATIVE_PATH
+
+    receipt = Path(root) / RECEIPT_RELATIVE_PATH
+    return {"engine": engine,
+            "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            "root": str(root)}
+
+
 def verify_installed_source(recorded_revision, recorded_digest, observed_revision, observed_digest):
     """Installed source proof is mandatory, even when workflow versions are unknown."""
     if (not isinstance(recorded_revision, str)
@@ -843,14 +857,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
                            live["source_revision"], live["source_content_digest"])},
         },
         "launch": {"output_root": output_root, "model_root": model_root},
-        "vibecomfy_session": {
-            "session_dir": registry, "server_url": installed["url"],
-            "pid": installed["daemon"]["pid"], "process_birth_id": installed["daemon"]["birth_id"],
-            "comfy_pid": comfy["pid"], "comfy_process_birth_id": comfy["birth_id"],
-            "launch_token": token, "config_digest": installed["config_digest"],
-            "source_revision": installed["source_revision"],
-            "source_content_digest": installed["source_content_digest"],
-        },
+        "engine_identity": engine_identity(engine, root),
     }
 
 
