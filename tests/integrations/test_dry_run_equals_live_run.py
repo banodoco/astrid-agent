@@ -75,9 +75,17 @@ def table():
         align = cls.align
         def spy(self, manifest, mode, _align=align, **kwargs):
             with Path({str(path)!r}).open("a") as sink:
-                sink.write(json.dumps(manifest, sort_keys=True) + "\\n")
+                sink.write(json.dumps({{"event": "align", "manifest": manifest}}, sort_keys=True) + "\\n")
             return _align(self, manifest, mode, **kwargs)
         cls.align = spy
+        requirements = cls.requirements
+        def spy_requirements(self, entry, inputs, _requirements=requirements):
+            manifest = _requirements(self, entry, inputs)
+            with Path({str(path)!r}).open("a") as sink:
+                sink.write(json.dumps({{"event": "requirements", "manifest": manifest,
+                                       "bundle": entry.get("bundle")}}, sort_keys=True) + "\\n")
+            return manifest
+        cls.requirements = spy_requirements
         cls._dry_live_spy = True
     return engines
 entries.engine_table = table
@@ -193,9 +201,18 @@ def test_dry_run_equals_live_run(cell, target_kind, tmp_path, monkeypatch, real_
         # The local child records the exact argument passed to real engine.align.
         if target_kind == "local-managed":
             assert align_log.is_file(), "the local run never called engine.align"
-            actual = [json.loads(line) for line in align_log.read_text().splitlines()]
+            events = [json.loads(line) for line in align_log.read_text().splitlines()]
+            actual = [event["manifest"] for event in events if event["event"] == "align"]
             assert len(actual) == 1, actual
             assert actual[0] == dry["entry"]["requirements"], "dry and actual align manifests differ"
+        elif h3:
+            # Attached defaults to trust, so it does not align. Still prove that the real child
+            # reads the emitted built graph rather than h3's static bundle or rebuilding h3.
+            events = [json.loads(line) for line in align_log.read_text().splitlines()]
+            actual = [event for event in events if event["event"] == "requirements"]
+            assert len(actual) == 1, actual
+            assert actual[0]["manifest"] == dry["entry"]["requirements"]
+            assert Path(actual[0]["bundle"]) != workflow_entries.bundle_path(workflow_entries.find_entry("h3"))
 
         submitted = provider.comfy.prompts[-1]["prompt"]
         assert submitted, "the live run submitted an empty graph"
