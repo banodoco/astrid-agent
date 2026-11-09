@@ -595,6 +595,14 @@ def _dimension_values(description, inputs):
     return values
 
 
+def file_map_is_valid(value: Any) -> bool:
+    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+    return (isinstance(value, Mapping) and bool(value)
+            and all(isinstance(key, str) and key and '/' not in key
+                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+                    for key, path in value.items()))
+
+
 def read_file_map_document(value: Any) -> Any:
     """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
     if not isinstance(value, (str, Path)):
@@ -606,10 +614,11 @@ def read_file_map_document(value: Any) -> Any:
         raw = json.loads(document.read_text(encoding='utf-8'))
     except (OSError, ValueError) as exc:
         raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
-    if not isinstance(raw, dict):
-        raise ValueError(f'file map document {str(value)!r} must be a JSON object of id to path')
-    return {key: (item if not isinstance(item, str) or Path(item).is_absolute()
-                  else str((document.parent / item).resolve())) for key, item in raw.items()}
+    if not file_map_is_valid(raw):
+        raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
+                         '(ids without "/", non-blank string paths)')
+    return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
+            for key, item in raw.items()}
 
 
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
@@ -669,10 +678,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 # A path to the map's JSON document (h3's --asset-map): read when the job is built
                 # (``entry_job``), not here, so describing and dry-running do not open the media.
                 value = str(value)
-            elif (not isinstance(value, Mapping) or not value
-                    or any(not isinstance(key, str) or not key or '/' in key
-                           or not isinstance(path, (str, Path)) or not str(path).strip()
-                           for key, path in value.items())):
+            elif not file_map_is_valid(value):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
             else:
                 value = {key: str(path) for key, path in value.items()}
