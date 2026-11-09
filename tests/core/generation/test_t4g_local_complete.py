@@ -39,9 +39,9 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
     engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
-        def align(self, manifest, mode):
+        def align(self, manifest, mode, **kwargs):
             seen.append((mode, manifest))
-            return super().align(manifest, mode)
+            return super().align(manifest, mode, **kwargs)
 
     monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     manifest = {"models": [], "extra": {"nodes": []}, "engine": "comfyui", "base": None}
@@ -219,9 +219,9 @@ def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align
     engine_cls = type(_engine("comfyui"))
 
     class Spy(engine_cls):
-        def align(self, manifest, mode):
+        def align(self, manifest, mode, **kwargs):
             seen.append((mode, manifest))
-            return super().align(manifest, mode)
+            return super().align(manifest, mode, **kwargs)
 
     monkeypatch.setattr(action, "_engine_for", lambda manifest: Spy())
     monkeypatch.setenv("ASTRID_ALIGN", "trust")
@@ -382,7 +382,7 @@ def test_an_explicit_align_on_an_attached_run_aligns_once_after_the_probe(comfy,
             events.append("probe")
             return super().probe(endpoint, timeout)
 
-        def align(self, manifest, mode):
+        def align(self, manifest, mode, **kwargs):
             events.append(("align", mode))
             return {"mode": mode, "missing": [], "fetched": [], "verified": True, "status": "ready"}
 

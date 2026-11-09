@@ -162,17 +162,15 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
     assert selected["template"] == "image/z_image_turbo"
     (tmp_path / "generate-list.json").write_text(json.dumps(inventory, indent=2))
     output = tmp_path / "dry.png"
-    # z-image has no pinned RunPod engine lock, so RunPod is refused explicitly
-    # before any pod is created (runpod_engine_unavailable; ledger M-42).
+    # The pending pod aligns the job requirements; controller lock coverage is not admission.
     assert console.main(["generate", "image", "A red cube on a white tabletop.",
         "--model", selected["id"], "--placement", "runpod", "--engine", "comfyui",
         "--width", "1024", "--height", "1024", "--steps", "8", "--seed", "0",
         "--out", str(output), "--consent", "paid", "--max-usd", "10",
         "--deadline", (datetime.now(timezone.utc) + timedelta(minutes=90)).isoformat(),
         "--preparation-seconds", "1800", "--execution-seconds", "900", "--idle-seconds", "1800",
-        "--dry-run", "--json"]) != 0
+        "--dry-run", "--json"]) == 0
     refused = json.loads(capsys.readouterr().out)
-    assert "runpod_engine_unavailable" in json.dumps(refused)
     assert "z_image_turbo" in json.dumps(refused) or "z-image" in json.dumps(refused)
     assert not output.exists()
     (tmp_path / "generate-dry-run.json").write_text(json.dumps(refused, indent=2))

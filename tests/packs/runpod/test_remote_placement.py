@@ -195,7 +195,7 @@ class FakePod:
 
 
 def _fake_generate(pod: "FakePod", command: str) -> str:
-    """The pod-side local run (T4 STUB contract): out tree, result line and digest manifest."""
+    """Fake pod-side local run: output tree, result line and digest manifest."""
     import shlex as _shlex
 
     line = next(row for row in command.splitlines() if "--placement local" in row)
@@ -271,8 +271,6 @@ def sources(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _wrapper(provider, sources, **kwargs):
-    kwargs.setdefault("verify_fn", lambda out, result: None)
-    kwargs.setdefault("ffprobe_fn", lambda path: None)
     return RemotePlacement(
         provider, limits=Limits(poll_seconds=0), source_root=sources, sleep=lambda s: None, **kwargs
     )

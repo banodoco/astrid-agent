@@ -250,3 +250,24 @@ def test_generation_kinds_are_one_shared_set():
     assert entries._KINDS == frozenset({'image', 'video', 'audio'})
     assert set(entries._DEFAULT_MODE_CANDIDATES) == entries._KINDS
     assert entries._DEFAULT_MODE_CANDIDATES == {'image': ('t2i',), 'video': ('t2v',), 'audio': ('music',)}
+
+
+@pytest.mark.parametrize("document", [
+    {}, [], {"": "a.mp4"}, {"a/b": "a.mp4"}, {"a": ""}, {"a": "  "}, {"a": 3}, {"a": None}])
+def test_a_file_map_document_gets_the_same_shape_checks_as_a_direct_map(tmp_path, document):
+    from astrid.core.generation.entries import file_map_is_valid, read_file_map_document
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(document))
+    assert not file_map_is_valid(document)
+    with pytest.raises(ValueError, match="nonempty JSON object of id to file path"):
+        read_file_map_document(str(path))
+
+
+def test_a_valid_file_map_document_reads_with_paths_relative_to_it(tmp_path):
+    from astrid.core.generation.entries import file_map_is_valid, read_file_map_document
+    (tmp_path / "source.mp4").write_bytes(b"x")
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps({"source": "source.mp4", "abs": "/tmp/abs.png"}))
+    value = read_file_map_document(str(path))
+    assert value == {"source": str(tmp_path / "source.mp4"), "abs": "/tmp/abs.png"}
+    assert file_map_is_valid(value)

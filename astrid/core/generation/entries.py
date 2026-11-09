@@ -595,6 +595,14 @@ def _dimension_values(description, inputs):
     return values
 
 
+def file_map_is_valid(value: Any) -> bool:
+    """A nonempty map of id to file path: string ids without '/', string (or Path) paths that are not blank."""
+    return (isinstance(value, Mapping) and bool(value)
+            and all(isinstance(key, str) and key and '/' not in key
+                    and isinstance(path, (str, Path)) and bool(str(path).strip())
+                    for key, path in value.items()))
+
+
 def read_file_map_document(value: Any) -> Any:
     """A ``file_map`` given as a path to its JSON document becomes the map; anything else is returned as is."""
     if not isinstance(value, (str, Path)):
@@ -606,10 +614,11 @@ def read_file_map_document(value: Any) -> Any:
         raw = json.loads(document.read_text(encoding='utf-8'))
     except (OSError, ValueError) as exc:
         raise ValueError(f'file map document {str(value)!r} is not readable JSON: {exc}') from exc
-    if not isinstance(raw, dict):
-        raise ValueError(f'file map document {str(value)!r} must be a JSON object of id to path')
-    return {key: (item if not isinstance(item, str) or Path(item).is_absolute()
-                  else str((document.parent / item).resolve())) for key, item in raw.items()}
+    if not file_map_is_valid(raw):
+        raise ValueError(f'file map document {str(value)!r} must be a nonempty JSON object of id to file path '
+                         '(ids without "/", non-blank string paths)')
+    return {key: (item if Path(item).is_absolute() else str((document.parent / item).resolve()))
+            for key, item in raw.items()}
 
 
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
@@ -669,10 +678,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 # A path to the map's JSON document (h3's --asset-map): read when the job is built
                 # (``entry_job``), not here, so describing and dry-running do not open the media.
                 value = str(value)
-            elif (not isinstance(value, Mapping) or not value
-                    or any(not isinstance(key, str) or not key or '/' in key
-                           or not isinstance(path, (str, Path)) or not str(path).strip()
-                           for key, path in value.items())):
+            elif not file_map_is_valid(value):
                 raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
             else:
                 value = {key: str(path) for key, path in value.items()}
@@ -893,62 +899,16 @@ def requirements(entry: Mapping[str, Any], inputs: Any = None) -> dict[str, Any]
     return engine.requirements(entry, inputs)
 
 
-def _model_requirements(entry: Mapping[str, Any]) -> tuple[list[str], set[str]]:
-    """Model destinations (or bare loader values) the entry needs, and those it pins itself.
-
-    The model rows come from the entry's requirements manifest. A contribution with a build hook
-    provisions the revision-pinned model assets its own graphs declare (the contribution owns its Ref2V LoRA
-    this way), so the engine lock need not.
-    """
-    import re
-    manifest = requirements(entry)
-    assets = manifest["models"]
-    built = bool(entry.get("hooks_declared") or entry.get("action"))
-    needs = [] if built else entry.get("needs", [])
-    required: set[str] = set()
-    pinned: set[str] = set()
-    names = {asset["name"] for asset in assets}
-    for asset in assets:
-        value = f"{asset['subdir']}/{asset['name']}" if asset.get("subdir") else asset["name"]
-        required.add(value)
-        if built and re.search(r"/resolve/[0-9a-f]{40}/", asset.get("url") or ""):
-            pinned.add(value)
-    required.update(need["value"] for need in needs
-                    if need.get("value") and Path(need["value"]).name not in names)
-    return sorted(required), pinned
-
-
-def _lock_coverage(entry: Mapping[str, Any], engine: str) -> tuple[list[str], int]:
-    """(models the engine's own pinned lock must supply but lacks, models it supplies)."""
-    from astrid.core.generation.engine_recipe import load_recipe_model_lock
-    destinations = [model.destination for model in load_recipe_model_lock(engine, RUNPOD_PLATFORM).models]
-    required, pinned = _model_requirements(entry)
-    covered = [value for value in required
-               if any(path == value or path.endswith("/" + value) for path in destinations)]
-    return [value for value in required if value not in covered and value not in pinned], len(covered)
-
-
-def _missing_locked_models(entry: Mapping[str, Any], engine: str) -> list[str]:
-    return _lock_coverage(entry, engine)[0]
-
-
 def runpod_engine(entry: Mapping[str, Any] | None) -> str:
-    """The one RunPod engine choice, from each engine's own pinned models lock.
-
-    Engines that leave nothing missing qualify; the one supplying the most of
-    the entry's models wins, and ties keep the declared preference order.
-    """
+    """Choose the preferred RunPod recipe; the machine aligns the job manifest."""
     from astrid.core.contracts.errors import AstridError
-    if entry is not None:
-        engines = runpod_engines()
-        coverage = {engine: _lock_coverage(entry, engine) for engine in engines}
-        qualified = [engine for engine in engines if not coverage[engine][0]]
-        if qualified:
-            return max(qualified, key=lambda engine: (coverage[engine][1], -engines.index(engine)))
+    engines = runpod_engines()
+    if entry is not None and engines:
+        return engines[0]
     identifier = (entry or {}).get("id")
-    raise AstridError(f"No RunPod engine lock covers the models of {identifier!r}; nothing was created.",
+    raise AstridError(f"No RunPod engine is available for {identifier!r}; nothing was created.",
                       code="runpod_engine_unavailable", field="target",
-                      state_snapshot={"entry": identifier, "engines": list(runpod_engines())})
+                      state_snapshot={"entry": identifier, "engines": list(engines)})
 
 
 def _workflow_description(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -966,17 +926,6 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any, *, engine: 
         if need.get("ambiguity"):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
     if client is None:
-        missing = _missing_locked_models(entry, engine) if engine is not None else []
-        if missing:
-            # No live target: the chosen engine's pinned lock is the inventory.
-            from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
-            raise GenerationReadinessError(readiness_envelope(
-                entry=_workflow_description(entry),
-                target=dict(pending_target) if pending_target is not None else {'engine': engine},
-                issues=[{'code': 'missing_model', 'severity': 'error',
-                         'message': f'{engine} model lock is missing {value!r}',
-                         'details': {'engine_code': 'comfyui.models_missing', 'model': value, 'bytes': None}}
-                        for value in missing]))
         return None
     from types import SimpleNamespace
     from astrid.core.generation.backends.comfy_target import _resolve_roles
