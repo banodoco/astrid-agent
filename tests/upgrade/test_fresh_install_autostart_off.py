@@ -23,16 +23,11 @@ ROWS = ("direct-linux-autostart-off", "direct-macos-autostart-off")
 
 def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, status_reason="autostart-off",
          post_status=409, post_reason="autostart-off", runtime_after="same", selection_after="same",
-         data_after_change=False, capture_dpr=2):
+         data_after_change=False, capture_dpr=2, build_error=None):
     app, candidate_path, root = (tmp_path / name for name in ("app", "candidate.json", "program"))
     data = tmp_path / "data"
     app.mkdir(exist_ok=True)
     candidate_path.write_text("{}", encoding="utf-8")
-    dist = tmp_path / "dist"
-    dist.mkdir(exist_ok=True)
-    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
-    (dist / "build.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("ASTRID_CI_HOSTED_APP_DIST", str(dist))
     manifest = {"release": 12, "agent": {"sha": "e2a7fad07e4a8bef9aa4c6e126911a1c5a29caf2"},
                 "runtime": {"sha": "744cf24874ea851f95949a706725aba19d18222f"}}
     args = argparse.Namespace(job_id="direct-linux-autostart-off", mode="direct", leg=LEG, shell="sh",
@@ -64,7 +59,7 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
         instance = "after" if runtime_after != "same" and state["post"] else "before"
         return {"runtime_instance_id": instance, "identity": {"release": 12}}
 
-    def capture(evidence, app_path, dist_path):
+    def capture(evidence, app_path, dist_path, capture_dir):
         return {"path": str(evidence / "autostart-off-card.png"), "sha256": "c" * 64,
                 "device_scale_factor": capture_dpr, "surface": "autostart-off card"}
 
@@ -73,6 +68,14 @@ def _leg(monkeypatch, tmp_path, *, install_exit=0, choices_autostart=False, stat
                                                                    "artifacts": {}}
                         if Path(path) == candidate_path else {})
     monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
+
+    def build(app_path, evidence_path):
+        if build_error:
+            raise RuntimeError(build_error)
+        return built_dist(tmp_path)
+
+    monkeypatch.setattr(jumps, "build_hosted_app", build)
+    monkeypatch.setattr(jumps, "install_capture_browser", lambda root: tmp_path / "capture-browser")
     monkeypatch.setattr(jumps.journey, "git_source", lambda *_: {"sha": "app-r12"})
     monkeypatch.setattr(jumps.journey, "sentinel_observation", lambda *_: {"alive": True})
     monkeypatch.setattr(jumps, "candidate_install_autostart_off", lambda *_a, **_k: {
@@ -207,14 +210,21 @@ def failing_capture(*_args):
     raise RuntimeError("intercept refused")
 
 
-def test_the_capture_needs_the_built_app_in_the_environment(monkeypatch, tmp_path):
-    run, receipt, _ = _leg(monkeypatch, tmp_path)
-    monkeypatch.delenv("ASTRID_CI_HOSTED_APP_DIST")
-    with pytest.raises(RuntimeError, match="needs its build in ASTRID_CI_HOSTED_APP_DIST"):
+def built_dist(tmp_path):
+    dist = tmp_path / "app-dist"
+    dist.mkdir(exist_ok=True)
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (dist / "build.json").write_text("{}", encoding="utf-8")
+    return dist
+
+
+def test_a_linux_build_failure_fails_the_leg(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, build_error="npm ci exited 1")
+    with pytest.raises(RuntimeError, match="npm ci exited 1"):
         run()
     recorded = json.loads(receipt.read_text())
     assert recorded["status"] == "fail"
-    assert recorded["checks"]["install_exit"] == "not-run"
+    assert recorded["checks"]["autostart_card_capture"] == "not-run"
 
 
 def test_the_capture_runs_inside_the_astrid_haus_intercept_at_the_approved_route(monkeypatch, tmp_path):
@@ -254,8 +264,9 @@ def test_the_capture_runs_inside_the_astrid_haus_intercept_at_the_approved_route
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     (dist / "build.json").write_text("{}", encoding="utf-8")
-    capture = jumps.capture_autostart_card(tmp_path / "evidence", app, dist)
+    capture = jumps.capture_autostart_card(tmp_path / "evidence", app, dist, tmp_path / "capture-browser")
     assert events == ["enter", "node", "exit"]
+    assert configs[0]["playwright"] == str(tmp_path / "capture-browser" / "node_modules" / "playwright" / "index.mjs")
     assert configs[0]["origin"] == jumps.AUTOSTART_ORIGIN == "https://astrid.haus"
     assert configs[0]["entry"] == jumps.AUTOSTART_ENTRY == "/tools/video-editor?settings=updates"
     assert configs[0]["text"] == jumps.AUTOSTART_CARD_TEXT
@@ -271,14 +282,14 @@ def test_the_wait_text_is_the_approved_card_sentence_and_the_script_waits_for_it
     assert "waitFor" in script and "Run this command" not in script and "saved autostart is off" not in script
 
 
-def test_a_macos_capture_failure_is_recorded_and_not_gated(monkeypatch, tmp_path):
+def test_a_macos_capture_failure_is_recorded_as_unverified(monkeypatch, tmp_path):
     run, receipt, _ = _leg(monkeypatch, tmp_path)
     monkeypatch.setattr(jumps, "capture_autostart_card", failing_capture)
     monkeypatch.setattr(jumps.sys, "platform", "darwin")
     result = run()
     assert result["status"] == "pass"
-    assert result["checks"]["autostart_card_capture"] == "not-gated"
-    assert result["capture"]["status"] == "not-gated" and "intercept refused" in result["capture"]["error"]
+    assert result["checks"]["autostart_card_capture"] == "unverified"
+    assert result["capture"]["status"] == "unverified" and "intercept refused" in result["capture"]["error"]
     for check in ("selection_autostart_false", "update_status_autostart_off", "post_update_refused_unchanged"):
         assert result["checks"][check] == "pass", check
 
@@ -291,9 +302,76 @@ def test_a_linux_capture_failure_fails_the_leg(monkeypatch, tmp_path):
     assert json.loads(receipt.read_text())["checks"]["autostart_card_capture"] == "not-run"
 
 
-def test_the_autostart_rows_build_and_serve_the_app_on_linux_and_macos():
+def test_the_macos_assertions_are_recorded_before_the_build(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path)
+    monkeypatch.setattr(jumps.sys, "platform", "darwin")
+    seen = {}
+
+    def build_after_checkpoint(app_path, evidence_path):
+        checkpoint = json.loads(receipt.read_text(encoding="utf-8"))
+        seen.update({key: checkpoint["checks"][key] for key in
+                     ("selection_autostart_false", "update_status_autostart_off", "post_update_refused_unchanged")})
+        seen["capture_before_build"] = checkpoint["checks"]["autostart_card_capture"]
+        return built_dist(tmp_path)
+
+    monkeypatch.setattr(jumps, "build_hosted_app", build_after_checkpoint)
+    result = run()
+    assert seen == {"selection_autostart_false": "pass", "update_status_autostart_off": "pass",
+                    "post_update_refused_unchanged": "pass", "capture_before_build": "not-run"}
+    assert result["status"] == "pass"
+
+
+def test_a_failing_macos_build_leaves_the_assertions_and_the_row_passes_with_capture_unverified(monkeypatch, tmp_path):
+    run, receipt, _ = _leg(monkeypatch, tmp_path, build_error="npm ci exited 1")
+    monkeypatch.setattr(jumps.sys, "platform", "darwin")
+    result = run()
+    assert result["status"] == "pass"
+    for check in ("install_exit", "selection_autostart_false", "update_status_autostart_off",
+                  "post_update_refused_unchanged", "service", "health", "unrelated_sentinel"):
+        assert result["checks"][check] == "pass", check
+    assert result["checks"]["autostart_card_capture"] == "unverified"
+    assert result["capture"]["status"] == "unverified" and "npm ci exited 1" in result["capture"]["error"]
+
+
+def test_the_hosted_app_is_built_with_npm_ci_then_build_hosted(monkeypatch, tmp_path):
+    calls = []
+
+    class Done:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs.get("cwd")))
+        if argv[-1] == "build:hosted":
+            dist = tmp_path / "app" / "dist"
+            dist.mkdir(parents=True)
+            (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+            (dist / "build.json").write_text("{}", encoding="utf-8")
+        return Done()
+
+    monkeypatch.setattr(jumps.subprocess, "run", fake_run)
+    dist = jumps.build_hosted_app(tmp_path / "app", tmp_path / "evidence")
+    assert dist == tmp_path / "app" / "dist"
+    assert calls == [(["npm", "ci", "--legacy-peer-deps"], tmp_path / "app"),
+                     (["npm", "run", "build:hosted"], tmp_path / "app")]
+
+
+def test_the_capture_browser_is_pinned_to_playwright_1_47_2(monkeypatch, tmp_path):
+    calls = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(jumps.subprocess, "run", lambda argv, **kwargs: calls.append(list(argv)) or Done())
+    directory = jumps.install_capture_browser(tmp_path / "program")
+    assert directory == tmp_path / "autostart-capture"
+    assert calls[0][:4] == ["npm", "install", "--prefix", str(directory)] and "playwright@1.47.2" in calls[0]
+    assert calls[1][-3:] == ["install", "--with-deps", "chromium"]
+
+
+def test_the_workflow_leaves_the_build_and_the_capture_browser_to_the_leg(monkeypatch):
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
-    assert workflow.count("if: matrix.job_id == 'direct-linux-fresh' || matrix.leg == 'fresh-install-autostart-off'") == 2
-    assert "matrix.leg == 'fresh-install-autostart-off') && format('{0}/app/dist', github.workspace)" in workflow
+    assert "Install the autostart-off capture browser" not in workflow
+    assert "ASTRID_AUTOSTART_CAPTURE_DIR" not in workflow
     build = workflow.split("      - name: Build the candidate's hosted App and the browser that clicks it\n", 1)[1]
-    assert "npm run build:hosted" in build.split("      - name:", 1)[0]
+    assert build.split("\n", 1)[0] == "        if: matrix.job_id == 'direct-linux-fresh'"
+    assert "matrix.leg == 'fresh-install-autostart-off'" in workflow.split("      - name: Set up Node", 1)[1].split("\n", 2)[1]
