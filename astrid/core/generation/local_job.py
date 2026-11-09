@@ -64,6 +64,12 @@ def run_job(entry: str, job_path: str | Path, out: str | Path, *, mode: str | No
         workflow, named = entries.bundle_path(described), entry
     # File inputs ride the job directory; they reach the run as its own file arguments.
     files = {name: str(inputs.pop(name)) for name in ("managed_assets", "source_video") if name in inputs}
+    if named is not None:
+        # The CLI's own validation: aliases, defaults and binds of the entry's public inputs, no Runtime.
+        try:
+            _, inputs = entries.resolve_entry_inputs(named, inputs, mode=mode or job.get("mode"))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise JobFileError(f"job inputs are not valid for entry {named!r}: {exc}") from exc
     return run_action._run_and_settle(
         workflow, Path(out), task_identity=task, attempt_identity=attempt,
         workflow_inputs=json.dumps(inputs, sort_keys=True), entry=named,

@@ -44,7 +44,8 @@ def test_job_align_reaches_engine_align(comfy, tmp_path, monkeypatch):  # noqa: 
         action._run_and_settle(comfy.workflow, tmp_path / mode / "outputs", task_identity="t", attempt_identity="a",
                                align=mode, manifest=manifest)
     assert [row[0] for row in seen] == ["trust", "check"]
-    assert seen[0][1] is manifest
+    assert seen[0][1] == {**manifest, "models_root": seen[0][1]["models_root"]}  # the install's models dir is added
+    assert seen[0][1]["models_root"].endswith("/models")
 
 
 def test_job_file_form_runs_end_to_end_on_the_cpu_standin(comfy, tmp_path, monkeypatch, capsys):  # noqa: F811
@@ -222,7 +223,8 @@ def test_the_plain_local_run_passes_align_and_the_requirements_manifest_to_align
     monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
     out = tmp_path / "attempt" / "outputs"
     assert action.main(["run", str(comfy.workflow), "--out", str(out), "--task-identity", "t"]) == 0
-    assert seen == [("trust", manifest)]
+    assert [(mode, {k: v for k, v in m.items() if k != "models_root"}) for mode, m in seen] == [("trust", manifest)]
+    assert seen[0][1]["models_root"].endswith("/models")
 
 
 def test_the_host_admits_the_requested_align_mode_and_entry():
@@ -284,3 +286,66 @@ def test_the_real_runner_start_probe_reuses_then_restarts_a_cpu_standin_server(i
         assert state["starts"] == 2 and "stop" not in state["ops"]  # a job never stops the server
     finally:
         state["proc"] and state["proc"].kill()
+
+
+def test_a_plain_align_run_fetches_only_the_manifests_missing_rows(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """align uses the install's own models dir, so only rows missing there are fetched."""
+    _endpoint(comfy, monkeypatch)
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.core.generation import entries
+    engine_root = tmp_path / "engine-root"
+    present = engine_root / "models" / "checkpoints" / "have.safetensors"
+    present.parent.mkdir(parents=True)
+    present.write_bytes(b"12345")
+    have = {"name": "have.safetensors", "subdir": "checkpoints", "url": "u1", "sha256": None, "size": 5}
+    lack = {"name": "lack.safetensors", "subdir": "loras", "url": "u2", "sha256": None, "size": 9}
+    manifest = {"engine": "comfyui", "base": None, "models": [have, lack], "extra": {"nodes": []}}
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.default_engine_root", lambda engine: str(engine_root))
+    monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(entries, "requirements", lambda entry, inputs=None: manifest)
+    calls = []
+
+    class Commands:
+        def doctor(self): calls.append(("doctor",))
+        def prepare_deps_sync(self): calls.append(("prepare",))
+        def nodes_restore(self, nodes): calls.append(("nodes", nodes))
+        def fetch(self, rows): calls.append(("fetch", [row["name"] for row in rows]))
+
+    engine_cls = type(action._comfyui_engine())
+    monkeypatch.setattr(action, "_comfyui_engine", lambda: engine_cls(commands=Commands()))
+    monkeypatch.setenv("ASTRID_ALIGN", "align")
+    monkeypatch.setenv("ASTRID_GENERATION_ENTRY", "some-entry")
+    out = tmp_path / "attempt" / "outputs"
+    assert action.main(["run", str(comfy.workflow), "--out", str(out), "--task-identity", "t"]) == 0
+    assert ("fetch", ["lack.safetensors"]) in calls and ("fetch", ["have.safetensors"]) not in calls
+    assert [call for call in calls if call[0] == "fetch"] == [("fetch", ["lack.safetensors"])]
+
+
+def test_the_job_path_applies_the_entrys_public_input_contract(tmp_path, monkeypatch):
+    """Aliases and defaults of the entry's public inputs, not the bundle's own names, reach the run."""
+    from astrid.core.generation import entries
+    from astrid.core.generation.local_job import JobFileError, run_job
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    public = {"id": "named", "kind": "image", "source": "workflow", "modes": ["t2i"], "mode": "t2i",
+              "inputs": [{"name": "prompt", "type": "string", "required": True},
+                         {"name": "seed", "type": "integer", "required": False, "default": 42},
+                         {"name": "paint_strength", "type": "number", "required": True, "aliases": ["texture"]}]}
+    bundle = tmp_path / "bundle" / "workflow.py"
+    bundle.parent.mkdir()
+    bundle.write_text("")
+    monkeypatch.setattr(entries, "describe_entry", lambda *a, **k: public)
+    monkeypatch.setattr(entries, "find_entry", lambda entry_id: {"id": entry_id, "bundle": str(bundle)})
+    seen = {}
+    monkeypatch.setattr(action, "_run_and_settle", lambda workflow, out, **kw: seen.update(kw, workflow=workflow) or {})
+
+    def write(inputs):
+        job = tmp_path / "job.json"
+        job.write_text(json.dumps({"schema": "astrid.machine-job.v1", "entry": "named", "mode": None,
+                                   "align": "check", "inputs": inputs}))
+        return job
+
+    run_job("named", write({"prompt": "x", "texture": 0.5}), tmp_path / "out")
+    assert json.loads(seen["workflow_inputs"]) == {"prompt": "x", "paint_strength": 0.5}
+    assert seen["entry"] == "named" and seen["workflow"] == bundle
+    with pytest.raises(JobFileError, match="not valid for entry"):
+        run_job("named", write({"prompt": "x", "unknown_field": 1}), tmp_path / "out")
