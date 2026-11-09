@@ -9,6 +9,7 @@ import sys
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from . import update_job
 from .backend import Backend
@@ -33,7 +34,7 @@ from .core import (
     separate_roots,
     write_json,
 )
-from .installation import Installation
+from .installation import Installation, State
 from .outcome import RECORD, Request, clear_record, receipt_warnings, settle, write_record
 from .service import (
     LABEL,
@@ -392,10 +393,12 @@ class _Run:
         self.target_source: str | None = None
         self.reason: str | None = None
         self.refused = False  # the run stopped before doing anything; never reported as reached
-        self.before = None
-        self.home = self.system = self.root = None
-        self.choices = None
-        self.installer = None
+        self.before: State | None = None
+        self.home: Path | None = None
+        self.system: str | None = None
+        self.root: Path | None = None
+        self.choices: dict[str, bool] | None = None
+        self.installer: Any | None = None
         self.transaction_id = None
         self.operation_id: str | None = None
         self.started_at: int | None = None
@@ -410,8 +413,9 @@ class _Run:
         self.operation_id = self.operation_id or secrets.token_hex(16)
         self.started_at = self.started_at or int(time.time())
         try:
-            self.before = Installation.resolve(home, system=system, root=root)
-            pending = read_json((root or self.before.program_root) / "update-transaction.json")
+            resolved = Installation.resolve(home, system=system, root=root)
+            self.before = resolved
+            pending = read_json((root or resolved.program_root) / "update-transaction.json")
             self.transaction_id = pending.get("operation_id")
         except Exception:  # noqa: BLE001 - observation only; settle re-resolves
             self.before = None

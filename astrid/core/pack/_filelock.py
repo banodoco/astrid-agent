@@ -6,15 +6,19 @@ import errno
 import os
 import sys
 import time
+from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 
+_fcntl: ModuleType | None
 try:  # POSIX
-    import fcntl as _fcntl
+    _fcntl = import_module("fcntl")
 except ImportError:  # pragma: no cover - exercised via monkeypatch in tests
     _fcntl = None
 
+_msvcrt: ModuleType | None
 try:  # Windows
-    import msvcrt as _msvcrt
+    _msvcrt = import_module("msvcrt")
 except ImportError:
     _msvcrt = None
 

@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 # Exit-code contract (ruled by M-INT on PR #319). The target follows the request:
 # --update targets the manifest release; a plain install or repair (including
@@ -49,7 +50,7 @@ def _repair_next() -> str:
 # not finish. The exit code stays 0; the headline, its Next line and last-run.json
 # (warnings) carry the same copy in the terminal and the App. Each phrase follows
 # "but" in the first line, joined with "and" when a success has several.
-WARNINGS = {
+WARNINGS: dict[str, dict[str, Any]] = {
     "skills-not-refreshed": {
         "phrase": "its skills couldn't be refreshed",
         "next": "Next: to refresh Astrid's skills, rerun the install line with --skills on (replace this flag in the Way back line).",
@@ -334,7 +335,7 @@ def settle(request: Request, before, resolver, *, failure: BaseException | None 
                        target_source=source)
     if request.refused:
         # Refused before any work: nothing was changed, whatever else is running.
-        reason = request.reason or "other-runtime-running"
+        reason: str | None = request.reason or "other-runtime-running"
         return Outcome("not-updated", live if live is not None else start, start, target, reason, request.mode,
                        target_source=source)
     # A second live Runtime is a warning on a success, and a refusal otherwise.

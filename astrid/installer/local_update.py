@@ -13,7 +13,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from .backend import Backend
 from .choices import resolve_choices
@@ -688,8 +688,10 @@ class _LocalRun:
         """install.log only when it cannot write into a selected root (the installer's rule)."""
         from .cli import _prepare_log
 
-        protected = [self.root]
-        marker = read_json(self.root / "install.json")
+        root = self.root
+        assert root is not None
+        protected = [root]
+        marker = read_json(root / "install.json")
         for key in ("data_root", "r1_data_root", "retained_r0_data_root"):
             if isinstance(marker.get(key), str) and marker[key]:
                 protected.append(absolute(marker[key]))
@@ -708,6 +710,7 @@ class _LocalRun:
         return protected, _prepare_log(log_path, *protected)
 
     def _rolled_back(self) -> bool:
+        assert self.root is not None
         pending = read_json(self.root / "update-transaction.json")
         return pending.get("step") == "rolled_back" and pending.get("operation_id") != self.transaction_id
 
@@ -741,7 +744,8 @@ class _LocalRun:
         except (OSError, ValueError):
             rolled_back = False
         outcome = settle(request, self.before, self._resolve, failure=failure, rolled_back=rolled_back)
-        app = self.action.get("app") if isinstance(self.action.get("app"), dict) else {}
+        app_value = self.action.get("app")
+        app = app_value if isinstance(app_value, dict) else {}
         old_editor = app.get("oldAppRelease")
         if (outcome.kind == "already-current" and type(old_editor) is int
                 and old_editor != outcome.target):
@@ -764,6 +768,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     args = parser.parse_args(argv)
     run = _LocalRun()
+    reply: dict[str, Any]
+    code: int
+    failure: Exception | None = None
     try:
         root = absolute(args.root)
         line = sys.stdin.readline()

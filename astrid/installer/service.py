@@ -564,7 +564,7 @@ class Service:
             value = self.run(["systemctl", "--user", "show", self.path.name,
                               "--property=MainPID,FragmentPath,LoadState"])
             fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
-            pid = int(fields.get("MainPID") or 0)
+            pid: int | None = int(fields.get("MainPID") or 0)
             if fields.get("LoadState") == "not-found" and pid == 0:
                 return None
             if fields.get("FragmentPath") != str(self.path) or pid not in {0, owner_pid}:
@@ -575,7 +575,7 @@ class Service:
         loaded = registration._mac_state(bound)
         if not loaded:
             if require_stopped:
-                self._validated_launchd_stop = None
+                self._validated_launchd_stop: dict | None = None
                 self._validated_launchd_stop_checked = True
             return None
         value = self.run(["launchctl", "print", self._handed_off_target()])
