@@ -316,11 +316,22 @@ def _windows_fresh_update_errors(update, job_id):
     return errors
 
 
+# The receipt kind each Release-1 matrix leg writes. The R0 handoff leg writes
+# its own kind; every other leg writes the shared lifecycle receipt.
+RELEASE1_RECEIPT_KINDS = {"r0-handoff-then-update": "r0-handoff-then-update"}
+RELEASE1_DEFAULT_RECEIPT_KIND = "release1-installed-lifecycle"
+
+
+def release1_receipt_kind(contract):
+    """The receipt kind a Release-1 matrix row must carry for its leg."""
+    return RELEASE1_RECEIPT_KINDS.get(contract.get("leg", "fresh-install"), RELEASE1_DEFAULT_RECEIPT_KIND)
+
+
 def _release1_row_errors(candidate, contract, row):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
     errors = []
-    if row.get("receipt_kind") != "release1-installed-lifecycle":
+    if row.get("receipt_kind") != release1_receipt_kind(contract):
         errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
     if row.get("status") != "pass":
         errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
@@ -1052,7 +1063,7 @@ def _visibility_receipts(results):
             errors.append(f"{path}: malformed journey receipt: {exc}")
             continue
         kind = row.get("receipt_kind")
-        if kind == "release1-installed-lifecycle":
+        if kind in {RELEASE1_DEFAULT_RECEIPT_KIND, *RELEASE1_RECEIPT_KINDS.values()}:
             add(release1, row.get("job_id"), (row, path), path)
         elif kind == "release2-installed-lifecycle":
             add(m4_5, row.get("scenario_id"), (row, path), path)

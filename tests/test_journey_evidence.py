@@ -50,7 +50,7 @@ def release1_receipts(tmp_path):
         runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
-        row = {"receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
+        row = {"receipt_kind": gate.release1_receipt_kind(contract), "job_id": contract["job_id"],
                "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
                "status": "pass", "runner_image": contract["runner"],
                "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
@@ -600,4 +600,24 @@ def test_both_fresh_rows_require_complete_update_receipt(tmp_path):
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path))
         row["update"] = original
         path.write_text(json.dumps(row))
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+
+
+def test_each_release1_leg_needs_its_own_receipt_kind(tmp_path):
+    """The R0 handoff rows carry their leg's receipt kind; the other rows the shared one."""
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    kinds = {row["job_id"]: gate.release1_receipt_kind(row) for row in gate.RELEASE1_MATRIX}
+    assert kinds["direct-linux"] == kinds["direct-macos"] == "r0-handoff-then-update"
+    assert {kinds[job] for job in ("direct-windows", "direct-linux-fresh", "direct-macos-fresh")} == {
+        "release1-installed-lifecycle"}
+    swapped = {"r0-handoff-then-update": "release1-installed-lifecycle",
+               "release1-installed-lifecycle": "r0-handoff-then-update"}
+    for job_id, kind in kinds.items():
+        path = tmp_path / job_id / "journey-result.json"
+        original = json.loads(path.read_text())
+        assert original["receipt_kind"] == kind
+        path.write_text(json.dumps(dict(original, receipt_kind=swapped[kind])))
+        assert f"{job_id}: not a Release-1 lifecycle receipt" in gate.evaluate_release1_matrix(candidate, tmp_path)
+        path.write_text(json.dumps(original))
     assert not gate.evaluate_release1_matrix(candidate, tmp_path)

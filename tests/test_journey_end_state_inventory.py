@@ -29,7 +29,7 @@ def candidate():
 def release1_row(contract, pinned):
     runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
     row = {
-        "receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
+        "receipt_kind": gate.release1_receipt_kind(contract), "job_id": contract["job_id"],
         "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
         "status": "pass", "runner_image": contract["runner"], "shell": contract["shell"],
         "source_override_test_mode": False, "final_cleanup": "pass", "os_build": runner_os + "-test",
