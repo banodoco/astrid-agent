@@ -807,7 +807,6 @@ def test_worker_validation_failure_cleans_from_its_own_job_context(tmp_path, mon
     assert calls == [{"finishing": True}]
 
 
-@pytest.mark.parametrize("terminal_state", ["updated", "rolled_back", "failed"])
 def test_legacy_selection_without_a_choice_record_snapshots_autostart_on(tmp_path, monkeypatch):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     selection_path = Path(request["selection_path"])
@@ -818,6 +817,7 @@ def test_legacy_selection_without_a_choice_record_snapshots_autostart_on(tmp_pat
     assert job["autostart_snapshot"] is True
 
 
+@pytest.mark.parametrize("terminal_state", ["updated", "rolled_back", "failed"])
 def test_worker_terminal_handoff_cleans_once_and_preserves_preferences_and_job_name(
         tmp_path, monkeypatch, terminal_state):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
