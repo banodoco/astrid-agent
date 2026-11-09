@@ -57,7 +57,7 @@ _PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = (
     VibeProfileFixture(
         "checkout_server",
         "7ac8da29bad6da2b7486df4fde4fa9a2a0c39fbd0911a6a60f988b3fb2f54fc8",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())),  # all five frozen fixtures; the removed pip_embedded row carried three
+        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())),  # all five frozen fixtures; the removed embedded row carried three
         "accepted D-4/D-5 profile evidence",
     ),
 )
