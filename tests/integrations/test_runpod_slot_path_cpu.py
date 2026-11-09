@@ -517,9 +517,6 @@ _RED = {
     (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    # h3 builds its graph and reaches vibecomfy.run on the stand-in; the packaged node schemas disagree with the
-    # graph's native ports (ComfyMathExpression 3 outputs vs 2), so the canonical UI materialization is refused.
-    (("video", "h3"), "local-managed"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
     (("video", "h3"), "attached"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
@@ -562,7 +559,10 @@ def _capability_call(capability):
 
 @pytest.mark.parametrize(
     "capability,target_kind",
-    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}") for t in TARGET_KINDS for c in CAPABILITIES])
+    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}",
+                  # CPU cannot verify the 1.9GB pinned turbo LoRA hash h3's validate step re-hashes (Plan 34; as the TTS local cell).
+                  marks=[pytest.mark.gpu] if (c, t) == (("video", "h3"), "local-managed") else [])
+     for t in TARGET_KINDS for c in CAPABILITIES])
 def test_capability_reaches_generation_on_each_target(capability, target_kind, tmp_path, monkeypatch,
                                                       real_runtime, tuple_sources):
     if capability == ("video", "h3"):
