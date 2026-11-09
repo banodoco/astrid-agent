@@ -679,6 +679,27 @@ def _comfyui_engine() -> Any:
     return module.ComfyUIEngine()
 
 
+def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
+    """The engine's own requirements for this workflow, rooted at the installed local engine's models.
+
+    Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
+    lists nothing (the target's own preflight still checks what it needs).
+    """
+    from vibecomfy.workflow_bundle import WorkflowBundleError
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import recorded_engine_root
+
+    try:
+        manifest = engine.requirements({"bundle": str(workflow_path)}, {})
+    except WorkflowBundleError:
+        return {"models": [], "extra": {"nodes": []}}
+    try:
+        root = recorded_engine_root("comfyui")
+    except EngineError:
+        root = None
+    return {**manifest, "models_root": f"{root}/models" if root else ""}
+
+
 class _LocalEngineServer:
     """The ``local`` that ComfyUIEngine.run drives: the installed local ComfyUI, and one production submit."""
 
@@ -851,9 +872,14 @@ def _run_and_settle(
         with provenance.capture():
             if synthetic is None and engine_local_run:
                 local = _LocalEngineServer(adapter, output_root, production_kwargs)
-                _comfyui_engine().run(
-                    {"workflow": workflow_path, "out": output_root, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"},
-                    local)
+                engine = _comfyui_engine()
+                manifest = _engine_manifest(engine, workflow_path)
+                missing = engine.align(manifest, "check")["missing"]
+                if manifest.get("models_root") and missing:
+                    raise AstridValueError(
+                        f"local engine is missing declared models: {', '.join(missing)}; "
+                        "run: astrid generate align --apply --consent user_env --all")
+                engine.run({"workflow": workflow_path, "out": output_root, "manifest": manifest, "mode": "check"}, local)
                 production_result = local.result
             elif synthetic is None:
                 production_result = adapter.workflow(

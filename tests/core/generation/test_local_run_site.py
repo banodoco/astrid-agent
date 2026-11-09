@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 
 from astrid.packs.vibecomfy import production_engine
@@ -40,3 +41,19 @@ def test_local_run_uses_the_engine_run(comfy, tmp_path, monkeypatch):  # noqa: F
     assert profiles == ["local_server"]  # the engine run is always local_server
     assert len(comfy.prompts) == 1
     assert (out / manifest["managed_generation_result_path"]).is_file()
+
+
+def test_local_run_checks_the_workflows_declared_models_before_queueing(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """The run site passes the engine's real requirements(): a declared model that is absent refuses before any /prompt."""
+    import pytest
+    from astrid.core.contracts.errors import AstridValueError
+    from astrid.core.generation import entries
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    row = next(r for r in entries.ready_entries() if r.get("bundle") and r.get("model_assets"))
+    root = tmp_path / "engine"
+    (root / "models").mkdir(parents=True)
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.recorded_engine_root", lambda engine: str(root))
+    with pytest.raises(AstridValueError, match="missing declared models"):
+        action._run_and_settle(Path(row["bundle"]), tmp_path / "out", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []
