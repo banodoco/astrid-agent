@@ -521,3 +521,17 @@ def test_seedless_rerun_uses_attempt_specific_save_prefix(comfy, tmp_path):
     assert prefixes[0] != prefixes[1]
     assert all(prefix.startswith("astrid") for prefix in prefixes)
     assert comfy.workflow.read_bytes() == original
+
+
+def test_explicit_trust_is_unverified_in_native_attempt_and_published_receipt(comfy, tmp_path, monkeypatch):
+    monkeypatch.setenv('ASTRID_ALIGN', 'trust')
+    result = production_engine.run_workflow_result_path(
+        comfy.workflow, tmp_path / 'attempt' / 'outputs', task_identity='task-trust',
+        attempt_identity='attempt-trust', comfy_url=comfy.url, profile_id='local_server',
+    )
+    receipt_path = Path(result.managed_generation_result_path)
+    receipt = json.loads(receipt_path.read_text())
+    attempt = json.loads(receipt_path.with_name('attempt.json').read_text())
+    expected = {'mode': 'trust', 'status': 'unverified', 'verified': False}
+    assert receipt['evidence']['producer']['alignment'] == expected
+    assert attempt['alignment'] == expected

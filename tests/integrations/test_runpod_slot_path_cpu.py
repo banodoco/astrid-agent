@@ -230,7 +230,7 @@ def _managed_local_engine(provider, tmp_path, monkeypatch):
 
 @contextlib.contextmanager
 def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_classes=(), call=None,
-           machine_identity=False, target_kind="runpod", h3_output=False):
+           machine_identity=False, target_kind="runpod", h3_output=False, trusted_inventory=False):
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "machine"))
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(tuple_sources))
     import subprocess
@@ -350,6 +350,19 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
             else:
                 stack.enter_context(_managed_local_engine(provider, tmp_path, monkeypatch))
                 controls = dict(placement="managed", client=client, project=project_id, wait=True)
+            if trusted_inventory:
+                # Trust exercises execution with unverified declarations, rather than real weights.
+                # Give the stand-in ComfyUI its declared loader names so /prompt can execute;
+                # focused trust tests separately cover an incomplete advertised inventory.
+                from astrid.core.generation import entries
+                from vibecomfy.model_assets import _referenced_model_values
+                declared = []
+                for identifier in SLOT_DEFAULTS[slot]:
+                    workflow = entries._load_entry_workflow(entries.find_entry(identifier))
+                    for reference in _referenced_model_values(workflow):
+                        declared.extend((reference['value'], reference['subdir'] + '/' + reference['value']))
+                installed = provider.comfy.installed_files
+                provider.comfy.installed_files = lambda: [*installed(), *declared]
             result = call(GenerationFacade(), controls, tmp_path)
             yield client, project_id, provider, result
     finally:
@@ -598,6 +611,7 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, a
     else:
         drive = dict(call=_capability_call(capability))
     if align_mode == "trust":
+        drive["trusted_inventory"] = True
         call = drive["call"]
         drive["call"] = lambda facade, controls, tmp: call(facade, {**controls, "align": "trust"}, tmp)
     red = _RED.get((capability, target_kind)) if align_mode == "check" else None
@@ -615,6 +629,13 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, a
             assert not result.ok and red[1] in json.dumps(result.to_dict(), default=str)
             return
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
+        if align_mode == "trust":
+            opened = client.media.open(project_id, result.manifest_ref, materialize=True,
+                                       cache_root=tmp_path / "trusted-receipt", preview_bytes=0)
+            assert opened.ok, opened.error
+            receipt = json.loads(Path(opened.data['local_path']).read_bytes())
+            assert receipt['evidence']['producer']['alignment'] == {
+                'mode': 'trust', 'status': 'unverified', 'verified': False}
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
         if capability == ("video", "h3") and target_kind != "runpod":

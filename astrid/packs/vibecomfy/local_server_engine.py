@@ -105,11 +105,14 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
                     or any(group in inputs and not isinstance(inputs[group], Mapping)
                            for group in ('required', 'optional'))):
                 raise ProductionEngineError(f'invalid live schema for {node.class_type}')
+        if target_custody is not None:
+            from astrid.core.generation.target_inventory import trust_declared_loader_choices
+            return trust_declared_loader_choices(observed, bundle.workflow)
         return observed
 
     custody = {}
     if target_custody is not None:
-        # Rows the host verified for this exact ComfyUI; approval skips the local-disk presence check.
+        # Explicitly trusted declarations; approval skips local byte checks, without asserting verification.
         custody = {"auxiliary_model_custody": "target", "target_model_assets": list(target_custody)}
     provider = UploadedTargetSchema.from_object_info(
         read_object_info(), server_url=url, model_availability="target",
@@ -383,6 +386,14 @@ def run_local_server(
             # (including the chosen seed) that actually reached /prompt.
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             payload["inputs"].update(bindings)
+            if custody is not None:
+                alignment = {"mode": "trust", "status": "unverified", "verified": False}
+                payload["evidence"]["producer"]["alignment"] = alignment
+                attempt_path = result_path.with_name("attempt.json")
+                attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+                attempt["alignment"] = alignment
+                from astrid.core.foundation.atomic_io import write_json_atomic
+                write_json_atomic(attempt_path, attempt)
             if workflow_conversion_object_info_sha256 is not None:
                 schema_provenance = payload["evidence"]["producer"]["runtime"]["schema_provenance"]
                 schema_provenance["workflow_conversion_object_info_sha256"] = (
