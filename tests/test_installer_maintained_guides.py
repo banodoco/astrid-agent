@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 
 
@@ -5,6 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = (
     "--autostart on --command on --skills on --skill-copies off"
 )
+PLAIN_UNIX_LINE = "curl -fsSL https://astrid.haus/install | sh"
+FRESH_LABEL = "for a fresh install, or after the choices step only"
+BANNER_ENDING = "Confirm that astrid.haus shows Connected, then help me begin at https://astrid.haus."
 FLAGS = (
     "--autostart on|off",
     "--command on|off",
@@ -44,3 +48,33 @@ def test_setup_guides_have_one_approved_installer_command_per_platform():
     for relative in ("docs/setup/SKILL.md", "docs/getting-started.md"):
         content = (ROOT / relative).read_text(encoding="utf-8")
         assert all(command in content for command in expected), relative
+
+
+def test_setup_skill_labels_full_flag_command_for_fresh_install_only():
+    # R1.3: the full-flag command must not read as safe for an existing install.
+    skill = (ROOT / "docs/setup/SKILL.md").read_text(encoding="utf-8")
+    full_flag = "curl -fsSL https://astrid.haus/install | sh -s -- --yes " + DEFAULTS
+    assert FRESH_LABEL in skill
+    assert skill.index(FRESH_LABEL) < skill.index(full_flag)
+
+
+def test_getting_started_tells_existing_installs_to_run_the_plain_line():
+    # R1.4: an existing install runs the plain line with no choice flags; saved choices stay.
+    guide = (ROOT / "docs/getting-started.md").read_text(encoding="utf-8")
+    assert "saved choices stay" in guide
+    assert "\n" + PLAIN_UNIX_LINE + "\n" in guide
+    assert guide.index("saved choices stay") < guide.index("\n" + PLAIN_UNIX_LINE + "\n")
+
+
+def test_readme_banner_ends_with_connected_check_and_names_no_missing_heading():
+    # R1.2: the banner ends with the Connected check and names no skill section.
+    spec = importlib.util.spec_from_file_location("render_readme", ROOT / "scripts/render_readme.py")
+    render_readme = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render_readme)
+    banner = render_readme.BANNER
+    prompt = banner.split("```text\n", 1)[1].split("\n```", 1)[0]  # the prompt the person copies
+    assert prompt.rstrip().endswith(BANNER_ENDING)
+    assert "Set up generation" not in banner
+    assert "#" not in banner  # the banner links the skill file only, no heading anchor
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert BANNER_ENDING in readme
