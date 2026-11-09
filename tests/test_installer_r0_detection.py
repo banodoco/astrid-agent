@@ -168,6 +168,13 @@ def test_windows_r0_upgrade_refuses_with_exact_text_before_any_change(tmp_path, 
 
 
 
+@pytest.mark.parametrize("selected", [True, False], ids=["selected-r0-version", "r0-task-only"])
+def test_windows_upgrade_refused_predicate_matches_the_refusal(tmp_path, selected):
+    service, root, _ = _windows_r0(tmp_path, selected=selected)
+    service.powershell = lambda script: "ASTRID_TASK_COUNT=1\n"
+    assert boundary_handoff.windows_upgrade_refused(root, service) is True
+
+
 @pytest.mark.parametrize("system", ["linux", "darwin"])
 def test_posix_r0_still_reaches_the_copy_only_handoff(tmp_path, monkeypatch, system):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
