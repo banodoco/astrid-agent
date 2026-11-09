@@ -2556,13 +2556,11 @@ def _parent_digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=None) -> dict[str, Any]:
-    # Reuse the installed H3 implementation, including all branch/eligibility
-    # decisions. This is CPU preparation, never a provider/worker admission.
+def _compile_stages(request, bundle: Path, destination: Path):
+    """Prepare and compile one request from its bundle: CPU only, shared by the plan and the contribution build."""
     from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
     from astrid.packs.h3_av.actions.compile.compile import compile_preparation
     from astrid.packs.h3_av.shared.input_bundle import bundle_digest, resolve_preparation_assets
-    from astrid.packs.vibecomfy.invocation_preflight import _assert_no_unresolved_placeholders
 
     paths, identities = materialize_input_bundle(request, bundle, destination / "assets")
     preparation = prepare_request(request, asset_map=paths)
@@ -2570,6 +2568,16 @@ def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=N
     preparation["input_bundle_sha256"] = bundle_digest(bundle)
     preparation = resolve_preparation_assets(preparation, bundle, destination / "compile-assets")
     compilation = compile_preparation(preparation, out_dir=destination / "compile")
+    return paths, preparation, compilation
+
+
+def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=None) -> dict[str, Any]:
+    # Reuse the installed H3 implementation, including all branch/eligibility
+    # decisions. This is CPU preparation, never a provider/worker admission.
+    from astrid.packs.h3_av.shared.input_bundle import bundle_digest
+    from astrid.packs.vibecomfy.invocation_preflight import _assert_no_unresolved_placeholders
+
+    paths, _preparation, compilation = _compile_stages(request, bundle, destination)
     _assert_no_unresolved_placeholders(compilation["workflow_inputs"])
     sealed = _sealed_plan(compilation)
     if endpoint_client is not None:

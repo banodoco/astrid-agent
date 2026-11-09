@@ -426,6 +426,12 @@ class RunPodLeaseOwner:
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
                 job = preparation.get("job")
+                if job is not None and job["state"] not in {"exited", "cancelled"} and reason == "provider_terminated":
+                    # The provider already ended the pod: there is no process left to stop.
+                    preparation = {**preparation, "state": "unresolved", "job": {"id": job["id"], "state": "cancelled"}}
+                    lease = {**lease, "preparation": preparation}
+                    record = self._save(record, lease)
+                    job = preparation["job"]
                 if job is not None and job["state"] not in {"exited", "cancelled"}:
                     from .remote_placement import connect_claimed_for_preparation
                     # The original verified claim is still exact custody; no
@@ -439,6 +445,11 @@ class RunPodLeaseOwner:
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
             machine_job = lease.get("job")
+            if (machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}
+                    and reason == "provider_terminated"):
+                lease = {**lease, "job": {"id": machine_job["id"], "state": "cancelled"}}
+                record = self._save(record, lease)
+                machine_job = lease["job"]
             if machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
                 from .remote_placement import connect_claimed_for_preparation
                 # A generation job the host started (or crashed after starting)
@@ -458,12 +469,60 @@ class RunPodLeaseOwner:
             config, handle_path=self.selection.path, attempt=record,
             quiesce_worker=self.quiesce, resume=True))
         with self.lock:
-            lease = dict(result["lease"])
+            lease = {**dict(result["lease"]), "ended": reason, "ended_at": self.clock()}
             elapsed = max(0, self.clock() - lease.get("accounted_at", lease["started_at"]))
             result = self._save(result, lease, estimated_cost_usd=lease.get("estimated_cost_usd", 0)
                                 + elapsed * lease.get("hourly_usd", limits["hourly_usd"]) / 3600)
+            self._record_ended(result)
             self.started = True
             return result
+
+    ENDED_KEEP = 20
+
+    def ended_path(self) -> Path:
+        return ended_leases_path(self.selection.path)
+
+    def _record_ended(self, record: Mapping[str, Any]) -> None:
+        """Keep the last few ended leases beside the journal, for ``astrid machines``."""
+        from .machine import lease_row
+
+        path = self.ended_path()
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+        except (OSError, ValueError):
+            rows = []
+        row = lease_row(record)
+        rows = [item for item in rows if isinstance(item, dict) and item.get("lease") != row["lease"]]
+        rows = (rows + [row])[-self.ENDED_KEEP:]
+        partial = path.with_name(path.name + ".partial")
+        partial.write_text(json.dumps(rows, sort_keys=True, indent=1), encoding="utf-8")
+        partial.replace(path)
+
+    def observe_liveness(self, *, observe: Callable[[str], str] | None = None) -> str | None:
+        """Ask the provider about this account's live lease; end it if the pod is gone.
+
+        Returns ``None`` (no live lease), ``"live"``, or ``"provider_terminated"``
+        after the lease was ended with that reason (it leaves warm reuse and stops
+        being charged). ``observe(pod_id)`` returns ``live`` or ``gone``.
+        """
+        from .target_selection import RunPodOffer
+        with self.lock:
+            if self.closed or self._release_inflight:
+                return None
+            record = self._read()
+            if (record is None or record["state"] != "claimed" or not record.get("pod_id")
+                    or record["lease"]["state"] not in {"active", "idle"}):
+                return None
+            operation, pod_id = record["operation_id"], record["pod_id"]
+            if observe is None:
+                limits = record["paid_limits"]
+                config = self.selection.config_factory(RunPodOffer(
+                    record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-liveness"))
+                observe = lambda pod: provider_pod_state(config.api_key, pod)  # noqa: E731
+        if observe(pod_id) != "gone":
+            return "live"
+        self.release(reason="provider_terminated", _expected_operation=operation)
+        return "provider_terminated"
 
     def close(self) -> None:
         """Host shutdown; saved custody is cleaned before the next admission."""
@@ -2481,3 +2540,24 @@ __all__ = [
     "RunPodRemoteWorkerPreparer",
     "RunPodWorkerOwnerError",
 ]
+
+
+def provider_pod_state(api_key: str, pod_id: str) -> str:
+    """``gone`` when the provider reports the exact pod missing, terminated or exited; else ``live``.
+
+    An unreadable answer is never absence: only a 404 or a terminal status ends a lease.
+    """
+    from .worker_preparation import read_exact_pod
+
+    status, pod = read_exact_pod(api_key, pod_id)
+    if status == 404:
+        return "gone"
+    if status == 200 and isinstance(pod, dict):
+        states = {str(pod.get(key) or "").upper() for key in ("desiredStatus", "actualStatus")}
+        if states & {"TERMINATED", "EXITED"}:
+            return "gone"
+    return "live"
+
+
+def ended_leases_path(journal: Path) -> Path:
+    return Path(journal).with_name(Path(journal).name + ".ended.json")

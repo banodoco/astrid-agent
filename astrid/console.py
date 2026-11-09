@@ -19,6 +19,10 @@ def main(argv: list[str] | None = None) -> int:
         from .core.engine_cli import main as engines_main
 
         return engines_main(rest[1:])
+    if rest and rest[0] == "machines":
+        from .core.machines_cli import main as machines_main
+
+        return machines_main(rest[1:])
     if rest and rest[0] == "packs":
         from .core.pack.cli import main as packs_main
 
