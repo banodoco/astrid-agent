@@ -371,13 +371,11 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Each fact recomputed here from its independent source, not copied from the producer.
     marker = json.loads(before["launch.json"])
     receipt = installation["receipt"]
-    if recipe.engine == "comfyui":
-        assert dict(receipt.source_commits) == {
-            "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": VIBECOMFY_REVISION,
-        }
-    inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
-                         "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),
+    # The recipe is the source of truth for every pinned source, including the custom nodes.
+    assert dict(receipt.source_commits) == {s.name: s.pin.revision for s in recipe.sources}
+    # Model-free install: the receipt carries no model rows, so the binding inventory is empty.
+    inventory = sorted(({"name": Path(m.path).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
+                         "subdir": str(Path(m.path).parent.relative_to(root / "models"))} for m in receipt.models),
                        key=lambda e: (e["subdir"], e["name"]))
     custom = {s.name: s.pin.revision for s in recipe.sources if "/custom_nodes/" in s.relative_path}
     node_lock = recipe.environments[0].node_lock
