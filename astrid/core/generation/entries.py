@@ -173,7 +173,8 @@ def _input_type(value: Any) -> str:
     token = str(value or 'unknown').lower()
     return {'int': 'integer', 'float': 'number', 'bool': 'boolean',
             'str': 'string', 'text': 'string', 'path': 'file',
-            'choice': 'string', 'combo': 'string'}.get(token, token)
+            'choice': 'string', 'combo': 'string',
+            'files': 'file_map', 'file-map': 'file_map'}.get(token, token)
 
 
 def _declared_default(port: dict[str, Any]) -> dict[str, Any]:
@@ -574,6 +575,14 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 managed = True
             if managed:
                 raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
+        elif kind == 'file_map':
+            # {id: path}; shipped in the managed-assets archive, one binding per id (asset_manifest.file_map_bindings).
+            if (not isinstance(value, Mapping) or not value
+                    or any(not isinstance(key, str) or not key or '/' in key
+                           or not isinstance(path, (str, Path)) or not str(path).strip()
+                           for key, path in value.items())):
+                raise ValueError(f'entry input {name!r} requires a nonempty map of id to file path')
+            value = {key: str(path) for key, path in value.items()}
         elif kind in {'string', 'file'}:
             if not isinstance(value, str):
                 raise ValueError(f'entry input {name!r} requires a string')
