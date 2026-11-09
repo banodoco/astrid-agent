@@ -13,8 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.packs.vibecomfy.asset_manifest import AssetManifestError, build_asset_manifest, read_archive
-
+from .engine_facts import facts
 from .errors import CompilationError, PreparationError
 from .request import H3Request, _asset_ids, normalize_request
 from .request_v2 import read_prepared_request
@@ -33,12 +32,12 @@ def _write_asset_bundle(
     lineage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        manifest = build_asset_manifest(
+        manifest = facts().build_asset_manifest(
             bindings,
             workflow_inputs=workflow_inputs,
             lineage=lineage,
         )
-    except AssetManifestError as exc:
+    except ValueError as exc:
         raise CompilationError(str(exc)) from exc
     payloads: list[tuple[str, bytes]] = []
     seen_members: set[str] = set()
@@ -69,14 +68,14 @@ def build_input_bundle(request: H3Request, asset_map: Mapping[str, Any], destina
     _write_asset_bundle(destination, bindings)
     # Re-read the completed bytes before importing: also catches a file changed
     # between manifest construction and archive writing.
-    read_archive(destination)
+    facts().read_archive(destination)
     return destination
 
 
 def materialize_input_bundle(
     request: H3Request, bundle: Path, destination: Path,
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    resolved = read_archive(bundle)
+    resolved = facts().read_archive(bundle)
     records = resolved.manifest["assets"]
     if {row["binding"] for row in records} != set(_asset_ids(request)):
         raise PreparationError("input bundle must contain exactly the request's declared assets")

@@ -105,17 +105,17 @@ def test_no_code_path_outside_align_downloads_a_model():
     assert hits == []
 
 
-def test_build_and_finalize_run_once_at_the_run_site(tmp_path):
-    """Plan 32 T6: the engine's run site calls build before submit and finalize after it, once each."""
+def test_build_and_after_outputs_run_once_at_the_run_site(tmp_path):
+    """Plan 32 T6: the engine's run site calls build before submit and after_outputs after it, once each."""
     events = []
 
     def build(inputs, files, out):
         events.append(("build", dict(inputs), dict(files), out))
         return {"workflow": {"graph": "built"}, "bindings": {}, "plan": "two steps"}
 
-    def finalize(job_dir, inputs, files, outputs):
-        events.append(("finalize", job_dir, dict(inputs), dict(files), outputs))
-        return {**outputs, "finalized": True}
+    def after_outputs(job_dir, inputs, files, outputs):
+        events.append(("after_outputs", job_dir, dict(inputs), dict(files), outputs))
+        return {**outputs, "after_outputs_ran": True}
 
     class Local(FakeLocal):
         def submit(self, url, workflow):
@@ -124,14 +124,14 @@ def test_build_and_finalize_run_once_at_the_run_site(tmp_path):
 
     job = {"manifest": _manifest(tmp_path), "mode": "check", "workflow": {"graph": "raw"},
            "inputs": {"prompt": "x"}, "files": {"ref": "/a/ref.png"}, "out": tmp_path / "out",
-           "job_dir": tmp_path / "job", "hooks": {"build": build, "finalize": finalize}}
+           "job_dir": tmp_path / "job", "hooks": {"build": build, "after_outputs": after_outputs}}
     local = Local(attached=True)
     result = mod.ComfyUIEngine(FakeCommands()).run(job, local)
 
-    assert [e[0] for e in events] == ["build", "submit", "finalize"]
-    assert events[0][1:] == ({"prompt": "x"}, {"ref": "/a/ref.png"}, tmp_path / "job")  # build and finalize share job_dir
+    assert [e[0] for e in events] == ["build", "submit", "after_outputs"]
+    assert events[0][1:] == ({"prompt": "x"}, {"ref": "/a/ref.png"}, tmp_path / "job")  # build and after_outputs share job_dir
     assert local.submitted == [("http://127.0.0.1:8188", {"graph": "built"})]
-    assert result == {"prompt_id": "p1", "finalized": True}
+    assert result == {"prompt_id": "p1", "after_outputs_ran": True}
 
     # The dry run calls build only, and prints its plan.
     events.clear()
@@ -139,13 +139,13 @@ def test_build_and_finalize_run_once_at_the_run_site(tmp_path):
     assert [e[0] for e in events] == ["build"] and dry["plan"] == "two steps"
 
 
-def test_finalize_failure_fails_the_job_and_no_hooks_means_no_change(tmp_path):
+def test_after_outputs_failure_fails_the_job_and_no_hooks_means_no_change(tmp_path):
     def boom(job_dir, inputs, files, outputs):
-        raise RuntimeError("finalize failed")
+        raise RuntimeError("after_outputs failed")
 
     job = {"manifest": _manifest(tmp_path), "mode": "check", "workflow": {"graph": "raw"},
-           "hooks": {"finalize": boom}}
-    with pytest.raises(RuntimeError, match="finalize failed"):
+           "hooks": {"after_outputs": boom}}
+    with pytest.raises(RuntimeError, match="after_outputs failed"):
         mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(attached=True))
     plain = {**job, "hooks": {}}
     local = FakeLocal(attached=True)
@@ -153,10 +153,10 @@ def test_finalize_failure_fails_the_job_and_no_hooks_means_no_change(tmp_path):
     assert local.submitted[0][1] == {"graph": "raw"}
 
 
-def test_core_names_neither_build_nor_finalize():
+def test_core_names_neither_build_nor_after_outputs():
     core = (ROOT / "astrid/core").rglob("*.py")
     named = [str(p.relative_to(ROOT)) for p in core
-             if re.search(r"\bhooks?\[['\"](build|finalize)['\"]\]|\.get\(['\"](build|finalize)['\"]", p.read_text())
+             if re.search(r"\bhooks?\[['\"](build|after_outputs)['\"]\]|\.get\(['\"](build|after_outputs)['\"]", p.read_text())
              and p.name != "workflows.py"]
     assert named == []
 
@@ -172,10 +172,10 @@ def test_vibecomfy_argv_parses_with_the_real_cli():
     assert parsed["nodes_restore"].lockfile == "custom_nodes.lock"
 
 
-def test_build_and_finalize_share_one_job_dir(tmp_path):
+def test_build_and_after_outputs_share_one_job_dir(tmp_path):
     seen = []
     hooks = {"build": lambda inputs, files, directory: seen.append(("build", directory)) or {"workflow": {"g": 1}},
-             "finalize": lambda directory, inputs, files, outputs: seen.append(("finalize", directory)) or outputs}
+             "after_outputs": lambda directory, inputs, files, outputs: seen.append(("after_outputs", directory)) or outputs}
     job = {"hooks": hooks, "out": tmp_path, "manifest": {"models": [], "extra": {"nodes": []}}, "mode": "check"}
     mod.ComfyUIEngine(FakeCommands()).run(job, FakeLocal(True))
-    assert seen == [("build", tmp_path), ("finalize", tmp_path)]
+    assert seen == [("build", tmp_path), ("after_outputs", tmp_path)]

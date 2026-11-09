@@ -8,7 +8,11 @@ entries:
     kind: video
     modes: [i2v, v2v, video-edit]
     bundle: native_h3_continuation
-    needs: [request, asset_map]
+    # No model needs are declared here: build's graph carries its own model rows (requirements()).
+    needs: []
+    inputs:
+      - {name: request, type: file, required: true, description: "H3 request document (request.v1 or request.v2 JSON)."}
+      - {name: asset_map, type: file_map, required: true, description: "Map of the request's asset ids to local files."}
     binds: {}
     defaults: {}
     # MiniMax H3 is the video default; a user pin (astrid generate defaults set) overrides it.
@@ -17,4 +21,4 @@ entries:
       - {kind: video, mode: v2v, priority: 100}
       - {kind: video, mode: video-edit, priority: 100}
 build: hooks.py:build
-finalize: hooks.py:finalize
+after_outputs: hooks.py:after_outputs

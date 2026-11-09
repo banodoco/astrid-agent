@@ -14,6 +14,11 @@ from astrid.packs.h3_av.actions.prepare.prepare import prepare_request, write_pr
 from astrid.packs.h3_av.shared.request import load_request
 from astrid.packs.h3_av.shared.input_bundle import bundle_digest, materialize_input_bundle
 
+from astrid.core.generation.engine_facts import comfyui_facts as _comfyui_facts
+from astrid.packs.h3_av.shared import engine_facts as _h3_engine_facts
+
+_h3_engine_facts.install(_comfyui_facts())
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare an H3 audiovisual request.")

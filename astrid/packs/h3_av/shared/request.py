@@ -9,20 +9,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from astrid.core.contracts.errors import AstridValueError
-
 if TYPE_CHECKING:
     from .spec import H3Spec
 
 
-class H3RequestError(AstridValueError):
-    """A fail-closed request error with a user-facing path."""
+class H3RequestError(ValueError):
+    """A fail-closed request error with a user-facing path.
+
+    Carries ``code``, ``field`` and ``fix``; the host turns it into a structured
+    Astrid error through ``astrid_error_fields`` (core never imports this class).
+    """
 
     def __init__(
         self, message: str, *, code: str = "h3.request.invalid",
         field: str = "request", fix: str = "Correct the request using its v1/v2 schema",
     ) -> None:
-        super().__init__(message, code=code, field=field, fix=fix)
+        super().__init__(message)
+        self.code, self.field, self.fix = code, field, fix
+
+    def astrid_error_fields(self) -> dict[str, str]:
+        return {"code": self.code, "field": self.field, "fix": self.fix}
 
 
 @dataclass(frozen=True)

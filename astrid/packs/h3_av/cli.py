@@ -111,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         assets = _asset_map(args.asset_map)
         if args.command == "plan":
+            from astrid.core.generation.engine_facts import comfyui_facts
+            from .shared import engine_facts
+            engine_facts.install(comfyui_facts())
             from .shared.planner import plan_request
             plan = plan_request(request, asset_map=assets, out_dir=args.out)
             print(json.dumps(plan, indent=2, sort_keys=True))

@@ -579,16 +579,6 @@ actions:
       tracked_h3_parent: true
       adapter_family: orchestration
       output_result_manifest: true
-      generation_entry:
-        id: h3
-        kind: video
-        modes: [transform]
-        inputs: [request, asset_map, execution_request, worker_qualification, prepared_worker,
-          cleanup_receipt, require_worker_qualification, resume, dry_run]
-        producer_local_inputs: [request, asset_map]
-        requirements:
-        - profiles/native-v1.yaml
-        - profiles/native-v2.yaml
       runtime_entrypoint: execute
       runtime_file: actions/transform/run.py
       runtime_module: astrid.packs.h3_av.actions.transform.run

@@ -14,6 +14,11 @@ from astrid.packs.h3_av.shared.input_bundle import resolve_preparation_assets
 
 from astrid.packs.h3_av.actions.verify.verify import verify_candidate
 
+from astrid.core.generation.engine_facts import comfyui_facts as _comfyui_facts
+from astrid.packs.h3_av.shared import engine_facts as _h3_engine_facts
+
+_h3_engine_facts.install(_comfyui_facts())
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Verify an H3 audiovisual candidate.")

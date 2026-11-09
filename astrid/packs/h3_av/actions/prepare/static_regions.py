@@ -15,9 +15,9 @@ from typing import Mapping, NoReturn
 
 from PIL import Image
 
-from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
-from astrid.packs.h3_av.shared.request import H3RequestError
-from astrid.packs.h3_av.shared.spec import Region
+from ...shared.compose import CompositionError, probe_mask
+from ...shared.request import H3RequestError
+from ...shared.spec import Region
 
 
 class StaticRegionError(H3RequestError):

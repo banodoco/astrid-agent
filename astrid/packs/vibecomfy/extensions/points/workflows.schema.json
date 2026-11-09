@@ -15,7 +15,21 @@
           "kind": {"enum": ["image", "video", "audio"]},
           "modes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
           "bundle": {"type": "string", "minLength": 1},
-          "needs": {"type": "array"},
+          "needs": {"type": "array", "items": {"type": "object"}},
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "type": {"enum": ["string", "integer", "number", "boolean", "file", "file_map", "json", "object", "array"]},
+                "required": {"type": "boolean"},
+                "description": {"type": "string"}
+              }
+            }
+          },
           "binds": {"type": "object"},
           "defaults": {"type": "object"},
           "default_for": {
@@ -35,6 +49,6 @@
       }
     },
     "build": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"},
-    "finalize": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"}
+    "after_outputs": {"type": "string", "pattern": "^[^:]+\\.py:[A-Za-z_]\\w*$"}
   }
 }

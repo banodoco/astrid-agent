@@ -14,6 +14,11 @@ from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.contracts.errors import AstridValueError
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
+from astrid.core.generation.engine_facts import comfyui_facts as _comfyui_facts
+from astrid.packs.h3_av.shared import engine_facts as _h3_engine_facts
+
+_h3_engine_facts.install(_comfyui_facts())
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()

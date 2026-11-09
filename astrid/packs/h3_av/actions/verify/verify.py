@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.packs.h3_av.shared.compose import (
+from ...shared.compose import (
     CompositionError,
     _audio_witness,
     _sample_digest,

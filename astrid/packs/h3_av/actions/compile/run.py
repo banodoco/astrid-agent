@@ -15,6 +15,11 @@ from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_mai
 from astrid.packs.h3_av.actions.compile.compile import compile_preparation
 from astrid.packs.h3_av.shared.input_bundle import resolve_preparation_assets
 
+from astrid.core.generation.engine_facts import comfyui_facts as _comfyui_facts
+from astrid.packs.h3_av.shared import engine_facts as _h3_engine_facts
+
+_h3_engine_facts.install(_comfyui_facts())
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compile a prepared H3 request.")

@@ -41,6 +41,8 @@ from astrid.packs.h3_av.actions.transform.receipt import (
     write_final_receipt,
 )
 from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, materialize_input_bundle
+from astrid.packs.h3_av.shared import engine_facts as _h3_engine_facts
+from astrid.packs.h3_av.shared.stages import _authoritative_source_asset_id, _sealed_plan as _shared_sealed_plan
 from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, branch_for
 from astrid.sdk import AstridClient, generate, observe_task_invocation
@@ -580,24 +582,6 @@ def _provenance(preparation: Mapping[str, Any], compilation: Mapping[str, Any]) 
             "managed_assets": dict(managed_assets),
         },
     }
-
-
-def _authoritative_source_asset_id(request: Any) -> str | None:
-    """Return the source baseline asset without projecting v1 keys onto v2."""
-
-    value = request.value
-    if value.get("version") != 2:
-        source = value["source"]
-        return None if source is None else str(source["asset"])
-    branch = branch_for(request)
-    if branch in {"source_free", "audio_only"}:
-        return None
-    videos = [
-        item
-        for item in value["media"]
-        if item["role"] == "timeline" and item.get("modality") == "video"
-    ]
-    return str(videos[0]["asset"]) if len(videos) == 1 else None
 
 
 def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], provenance: Mapping[str, Any]) -> Path:
@@ -2513,6 +2497,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+from astrid.core.generation.engine_facts import comfyui_facts as _comfyui_facts
+_h3_engine_facts.install(_comfyui_facts())
+
 STAGES = (
     ("prepare", "h3_av.prepare"), ("compile", "h3_av.compile"),
     ("validate", "vibecomfy.validate"), ("run", "vibecomfy.run"),
@@ -2594,20 +2581,10 @@ def preflight_endpoint(inputs: Mapping[str, Any], endpoint_client) -> dict[str, 
 
 
 def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
-    capabilities = compilation.get("capabilities", {})
-    contract = capabilities.get("output_contract")
-    if contract not in {"muxed_av_full_timeline", "separate_av_full_timeline"}:
-        raise AstridError("unsupported H3 parent output mapping")
-    intent = _generation_intent(compilation)
-    if (intent["modality"] != "video" or len(intent["groups"]) != 1
-            or len(intent["groups"][0]["selectors"]) != 1):
-        raise AstridError("tracked H3 requires the sealed single video selector")
-    digest = compilation.get("compilation_digest")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise AstridError("H3 compilation has no sealed identity")
-    return {"compilation_digest": digest, "output_contract": contract, "intent": intent,
-            "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
-            "workflow_inputs_sha256": _stable_digest(compilation["workflow_inputs"])}
+    try:
+        return _shared_sealed_plan(compilation)
+    except ValueError as exc:
+        raise AstridError(str(exc)) from exc
 
 
 def _import(client, project: str, data: bytes, filename: str) -> dict[str, Any]:
