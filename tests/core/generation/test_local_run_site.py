@@ -111,3 +111,41 @@ def test_probe_succeeds_on_the_stand_in_and_fails_cleanly_on_a_closed_port(comfy
         port = s.getsockname()[1]
     result = engine.probe(f"http://127.0.0.1:{port}", timeout=1)
     assert result["ready"] is False and result["reason"]
+
+
+def test_local_run_proceeds_when_the_workflow_loader_cannot_read_a_bundle(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """requirements() reads declared workflows; a file the bundle loader cannot execute (NameError here) declares
+    nothing, and the run's own loader reports it. The site does not raise on that loader."""
+    from astrid.core.generation import entries
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    endpoint = SimpleNamespace(endpoint=SimpleNamespace(url=comfy.url), comfy_output_dir=str(comfy.output),
+                               model_root_binding=None)
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_engine_endpoint",
+                        lambda *args, **kwargs: endpoint)
+    engine = entries.engine_table()["comfyui"]
+
+    def unreadable(entry, inputs=None):
+        raise NameError("name 'VibeWorkflow' is not defined")
+
+    monkeypatch.setitem(engine.requirements.__globals__, "_workflows", unreadable)
+    manifest = action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
+    assert len(comfy.prompts) == 1 and manifest["outputs"]
+
+
+def test_local_run_does_not_swallow_an_engine_error_from_requirements(comfy, tmp_path, monkeypatch):  # noqa: F811
+    """Only loader failures mean 'declares nothing'; an EngineError from the engine is the real refusal."""
+    import pytest
+    from astrid.core.generation import entries
+    from astrid.core.generation.engine_contracts import EngineError
+
+    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    engine = entries.engine_table()["comfyui"]
+
+    def refused(entry, inputs=None):
+        raise EngineError("engine refused the declared requirements")
+
+    monkeypatch.setitem(engine.requirements.__globals__, "_workflows", refused)
+    with pytest.raises(EngineError, match="engine refused"):
+        action._run_and_settle(comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="t", attempt_identity="a")
+    assert comfy.prompts == []

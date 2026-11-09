@@ -614,7 +614,11 @@ def _t9_child_dispatch(
     if (profile_hash != "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
             or json.loads(profile_bytes) != readiness_profile):
         raise AstridValueError("T9 child readiness profile differs from the paired Worker bytes")
-    from astrid.packs.h3_av.shared import generation
+    from astrid.core.generation.engine_facts import comfyui_facts
+    from astrid.packs.h3_av.shared import engine_facts, generation
+
+    # h3_av imports nothing from Astrid; this child is its host, so it installs the engine facts.
+    engine_facts.install(comfyui_facts())
 
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.
@@ -707,16 +711,20 @@ def _engine_manifest(engine: Any, workflow_path: Path) -> dict[str, Any]:
     Only a canonical bundle declares requirements; a UI-JSON or other file has none to read, so its manifest
     lists nothing (the target's own preflight still checks what it needs).
     """
-    from vibecomfy.workflow_bundle import WorkflowBundleError
     from astrid.core.generation.engine_contracts import EngineError
     from astrid.core.generation.engine_local_endpoint import default_engine_root
 
     try:
         manifest = engine.requirements({"bundle": str(workflow_path)}, {})
-    except WorkflowBundleError:
+    except Exception as exc:
+        if isinstance(exc, (EngineError, AstridError)):
+            raise
+        if getattr(exc, "unpinned", False):  # validate_extra: a custom node ref without its repo or commit
+            raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
+        # The bundle loader could not read this file (not a canonical bundle, or it does not execute on its own):
+        # it declares nothing here, and the run's own loader reports the real error. Limit: a loader that cannot
+        # run the bundle standalone means no pre-queue model check for that file.
         return {"models": [], "extra": {"nodes": []}}
-    except ValueError as exc:  # validate_extra: a custom node ref without its repo or commit
-        raise AstridValueError(f"workflow declares an unpinned custom node: {exc}") from exc
     try:
         root = default_engine_root("comfyui")
     except EngineError:
