@@ -1,18 +1,17 @@
-"""Every default generation slot through the real RunPod host bind, on CPU.
+"""Every default generation slot through the RunPod machine, on CPU.
 
-Real SDK, Runtime, host, lease owner and engine bridge (the journey's
-harness); doubles sit only at HTTP I/O. The stand-in pod validates /prompt
-against object_info built from VibeComfy's packaged real node schemas, fills
-loader menus from its install receipt, and returns the real output keys.
+Real SDK, Runtime, host and lease owner; doubles sit only at HTTP I/O. On
+RunPod the job runs on the machine (Plan 32 T5): the fake pod answers the
+pod-side local run (``test_remote_machine_cpu.MachineProviderHTTP``). For the
+attached and local cells, a stand-in ComfyUI validates /prompt against
+object_info built from VibeComfy's packaged real node schemas, fills loader
+menus from its install receipt, and returns the real output keys.
 """
 from __future__ import annotations
 
-import base64
 import contextlib
-import hashlib
 import json
 import os
-import shlex
 import re
 import socket
 import threading
@@ -31,7 +30,7 @@ from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
 from astrid.sdk.workspace_client import WorkspaceClient
 from tests.integrations.runpod_slot_pod import PodComfy, pin_object_info, receipt_files
-from tests.integrations.test_runpod_cpu_path import ProviderHTTP
+from tests.integrations.test_remote_machine_cpu import MachineProviderHTTP
 from tests.integrations.test_runpod_host_endpoint_r5 import tuple_sources  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.integration
@@ -61,44 +60,35 @@ def _slot_classes(slot):
     return classes
 
 
-class SlotPod(ProviderHTTP):
-    """The journey's provider/pod contract with a validating ComfyUI behind the engine proxy."""
+def _media(kind, tmp):
+    """A small real media file, so delivery and thumbnails probe real bytes."""
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / ("out.wav" if kind == "audio" else "out.mp4")
+        source = (["-f", "lavfi", "-i", "sine=frequency=440:duration=1"] if kind == "audio"
+                  else ["-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=1", "-pix_fmt", "yuv420p"])
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *source, str(path)],
+                       check=True, timeout=60)
+        return path.read_bytes()
 
-    def __init__(self, source_root, claim_path, classes):
-        super().__init__(source_root, claim_path)
-        self.receipts = {"comfyui": self.receipt}
+
+class SlotPod(MachineProviderHTTP):
+    """The machine fake for the runpod cells; a validating stand-in ComfyUI for attached and local cells."""
+
+    def __init__(self, claim_path, attempts, classes):
+        super().__init__(claim_path, attempts)
+        self.expect_entry = None
+        from astrid.core.generation import entries
+        self.listed = sorted({row["id"] for row in entries.ready_entries()}
+                             | {value for values in generation._DEFAULT_ENTRIES.values() for value in values}
+                             | {value for values in _CAPABILITY_ENTRIES.values() for value in values})
         # Each engine's own readiness gate needs its required nodes in /object_info, besides the workflow's classes.
-        from astrid.core.generation import engine_recipe, entries
+        from astrid.core.generation import engine_recipe
         required = {node for engine in entries.runpod_engines() for node in
                     engine_recipe.load_recipe(engine, "linux-x86_64-cu130").health.required_nodes}
         self.comfy = PodComfy(set(classes) | required, self._installed_files, extra=pin_object_info())
-
-    def _receipt_for(self, engine):
-        """The pod's install receipt for any RunPod engine, synthesized from that engine's own recipe and lock."""
-        if engine not in self.receipts:
-            from dataclasses import asdict
-            from astrid.core.generation import engine_recipe, engine_runner
-            from astrid.core.generation.engine_contracts import (
-                DownloadResult, HealthEvidence, InstallReceipt, StepReceipt)
-            recipe = engine_recipe.load_recipe(engine, "linux-x86_64-cu130")
-            root = f"/root/astrid/engines/{engine}"
-            plan = engine_runner.plan_install(recipe, root=root, placement="local")
-            lock = engine_recipe.load_model_lock(recipe.models_lock)
-            stamp = datetime.now(timezone.utc).isoformat()
-            receipt = InstallReceipt(
-                "astrid.engine-install.v1", f"cpu-http-install-{engine}", plan.engine, plan.platform, plan.placement,
-                root, "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
-                {env.name: (env.requirements.packaged_lock.sha256 if env.requirements.packaged_lock
-                            else hashlib.sha256(env.name.encode()).hexdigest()) for env in recipe.environments},
-                {source.name: source.pin.revision for source in recipe.sources},
-                tuple(DownloadResult(model.name, root + "/models/" + model.destination, "downloaded",
-                                     model.bytes, model.sha256, True, 0) for model in lock.models),
-                tuple(StepReceipt(step.id, step.kind, "executed", "passed", {}) for step in plan.steps),
-                HealthEvidence("healthy", stamp, hashlib.sha256(json.dumps(self.schema).encode()).hexdigest(), True),
-                stamp, stamp, None)
-            engine_runner._parse_receipt(asdict(receipt), plan)
-            self.receipts[engine] = asdict(receipt)
-        return self.receipts[engine]
+        self._outputs = {}
 
     def _installed_files(self):
         files = []
@@ -107,76 +97,15 @@ class SlotPod(ProviderHTTP):
                 files += receipt_files(receipt)
         return files
 
-    def graphql(self, body):
-        query = body["query"]
-        match = re.search(r"gpuTypes\(input: \{id: (\"[^\"]*\")\}\)", query)
-        if match:
-            gpu = json.loads(match[1])
-            return {"gpuTypes": [{"id": gpu, "displayName": "CPU fixture GPU"}]}
-        data = super().graphql(body)
-        for pod in self.pods:
-            # The agent's rate gate compares gpuCount x costPerHr; the journey's pod omits the count.
-            pod.setdefault("gpuCount", 1)
-            pod["machine"].setdefault("gpuCount", 1)
-        return data
-
-    def command(self, command):
-        match = re.search(r"engines (status|install) (\S+) --platform", command)
-        if match and match[2] != "comfyui":
-            engine, operation = match[2], match[1]
-            marker = f"/root/astrid/engines/{engine}/.astrid-engine/install.json"
-            if operation == "status":
-                return 0, json.dumps(self._receipt_for(engine) if marker in self.files else None)
-        if "base64 -d" in command and '"$d/command.sh"' in command:
-            detached = base64.b64decode(re.search(r"printf %s (\S+) \| base64 -d", command)[1]).decode()
-            match = re.search(r"engines install (\S+) --platform", detached)
-            if match and match[1] != "comfyui":
-                self.commands.append(command)
-                self.commands.append(detached)
-                directory = shlex.split(command.splitlines()[1])[0].removeprefix("d=")
-                self.files[f"/root/astrid/engines/{match[1]}/.astrid-engine/install.json"] = json.dumps(
-                    self._receipt_for(match[1])).encode()
-                self.files.update({directory + "/status": b"exited", directory + "/exit": b"0",
-                                   directory + "/pid": b"123", directory + "/stdout": b"", directory + "/stderr": b""})
-                return 0, ""
-        if ': > "$d/cancel"' in command:  # the job-cancel script the controller runs when it abandons a job
-            self.commands.append(command)
-            return 0, ""
-        return super().command(command)
-
-    def handle(self, request):
-        path = request.url.path
-        if request.url.host == self.pod_id + "-8000.proxy.runpod.net" and "/engines/" in path:
-            operation = path.split("/", 3)[-1]
-            request.read()
-            def reply(data, status=200):
-                encoded = json.dumps(data).encode()
-                return httpx.Response(status, stream=httpx.ByteStream(encoded), request=request,
-                    headers={"Content-Type": "application/json", "Content-Length": str(len(encoded))})
-            if operation == "object_info":
-                return reply(self.comfy.object_info())
-            if operation == "prompt":
-                status, payload = self.comfy.submit(json.loads(request.content))
-                return reply(payload, status)
-            if operation.startswith("history"):
-                history = getattr(self.comfy, "history", {})
-                tail = operation.partition("/")[2]
-                return reply({tail: history[tail]} if tail in history else {} if tail else history)
-            if operation.startswith("view"):
-                name = request.url.params.get("filename")
-                self.comfy.views.append(name)
-                data, mime = self.comfy.outputs[name]
-                return httpx.Response(200, stream=httpx.ByteStream(data), request=request,
-                    headers={"Content-Type": mime, "Content-Length": str(len(data))})
-            if operation == "upload/image":
-                body = request.content
-                subfolder = re.search(rb'name="subfolder"\r\n\r\n([^\r]*)\r\n', body)
-                name = re.search(rb'name="image"; filename="([^"]+)"', body)
-                saved = name[1].decode()
-                self.comfy.uploads[saved] = body
-                self.comfy.input_files.add(f"{subfolder[1].decode()}/{saved}" if subfolder and subfolder[1] else saved)
-                return reply({"name": saved, "subfolder": subfolder[1].decode() if subfolder else "", "type": "input"})
-        return super().handle(request)
+    def output_for(self, job):
+        mode = job.get("mode")
+        kind = "image" if mode in {"t2i", "edit"} else "audio" if mode in {"tts", "music", "sfx"} else "video"
+        if kind == "image":
+            return "cpu.png", self.image, "image/png"
+        if kind not in self._outputs:
+            self._outputs[kind] = _media(kind, None)
+        return (("cpu.wav", self._outputs[kind], "audio/wav") if kind == "audio"
+                else ("cpu.mp4", self._outputs[kind], "video/mp4"))
 
 
 @contextlib.contextmanager
@@ -264,7 +193,8 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         "credential_ref": "env:RUNPOD_RUNPOD_FAKE_CREDENTIAL", "budget_cap_usd": 2.0}
     target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
-    provider = SlotPod(tuple_sources, claim_path, _slot_classes(slot) | set(extra_classes))
+    monkeypatch.setenv("ASTRID_MACHINE_POLL_SECONDS", "0.05")
+    provider = SlotPod(claim_path, tmp_path / "attempts", _slot_classes(slot) | set(extra_classes))
     send, send_requests, connect = httpx.Client.send, requests.Session.send, socket.socket.connect
     local = {"127.0.0.1", "localhost", "::1"}
     def respond(request):
@@ -382,7 +312,7 @@ _SLOT_PARAMS = [
 
 
 @pytest.mark.parametrize("slot", _SLOT_PARAMS, ids=lambda slot: "/".join(slot))
-def test_default_slot_through_the_runpod_bind(slot, tmp_path, monkeypatch, real_runtime, tuple_sources):
+def test_default_slot_through_the_runpod_machine(slot, tmp_path, monkeypatch, real_runtime, tuple_sources):
     modality, mode = slot
     def call(facade, controls, tmp):
         inputs = dict(PROMPTS[slot])
@@ -404,18 +334,18 @@ def test_default_slot_through_the_runpod_bind(slot, tmp_path, monkeypatch, real_
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
-        assert provider.comfy.prompts and not provider.comfy.rejections
-        assert provider.comfy.views, "no output was retrieved over /view"
+        _assert_ran_on_the_machine(provider)
         task = client.tasks.show(result.task_id)
         assert task.ok and task.data["state"] == "succeeded"
-        if slot == ("audio", "sfx"):
-            assert provider.comfy.uploads, "the source video was never uploaded to the pod"
+        if slot in {("audio", "sfx"), ("image", "edit")}:
+            # Media inputs ship inside the job directory; nothing is uploaded to a pod ComfyUI.
+            assert "managed_assets" in provider.generations[0]["inputs"], provider.generations[0]["inputs"]
 
 
 H3_REQUEST = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "request.v2.json"
 
 
-def test_h3_av_through_the_runpod_bind(tmp_path, monkeypatch, real_runtime, tuple_sources):
+def test_h3_av_through_the_runpod_machine(tmp_path, monkeypatch, real_runtime, tuple_sources):
     """The Matrix continuation request (57 frames, 24 fps, 1024x576 source) through the host bind."""
     import subprocess
     source = tmp_path / "source.mp4"
@@ -435,9 +365,15 @@ def test_h3_av_through_the_runpod_bind(tmp_path, monkeypatch, real_runtime, tupl
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
-        assert provider.comfy.prompts and not provider.comfy.rejections
-        assert provider.comfy.views, "no output was retrieved over /view"
+        _assert_ran_on_the_machine(provider)
         assert client.tasks.show(result.task_id).data["state"] == "succeeded"
+
+
+def _assert_ran_on_the_machine(provider):
+    """Plan 32 T5: the job ran on the pod; the controller never reached a pod engine."""
+    assert provider.generations, "no generation job ran on the machine"
+    assert not any("/engines/" in str(event) or "/engine-proxy" in str(event) for event in provider.events)
+    assert not provider.comfy.prompts and not provider.comfy.views
 
 
 VOICE_CHILD = '''
@@ -459,7 +395,7 @@ def test_local_managed_voice(tmp_path, monkeypatch, tuple_sources):
     import http.server
     import subprocess
     import sys
-    pod = SlotPod(tuple_sources, tmp_path / "claim.json", _slot_classes(("audio", "tts")))
+    pod = SlotPod(tmp_path / "claim.json", tmp_path / "attempts", _slot_classes(("audio", "tts")))
     # The managed target's inventory is the stand-in pod's install receipt; the controller keeps no model files.
     pod.receipts["comfyui"] = pod._receipt_for("comfyui")
     pod.files["/root/astrid/engines/comfyui/.astrid-engine/install.json"] = b"{}"
@@ -525,7 +461,6 @@ _RED = {
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
     (("video", "h3"), "attached"): ("CapabilityValidationError", "tracked H3 requires the default Runtime target", "T6b"),
-    (("audio", "sfx"), "runpod"): ("CapabilityRuntimeError", "missing models: hunyuanvideo_foley_xl.pth", "T5"),
     (("video", "i2v"), "runpod"): ("GenerationReadinessError", "No RunPod engine lock covers the models of 'video/ltx2_3_i2v'", "T5"),
     (("video", "h3"), "runpod"): ("result", "h3_av.transform", "T6b"),
 }
@@ -602,6 +537,9 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
-        assert provider.comfy.prompts and not provider.comfy.rejections
-        assert provider.comfy.views, "no output was retrieved over /view"
+        if target_kind == "runpod":
+            _assert_ran_on_the_machine(provider)
+        else:
+            assert provider.comfy.prompts and not provider.comfy.rejections
+            assert provider.comfy.views, "no output was retrieved over /view"
         assert client.tasks.show(result.task_id).data["state"] == "succeeded"

@@ -2,13 +2,12 @@
 
 The broker's priced-stock selection is observational here: create, reconcile
 and release always go through the existing write-ahead claim and lifecycle.
-A5 consumes the prepared lease using the existing attached generation chain.
+Generation runs on the prepared pod as a remote machine
+(``astrid.packs.runpod.machine``); no engine endpoint is bridged back here.
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ from astrid.packs.runpod.target_selection import (
 )
 from astrid.packs.runpod.worker_owner import _run_sync
 from astrid.packs.runpod.worker_preparation import (
-    AcquisitionUnresolvedError, RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
+    RunPodTargetContract, inspect_volume_records, resolve_existing_volume,
 )
 
 
@@ -141,149 +140,13 @@ class RunPodAdapter:
             result.update(self.quote())
         return result
 
-    def bind_task(self, policy, inputs, *, invocation_id, scratch, begin_lease, retain_bridge, retire_bridge):
-        """Bind the admitted policy and materialized workflow to one lease."""
-        from astrid.core.generation.interfaces import RunPodPreparationRequest
-        from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
-        from astrid.packs.runpod.target_selection import PaidRunConsent
-
-        prevalidate_task(policy, inputs, scratch=scratch)
-        if (policy["kind"] != "runpod" or policy["engine"] != self.installation.engine
-                or policy["preferences"] != self.lease_owner.selection.preferences.as_mapping()):
-            raise PaidSelectionError("target policy differs from the retained owner")
-        if not isinstance(policy["consent"], (tuple, list)):
-            raise PaidSelectionError("paid consent must be a list")
-        members = tuple(inputs.get(name) for name in ("python", "companion", "source"))
-        if not all(isinstance(value, str) and value for value in members):
-            raise PaidSelectionError("retained generation requires materialized canonical workflow and source")
-        values = json.loads(inputs.get("workflow_inputs") or "{}")
-        if not isinstance(values, dict):
-            raise PaidSelectionError("workflow inputs must be an object")
-        consent = PaidRunConsent(
-            invocation_id=invocation_id, offer_digest=policy["offer_digest"], max_usd=policy["max_usd"],
-            deadline=policy["deadline"], consent=tuple(policy["consent"]),
-            preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
-            idle_seconds=policy["idle_seconds"],
-        )
-        # Refuse a changed offer first: before staging, managed sources, the
-        # account lock, any claim record or any provider create.
-        self.lease_owner.selection.consented_offer(consent, self.lease_owner.selection.clock())
-        with staged_workflow_path(workflow=None, python=members[0], companion=members[1], source=members[2],
-                                  scratch=scratch) as (workflow, _):
-            companion = workflow.with_suffix(".vibe.json")
-            source = workflow.with_name("source.json")
-            before = hashlib.sha256(companion.read_bytes()).digest()
-            request = RunPodPreparationRequest({"engine": self.installation.engine}, source, workflow,
-                                               values, consent.consent, consent.max_usd, consent.deadline)
-            prepared, evidence = self.bind_endpoint(
-                request, consent, begin_lease=begin_lease, retain_bridge=retain_bridge, retire_bridge=retire_bridge,
-                requested_idle_seconds=policy["idle_seconds"])
-            if hashlib.sha256(companion.read_bytes()).digest() != before:
-                retire_bridge(prepared.lease, bridge_closed=False)
-                self.lease_owner.release(reason="workflow_changed", _expected_operation=prepared.lease.operation_id)
-                raise PaidSelectionError("canonical workflow companion changed during preparation")
-            return prepared, evidence
-
     def prepare(self, request, consent, *, requested_idle_seconds=None, on_acquired=None):
         return prepare_retained_generation(
             request, consent=consent, lease_owner=self.lease_owner, placement=self.placement,
             installation=self.installation, validate=self.validate,
             requested_idle_seconds=requested_idle_seconds,
-            on_acquired=on_acquired,
+            on_acquired=on_acquired, observe_mounts=getattr(self, "observe_mounts", None),
         )
-
-    def bind_endpoint(self, request, consent, *, begin_lease, retain_bridge, retire_bridge, requested_idle_seconds=None):
-        """Prepare one lease and attach its authenticated loopback endpoint.
-
-        ``retain_bridge`` registers the bridge with the host's exact invocation
-        drain before it can be used.  The A3 owner remains the only authority
-        that settles or releases the paid lease.
-        """
-        from astrid.core.generation.engine_recipe import load_recipe
-        from astrid.core.generation.backends.comfy_target import (
-            ComfyTarget, ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES,
-        )
-        from runtime_protocol import platform
-        from runpod_lifecycle.engine_bridge import EngineBridge
-        from runpod_lifecycle.https import HttpsPodTransport, read_token_file
-
-        if not all(callable(value) for value in (begin_lease, retain_bridge, retire_bridge)):
-            raise ValueError("endpoint binding requires the host's bridge drain")
-        identity = platform.process_identity(os.getpid())
-        if (not isinstance(identity, dict) or identity.get("pid") != os.getpid()
-                or not isinstance(identity.get("birth_id"), str) or not identity["birth_id"]):
-            raise ValueError("endpoint binding requires an observable host process identity")
-        recipe = load_recipe(self.installation.engine, self.installation.platform)
-        acquired = []
-        bridge = None
-        transport = None
-        try:
-            def acquired_lease(lease):
-                acquired.append(lease)
-                begin_lease(lease)
-
-            prepared = self.prepare(request, consent, requested_idle_seconds=requested_idle_seconds,
-                                    on_acquired=acquired_lease)
-            # The account lock fences expiry/release while an endpoint is
-            # attached. Save the exact association before enabling the proxy.
-            with self.lease_owner.lock:
-                record = self.lease_owner.preparation_claim(prepared.lease)
-                binding = {
-                    "schema": "astrid.runpod.endpoint-binding.v1", "state": "binding",
-                    "operation_id": prepared.lease.operation_id,
-                    "owner_epoch": prepared.lease.owner_epoch,
-                    "generation": prepared.lease.generation,
-                    "invocation_id": prepared.lease.invocation_id,
-                    "pod_id": record["pod_id"],
-                    "provider_account_ref": record["provider_account_ref"],
-                    "host_pid": identity["pid"], "host_birth_id": identity["birth_id"],
-                    "endpoint_id": self.installation.engine,
-                    "engine_port": recipe.start.port,
-                    "installed_receipt_sha256": prepared.installed["receipt_sha256"],
-                    "workflow_sha256": "sha256:" + hashlib.sha256(request.workflow.read_bytes()).hexdigest(),
-                    "source_sha256": "sha256:" + hashlib.sha256(request.source.read_bytes()).hexdigest(),
-                }
-                companion = request.workflow.with_suffix(".vibe.json")
-                if companion.is_file() and not companion.is_symlink():
-                    binding["companion_sha256"] = "sha256:" + hashlib.sha256(companion.read_bytes()).hexdigest()
-                self.lease_owner._save(record, {**record["lease"], "endpoint_binding": binding})
-                token = read_token_file(record["https_token_file"])
-                transport = HttpsPodTransport(record["pod_id"], token)
-                transport.enable_engine_proxy(binding["endpoint_id"], binding["engine_port"])
-                bridge = EngineBridge(transport, {"endpoint_id": binding["endpoint_id"],
-                                                   "port": binding["engine_port"]})
-                transport = None  # bridge owns and closes its dedicated transport
-                retain_bridge(prepared.lease, bridge)
-                record = self.lease_owner.preparation_claim(prepared.lease)
-                binding = {**binding, "state": "bound", "loopback_url": bridge.url}
-                self.lease_owner._save(record, {**record["lease"], "endpoint_binding": binding})
-                client = ComfyTargetClient(ComfyTarget(bridge.url, "attached"))
-                info = client.request_json(recipe.health.object_info_path, timeout=HTTP_TRANSFER_SECONDS,
-                                           response_limit=MAX_JSON_BYTES)
-                if not isinstance(info, dict) or any(
-                    node not in info for node in recipe.health.required_nodes
-                ):
-                    raise ValueError("bound engine did not satisfy canonical readiness")
-                body = json.dumps(info, sort_keys=True, separators=(",", ":"),
-                                  ensure_ascii=False, allow_nan=False).encode("utf-8")
-                record = self.lease_owner.preparation_claim(prepared.lease)
-                binding = {**binding, "state": "ready",
-                           "object_info_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
-                           "object_info_encoding": "json-utf8-sorted-v1"}
-                self.lease_owner._save(record, {**record["lease"], "endpoint_binding": binding})
-                return prepared, dict(binding)
-        except BaseException:
-            if bridge is not None:
-                bridge.close()
-            elif transport is not None:
-                transport.disconnect()
-            # Release, including exact host drain and independent absence
-            # observation, stays with the existing lease owner.
-            if acquired:
-                retire_bridge(acquired[0], bridge_closed=bridge is not None)
-                self.lease_owner.release(reason="endpoint_binding_failure",
-                                         _expected_operation=acquired[0].operation_id)
-            raise
 
 
 def build_adapter(**context: Any) -> RunPodAdapter:
@@ -300,42 +163,6 @@ def _validate_retained_workflow(request):
     unknown = set(request.inputs) - set(loaded.resolved.workflow.inputs)
     if unknown:
         raise PaidSelectionError("workflow contains undeclared input bindings")
-
-
-def _validate_endpoint_binding(record):
-    lease = record.get("lease", {})
-    binding = lease.get("endpoint_binding") if isinstance(lease, dict) else None
-    if binding is None:
-        return
-    required = {"schema", "state", "operation_id", "owner_epoch", "generation", "invocation_id",
-                "pod_id", "provider_account_ref", "host_pid", "host_birth_id", "endpoint_id", "engine_port",
-                "installed_receipt_sha256", "workflow_sha256", "source_sha256"}
-    optional = {"companion_sha256", "loopback_url", "object_info_sha256", "object_info_encoding"}
-    if (not isinstance(binding, dict) or set(binding) - required - optional or not required <= set(binding)
-            or binding["schema"] != "astrid.runpod.endpoint-binding.v1"
-            or binding["state"] not in {"binding", "bound", "ready"}
-            or any(binding[name] != record.get(name) for name in ("operation_id", "pod_id", "provider_account_ref"))
-            or any(binding[name] != lease.get(name) for name in ("owner_epoch", "generation", "invocation_id"))
-            or type(binding["host_pid"]) is not int or binding["host_pid"] < 1
-            or not isinstance(binding["host_birth_id"], str) or not binding["host_birth_id"]
-            or binding["endpoint_id"] not in {"comfyui"}
-            or type(binding["engine_port"]) is not int or not 1 <= binding["engine_port"] <= 65535):
-        raise PaidSelectionError("endpoint binding does not match exact lease custody")
-    for name in ("installed_receipt_sha256", "workflow_sha256", "source_sha256", "companion_sha256", "object_info_sha256"):
-        if name in binding and (not isinstance(binding[name], str)
-                                or re.fullmatch(r"sha256:[0-9a-f]{64}", binding[name]) is None):
-            raise PaidSelectionError("endpoint binding has invalid digest evidence")
-    installed = lease.get("preparation", {}).get("installed", {})
-    if binding["installed_receipt_sha256"] != installed.get("receipt_sha256"):
-        raise PaidSelectionError("endpoint binding differs from the installed receipt")
-    if binding["state"] in {"bound", "ready"}:
-        from astrid.core.generation.backends.comfy_target import validate_attached_url
-        if validate_attached_url(binding.get("loopback_url")) != binding["loopback_url"]:
-            raise PaidSelectionError("endpoint binding has an invalid loopback URL")
-    if binding["state"] == "ready" and "object_info_sha256" not in binding:
-        raise PaidSelectionError("endpoint binding lacks readiness evidence")
-    if "object_info_encoding" in binding and binding["object_info_encoding"] != "json-utf8-sorted-v1":
-        raise PaidSelectionError("endpoint binding has invalid readiness encoding")
 
 
 def prevalidate_task(policy, inputs, *, scratch):
@@ -367,7 +194,7 @@ def prevalidate_task(policy, inputs, *, scratch):
                  ("preparation_seconds", "execution_seconds", "idle_seconds")]
     if sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
         raise PaidSelectionError("deadline cannot cover the disclosed paid bounds")
-    if inputs.get("comfy_url") or inputs.get("comfy_output_dir") or inputs.get("source_video"):
+    if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
         raise PaidSelectionError("target policy cannot be combined with an endpoint override")
     members = tuple(inputs.get(name) for name in ("python", "companion", "source"))
     if not all(isinstance(value, str) and value for value in members):
@@ -415,7 +242,6 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     selection = broker_selection(preferences, config, account_ref=preferences.provider_account_ref,
                                  data_root=None, compatibility=compatibility)
     async def drain(record):
-        _validate_endpoint_binding(record)
         quiesce(record)
         lease = record["lease"]
         return {"schema": "astrid.runpod.lease-drain.v1", "state": "drained", "admission_closed": True,
@@ -429,14 +255,23 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
     except BaseException:
         owner.close()
         raise
-    return RunPodAdapter(lease_owner=owner,
-                         placement=RemotePlacement(None),
-                         installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
-                         validate=_validate_retained_workflow)
+    from astrid.packs.runpod.machine import observe_mounts_with
+
+    adapter = RunPodAdapter(lease_owner=owner,
+                            placement=RemotePlacement(None),
+                            installation=RunPodInstallation(compatibility.as_mapping(), engine=engine, root=root),
+                            validate=_validate_retained_workflow)
+    adapter.observe_mounts = observe_mounts_with(credential)
+    return adapter
 
 
 class TargetProviderBindings:
-    """Host-owned references and drain callback for its single provider owner."""
+    """Host-owned references and drain callback for its single provider owner.
+
+    The host drives generation through the ``generation.machine`` contribution
+    (``astrid.packs.runpod.machine``); ``begin``/``done`` mark the one machine
+    job a release must drain first.
+    """
 
     def __init__(self, *, pack_roots, holds, credentials, environ):
         self.pack_roots, self.holds = pack_roots, holds
@@ -462,8 +297,6 @@ class TargetProviderBindings:
                             if self.active is not None:
                                 if not self.active["done"].is_set():
                                     raise ValueError("target invocation remains active")
-                                if self.active["bridge"] is not None:
-                                    self.active["bridge"].close()
                                 self.active = None
                             prior.lease_owner.close()
                         self.provider = self.signature = None
@@ -494,6 +327,21 @@ class TargetProviderBindings:
     def _key(lease):
         return lease.operation_id, lease.owner_epoch, lease.generation, lease.invocation_id
 
+    def begin(self, lease, cancel):
+        """The machine claimed ``lease`` for one job; a release drains it first."""
+        with self.lock:
+            previous = self.active
+            if previous is not None and not previous["done"].is_set():
+                raise ValueError("another target invocation is active")
+            self.active = {"key": self._key(lease), "lease": lease, "cancel": cancel,
+                           "done": threading.Event()}
+
+    def done(self, lease):
+        with self.lock:
+            active = self.active
+            if active is not None and active["key"] == self._key(lease):
+                active["done"].set()
+
     def _quiesce(self, record):
         lease = record["lease"]
         key = (record["operation_id"], lease["owner_epoch"], lease["generation"], lease["invocation_id"])
@@ -502,106 +350,17 @@ class TargetProviderBindings:
             if active is not None and active["key"] != key:
                 if not active["done"].is_set():
                     raise ValueError("target drain does not name the retained invocation")
-                if active["bridge"] is not None:
-                    active["bridge"].close()
                 self.active = active = None
         if active is not None:
-            binding = lease.get("endpoint_binding")
-            bridge = active["bridge"]
-            if (binding is not None and bridge is not None
-                    and binding.get("loopback_url") != bridge.url):
-                raise ValueError("target bridge origin differs from the retained listener")
+            # The host's cancel check stops the machine job; the machine then
+            # marks it done before releasing.
             active["cancel"].set()
             if not active["done"].wait(timeout=30):
                 raise ValueError("target invocation drain remains unresolved")
             with self.lock:
-                if self.active is not active:
-                    raise ValueError("target invocation changed during drain")
-                if active["bridge"] is not None:
-                    active["bridge"].close()
-                    active["bridge"] = None
-                self.active = None
-        else:
-            # After a host crash the listener can only disappear with that
-            # exact host process. Unknown process observation stays pending.
-            binding = lease.get("endpoint_binding")
-            if binding is not None:
-                from runtime_protocol import platform
-
-                if (not isinstance(binding, dict) or binding.get("state") not in {"binding", "bound", "ready"}
-                        or any(binding.get(name) != record.get(name) for name in
-                               ("operation_id", "pod_id", "provider_account_ref"))
-                        or any(binding.get(name) != lease.get(name) for name in
-                               ("owner_epoch", "generation", "invocation_id"))):
-                    raise ValueError("target bridge custody differs from the retained lease")
-                pid, birth = binding.get("host_pid"), binding.get("host_birth_id")
-                if type(pid) is not int or pid < 1 or not isinstance(birth, str) or not birth:
-                    raise ValueError("target bridge owner identity is missing")
-                observed = platform.process_identity(pid)
-                if observed is not None:
-                    matches = platform.process_birth_matches(birth, observed.get("birth_id", ""))
-                    if matches is not False:
-                        raise ValueError("target bridge owner death is unproven")
+                if self.active is active:
+                    self.active = None
         return None
-
-    def bind(self, policy, inputs, *, invocation_id, scratch, cancel):
-        if not isinstance(policy, dict):
-            raise ValueError("target policy must be an object")
-        prevalidate_task(policy, inputs, scratch=scratch)
-        provider = self.get(kind=policy.get("kind"), engine=policy.get("engine"),
-                            preferences=policy.get("preferences"))
-        retained = []
-
-        def begin(lease):
-            with self.lock:
-                previous = self.active
-                if previous is not None:
-                    if not previous["done"].is_set():
-                        raise ValueError("another target invocation is active")
-                    if previous["bridge"] is not None:
-                        previous["bridge"].close()
-                active = {"key": self._key(lease), "lease": lease, "bridge": None,
-                          "cancel": cancel, "done": threading.Event()}
-                self.active = active
-                retained.append(active)
-
-        def retain(lease, bridge):
-            with self.lock:
-                active = self.active
-                if active is None or active["key"] != self._key(lease) or active["bridge"] is not None:
-                    raise ValueError("target bridge does not own the active invocation")
-                active["bridge"] = bridge
-
-        def retire(lease, *, bridge_closed):
-            with self.lock:
-                active = self.active
-                if active is not None and active["key"] == self._key(lease):
-                    if active["bridge"] is not None and not bridge_closed:
-                        active["bridge"].close()
-                    active["bridge"] = None
-                    active["done"].set()
-
-        with self.lock:
-            if provider is not self.provider:
-                raise ValueError("target provider changed before binding")
-            self.operations += 1
-        try:
-            prepared, evidence = provider.bind_task(
-                policy, inputs, invocation_id=invocation_id, scratch=scratch,
-                begin_lease=begin, retain_bridge=retain, retire_bridge=retire)
-            if retained:
-                # The host checks this prepared install against the binding before it trusts the rows.
-                retained[0]["installed"] = dict(prepared.installed)
-                retained[0]["models"] = tuple(prepared.models)
-        finally:
-            with self.lock:
-                self.operations -= 1
-        if len(retained) != 1 or retained[0]["key"] != self._key(prepared.lease):
-            retire(prepared.lease, bridge_closed=False)
-            provider.lease_owner.release(reason="binding_not_retained",
-                                         _expected_operation=prepared.lease.operation_id)
-            raise ValueError("target provider did not retain exactly one invocation bridge")
-        return provider, retained[0], evidence
 
     def operate(self, policy, operation, *, include_quote=False):
         if operation not in {"setup", "ls", "status", "release"}:
@@ -637,27 +396,6 @@ class TargetProviderBindings:
             with self.lock:
                 self.operations -= 1
 
-    def finish(self, provider, active, *, success):
-        with self.lock:
-            if self.active is not active:
-                raise ValueError("target finish does not own the retained invocation")
-            active["done"].set()
-        if success:
-            provider.lease_owner.settle(active["lease"])
-        else:
-            try:
-                provider.lease_owner.release(reason="task_failed",
-                                             _expected_operation=active["lease"].operation_id)
-            except AcquisitionUnresolvedError:
-                # A deadline or explicit release may already own the single
-                # terminal transition while it waits for this exact drain.
-                with provider.lease_owner.lock:
-                    record = provider.lease_owner._read()
-                    if not (provider.lease_owner._release_inflight and record is not None
-                            and record.get("operation_id") == active["lease"].operation_id
-                            and record.get("lease", {}).get("state") == "releasing"):
-                        raise
-
     def close(self):
         with self.lock:
             if self.operations or self.constructing is not None:
@@ -665,8 +403,6 @@ class TargetProviderBindings:
             if self.active is not None:
                 if not self.active["done"].is_set():
                     raise ValueError("target invocation is still active at host shutdown")
-                if self.active["bridge"] is not None:
-                    self.active["bridge"].close()
                 self.active = None
             provider, self.provider = self.provider, None
         if provider is not None:

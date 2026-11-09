@@ -686,35 +686,31 @@ def _run_and_settle(
     comfy_output_dir: str = "",
     placement: str | None = None,
     execution_request: Any = None,
-    registry: Any = None,
     endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt."""
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
+    from astrid.core.generation.placement import resolve_workflow_placement
+
+    # Placement is validated before any effect: a wrong placement creates nothing.
+    if placement is None:
+        # An unplaced call carrying a RunPod target is the legacy prepared route.
+        target = execution_request.get("target") if isinstance(execution_request, dict) else None
+        if isinstance(target, dict) and target.get("kind") == "runpod":
+            placement = "runpod"
+    resolved_placement = resolve_workflow_placement(placement, execution_request=execution_request)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     # Canonical sibling source.json is the submitted source, not a re-emitted
     # UI graph. Save it before the backend can convert or delete its scratch.
     source_path = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
     source_snapshot = _evidence_snapshot(source_path, output_root) if source_path.is_file() else None
-    from astrid.core.generation.backends.registry import (
-        load_default_generation_backend_registry, resolve_workflow_descriptor,
-    )
-    from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
+    from astrid.packs.vibecomfy.workflow_route import WorkflowRunner
 
     # The host injects admitted scheduling intent and its original endpoint
     # attachment. Neither value is part of the workflow's creative inputs.
-    registry = registry if registry is not None else load_default_generation_backend_registry()
-    if placement is None:
-        # An unplaced call carrying a RunPod target is the legacy prepared route.
-        target = execution_request.get("target") if isinstance(execution_request, dict) else None
-        if isinstance(target, dict) and target.get("kind") == "runpod":
-            placement = "runpod"
-    selected = resolve_workflow_descriptor(
-        registry, placement=placement, execution_request=execution_request,
-    )
-    runpod_route = selected.placement.resolve(placement) == "runpod"
+    runpod_route = resolved_placement == "runpod"
     if runpod_route:
         if endpoint_checkout is None:
             raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
@@ -722,11 +718,7 @@ def _run_and_settle(
             raise AstridValueError("RunPod workflow cannot use local_server overrides")
     elif endpoint_checkout is not None:
         raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
-    adapter = selected.create(init_overrides=(
-        {"endpoint_checkout": endpoint_checkout} if runpod_route else None
-    ))
-    if not isinstance(adapter, WorkflowBackendAdapter):
-        raise AstridValueError("selected generation backend does not support workflows")
+    adapter = WorkflowRunner(endpoint_checkout=endpoint_checkout if runpod_route else None)
 
     if comfy_url:
         from astrid.core.generation.backends.vibecomfy_local_server import (

@@ -979,14 +979,9 @@ class GenerationFacade:
                     verbose=verbose, argv=argv, **controls)
         if inputs is not None:
             raise GenerationInputError('workflow inputs require an explicit target')
-        from astrid.core.generation.backends.registry import (
-            GenerationBackendRegistry, resolve_workflow_descriptor,
-        )
+        from astrid.core.generation.placement import resolve_workflow_placement
 
-        resolve_workflow_descriptor(
-            GenerationBackendRegistry(), placement=engine_placement,
-            execution_request=execution_request,
-        )
+        resolve_workflow_placement(engine_placement, execution_request=execution_request)
         from astrid.core.generation.availability import require_bundled_workflow_available
         for member in (workflow, python):
             if isinstance(member, (str, Path)):
@@ -1409,6 +1404,34 @@ class GenerationFacade:
                 "the tracked parent interface is not yet available"
             )
         return description, values
+
+    def generate(self, entry: str | None = None, inputs: Mapping[str, Any] | None = None,
+                 placement: str | None = None, **options: Any) -> Any:
+        """The one generation front door: ``generate(entry, inputs, placement)``.
+
+        The kind (image, video or audio) is read from the entry's own declaration, so this is the
+        one place that refuses an unknown entry or malformed inputs. ``image``, ``video`` and
+        ``audio`` remain as the typed aliases that pin a kind.
+        """
+        if entry is None:
+            raise CapabilityValidationError("generate requires an entry")
+        if inputs is not None and not isinstance(inputs, Mapping):
+            raise CapabilityValidationError("generate inputs must be an object")
+        from astrid.core.generation.entries import describe_entry
+
+        sdk_module = importlib.import_module(self.sdk_module_name)
+        try:
+            kind = describe_entry(
+                entry, mode=options.get("mode"),
+                registry=sdk_module._load_model_registry(
+                    project_root=options.get("project_root"),
+                    extra_pack_roots=options.get("extra_pack_roots", ()),
+                ),
+                _native=True,
+            )["kind"]
+        except (KeyError, ValueError) as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        return getattr(self, kind)(entry=entry, placement=placement, **dict(inputs or {}), **options)
 
     @_generation_boundary
     def image(

@@ -752,8 +752,17 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = False) -> None:
-    """Preparation is child custody of A3, never a second release owner."""
+    """Preparation and the machine job are child custody of A3, never a second release owner."""
     lease = attempt.get("lease", {})
+    machine_job = lease.get("job") if isinstance(lease, Mapping) else None
+    if machine_job is not None and (
+        not isinstance(machine_job, Mapping) or set(machine_job) != {"id", "state"}
+        or not isinstance(machine_job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", machine_job["id"])
+        or machine_job.get("state") not in {"starting", "running", "exited", "cancelled"}
+    ):
+        raise TargetObservationError("invalid exact machine job custody")
+    if releasing and machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
+        raise TargetObservationError("machine job remains unresolved; retain the exact lease")
     preparation = lease.get("preparation")
     if preparation is None:
         return
