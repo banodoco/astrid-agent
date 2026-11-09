@@ -119,15 +119,16 @@ def consent_rerun_command(choices, *, windows: bool) -> str:
     return " ".join([line, "--yes", *flags])
 
 
-def _print_run_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
-                       install_root: Path | None = None):
-    def safe(value):
-        return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
+def _safe(value) -> str:
+    return str(value).encode("ascii", errors="backslashreplace").decode("ascii")
 
-    if outcome is not None:
-        # The first lines are the run receipt; nothing below may contradict them.
-        print("\n" + "\n".join(outcome.headline()))
-    print("\nAstrid setup summary:")
+
+def _setup_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
+                   install_root: Path | None = None) -> list[str]:
+    """The full setup summary. It goes to install.log, never after the receipt in the terminal."""
+    safe = _safe
+    lines = ["Astrid setup summary:"]
+    print = lines.append  # noqa: A001 - every summary line is collected, not printed
     if outcomes is None and failure is None and outcome is not None:
         pass  # This run never reached the installer's setup steps.
     else:
@@ -212,6 +213,66 @@ def _print_run_summary(choices, *, mode, outcome=None, outcomes=None, failure=No
         print("  Skill copies recovery: to enable skill copies later, rerun the install line with --skill-copies on (replace this flag in the Way back line).")
     print("  Maintenance: rerun the install line to repair or restart; add --update to update, or --uninstall to remove Astrid. Uninstall keeps the workspace unless --delete-data is added.")
     print("  Way back: " + _way_back_command(choices, mode=mode))
+    return lines
+
+# One terminal line for each choice the user changed from the recommended setup.
+CHOICE_LINES = {
+    ("autostart", False): "Your choice: start at sign-in is off. To turn it on, rerun the install line with --autostart on.",
+    ("command", False): "Your choice: the astrid command is off. To turn it on, rerun the install line with --command on.",
+    ("skills", False): "Your choice: Astrid skills are off. To turn them on, rerun the install line with --skills on.",
+    ("skill_copies", True): "Your choice: skills are copies. To use links instead, rerun the install line with --skill-copies off.",
+}
+
+
+def changed_choice_lines(choices, *, install_root: Path | None = None) -> list[str]:
+    """A line only for a choice the user changed; the recommended setup prints none."""
+    selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+    lines = []
+    for name in CHOICE_NAMES:
+        if selected[name] == RECOMMENDED_CHOICES[name]:
+            continue
+        lines.append(CHOICE_LINES.get((name, selected[name]),
+                                      f"Your choice: {name.replace('_', ' ')} is "
+                                      f"{'on' if selected[name] else 'off'}."))
+        if name == "command" and install_root is not None:
+            launcher = install_root / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+            if launcher.is_file():
+                lines.append(f"Run Astrid with: {_safe(launcher)}")
+    return lines
+
+
+def _append_log(log: Path | None, lines: list[str]) -> bool:
+    """Append ``lines`` to install.log; False when there is no usable log."""
+    from runtime_protocol import platform
+
+    if log is None:
+        return False
+    try:
+        with Path(log).open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
+            stream.write("\n".join(lines) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _print_run_summary(choices, *, mode, outcome=None, outcomes=None, failure=None,
+                       install_root: Path | None = None, log: Path | None = None) -> None:
+    """Point to detail, never dump it: the receipt's outcome lines are the last lines printed.
+
+    The setup summary (startup, command, skill paths, failure class, maintenance and
+    the Way back line) goes to install.log. Without a usable log it is printed first,
+    above the receipt, which then says the details are shown above in this window.
+    """
+    summary = _setup_summary(choices, mode=mode, outcome=outcome, outcomes=outcomes,
+                             failure=failure, install_root=install_root)
+    if not _append_log(log, summary):
+        print("\n" + "\n".join(summary))
+    changed = changed_choice_lines(choices, install_root=install_root)
+    if changed:
+        print("\n" + "\n".join(changed))
+    if outcome is not None:
+        print("\n" + "\n".join(outcome.headline()))
 
 
 class _ChoiceAction(argparse.Action):
@@ -386,7 +447,7 @@ class _Run:
                          run={"operation_id": self.operation_id, "started_at": self.started_at})
         _print_run_summary(self.choices, mode=self.mode, outcome=outcome,
                            outcomes=getattr(self.installer, "outcomes", None), failure=failure,
-                           install_root=self.root)
+                           install_root=self.root, log=self.log)
         return outcome.exit_code
 
 
@@ -883,7 +944,10 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
             print(str(failure))
             if isinstance(failure, RuntimeOperationError) and failure.details is not None:
-                print(json.dumps(failure.details, ensure_ascii=False))
+                # Detail goes to install.log; the Details line points there.
+                details = json.dumps(failure.details, ensure_ascii=False)
+                if not _append_log(log, ["Failure details: " + details]):
+                    print(details)
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
         if log is not None and not settled:

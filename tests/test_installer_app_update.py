@@ -2121,7 +2121,11 @@ def test_strict_cli_app_update_applies_skill_policy_and_reports_without_migratio
         args.extend(["--skills", "on" if requested["skills"] else "off",
                      "--skill-copies", "on" if requested["skill_copies"] else "off"])
     assert cli.main(args) == 0
-    output = capsys.readouterr().out
+    from runtime_protocol import platform
+
+    terminal = capsys.readouterr().out
+    assert "Astrid setup summary:" not in terminal  # the summary is in install.log (card 2)
+    output = terminal + (platform.log_dir() / "install.log").read_text(encoding="utf-8")
     assert env.events.index("ready:new") < env.events.index("skills:new")
     assert env.events.count("skills:new") == 1
     assert current(env.root) == env.candidate
@@ -2196,7 +2200,11 @@ def test_strict_app_update_reports_skill_process_failure_after_successful_restar
     write_json(manifest, {})
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root),
                      "--manifest", str(manifest), "--uv", str(env.backend.uv), "--skills", "off"]) == 0
-    output = capsys.readouterr().out
+    from runtime_protocol import platform
+
+    terminal = capsys.readouterr().out
+    assert "Skill destinations:" not in terminal  # the summary is in install.log (card 2)
+    output = terminal + (platform.log_dir() / "install.log").read_text(encoding="utf-8")
     assert "Skill destinations: sync failed; see the installer log." in output
     assert "Couldn't add Astrid's skill to your agents" in output
     assert current(env.root) == env.candidate

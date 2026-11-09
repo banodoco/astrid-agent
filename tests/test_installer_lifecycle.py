@@ -1118,7 +1118,11 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     output = capsys.readouterr()
     lines = output.out.splitlines()
     assert lines[:2] == [FAILURE_MESSAGE, message]
-    assert "Astrid setup summary:" in lines  # the consent summary now follows a failed run
+    # No install.log was used, so the summary is shown above the receipt in this window,
+    # and the receipt's Details line, last, says so.
+    assert "Astrid setup summary:" in lines
+    assert lines.index("Astrid setup summary:") < lines.index("Nothing was installed.")
+    assert lines[-1] == "Details: shown above in this window (the installer log was not used)."
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
