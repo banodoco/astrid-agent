@@ -192,6 +192,20 @@ def test_uncovered_entry_reaches_submission(image, preferences):
     assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
 
 
+@pytest.mark.parametrize('pinned', [False, True])
+def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, preferences, monkeypatch, pinned):
+    from astrid.core.generation import defaults
+    if pinned:
+        monkeypatch.setattr(defaults, 'pinned_entry', lambda *args: 'h3')
+        monkeypatch.setattr(defaults, 'ordered_ids', lambda *args: ('h3',))
+    client = NoPodClient()
+    with pytest.raises(Exception, match="unsupported entry inputs|needs the 'request' input"):
+        GenerationFacade().video(prompt='a boat', image_ref=str(image), placement='runpod',
+                                 client=client, project='demo', wait=False,
+                                 **({} if pinned else {'entry': 'h3'}), **LIVE)
+    assert client.calls == []
+
+
 def test_uncovered_entry_selects_recipe():
     entry = entries.find_entry('video/ltx2_3_i2v')
     assert entry is not None
