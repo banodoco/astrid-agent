@@ -37,7 +37,7 @@ def envelope(root, *, status='failed', task='task-1'):
     return path
 
 
-@pytest.mark.parametrize('route', ['embedded', 'attached', 'runpod'])
+@pytest.mark.parametrize('route', ['embedded', 'attached'])
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path, route, cancelled):
     import astrid.packs.vibecomfy.production_engine as producer
@@ -49,12 +49,10 @@ def test_backend_exposes_existing_verified_partial_result(monkeypatch, tmp_path,
     def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr(producer, 'run_workflow_result_path', fail)
-    backend = VibeComfyWorkflowBackend(endpoint_checkout=(lambda **kw: None) if route == 'runpod' else None)
+    backend = VibeComfyWorkflowBackend()
     kwargs = {'task_identity': 'task-1', 'attempt_identity': 'attempt-1'}
     if route == 'attached':
         kwargs.update(profile_id='local_server', comfy_url='http://127.0.0.1:8188')
-    elif route == 'runpod':
-        kwargs.update(profile_id='checkout_server', hc03_profile={}, expected_execution_identity='exact-binding')
     with pytest.raises(type(error)) as caught:
         backend.workflow(tmp_path / 'workflow.py', root, **kwargs)
     assert caught.value is error

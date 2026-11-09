@@ -28,7 +28,6 @@ from .results import _reconstruct_generation_result
 if TYPE_CHECKING:
     from .execution_request import ExecutionRequest
     from .results import InvocationResult
-    from astrid.core.generation.engine_contracts import Placement
 
 
 WorkflowFile = str | Path | Mapping[str, Any]
@@ -910,7 +909,6 @@ class GenerationFacade:
         comfy_url: str | None = None,
         comfy_output_dir: str | None = None,
         generation_intent: Mapping[str, Any] | None = None,
-        engine_placement: Placement | None = None,
         out: Path | str | None = None,
         project: str | None = None,
         client: WorkflowInvocationClient | None = None,
@@ -938,7 +936,6 @@ class GenerationFacade:
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
-        engine_placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
         _require_single_declared_output(workflow=workflow, companion=companion)
@@ -953,7 +950,7 @@ class GenerationFacade:
             if inputs is not None and not isinstance(inputs, Mapping):
                 raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
-                    execution_request, engine_placement, source, source_video, source_video_node,
+                    execution_request, source, source_video, source_video_node,
                     source_video_widget, managed_assets, workflow_inputs, comfy_url,
                     comfy_output_dir, generation_intent, placement_policy)):
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
@@ -999,9 +996,6 @@ class GenerationFacade:
                     verbose=verbose, argv=argv, **controls)
         if inputs is not None:
             raise GenerationInputError('workflow inputs require an explicit target')
-        from astrid.core.generation.placement import resolve_workflow_placement
-
-        resolve_workflow_placement(engine_placement, execution_request=execution_request)
         from astrid.core.generation.availability import require_bundled_workflow_available
         for member in (workflow, python):
             if isinstance(member, (str, Path)):

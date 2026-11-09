@@ -55,7 +55,18 @@ install_runpod_from_lock() {
 }
 
 # Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
-DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
+# One explicit pod data root (the pod-side run and the reset use the same one; without it the
+# launcher falls back to /root/.astrid-data, which has no workspace).
+DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-/root/astrid/runtime-data}"
+export ASTRID_RUNTIME_DATA_ROOT="$DATA_ROOT"
+SOURCE_MANIFEST="${ASTRID_RUNTIME_SOURCE_MANIFEST:-/root/astrid/source-manifest.json}"
+export ASTRID_RUNTIME_SOURCE_MANIFEST="$SOURCE_MANIFEST"
+# No pod Runtime takes the door port; the one Runtime picks its own port.
+export ASTRID_RUNTIME_DOOR_PORT=0
+# Warm-machine reset state (astrid.packs.runpod.pod_reset).
+REALM_TEMPLATE=/root/astrid/realm-template
+READY_MARKER=/root/astrid/ready.json
+PREPARED_CONNECTION=/root/astrid/prepared-connection.json
 REALM_ROOT="${ASTRID_REALM_ROOT:-/root/astrid/realm}"
 BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/root/astrid/bootstrap}"
 ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/root/astrid/engines/comfyui}"
@@ -87,11 +98,10 @@ ensure_dir "$BOOTSTRAP_ROOT"
 ensure_dir "$DATA_ROOT"
 ensure_dir "$(dirname "$REALM_ROOT")"
 
-# Headless Runtime setup: a source profile plus a configured workspace, so the
-# machine's pod-side run (`astrid generate <entry> --placement local`, and the
-# runtime check after install) works with no manual step. It never runs
-# `astrid-runtime up`: the pod-side run's ensure_runtime starts its own headless
-# Runtime and picks its own port, so nothing on the pod needs the door port (17340).
+# Headless Runtime setup: a source profile plus a configured workspace. It never runs
+# `astrid-runtime up`: the first pod_reset (after install) starts the one long-lived Runtime,
+# takes the empty-realm template and writes the prepared connection each job then opens.
+# Nothing on the pod needs the door port (17340).
 setup_runtime() {
   local profile="$DATA_ROOT/runtime/source-profiles/astrid.json"
   local runtime_src agent_src
@@ -122,6 +132,8 @@ os.replace(tmp, path)
 PY
     echo "pod_bootstrap: wrote source profile ($profile)"
   fi
+  # The launcher's source manifest: the same identity, at one fixed path the pod-side run exports.
+  cp "$profile" "$SOURCE_MANIFEST.tmp" && chmod 600 "$SOURCE_MANIFEST.tmp" && mv "$SOURCE_MANIFEST.tmp" "$SOURCE_MANIFEST"
   # Fail before workspace admission and, in pod_session, before engine downloads.
   # Use the same source-profile identity and producer-lock checks as the launcher.
   "$VENV/bin/python" src/astrid-agent/astrid/packs/runpod/pod_source_identity.py "$(cd src && pwd)" "$profile"
@@ -234,6 +246,12 @@ if ! grep -qiE '^pip==' <<< "$installed"; then
 fi
 verify_astrid_install
 "$VENV/bin/python" -c 'import runpod_lifecycle'
+
+# New source bytes: the long-lived Runtime, its template and the prepared connection
+# belong to the old sources. Stop it and drop them; the next pod_reset rebuilds all three.
+rm -f "$READY_MARKER" "$PREPARED_CONNECTION"
+"$VENV/bin/astrid-runtime" down --profile astrid --data-root "$DATA_ROOT" --json >/dev/null 2>&1 || true
+rm -rf "$REALM_TEMPLATE"
 
 setup_runtime
 

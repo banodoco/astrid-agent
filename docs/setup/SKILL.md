@@ -42,8 +42,17 @@ task cannot find them.
 
 The installer checks that Astrid is healthy and opens astrid.haus itself. Tell
 the user to choose Allow if Chrome or Edge asks to reach their computer, then
-confirm astrid.haus shows Connected. That is the end of setup. (Connecting
-local engines such as ComfyUI or Wan2GP is not covered here yet.) Carry
+confirm astrid.haus shows Connected. That is the end of setup.
+
+### Set up generation
+
+To connect a ComfyUI the user already runs, or to find their Wan2GP folder,
+use the **Set up my generation** section of the `generation` skill
+(installed name: `generation`;
+[public copy](https://github.com/banodoco/astrid-agent/blob/main/astrid/packs/generation/docs/SKILL.md#set-up-my-generation)).
+It reads what is set up, asks before it changes anything, and lists every change
+with how to undo it. Do not start, restart or install anything for ComfyUI or
+Wan2GP during setup. Carry
 out requested checks, report their actual results, and do not claim a check
 passed when it could not be run.
 

@@ -306,7 +306,7 @@ def test_transform_dry_run_never_touches_runtime_or_worker_selection(
     if placement_args == ("--prepared-worker", "worker.json"):
         args_values[args_values.index("worker.json")] = str(tmp_path / "worker.json")
     args = build_parser().parse_args(args_values)
-    patched = ("_resolve_local_engine", "_run_remote_placement", "_invoke_stage", "_invoke_canonical_run",
+    patched = ("_resolve_local_engine", "_invoke_stage", "_invoke_canonical_run",
                "ensure_runpod_worker", "load_worker_qualification", "AstridClient", "generate",
                "prepared_worker_selection")
     calls = dict.fromkeys(patched, 0)
@@ -317,7 +317,7 @@ def test_transform_dry_run_never_touches_runtime_or_worker_selection(
             return None
         return invoke
 
-    for name in ("_resolve_local_engine", "_run_remote_placement", "_invoke_stage", "_invoke_canonical_run",
+    for name in ("_resolve_local_engine", "_invoke_stage", "_invoke_canonical_run",
                  "ensure_runpod_worker", "load_worker_qualification"):
         monkeypatch.setattr(transform, name, bomb(name))
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", bomb("AstridClient"))

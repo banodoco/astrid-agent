@@ -58,8 +58,28 @@ def test_workflow_cli_calls_public_sdk_once_without_private_probe(monkeypatch, c
     assert json.loads(capsys.readouterr().out) == {'ok': True}
 
 
+def test_as_entry_dry_run_previews_without_writing_or_running(monkeypatch, tmp_path, capsys):
+    from astrid.core.generation import entries
+    source = tmp_path / 'preview.json'
+    source.write_text('{}')
+    described = {'kind': 'image', 'modes': ['t2i'], 'inputs': [{'name': 'prompt'}]}
+    seen = []
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs',
+        lambda path, values, mode=None: seen.append((path, dict(values))) or (described, values))
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('preview opened Runtime'))
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('preview ran the workflow'))
+    monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(tmp_path / 'entries'))
+    assert cli.main(['workflow', str(source), '--as-entry', 'mine', '--dry-run',
+                     '--prompt', 'a lighthouse', '--json']) == 0
+    assert seen == [(source, {'prompt': 'a lighthouse'})]
+    assert json.loads(capsys.readouterr().out) == {
+        'dry_run': True, 'written': False, 'would_save_entry': 'mine', 'replaces_existing': False,
+        'kind': 'image', 'modes': ['t2i'], 'inputs': [{'name': 'prompt'}]}
+    assert not (tmp_path / 'entries').exists()
+
+
 @pytest.mark.parametrize('flags', [
-    ['--replace'], ['--as-entry', 'mine', '--dry-run'],
+    ['--replace'],
     ['--input', 'texture=0.7', '--input', 'texture=0.8'],
 ])
 def test_invalid_save_or_duplicate_input_rejects_before_runtime(monkeypatch, capsys, flags):

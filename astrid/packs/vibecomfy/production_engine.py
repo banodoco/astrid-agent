@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, ContextManager
+from typing import Any
 
 from runtime_protocol import platform
 
@@ -687,15 +687,10 @@ def _run_profile_result(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     workflow_conversion_object_info_sha256: str | None = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> ProductionRunResult:
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     if endpoint_transport is not None and profile_id != "checkout_server":
         raise ProductionEngineError("endpoint_transport requires checkout_server")
-    if endpoint_checkout is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_checkout requires checkout_server")
     if comfy_url and profile_id != "local_server":
         raise ProductionEngineError("comfy_url requires the local_server profile")
     from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -741,7 +736,7 @@ def _run_profile_result(
     version_readiness = readiness_envelope(issues=issues)
     if provenance is not None:
         provenance.add_readiness_issues(issues)
-    factory = endpoint_checkout if endpoint_checkout is not None else CheckoutServerAdapter.from_host_session
+    factory = CheckoutServerAdapter.from_host_session
     transport_kwargs = {} if endpoint_transport is None else {"endpoint_transport": endpoint_transport}
     checkout = factory(
         hc03_profile=hc03_profile,
@@ -751,10 +746,7 @@ def _run_profile_result(
         expected_comfyui_version=workflow_comfyui_version or profile_comfyui_version,
         **transport_kwargs,
     )
-    # The injected context attaches to the original owner and closes only its
-    # transport. Existing local checkout creation and cancellation stay intact.
-    attachment = checkout if endpoint_checkout is not None else nullcontext(checkout)
-    with attachment as adapter, _checkout_cancellation(adapter) as was_cancelled:
+    with nullcontext(checkout) as adapter, _checkout_cancellation(adapter) as was_cancelled:
         try:
             outputs = tuple(
                 adapter.run_compiled_workflow(
@@ -788,20 +780,15 @@ def _run_profile(
     comfy_url: str = "",
     comfy_output_dir: str = "",
     workflow_conversion_object_info_sha256: str | None = None,
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> tuple[Path, ...]:
     """Compatibility projection for callers that only need output paths."""
     global _LAST_PRODUCTION_RESULT
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     from astrid.core.generation.availability import require_bundled_execution_available
     require_bundled_execution_available(resolved)
     local_kwargs: dict[str, Any] = {}
     if endpoint_transport is not None:
         local_kwargs["endpoint_transport"] = endpoint_transport
-    if endpoint_checkout is not None:
-        local_kwargs["endpoint_checkout"] = endpoint_checkout
     if comfy_url:
         local_kwargs["comfy_url"] = comfy_url
     if comfy_output_dir:
@@ -839,7 +826,6 @@ def run_workflow_path(
     workflow_input_bindings: Mapping[str, Any] | None = None,
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> tuple[Path, ...]:
     """Run a file workflow through the reviewed production-engine path.
@@ -851,12 +837,8 @@ def run_workflow_path(
     """
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise ProductionEngineError("production engine task_identity is required")
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     if endpoint_transport is not None and profile_id != "checkout_server":
         raise ProductionEngineError("endpoint_transport requires checkout_server")
-    if endpoint_checkout is not None and profile_id != "checkout_server":
-        raise ProductionEngineError("endpoint_checkout requires checkout_server")
     destination_path = Path(destination).expanduser().resolve()
     destination_path.mkdir(parents=True, exist_ok=True)
     loaded = load_workflow_path(
@@ -886,8 +868,6 @@ def run_workflow_path(
     profile_kwargs: dict[str, Any] = {}
     if endpoint_transport is not None:
         profile_kwargs["endpoint_transport"] = endpoint_transport
-    if endpoint_checkout is not None:
-        profile_kwargs["endpoint_checkout"] = endpoint_checkout
     if attempt_identity is not None:
         profile_kwargs["attempt_identity"] = attempt_identity
     if comfy_url:
@@ -926,7 +906,6 @@ def run_workflow_result_path(
     workflow_input_bindings: Mapping[str, Any] | None = None,
     comfy_url: str = "",
     comfy_output_dir: str = "",
-    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
     endpoint_transport: Any = None,
 ) -> ProductionRunResult:
     """Run a workflow while retaining the producer result envelope.
@@ -934,8 +913,6 @@ def run_workflow_result_path(
     This projects the existing path API so callers and test doubles that still
     replace ``run_workflow_path`` continue to work.
     """
-    if endpoint_checkout is not None and endpoint_transport is not None:
-        raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
     global _LAST_PRODUCTION_RESULT
     _LAST_PRODUCTION_RESULT = None
     kwargs: dict[str, Any] = {
@@ -944,8 +921,6 @@ def run_workflow_result_path(
         "hc03_profile": hc03_profile,
         "expected_execution_identity": expected_execution_identity,
     }
-    if endpoint_checkout is not None:
-        kwargs["endpoint_checkout"] = endpoint_checkout
     if endpoint_transport is not None:
         kwargs["endpoint_transport"] = endpoint_transport
     if model_id != "vibecomfy":

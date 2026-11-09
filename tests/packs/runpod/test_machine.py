@@ -58,7 +58,12 @@ def test_the_pod_side_command_is_the_local_run_with_its_progress_path():
     assert "export ASTRID_PROGRESS_PATH=/root/astrid/runs/abc/progress.json" in command
     argv = rm.generation_argv("cpu-image", "/root/astrid/runs/abc", mode="t2i")
     assert argv[1:5] == ["generate", "cpu-image", "--placement", "local"]
-    assert "--port" not in command and "17340" not in rm.runtime_check_command()
+    assert "--port" not in command and "17340" not in command
+    # T5f: the warm job opens the prepared connection under the reset lock; no up, no connect.
+    assert "ensure_runtime" not in command and "astrid-runtime" not in command
+    assert "flock -s 9" in command and "export ASTRID_PREPARED_CONNECTION=/root/astrid/prepared-connection.json" in command
+    assert "ASTRID_RUNTIME_DATA_ROOT=/root/astrid/runtime-data" in command and "ASTRID_RUNTIME_DOOR_PORT=0" in command
+    assert command.index("generate list --json") < command.index("--placement local")
 
 
 # ----------------------------------------------------------------------------
@@ -114,9 +119,18 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     assert json.loads(job.progress_path.read_text()) == {"phase": "fetch"}
     record = c.read()
     assert record["lease"]["state"] == "idle" and record["lease"]["job"]["state"] == "exited"
-    assert record["lease"]["preparation"]["runtime_check"]["entry"] is None  # claim: the runtime starts
-    # start: the shipped selection is extracted and the entry must be listed from it.
-    assert any("tar -xzf" in line and "generate list --json" in line for line in c.pod.exec_log)
+    # Claim on a fresh pod: the reset takes the empty-realm template and writes ready.json.
+    assert record["lease"]["preparation"]["pod_ready"] == {"entry": None, "ready": True, "found": "absent",
+                                                           "reset": "taken"}
+    # The job's one command extracts the selection and checks the entry, then runs.
+    generation = next(line for line in c.pod.job_log if " generate cpu-image " in line)
+    assert "tar -xzf" in generation and "generate list --json" in generation
+    # After the fetch, before settle: the reset removed the run and job folders.
+    reset = c.pod.resets[-1]
+    assert reset["ok"] and reset["active"] == {"run_id": reset["dirs"][0].rsplit("/", 1)[1], "task": "task",
+                                               "attempt": "attempt-1"}
+    assert reset["dirs"][0].startswith("/root/astrid/runs/") and reset["dirs"][1].startswith("/workspace/.astrid-jobs/")
+    assert not [path for path in c.pod.files if path.startswith(reset["dirs"][0] + "/")]
     assert c.creates == 1 and c.deletes == []
     assert [kind for kind, _ in c.active] == ["begin", "done"]
     # Inputs shipped inside the job directory, each digest-checked after upload.
@@ -128,7 +142,9 @@ def test_a_job_runs_ships_fetches_and_settles_warm(machine_case, tmp_path):
     run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
                    sleep=lambda s: None)
     new = c.pod.job_log[jobs:]
-    assert len(new) == 1 and " generate cpu-image " in new[0]
+    # Warm: no claim-time reset (ready.json is there), the job, then its own reset.
+    assert len(new) == 2 and " generate cpu-image " in new[0] and "pod_reset reset --run-dir" in new[1]
+    assert c.read()["lease"]["preparation"]["pod_ready"]["reset"] == "skipped"
     assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
     c.host.release()
     assert c.deletes == ["pod-1"]
@@ -144,7 +160,37 @@ def test_a_failing_runtime_check_releases_the_lease_and_never_settles_warm(machi
     record = c.read()
     assert record["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
     assert record["lease"].get("ended") == "task_failed"
-    assert not [line for line in c.pod.job_log if " generate " in line]
+    # The check is the job command's first step: the run itself never produced outputs.
+    assert not any("/out/" in path for path in c.pod.files) and len(c.pod.resets) == 1
+
+
+def test_a_failed_reset_releases_the_pod_instead_of_settling_it(machine_case):
+    """T5f: the outputs were fetched, but a reset that fails never leaves a dirty warm pod."""
+    c = machine_case
+    c.pod.fail_jobs = {"--run-dir"}  # only the release-time reset carries the job's run directory
+    job = c.job()
+    fetched = run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                             sleep=lambda s: None)
+    assert set(fetched["files"]) == {"artifacts/cpu.png", "manifest.json"}
+    record = c.read()
+    assert [r["ok"] for r in c.pod.resets] == [True, False]
+    assert record["state"] == "cleanup_complete" and record["lease"]["ended"] == "reset_failed"
+    assert record["lease"]["job"]["state"] == "exited" and c.deletes == ["pod-1"]
+
+
+def test_a_pending_active_job_at_the_next_claim_redoes_the_reset(machine_case):
+    c = machine_case
+    job = c.job()
+    run_on_machine(c.machine, job, destination=job.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    c.pod.active_job = {"run_id": "lost", "task": "task", "attempt": "attempt-0"}  # never reached its reset
+    second = c.job(2)
+    run_on_machine(c.machine, second, destination=second.scratch / "outputs", cancelled=lambda: False,
+                   sleep=lambda s: None)
+    ready = c.read()["lease"]["preparation"]["pod_ready"]
+    assert ready == {"entry": None, "ready": True, "found": "pending", "reset": "restored"}
+    assert [r["active"] and r["active"]["run_id"] for r in c.pod.resets][2] == "lost"
+    assert c.creates == 1 and c.read()["lease"]["state"] == "idle"
 
 
 def test_cancel_stops_the_job_checkpoints_it_then_releases(machine_case):

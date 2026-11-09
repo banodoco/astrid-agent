@@ -29,27 +29,26 @@ routes documented below remain available as compatibility conveniences.
 ## Run on your own ComfyUI
 
 Use this when the user wants to generate with their own ComfyUI: "use my
-ComfyUI", "with my portrait workflow", "my saved workflow", "run it locally",
-"on my GPU", or when their `## Local generation` preferences say to prefer
-local and they didn't ask for the cloud this time. Their ComfyUI is already
-running; you attach to it. You never launch, restart or manage it, never
-unload its models, and never touch its queue beyond your own prompt. No API
-key is involved.
+ComfyUI", "with my portrait workflow", "my saved workflow", "on my GPU". Their
+ComfyUI is already running; Astrid attaches to it as the `attached` placement.
+You never launch, restart or manage it, never unload its models, and never
+touch its queue beyond your own prompt. No API key is involved. First-time
+setup (finding it and choosing defaults) is the generation skill's
+[Set up my generation](../../generation/docs/SKILL.md#set-up-my-generation).
 
-The flow is: find their ComfyUI → pick a saved workflow → read it → run
-`vibecomfy.run` with `comfy_url` → follow → show the result → remember the
-setup. Ask the user only on real ambiguity, and before installing anything.
+The flow is: find their ComfyUI → pick a saved workflow → read it → run it on
+`attached` → follow → show the result. Ask the user only on real ambiguity, and
+before installing anything.
 
 ### Find their ComfyUI
 
-If the injected preferences already have `## Local generation`, treat it as a
-hint and check it with one call. Otherwise discover. Both use the same
-read-only helper, run with Astrid's Python (the one that runs
-`python3 -m astrid`):
+If the generation settings already name a ComfyUI address, check it with one
+scan. Otherwise discover. Both use the same read-only helper, run with Astrid's
+Python (the one that runs `python3 -m astrid`):
 
 ```sh
 python3 -m astrid.packs.vibecomfy.local scan                 # ports 8188 and 8000
-python3 -m astrid.packs.vibecomfy.local scan --ports 8188    # health-check a saved URL
+python3 -m astrid.packs.vibecomfy.local scan --ports 8188    # health-check a saved address
 ```
 
 It reads `/system_stats`, `/internal/folder_paths` (model folders and
@@ -59,27 +58,21 @@ and prints one JSON object: `servers[]` with `url`, `base_dir`, `output_dir`
 names), `manager_present` and `python` (their ComfyUI's interpreter, if
 found); `errors[]` per port and endpoint; and `pinokio.available` plus
 `pinokio.home` when Pinokio's optional scan completes within its short budget.
-It probes up to eight extra loopback HTTP ports from running scripts'
-`local.url` values; extra-port matches must have a ComfyUI-shaped
-`/system_stats` response. A matching server includes its `pinokio_apps`.
+A matching server includes its `pinokio_apps`. The scan only reads; it never
+starts or changes anything.
 
 If no ComfyUI is found and `pinokio.available` is true, ask the person to
 start ComfyUI in Pinokio, then rescan. Its ComfyUI tree is
 `<pinokio.home>/api/comfy.git/app`, Python is `<tree>/env/bin/python` (on
 Windows, `<tree>\env\Scripts\python.exe`), and output is `<tree>/output`.
-These paths come from `/pinokio/info`'s `home`, so save them in preferences
-after a successful scan as usual.
 
-- Saved setup and scan agree: carry on. They disagree (other folder, workflow
-  gone, nothing on that port): rediscover, use what's true now, and update
-  preferences after the next success.
+- Saved setup and scan agree: carry on. They disagree (other address, workflow
+  gone, nothing on that port): rediscover, use what is true now, and update
+  the settings after the next success.
 - `Operation not permitted` / `Permission denied`: the agent's sandbox may
   have blocked loopback access. Retry the same command through the agent's
   normal permission-request flow; don't change permission defaults or tell
   the user to restart ComfyUI. A denied request means report the access block.
-  Astrid CLI calls also need access to Runtime storage outside the sandbox;
-  a `runtime_acquisition_lock_unavailable` there can need the same approval,
-  rather than an Astrid reinstall.
 - No server (connection refused or timed out): ComfyUI isn't running, or it's
   on another port. Ask them to start it, or for the port
   (`--ports 8188,8000,PORT`). ComfyUI Desktop's port varies.
@@ -102,62 +95,40 @@ Fetch it read-only into a scratch folder of your own (`$WORK` below), e.g.
 or copy it from `<base>/user/default/workflows/`. Never write into their
 ComfyUI folders.
 
-Read the JSON yourself before running. `vibecomfy.run` auto-detects a few
-inputs, and the detection is rough:
+Read the JSON yourself before running, and check the inputs you pass land on
+the right nodes. Follow the links into the sampler's `positive` input to see
+which encoder a prompt reaches. Flux (`CLIPTextEncodeFlux`) and SDXL
+(`CLIPTextEncodeSDXL`) encoders take no `prompt` by default.
 
-- `prompt` binds to the first `CLIPTextEncode` by node id, which may be the
-  negative encoder. Follow the links into the sampler's `positive` input to
-  check.
-- Flux (`CLIPTextEncodeFlux`) and SDXL (`CLIPTextEncodeSDXL`) encoders get no
-  `prompt` at all.
-- Only the first `LoadImage` (`image`) and the first seed (`seed`) are
-  detected.
+Describe the workflow to see the inputs it declares, then pass values:
 
-When detection fits, pass values in `workflow_inputs`. For anything else
-(prompt on a Flux/SDXL or misdetected node, negative prompt, steps, size,
-LoRA strength, a second sampler's seed), edit the widget values in a copy and
-run the copy; don't also pass `prompt` if it would land on the wrong node. Each
-tweak is a new file and a new content-addressed workflow, so history is kept.
-An unknown `workflow_inputs` name fails before queueing and lists the valid
-names, which also tells you what was detected.
-Don't infer a missing node from its name alone: let `vibecomfy.run` check the
-live server before queueing and record any failure in task history.
+```sh
+python3 -m astrid generate describe "$WORK/portrait_flux.json" --json
+```
+
+For anything the declared inputs don't cover (negative prompt, steps, size, LoRA
+strength, a second sampler's seed), edit the widget values in a copy and run the
+copy; don't also pass `prompt` if it would land on the wrong node. Each tweak is
+a new file and a new content-addressed workflow, so history is kept. An unknown
+input name fails before queueing and lists the valid names.
+Don't infer a missing node from its name alone: let the run check the live
+server before queueing and record any failure in task history.
 
 ### Run, follow, stop
 
-Use the selected project (editor context, or `python3 -m astrid projects current`).
-Import the workflow file, and the image ZIP if any; the `digest` in each
-response is what the run's file inputs take:
+Run the workflow file on the attached ComfyUI. Give the address as the
+placement; the address must be loopback (`http://127.0.0.1:PORT`):
 
 ```sh
-python3 -m astrid media import "$WORK/portrait_flux.json" --project PROJECT --json
+python3 -m astrid generate workflow "$WORK/portrait_flux.json" \
+  --placement http://127.0.0.1:8188 --inputs-json "$WORK/inputs.json" \
+  --project PROJECT --json
 ```
 
-Then admit `vibecomfy.run`. Astrid's own agent uses the `astrid_invoke` tool
-with these fields; Claude Code, Codex and Hermes run
-`python3 -m astrid.omp_invoke '<json>'` with Astrid's Python:
+`inputs.json` is a JSON object such as `{"prompt": "a moody portrait of a lighthouse keeper"}`.
+Add `--dry-run` to see the plan without queueing. The command prints the task
+id and, unless `--no-wait` is given, waits for the result.
 
-```json
-{"capability_id": "vibecomfy.run", "kind": "executor", "project": "PROJECT",
- "inputs": {
-   "workflow": "sha256:WORKFLOW_DIGEST",
-   "workflow_inputs": "{\"prompt\": \"a moody portrait of a lighthouse keeper\"}",
-   "comfy_url": "http://127.0.0.1:8188",
-   "comfy_output_dir": "/abs/ComfyUI/output"}}
-```
-
-- `workflow_inputs` is a JSON object encoded as a string.
-- `comfy_url` is loopback only (`http://127.0.0.1:PORT`); `comfy_output_dir`
-  is the scan's absolute `output_dir`.
-- `seed` defaults to a new random value on every run when the workflow has a
-  detected seed, and the result records the one used. Pass `"seed": N` to
-  repeat an image. If the seed isn't detected, set a fresh one in your copy
-  each time, or "another one" can come back identical or cached.
-- Workflows with several save nodes need a `filename_prefix` on each, or the
-  run fails closed.
-
-Admission returns the task id. If the shell tool reports a still-running
-process/session, wait on that same handle; don't submit the invocation again.
 For stills, follow in the same turn with a limit, and tell the user they can
 watch it in their ComfyUI window:
 
@@ -170,19 +141,16 @@ later with `python3 -m astrid tasks show TASK_ID --project PROJECT --json`. "Sto
 "cancel" means `python3 -m astrid tasks cancel TASK_ID --project PROJECT`, which removes
 only Astrid's prompt from their queue.
 
+Set `seed` in `inputs.json` to repeat an image. Without it, the result records
+the seed it used; for "another one", set a fresh seed each time, or the run can
+come back identical or cached. Workflows with several save nodes need a
+`filename_prefix` on each, or the run fails closed.
+
 ### Image inputs
 
-Build the `managed_assets` ZIP, import it, and pass its digest as
-`managed_assets`. The run uploads the images to their ComfyUI (input
-subfolder `astrid/<task id>`) and binds the first `LoadImage`:
-
-```sh
-python3 -m astrid.packs.vibecomfy.local pack-images "$WORK/images.zip" /abs/ref.png
-```
-
-It prints `{"zip", "names"}`; `names` are the `LoadImage` values. A second
-image needs its own `LoadImage` value set in your copy, pointing at a file
-already in their ComfyUI input folder.
+Pass a reference image with `--edit FILE`. The run uploads it to their ComfyUI
+and binds the first `LoadImage`. A second image needs its own input name
+declared by the workflow; check `generate describe` for the name.
 
 ### Missing nodes and models
 
@@ -233,49 +201,37 @@ means edit the copy and pass the previous seed unless asked otherwise.
 On Windows with NVIDIA this setup is untested, and Astrid may show a warning
 saying so. Run anyway, say it once ("untested on Windows NVIDIA; please tell
 us how it went, with the GPU and driver from `nvidia-smi`"), and record that
-you said it in preferences so it isn't repeated. A missing or unrecognized GPU never
-blocks: VibeComfy uses their ComfyUI's GPU, not Astrid's detection.
+you said it in the generation settings so it isn't repeated. A missing or
+unrecognized GPU never blocks: VibeComfy uses their ComfyUI's GPU, not Astrid's
+detection.
 
-Wan2GP is manual for now: the user runs it themselves, then you import the
-results from its output folder (usually `outputs/` in their Wan2GP folder)
-with `python3 -m astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
+Wan2GP is manual: the user runs it themselves, then you import its results. To
+check a Wan2GP folder without running anything, use
+`python3 -m astrid.packs.vibecomfy.local wan2gp /abs/Wan2GP` (it reports whether
+`wgp.py` is there and where `outputs/` is). Then import a result with
+`python3 -m astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
 
 ### Remember the setup
 
-After the first successful run, save the machine facts (URL, folders, their
-ComfyUI's Python, the saved workflows that worked) to the user's preferences
-without asking, and say so in one line ("I saved your ComfyUI setup to your
-preferences, so next time is instant"). Update them when a health check finds
-they've changed. Save taste (sizes, defaults, local versus cloud) only when
-the user asks, or offer once ("Want 1280x720 as
-your default from now on?") and save on yes. Store saved workflow names, not
-absolute workflow paths. Never store secrets, tokens or API keys: preferences
-go into model prompts.
+After the first successful run, save the machine facts (the ComfyUI address as
+the `attached` placement, its folders, their ComfyUI's Python, the saved
+workflow names that worked) to the generation settings document without asking,
+and say so in one line ("I saved your ComfyUI setup, so next time is instant").
+Update them when a health check finds they've changed. Save taste (sizes,
+defaults, local versus cloud) only when the user asks, or offer once and save
+on yes. Store saved workflow names, not absolute workflow paths. Never store
+secrets, tokens or API keys.
 
-Read, check out to a new file, edit, then check in. A conflict keeps your
-file; check out again to another new file and merge:
+The settings document is edited as a file, the same way as preferences:
 
 ```sh
-python3 -m astrid preferences user
-python3 -m astrid preferences checkout --scope user --file /tmp/astrid-prefs.md
-python3 -m astrid preferences checkin /tmp/astrid-prefs.md
+python3 -m astrid generate settings checkout --file "$WORK/generation.json"
+python3 -m astrid generate settings checkin "$WORK/generation.json"
 ```
 
-Keep one section in this shape; the "Defaults" and "Prefer" lines are taste,
-written only when the user said so:
-
-```markdown
-## Local generation
-- ComfyUI: http://127.0.0.1:8188 · folder /abs/ComfyUI · python /abs/ComfyUI/venv/bin/python
-- Output folder: /abs/ComfyUI/output · models: /abs/ComfyUI/models (+ extra_model_paths.yaml)
-- Workflows (saved names): portraits "portrait_flux"; motion "wan_i2v"; upscale "upscale_4x"
-- How to run these: see "Run on your own ComfyUI" in packs/vibecomfy/docs/SKILL.md
-- Defaults: 1280x720 finals, 768x432 previews; random seed unless I give one
-- Prefer local; cloud only when I ask
-- Updated: YYYY-MM-DD
-```
-
-On Windows NVIDIA add `- Windows NVIDIA untested note given: YYYY-MM-DD`.
+A conflict is refused with both versions shown; check out again and merge.
+The shape is `{"placement": {"kind": "attached", "endpoint": "http://127.0.0.1:8188"},
+"defaults": {...}}`, and the generation skill's Set up section explains each key.
 
 ## Workflow authoring
 
@@ -365,8 +321,7 @@ supplies project context.
 - Own-ComfyUI requests ("my ComfyUI", "my saved workflow", local generation)
   belong in [Run on your own ComfyUI](#run-on-your-own-comfyui) above, not in
   `generation`.
-- Use `generation.generate_image` for standard model-by-name image generation
-  (cloud, Codex, or Astrid's built-in engine) when the user hasn't pointed at
-  their own ComfyUI.
+- Use the `generation` skill (`generate(entry, inputs, placement)`) for standard
+  entry-based generation when the user hasn't pointed at their own ComfyUI.
 - Use `understanding` to explain existing media.
 - Use `video_editing` to cut or render timelines.
