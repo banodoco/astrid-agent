@@ -10,26 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-# These two identities are accepted B-lane fixture inputs (the checkout_server row's).  They are carried
-# unchanged so a boot manifest cannot accidentally bless a different fixture
-# corpus.
-FROZEN_FIXTURE_DIGESTS: dict[str, str] = {
-    "portable-capability-fixture.json": "9284b056aa8a38f884599a7634be0fe0cb7fbfbd117823960e563375b3aa43b7",
-    "task-resource-fixture.json": "ddc2d00bb893ea214d000bf618f67785c89c81d68d892864d9676d3c8b8d5164",
-}
+# The checkout_server boot row is removed with the checkout route.  No accepted
+# profile fixture remains, so the frozen manifest carries an empty profile set.
+FROZEN_FIXTURE_DIGESTS: dict[str, str] = {}
 
-VIBE_PROFILE_ORDER: tuple[str, ...] = ("checkout_server",)
+VIBE_PROFILE_ORDER: tuple[str, ...] = ()
 
-# Registry-derived identity.  ``binding`` is intentionally a generic profile
-# binding, not an engine route; transport/provider selection is out of scope.
-VIBE_PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
-    "checkout_server": {
-        "definition_version": 1,
-        "binding": "vibe.profile",
-        "output_policy": "staged_artifact",
-        "probe": "accepted_profile_fixture",
-    },
-}
+# Registry-derived identity.  Empty: no profile row is admitted at boot.
+VIBE_PROFILE_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,14 +38,7 @@ class VibeProfileFixture:
         }
 
 
-_PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = (
-    VibeProfileFixture(
-        "checkout_server",
-        "7ac8da29bad6da2b7486df4fde4fa9a2a0c39fbd0911a6a60f988b3fb2f54fc8",
-        tuple(sorted(FROZEN_FIXTURE_DIGESTS.items())),
-        "accepted D-4/D-5 profile evidence",
-    ),
-)
+_PROFILE_FIXTURES: tuple[VibeProfileFixture, ...] = ()
 
 
 def vibe_profile_specs() -> tuple[VibeProfileFixture, ...]:
