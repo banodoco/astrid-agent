@@ -952,6 +952,7 @@ class GenerationFacade:
         python_exec: str | None = None,
         verbose: bool = False,
         argv: tuple[str, ...] = (),
+        align: str = 'check',
     ) -> InvocationResult:
         """Invoke the existing workflow action through the supplied client.
 
