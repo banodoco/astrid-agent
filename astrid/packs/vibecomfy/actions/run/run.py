@@ -880,8 +880,8 @@ def _run_and_settle(
     admitted_requirements = None
     if entry:
         admitted_requirements = manifest if manifest is not None else _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
-    if manifest is None and engine_local_run and entry:
-        manifest = _entry_manifest(entry, _workflow_inputs(workflow_inputs), workflow_path=workflow_path)
+    if manifest is None and engine_local_run:
+        manifest = admitted_requirements
     if manifest is not None and engine_local_run and not manifest.get("models_root"):
         # The models directory the installed engine itself uses, so align judges and fetches
         # only the rows this job lacks there.
