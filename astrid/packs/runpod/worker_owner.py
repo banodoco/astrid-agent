@@ -704,7 +704,7 @@ def _stop_original_installed_session(selection_value: Mapping[str, Any],
 
     selection = ManagedSessionSelection(**dict(selection_value))
     receipt = ManagedSessionReceipt.from_dict(receipt_value)
-    if (selection.session_ref != "vibecomfy-h3" or any(
+    if (selection.session_ref != "comfyui" or any(
             getattr(selection, key) != getattr(receipt, key)
             for key in ("account_ref", "pod_id", "session_ref", "config_digest", "output_root"))):
         raise RunPodWorkerOwnerError("original supervisor stop selection is foreign")
@@ -1009,7 +1009,7 @@ class RunPodRemoteWorkerPreparer:
         from .worker_preparation import create_target_record_exclusive
 
         recipe = load_recipe(engine, platform)  # support admission precedes effects
-        if engine != "vibecomfy-h3" or endpoint_id != engine or reference.session_ref != engine:
+        if engine != "comfyui" or endpoint_id != engine or reference.session_ref != engine:
             raise AttestationError("workflow endpoint readiness binding is invalid")
         retained = getattr(self, "_endpoint_preparation", None)
         if retained is not None:
@@ -1291,7 +1291,7 @@ class RunPodRemoteWorkerPreparer:
             "gpu_qualified": False,
         }
         current = self._read_claim()
-        if (selection.session_ref == "vibecomfy-h3" and current.get("managed_session") is not None
+        if (selection.session_ref == "comfyui" and current.get("managed_session") is not None
                 and current["managed_session"] != record):
             raise RunPodWorkerOwnerError("installer attachment conflicts with original session custody")
         updated = {**current, "managed_session": record}
@@ -1375,7 +1375,7 @@ class RunPodRemoteWorkerPreparer:
         if isinstance(previous, Mapping) and previous.get("state") not in {"stopped", "released"}:
             raise RunPodWorkerOwnerError("P1 custody already contains a live or unresolved managed worker")
 
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+        if getattr(reference, "session_ref", None) == "comfyui" and self.session_owner is None:
             raise RunPodWorkerOwnerError("installer-owned session attachment is required")
 
         retained = getattr(self, "_endpoint_preparation", None)
@@ -2031,7 +2031,7 @@ class RunPodRemoteWorkerPreparer:
                     or selection.pod_id != binding.pod_id or receipt.pod_id != binding.pod_id):
                 raise RunPodWorkerOwnerError("managed session custody changed before release")
             if session_stopped is None:
-                if selection.session_ref == "vibecomfy-h3":
+                if selection.session_ref == "comfyui":
                     program = (
                         "import json,sys; sys.path[:0]=json.loads(sys.argv[1]); "
                         "from astrid.packs.runpod.worker_owner import _stop_original_installed_session; "
@@ -2219,7 +2219,7 @@ class RunPodRemoteWorkerPreparer:
             raise RunPodWorkerOwnerError("selected P2 plan differs from durable RunPod preparation custody")
         session_selection = None
         session_receipt = None
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+        if getattr(reference, "session_ref", None) == "comfyui" and self.session_owner is None:
             raise RunPodWorkerOwnerError("installer-owned session attachment is required")
         if self.session_owner is not None:
             saved_session = claim.get("managed_session")

@@ -778,7 +778,7 @@ RUNPOD_PLATFORM = "linux-x86_64-cu130"
 
 @lru_cache(maxsize=1)
 def runpod_engines() -> tuple[str, ...]:
-    """RunPod engines in engine-index order: the index rows for the RunPod platform."""
+    """RunPod engines, from the generation.engine recipe rows for the RunPod platform."""
     from astrid.core.generation.engine_recipe import _index_rows
     return tuple(row["engine"] for row in _index_rows() if row["platform"] == RUNPOD_PLATFORM)
 

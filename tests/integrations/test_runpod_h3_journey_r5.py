@@ -66,8 +66,8 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
     monkeypatch.setattr(target_selection, 'resolve_runtime_data_root', lambda: tmp_path / 'machine')
     monkeypatch.setattr(target_selection, 'read_runpod_preferences', lambda: c.prefs)
     monkeypatch.setattr('astrid.packs.runpod.managed_sources.ensure_managed_sources', lambda: Path(c.placement.source_root))
-    engine_root = '/root/astrid/engines/vibecomfy-h3'
-    recipe = engine_recipe.load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    engine_root = '/root/astrid/engines/comfyui'
+    recipe = engine_recipe.load_recipe('comfyui', 'linux-x86_64-cu130')
     plan = engine_runner.plan_install(recipe, root=engine_root, placement='local')
     monkeypatch.setattr(canonical, 'ROOT', engine_root)
     context = canonical.FakeContext()
@@ -80,7 +80,7 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
             pod.exec_log.append(command)
             if not pod.installed:
                 return 0, 'null', ''
-            status = engine_runner.engine_status('vibecomfy-h3', platform='linux-x86_64-cu130',
+            status = engine_runner.engine_status('comfyui', platform='linux-x86_64-cu130',
                 placement='local', root=engine_root, context=context, deadline=context.deadline)
             return 0, engine_runner._json(status), ''
         return FakePod.exec(pod, command, timeout=timeout)
@@ -187,7 +187,7 @@ def test_runtime_h3_parent_runs_local_child_on_retained_endpoint(retained, h3_in
         assert status['pod_id'] == 'pod-1' and status['lease']['state'] == 'idle'
         assert host._target_bindings.provider.lease_owner is retained_owner
         binding = c.read()['lease']['endpoint_binding']
-        assert binding['endpoint_id'] == 'vibecomfy-h3' and binding['state'] == 'ready'
+        assert binding['endpoint_id'] == 'comfyui' and binding['state'] == 'ready'
         assert binding['installed_receipt_sha256'] == c.read()['lease']['preparation']['installed']['receipt_sha256']
         assert c.read()['paid_limits']['idle_seconds'] == 1800
         parent = client.tasks.show(result.kernel_task_id)

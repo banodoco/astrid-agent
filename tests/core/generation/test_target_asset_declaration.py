@@ -135,11 +135,11 @@ def test_engine_model_locks_leave_foley_assets_in_the_workflow_declaration():
     # Foley is part of the H3/RunPod engine closure; keep it out of unrelated locks.
     for path in (engine_recipe._ROOT / 'packs').glob('*/models.lock.json'):
         assert ('hunyuan_foley' in path.read_text()) == (path.parent.name == 'runpod'), path
-    for engine in ('comfyui', 'vibecomfy-h3'):
+    for engine in ('comfyui',):
         models = engine_recipe.load_recipe_model_lock(engine, 'linux-x86_64-cu130').models
         foley_models = [model for model in models
                         if model.destination.startswith('hunyuan_foley/')]
-        if engine == 'vibecomfy-h3':
+        if engine == 'comfyui':
             assert len(foley_models) == len(assets) == 10
             assert {
                 (model.destination, model.repository, model.revision,
@@ -161,8 +161,8 @@ def test_target_source_and_manifest_pins_use_the_current_custody_provider():
     vc = Path(vibecomfy.__file__).resolve().parents[1]
     revision = subprocess.check_output(['git', '-C', str(vc), 'rev-parse', 'HEAD'], text=True).strip()
     for engine, platform in [('comfyui', 'linux-x86_64-cu130'),
-                             ('vibecomfy-h3', 'linux-x86_64-cu130'),
-                             ('vibecomfy', 'windows-x86_64-cu130')]:
+                             ('comfyui', 'linux-x86_64-cu130'),
+                             ('comfyui', 'windows-x86_64-cu130')]:
         recipe = engine_recipe.load_recipe(engine, platform)
         assert next(source.pin.revision for source in recipe.sources if source.name == 'vibecomfy') == revision
         for environment in recipe.environments:

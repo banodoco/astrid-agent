@@ -90,7 +90,7 @@ def test_context_delegates_commands_service_and_lock(tmp_path):
             self.call_args = operation, payload, deadline
             return {'state': 'absent'}
     client = Client()
-    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform=platform, root=root,
+    ctx = LocalLinuxExecutionContext(engine='comfyui', platform=platform, root=root,
                                      adapter=adapter, service_client=client)
     limit = deadline()
     ordinary = CommandRequest(('git', 'status'), root, {}, limit)
@@ -131,7 +131,7 @@ def test_finite_helper_uses_selected_package_and_interpreter_with_isolation(
     from astrid.core.generation.engine_contracts import CommandRequest, CommandResult
     from astrid.core.generation.engine_platforms import platform_adapter
 
-    recipe = engine_recipe.load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    recipe = engine_recipe.load_recipe('comfyui', 'linux-x86_64-cu130')
     manifest = engine_runner.helper_manifest(recipe)
     ambient = tmp_path / "ambient ' ; $literal"
     for relative in manifest:
@@ -195,7 +195,7 @@ def test_download_delegates_canonical_and_confines_root(tmp_path, monkeypatch):
     from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
     from astrid.core.generation.engine_platforms import platform_adapter
     root = str(tmp_path / 'engine')
-    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+    ctx = LocalLinuxExecutionContext(engine='comfyui', platform='linux-x86_64-cu130',
                                      root=root, adapter=platform_adapter('linux-x86_64-cu130'),
                                      service_client=object())
     seen = []
@@ -219,7 +219,7 @@ def test_context_refuses_cache_overlapping_private_engine_root(tmp_path, monkeyp
     from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
     from astrid.core.generation.engine_platforms import platform_adapter
     root = str(tmp_path / 'engine')
-    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+    ctx = LocalLinuxExecutionContext(engine='comfyui', platform='linux-x86_64-cu130',
                                      root=root, adapter=platform_adapter('linux-x86_64-cu130'),
                                      service_client=object())
     monkeypatch.setattr(model_downloader, 'download_model', lambda *a, **kw: pytest.fail('downloader'))
@@ -238,8 +238,8 @@ def test_context_copies_verified_cache_bytes_into_private_local_model_root(
     from astrid.core.generation.engine_platforms import platform_adapter
     root, cache = tmp_path / 'engine', tmp_path / 'mounted-cache'
     if workspace_siblings:
-        root = tmp_path / 'workspace/astrid/runtime/h3/vibecomfy-h3'
-        cache = tmp_path / 'workspace/astrid/engines/vibecomfy-h3/models'
+        root = tmp_path / 'workspace/astrid/runtime/h3/comfyui'
+        cache = tmp_path / 'workspace/astrid/engines/comfyui/models'
         # Exercise the real private-directory guard, without starting a service.
         # This verifies a POSIX filesystem; it does not simulate a FUSE mount.
         from astrid.core.generation.engine_custody import _directory
@@ -252,7 +252,7 @@ def test_context_copies_verified_cache_bytes_into_private_local_model_root(
     source = cache / model_downloader._cache_relative(model)
     source.parent.mkdir(parents=True)
     source.write_bytes(payload)
-    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+    ctx = LocalLinuxExecutionContext(engine='comfyui', platform='linux-x86_64-cu130',
                                      root=str(root), adapter=platform_adapter('linux-x86_64-cu130'),
                                      service_client=object())
     monkeypatch.setattr(model_downloader.urllib.request, 'urlopen',
@@ -277,7 +277,7 @@ def test_context_forwards_authenticated_cache_mount_binding(tmp_path, monkeypatc
     from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
     from astrid.core.generation.engine_platforms import platform_adapter
     root = str(tmp_path / 'engine')
-    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+    ctx = LocalLinuxExecutionContext(engine='comfyui', platform='linux-x86_64-cu130',
         root=root, adapter=platform_adapter('linux-x86_64-cu130'), service_client=object())
     seen = []
     monkeypatch.setattr(model_downloader, 'download_model', lambda model, **kw: seen.append(kw))

@@ -888,7 +888,7 @@ class _ProductionPreparedTaskRuntime:
             self._restore_local_worker()
         # Recovery above always runs first. Only a genuinely new proof host
         # generation prepares its installed session and freezes final bytes.
-        if getattr(reference, "session_ref", None) == "vibecomfy-h3":
+        if getattr(reference, "session_ref", None) == "comfyui":
             import time
             from astrid.core.generation.engine_contracts import SecretRef
             from runpod_lifecycle.https import PORT
@@ -898,14 +898,14 @@ class _ProductionPreparedTaskRuntime:
                 return _run_sync(preparer.preparation_transport.read_endpoint_file(path, deadline=deadline))
 
             reference = preparer.finalize_endpoint_readiness(
-                reference, engine="vibecomfy-h3", platform="linux-x86_64-cu130",
-                endpoint_id="vibecomfy-h3", agent_port=PORT,
+                reference, engine="comfyui", platform="linux-x86_64-cu130",
+                endpoint_id="comfyui", agent_port=PORT,
                 token_ref=SecretRef("file", claim["https_token_file"]), read_file=read_file,
                 deadline=time.monotonic() + preparer.ready_timeout_seconds,
             )
             self._reference = reference
         elif getattr(reference, "session_ref", None) is not None:
-            raise PreparedWorkerError("prepared workflow requires the original installed vibecomfy-h3 session")
+            raise PreparedWorkerError("prepared workflow requires the original installed comfyui session")
         try:
             parked = launcher.park(reference, target=reference.effective_target)
             self._relinquish_local_worker(preparer, reference)

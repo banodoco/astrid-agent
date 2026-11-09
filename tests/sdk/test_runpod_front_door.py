@@ -532,7 +532,7 @@ def test_h3_no_wait_uses_prepared_child_and_preserves_parent_default(retained_ho
     task = r.show(result.kernel_task_id)
     spec = task['spec'].get('spec', task['spec'])
     plan = spec['inputs']['plan']
-    assert plan['controls']['placement_policy'] == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
+    assert plan['controls']['placement_policy'] == {**r.selection, **r.paid, 'engine': 'comfyui', 'consent': ['paid']}
     assert all(stage.get('target', {'kind': 'default'}) == {'kind': 'default'} for stage in plan['stages'])
     assert 'prepared_worker' not in spec['inputs'] and not getattr(r.client, '_generation_prepared_owners', {})
     assert r.c.creates == 0

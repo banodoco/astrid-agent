@@ -40,7 +40,7 @@ from ._engine_target_files import _FILE_FLAGS, _TargetFiles, _check, _parts
 from .engine_contracts import EngineError
 
 SCHEMA = "hc03-worker-readiness.v1"
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
 PROFILE_NAME = "engine-readiness.json"
 # Named only so it can be refused as a target. The producer never opens it.

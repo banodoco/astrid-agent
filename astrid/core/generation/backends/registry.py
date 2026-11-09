@@ -25,7 +25,7 @@ from astrid.core.model_catalog.taxonomy import (
 from astrid.core.pack import PackDefinition, discover_packs
 from astrid.core.pack.discovery import discover_pack_metadata
 
-H3_WORKFLOW_BACKEND_ID = "vibecomfy-h3-workflow"
+H3_WORKFLOW_BACKEND_ID = "comfyui-workflow"
 
 
 @dataclass(frozen=True)
@@ -157,7 +157,7 @@ def resolve_workflow_descriptor(
     """Select the engine-bound H3 workflow backend and validate placement.
 
     Backend choice no longer depends on ``target.kind``: engine-bound workflows
-    always use ``vibecomfy-h3-workflow``. Placement defaults to ``local``. A
+    always use ``comfyui-workflow``. Placement defaults to ``local``. A
     ``runpod`` execution-request target is accepted only on the legacy prepared
     route (explicit ``placement="runpod"``); otherwise it is refused.
 
@@ -246,7 +246,7 @@ def _builtin_generation_backend_descriptors() -> tuple[GenerationBackendDescript
             label="VibeComfy H3 workflow",
             placement=PlacementDescriptor(
                 "astrid.generation-placement.v1", ("local", "runpod"), "local",
-                "vibecomfy-h3", True,
+                "comfyui", True,
             ),
         ),
         GenerationBackendDescriptor(

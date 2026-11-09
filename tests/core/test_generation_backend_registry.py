@@ -45,7 +45,7 @@ def test_registry_lists_builtins_without_importing_third_party_modules(
         "codex",
         "local",
         "third-party",
-        "vibecomfy-h3-workflow",
+        "comfyui-workflow",
         "wavespeed",
     ]
     assert module_name not in sys.modules
@@ -354,12 +354,12 @@ def test_builtin_and_legacy_positional_construction_have_local_only_placement():
     assert legacy.placement == expected
     assert legacy.init_kwargs == {"setting": 1}
     registry = GenerationBackendRegistry()
-    assert {d.backend_id for d in registry.descriptors()} == {"local", "cloud", "codex", "wavespeed", "vibecomfy-h3-workflow"}
+    assert {d.backend_id for d in registry.descriptors()} == {"local", "cloud", "codex", "wavespeed", "comfyui-workflow"}
     assert all(d.placement == expected for d in registry.descriptors()
-               if d.backend_id != "vibecomfy-h3-workflow")
-    workflow = registry.get_descriptor("vibecomfy-h3-workflow")
+               if d.backend_id != "comfyui-workflow")
+    workflow = registry.get_descriptor("comfyui-workflow")
     assert workflow.placement == PlacementDescriptor(
-        "astrid.generation-placement.v1", ("local", "runpod"), "local", "vibecomfy-h3", True
+        "astrid.generation-placement.v1", ("local", "runpod"), "local", "comfyui", True
     )
 
 
@@ -439,10 +439,10 @@ def test_fresh_registry_discovery_does_not_load_providers_recipes_or_runtime(tmp
         registry = GenerationBackendRegistry()
         assert len(registry.descriptors()) == 5
         for descriptor in registry.descriptors():
-            if descriptor.backend_id == "vibecomfy-h3-workflow":
+            if descriptor.backend_id == "comfyui-workflow":
                 assert descriptor.placement.resolve(None) == "local"
                 assert descriptor.placement.supported == ("local", "runpod")
-                assert descriptor.placement.engine == "vibecomfy-h3"
+                assert descriptor.placement.engine == "comfyui"
                 continue
             assert descriptor.placement.resolve(None) == "local"
             assert descriptor.placement.engine is None

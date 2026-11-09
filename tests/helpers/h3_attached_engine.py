@@ -27,7 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 MARKER = "rehearsal-attached-engine.marker"
-ENGINE, PLATFORM = "vibecomfy-h3", "linux-x86_64-cu130"
+ENGINE, PLATFORM = "comfyui", "linux-x86_64-cu130"
 OBJECT_INFO = Path(__file__).resolve().parents[1] / "fixtures" / "h3_cpu" / "object_info_h3_runpod.json"
 PTH_NAME = "astrid_rehearsal_attached_engine.pth"
 _HELPERS = Path(__file__).resolve().parent
@@ -135,7 +135,7 @@ def install_pth() -> Path:
 
 
 class AttachedEngine:
-    """An installed-engine record under ``$HOME/.astrid-data/engines/vibecomfy-h3`` plus a fake ComfyUI."""
+    """An installed-engine record under ``$HOME/.astrid-data/engines/comfyui`` plus a fake ComfyUI."""
 
     def __init__(self, home: Path, *, generated_seconds: float) -> None:
         from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt

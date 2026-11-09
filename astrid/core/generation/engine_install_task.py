@@ -54,10 +54,10 @@ class DiskObservation:
 
 
 
-def prepare_install(*, root: str, engine: str = 'vibecomfy-h3',
+def prepare_install(*, root: str, engine: str = 'comfyui',
                     platform: str = 'linux-x86_64-cu130'):
     """Verify the packaged H3 plan and observe free space without creating files."""
-    if (engine, platform) != ('vibecomfy-h3', 'linux-x86_64-cu130'):
+    if (engine, platform) != ('comfyui', 'linux-x86_64-cu130'):
         raise ValueError('only the indexed local H3 engine is supported')
     recipe = load_recipe(engine, platform)
     plan = plan_install(recipe, root=root, placement='local')

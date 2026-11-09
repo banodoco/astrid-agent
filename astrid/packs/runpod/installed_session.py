@@ -22,7 +22,7 @@ from astrid.core.generation.engine_platforms import LinuxPlatformAdapter
 
 from .worker_session import ManagedSessionError, _DIGEST, _path, _process
 
-ENGINE = "vibecomfy-h3"
+ENGINE = "comfyui"
 PLATFORM = "linux-x86_64-cu130"
 _LIMIT = 1024 * 1024
 _NAMES = ("config.json", "launch.json", "pid", "comfy_pid",

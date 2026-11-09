@@ -669,6 +669,6 @@ def test_engine_custody_root_is_not_on_the_workspace_fuse_mount():
 
     assert not on_workspace(rp.ENGINE_ROOT)
     assert f"ASTRID_ENGINE_ROOT:-{rp.ENGINE_ROOT}}}" in rp.POD_BOOTSTRAP_SCRIPT
-    for engine in ("comfyui", "vibecomfy-h3"):
+    for engine in ("comfyui",):
         assert not on_workspace(f"{rp.ENGINE_BASE}/{engine}")
     assert not on_workspace(rp.RunPodInstallation.root)

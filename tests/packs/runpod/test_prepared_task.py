@@ -507,8 +507,8 @@ def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_relea
     case = release_case
     session_owner, transport, selected, _ = _owner()
     receipt = session_owner.start(selected)
-    selected = replace(selected, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
-    receipt = replace(receipt, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
+    selected = replace(selected, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
+    receipt = replace(receipt, session_ref="comfyui", account_ref="runpod-test-account", pod_id="pod-exact")
     record = {**case.record, "managed_session": {
         "schema": "astrid.runpod.managed-session.v1",
         "claim_operation_id": case.record["operation_id"],

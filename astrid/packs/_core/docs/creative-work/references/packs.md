@@ -6,7 +6,6 @@
 
 | Pack | Description | Full skill |
 | --- | --- | --- |
-| comfy_wrap | Comfy Workflow Wrapper — generate images by injecting a text prompt into a ComfyUI workflow JSON and running it via v... | `astrid/packs/comfy_wrap/docs/SKILL.md` |
 | developer | Develop Astrid itself: the repositories, building and testing, and the developer skills. | `astrid/packs/developer/docs/SKILL.md` |
 | developer / fast-iteration | Iterate fast on Astrid with evidence you can trust.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/fast-iteration/SKILL.md` |
 | developer / releasing | Astrid's release gates and qualification, from candidate to go/no-go.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/releasing/SKILL.md` |

@@ -110,7 +110,7 @@ def canonical_session(tmp_path):
     """
     install_root = tmp_path / "engine"
     cwd = install_root / "runtime" / "ComfyUI"
-    registry = install_root / "runtime" / "out" / "sessions" / "vibecomfy-h3"
+    registry = install_root / "runtime" / "out" / "sessions" / "comfyui"
     config = {
         "runtime_root": str(install_root / "runtime"), "cwd": str(cwd), "port": 8188,
         "warm_policy": "never", "base_directory": str(cwd),
@@ -140,7 +140,7 @@ def observation_configuration():
 
 @pytest.fixture
 def network(tmp_path, engine_configuration, observation_configuration):
-    recipe = load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = load_recipe("comfyui", PLATFORM)
     facts = {"objects": {n: {} for n in recipe.health.required_nodes}, "upstream": [], "agent": [],
              "redirect": None, "recipient": [], "handler": None, "timeouts": [], "bounded_timeouts": [],
              "exchanges": [], "corrupt_digest": False, "responses": [], "image": b"image-data\x00\xff" * 200000,
@@ -259,7 +259,7 @@ def endpoint(tmp_path, network):
     token = private(tmp_path / "token", TOKEN.encode())
     attestation = RunPodAttestation("runpod-engine.v1", "account", "pod123", str(tmp_path / "snapshot"),
                                    "a" * 64, "/engine/.astrid-engine/install.json", "b" * 64, health, digest)
-    return EngineEndpoint("astrid.engine-endpoint.v1", "single", "vibecomfy-h3", PLATFORM, "runpod",
+    return EngineEndpoint("astrid.engine-endpoint.v1", "single", "comfyui", PLATFORM, "runpod",
                           "https://pod123-8000.proxy.runpod.net/engines/single",
                           EndpointAuth("bearer-file", SecretRef("file", str(token))), "ready", health,
                           LifecycleOwner("astrid-runpod", "original", str(tmp_path / "claim"), None, "pod123", False),

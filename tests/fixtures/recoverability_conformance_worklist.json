@@ -22,11 +22,6 @@
     },
     {
       "builder": "build_parser",
-      "module": "astrid.packs.comfy_wrap.actions.run.run",
-      "path": "astrid/packs/comfy_wrap/actions/run/run.py"
-    },
-    {
-      "builder": "build_parser",
       "module": "astrid.packs.generation.actions.generate_audio.run",
       "path": "astrid/packs/generation/actions/generate_audio/run.py"
     },
@@ -219,13 +214,6 @@
       "module": "astrid.core.rendering.cli",
       "path": "astrid/core/rendering/cli.py",
       "prog": "python3 -m astrid.core.rendering.cli"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.comfy_wrap.actions.run.run",
-      "path": "astrid/packs/comfy_wrap/actions/run/run.py",
-      "prog": "comfy_wrap.run"
     },
     {
       "builder": "build_parser",

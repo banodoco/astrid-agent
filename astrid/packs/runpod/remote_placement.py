@@ -48,7 +48,7 @@ from astrid.core.contracts.errors import AstridError
 from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
-ENGINE_ID = "vibecomfy-h3"
+ENGINE_ID = "comfyui"
 DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
 # One pod storage root on the container disk. Attempts, outputs, engines, bootstrap and runs all derive
@@ -158,7 +158,7 @@ class RunPodInstallation:
         from .target_selection import RunPodLeaseCompatibility
 
         expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
-        if (self.engine not in {"comfyui", "vibecomfy-h3"} or self.platform != "linux-x86_64-cu130"
+        if (self.engine not in {"comfyui"} or self.platform != "linux-x86_64-cu130"
                 or self.root != f"{ENGINE_BASE}/{self.engine}"):
             raise RemotePlacementError("unsupported retained installation route")
         recipe = engine_recipe.load_recipe(self.engine, self.platform)

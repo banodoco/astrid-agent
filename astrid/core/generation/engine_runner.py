@@ -271,7 +271,8 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / relative
         if path.is_file():
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
+    for relative in recipes.declaration_paths():
+        result[relative] = hashlib.sha256((recipes._ROOT / relative).read_bytes()).hexdigest()
     entry = next(e for e in recipes.load_recipe_index().entries
                  if (e.engine, e.platform) == (recipe.engine, recipe.platform))
     refs = [entry.recipe, *recipes.pin_set_refs(recipe.pins), recipe.models_lock]
@@ -627,7 +628,7 @@ class _Runner:
         wheels = self.path(".astrid-engine/environments", name, "wheels.lock")
         sync = (uv, "--no-config", "pip", "sync", "--python", python,
                 "--index-url", "https://pypi.org/simple", "--require-hashes")
-        if (self.recipe.engine == "vibecomfy-h3" and self.recipe.platform == "linux-x86_64-cu130"
+        if (self.recipe.engine == "comfyui" and self.recipe.platform == "linux-x86_64-cu130"
                 and environment.requirements.mode == "packaged"):
             sync += ("--only-binary", ":all:", "--no-binary", "openai-whisper",
                      "--no-binary", "argbind", "--no-binary", "randomname",

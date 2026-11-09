@@ -390,7 +390,7 @@ class RunPodPreparationTransport:
                 or PurePosixPath(profile).name in {"engine-bearer.token", "executor.token"}):
             raise WorkerPreparationError("trusted startup endpoint readiness selection is unavailable")
         root = str(PurePosixPath(runtime).parent)
-        registry = runtime + "/out/sessions/vibecomfy-h3/"
+        registry = runtime + "/out/sessions/comfyui/"
         selected = frozenset({profile, root + "/.astrid-engine/install.json", *(
             registry + name for name in (
                 "config.json", "launch.json", "pid", "comfy_pid", "comfy_process_start_identity",

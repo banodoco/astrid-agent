@@ -379,19 +379,17 @@ def _first_party_inventory(
 
     errors: list[str] = []
     selected: list[Path] = []
-    # Engine assets are already declared by the canonical engine index. Reuse
+    # Engine assets are already declared by the generation.engine contributions. Reuse
     # those explicit inputs instead of maintaining a copied directory allowlist.
     resource_roots: set[str] = set()
-    index = root / "engine-index.json"
-    if index.is_file():
+    for manifest in sorted(root.glob("*/extensions/generation.engine/*.yaml")):
         try:
-            entries = json.loads(index.read_text(encoding="utf-8"))["entries"]
-            for entry in entries:
-                recipe = (root.parent / entry["recipe"]["path"]).resolve()
+            for row in yaml.safe_load(manifest.read_text(encoding="utf-8")).get("recipes", []):
+                recipe = (root.parent / row["path"]).resolve()
                 relative = recipe.relative_to(root)
                 if recipe.is_file() and len(relative.parts) > 1:
                     resource_roots.add(relative.parts[0])
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, yaml.YAMLError) as exc:
             errors.append(f"invalid engine resource inventory: {exc}")
     for name, child in sorted(child_dirs.items()):
         if name == "_core":

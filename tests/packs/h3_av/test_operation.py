@@ -662,13 +662,13 @@ def test_local_placement_fails_fast_when_engine_not_installed(tmp_path: Path, mo
     from astrid.core.generation.engine_local_endpoint import EngineNotInstalled
     from astrid.packs.h3_av.actions.transform import run as transform
     def not_installed(*args, **kwargs):
-        raise EngineNotInstalled("vibecomfy-h3", "no install receipt")
+        raise EngineNotInstalled("comfyui", "no install receipt")
     monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_engine_endpoint", not_installed)
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected before engine check"))
     for extra in ((), ("--placement", "local")):
         with pytest.raises(AstridError) as caught:
             transform.run_transform(_transform_args(tmp_path, *extra))
-        assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+        assert caught.value.recovery_command == "astrid engines install comfyui"
         import json
         receipt = json.loads((tmp_path / "operation/result.json").read_text())
         assert receipt["status"] == "failed" and receipt["ok"] is False
@@ -719,7 +719,7 @@ def test_local_readiness_reason_survives_h3_failure_without_private_details(tmp_
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     root = tmp_path / private
-    record = engine_local_endpoint.record_engine_root("vibecomfy-h3", str(root))
+    record = engine_local_endpoint.record_engine_root("comfyui", str(root))
     # The existing recorded root must still win; no discovery or fallback is added.
     monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(tmp_path / "unused-default"))
     if fault == "invalid_record":
@@ -727,7 +727,7 @@ def test_local_readiness_reason_survives_h3_failure_without_private_details(tmp_
     calls = []
     def status(engine, **kwargs):
         calls.append(kwargs["root"])
-        assert engine == "vibecomfy-h3" and kwargs["root"] == str(root)
+        assert engine == "comfyui" and kwargs["root"] == str(root)
         if fault == "missing":
             return None
         health = SimpleNamespace(status="healthy", required_nodes_present=True, object_info_sha256="a" * 64)
@@ -746,7 +746,7 @@ def test_local_readiness_reason_survives_h3_failure_without_private_details(tmp_
     message = str(caught.value)
     assert "local H3 engine is not ready (engine_not_installed)" in message
     assert f"readiness reason: {reason}" in message
-    assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+    assert caught.value.recovery_command == "astrid engines install comfyui"
     result = json.loads((args.out / "result.json").read_text())
     assert result["status"] == "failed" and result["error"]["message"] == message
     assert private not in json.dumps(result) + message

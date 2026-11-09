@@ -58,7 +58,7 @@ install_runpod_from_lock() {
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
 REALM_ROOT="${ASTRID_REALM_ROOT:-/root/astrid/realm}"
 BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/root/astrid/bootstrap}"
-ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/root/astrid/engines/vibecomfy-h3}"
+ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/root/astrid/engines/comfyui}"
 # uv caches and managed Pythons live under the data root unless the caller set them.
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}"

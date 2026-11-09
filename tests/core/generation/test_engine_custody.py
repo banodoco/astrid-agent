@@ -86,7 +86,7 @@ def _wait(predicate, seconds=8):
 
 
 def _identity(root, recipe=None):
-    recipe = recipe or load_recipe("vibecomfy-h3", PLATFORM)
+    recipe = recipe or load_recipe("comfyui", PLATFORM)
     return dict(root=str(root), engine=recipe.engine, platform=recipe.platform,
                 recipe_sha256=recipe_digest(recipe), helper_sha256=_sha(helper_manifest(recipe)))
 
@@ -141,7 +141,7 @@ def session(tmp_path, monkeypatch):
     with socket.socket() as port_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
-    base = load_recipe("vibecomfy-h3", PLATFORM)
+    base = load_recipe("comfyui", PLATFORM)
     recipe = replace(base, sources=tuple(replace(s, pin=replace(s.pin, revision=revision))
                      if s.name == "vibecomfy" else s for s in base.sources),
                      start=StartSpec((sys.executable, str(server), str(port), str(mode), str(started)),
@@ -157,7 +157,7 @@ from dataclasses import replace
 from astrid.core.generation.engine_contracts import StartSpec
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_custody import _serve
-base=load_recipe('vibecomfy-h3',{PLATFORM!r})
+base=load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) if s.name=='vibecomfy' else s for s in base.sources),start=StartSpec({recipe.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{port}),health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 _serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])
 '''
@@ -196,7 +196,7 @@ def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, mon
     """DEEP-BUG13: a post-TERM error must not leave the retained Popen zombie."""
     from astrid.core.execution import process_group as groups
 
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "test-owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "test-owner")
     owned = supervisor.spawn(_request(tmp_path, "import time;time.sleep(60)"))
     original = groups._signal_valid_tree_members
     failure = groups.CleanupUncertainError("injected verification failure after root TERM")
@@ -234,7 +234,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
     from astrid.core.execution import process_group as groups
 
     token, env_secret, arg_secret = "owner-launch-token-value", "private-env-value", "private-arg-value"
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), token)
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), token)
     # Exercise secret capture at the real spawn boundary without starting a process.
     process = SimpleNamespace(stdout=None, stderr=None)
     monkeypatch.setattr(groups, "popen_owned_group", lambda *args, **kwargs: process)
@@ -307,7 +307,7 @@ def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_pa
 
 @pytest.mark.parametrize("fail_command", [False, True])
 def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, monkeypatch, fail_command):
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
     now, calls, replies = [1000.0], [], []
 
     def owned(name):
@@ -345,7 +345,7 @@ def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, mo
 
 @pytest.mark.parametrize("outcome", ["normal", "timeout", "disconnect", "explicit_stop"])
 def test_command_drain_uses_request_or_pending_stop_deadline_and_only_implicit_fallback(tmp_path, monkeypatch, outcome):
-    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("comfyui", PLATFORM), "owner")
     output = SimpleNamespace(text=lambda: "", truncated=lambda: False)
     owned = SimpleNamespace(live=lambda: outcome != "normal", process=SimpleNamespace(returncode=0),
                             stdout=output, stderr=output)
@@ -465,7 +465,7 @@ def test_real_local_factory_context_client_default_supervisor(tmp_path, monkeypa
     from astrid.core.generation.engine_execution import create_local_backend, LocalLinuxExecutionContext
 
     root = tmp_path / "factory-install"
-    ctx, adapter = create_local_backend(engine="vibecomfy-h3", platform=PLATFORM,
+    ctx, adapter = create_local_backend(engine="comfyui", platform=PLATFORM,
                                         placement="local", root=str(root),
                                         deadline=time.monotonic() + 10)
     assert isinstance(ctx, LocalLinuxExecutionContext) and ctx.adapter is adapter
@@ -577,7 +577,7 @@ def test_real_context_service_bridge_with_tiny_recipe_fixture(session, monkeypat
         assert second == first
         assert service("start", first["owner_id"])["owner_id"] == first["owner_id"]
         assert len(started.read_text().splitlines()) == 1
-        marker = json.loads((root / "runtime/out/sessions/vibecomfy-h3/launch.json").read_text())
+        marker = json.loads((root / "runtime/out/sessions/comfyui/launch.json").read_text())
         assert marker["pid"] == client._spawned.pid
         assert marker["comfy_pid"] == int(started.read_text().strip())
         assert marker["launch_token"] == first["owner_id"]
@@ -646,7 +646,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert first["launch_sha256"] == _sha(payload["launch"])
     assert started.read_text().splitlines() == [str(pid)] and _alive(pid)
     assert _call(_client(client.identity), payload, "start")["owner_id"] == first["owner_id"]
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     marker = json.loads((registry / "launch.json").read_text())
     assert marker["comfy_pid"] == pid and marker["pid"] != pid
     assert marker["launch_token"] == first["owner_id"]
@@ -755,7 +755,7 @@ from dataclasses import replace
 from astrid.core.generation import engine_recipe as recipes
 from astrid.core.generation.engine_contracts import DataRef,RequirementsSpec,StartSpec
 from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
-base=recipes.load_recipe('vibecomfy-h3',{PLATFORM!r})
+base=recipes.load_recipe('comfyui',{PLATFORM!r})
 recipe=replace(base,
  sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
  environments=(replace(base.environments[0],name='cpu',relative_path='runtime/cpu-venv',python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
@@ -864,7 +864,7 @@ print(json.dumps({'url':engine.endpoint.url,'operations':operations,'prompt_id':
 
 def test_two_finite_h3_cpu_preflights_reuse_owned_native_service(cpu_h3_install):
     client, payload, recipe, root, started, program_path = cpu_h3_install
-    marker_path = root / "runtime/out/sessions/vibecomfy-h3/launch.json"
+    marker_path = root / "runtime/out/sessions/comfyui/launch.json"
     marker = marker_path.read_bytes()
     supervisor = json.loads(marker)["pid"]
     first = _finite_h3_cpu_run(program_path, root, "cpu-h3-run-1")
@@ -915,7 +915,7 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     operations = tmp_path / "native-service-operations.jsonl"
     monkeypatch.setattr(custody.LinuxEngineServiceClient, "_request",
                         observe_requests(custody.LinuxEngineServiceClient._request, operations))
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     marker = json.loads((registry / "launch.json").read_text())
     supervisor = marker["pid"]
     child = int(started.read_text().strip())
@@ -1373,7 +1373,7 @@ def installed_consumer(session, monkeypatch):
         HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
     )
     (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
-    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    registry = root / "runtime/out/sessions/comfyui"
     # Noncanonical whitespace proves that selection hashes actual bytes.
     config = json.loads((registry / "config.json").read_bytes())
     raw = json.dumps(config, indent=2).encode() + b"\n"
@@ -1382,7 +1382,7 @@ def installed_consumer(session, monkeypatch):
         effective_target={"kind": "runpod", "provider_account_ref": "account-1", "pod_id": "pod-1"},
         executable=SimpleNamespace(path=root / "runtime/venv/bin/python"),
         model_root=root / "models", output_root=Path(config["output_directory"]),
-        session_ref="vibecomfy-h3", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+        session_ref="comfyui", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
     )
     readiness = {
         "status": "cpu_ready", "gpu_qualified": False,
@@ -1480,7 +1480,7 @@ def test_installed_consumer_refuses_changed_evidence_without_legacy_control(inst
     assert _alive(receipt.comfy_pid)
 
 
-@pytest.mark.parametrize("engine", ["vibecomfy-h3", "comfyui"])
+@pytest.mark.parametrize("engine", ["comfyui"])
 def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch, engine):
     from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
     from types import SimpleNamespace

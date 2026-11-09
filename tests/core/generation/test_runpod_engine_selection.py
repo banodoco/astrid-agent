@@ -158,7 +158,7 @@ def test_dry_run_target_and_engine_equal_live_policy(slot, image, preferences):
     assert inputs['generation_intent']['metadata']['model'] == plan['entry']['id']
 
 
-@pytest.mark.parametrize('slot,engine', [(('audio', 'tts'), 'vibecomfy-h3'), (('audio', 'music'), 'vibecomfy-h3'),
+@pytest.mark.parametrize('slot,engine', [(('audio', 'tts'), 'comfyui'), (('audio', 'music'), 'comfyui'),
                                          (('image', 't2i'), 'comfyui'), (('image', 'edit'), 'comfyui')],
                          ids=lambda value: '/'.join(value) if isinstance(value, tuple) else value)
 def test_audio_runpod_uses_h3_engine_and_image_keeps_comfyui(slot, engine, image, preferences):
@@ -200,8 +200,8 @@ def test_uncovered_entry_refuses_before_any_task(image, preferences):
 
 def test_engine_helper_reads_the_pinned_locks():
     tts, music = entries.find_entry('audio/qwen3_tts_custom_voice'), entries.find_entry('audio/minimax_music_3')
-    assert entries._missing_locked_models(tts, 'comfyui') and not entries._missing_locked_models(tts, 'vibecomfy-h3')
-    assert entries.runpod_engine(music) == 'vibecomfy-h3'
+    assert not entries._missing_locked_models(tts, 'comfyui')  # the one engine's lock covers it
+    assert entries.runpod_engine(music) == 'comfyui'
     assert entries.runpod_engine(entries.find_entry('image/qwen_image_2_1_turbo')) == 'comfyui'
     with pytest.raises(AstridError) as raised:
         entries.runpod_engine(None)
@@ -210,17 +210,19 @@ def test_engine_helper_reads_the_pinned_locks():
 
 def test_dry_run_without_client_checks_the_engine_lock():
     music = entries.find_entry('audio/minimax_music_3')
-    assert entries.target_schema(music, None, None, engine='vibecomfy-h3') is None
+    assert entries.target_schema(music, None, None, engine='comfyui') is None
+    uncovered = dict(music, needs=[{'class_type': 'UNETLoader', 'field': 'unet_name',
+                                    'value': 'diffusion_models/no_such_model.safetensors'}])  # no lock row holds it
     with pytest.raises(AstridError) as raised:
-        entries.target_schema(music, None, None, engine='comfyui')
+        entries.target_schema(uncovered, None, None, engine='comfyui')
     assert raised.value.code == 'missing_model'
 
 
 def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypatch):
-    """H3 pins its Ref2V LoRA in its own graph; the vibecomfy-h3 lock supplies the rest."""
+    """H3 pins its Ref2V LoRA in its own graph; the comfyui lock supplies the rest."""
     h3 = entries.find_entry('h3')
-    assert entries.runpod_engine(h3) == 'vibecomfy-h3'
-    assert entries._lock_coverage(h3, 'vibecomfy-h3')[1] > entries._lock_coverage(h3, 'comfyui')[1]
+    assert entries.runpod_engine(h3) == 'comfyui'
+    assert entries._lock_coverage(h3, 'comfyui')[1] > 0
     chosen = []
     real = entries.runpod_engine
     monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
@@ -229,7 +231,7 @@ def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypa
                              inputs={'request': 'r.json', 'asset_map': 'a.json'}, **LIVE)
     assert chosen == ['h3']
     assert [capability for capability, _ in client.calls] == ['h3_av.transform']
-    assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'vibecomfy-h3'
+    assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'comfyui'
 
 
 def test_uncovered_entry_refuses_before_prepare(image, preferences):
