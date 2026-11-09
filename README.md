@@ -9,31 +9,35 @@ Open tools and knowledge for humans and agents to make art.
 ### Give this to your agent (recommended)
 
 ```text
-Help me set up Astrid on this computer. Follow the onboarding skill at
-https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
-without installing it. Show me the setup choices and let me change them
-before you run anything.
+Help me set up Astrid on this computer.
 
-Preserve my existing work and credentials, confirm that the
-Runtime is connected, and help me begin at https://astrid.haus.
+Read this setup guide and follow its steps in order:
+https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+Do not install the guide itself as a skill.
+
+Before you run anything, show me the setup choices and let me change them.
+Keep my existing work and credentials.
+Confirm that the Runtime is connected.
+Then follow its "Set up generation" section, and help me begin at
+https://astrid.haus.
 ```
 
 <!-- END GENERATED AGENT BANNER -->
 
 ### Set it up yourself
 
-Follow the [manual setup guide](docs/getting-started.md), or follow the
-onboarding skill at [docs/setup/SKILL.md](docs/setup/SKILL.md) and use its
-choices step to review the setup choices before anything is installed. Review
-the installer before running it.
+Follow the [manual setup guide](docs/getting-started.md). You can also follow
+the setup guide at [docs/setup/SKILL.md](docs/setup/SKILL.md). Its step 1
+shows the setup choices before anything is installed. Read the installer
+before you run it.
 
 The recommended setup starts Astrid at sign-in, adds the `astrid` terminal
-command, installs Astrid skills, and leaves skill copies off. The four choices
-are controlled by `--autostart on|off`, `--command on|off`, `--skills on|off`,
-and `--skill-copies on|off`. Ask for consent once for a fresh install when it
-has not already been given. After consent, use one installer command with the
-approved values. An already-approved handoff needs no second consent question;
-preserve all its choices.
+command, installs Astrid skills, and leaves skill copies off. Each choice has a
+flag: `--autostart on|off`, `--command on|off`, `--skills on|off`, and
+`--skill-copies on|off`. On a fresh install, Astrid asks for your consent once,
+unless you have already given it. After consent, run one installer command
+with your approved values. An already-approved handoff needs no second consent
+question; it keeps all its choices.
 
 macOS or Linux (Terminal):
 
