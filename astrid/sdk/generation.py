@@ -1237,6 +1237,12 @@ class GenerationFacade:
                     elif source == "workflow" and candidate.get('hooks_declared') and 'build' in workflow_entries.entry_hooks(candidate):
                         # A contribution with a build hook owns its graph: build (CPU, deterministic) picks it
                         # from the request; after_outputs shares this job directory. Plan 32 T6b-3.
+                        if controls.get('wait') is False and not dry_run and not is_remote_target:
+                            # after_outputs reads the build state in this call's job directory, which is
+                            # removed when the call returns; a queued task would find it gone.
+                            raise CapabilityValidationError(
+                                f"entry {identifier!r} runs a post-generation step on this machine; "
+                                "it cannot run with --no-wait (the build state lives only for this call)")
                         import tempfile
                         job_dir = candidate.get('job_dir') or Path(tempfile.mkdtemp(prefix='astrid-job-'))
                         if not candidate.get('job_dir'):
@@ -1386,8 +1392,10 @@ class GenerationFacade:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
             hook_job = None
-            if source == 'workflow' and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
+            if source == 'workflow' and not is_remote_target and plan and plan.get('job_dir') and 'after_outputs' in (candidate.get('hooks') or workflow_entries.entry_hooks(candidate)):
                 # The hook runs where the job runs, after the outputs are written and before they are sealed.
+                # On a rented machine the pod-side `astrid generate` rebuilds and runs it from the shipped inputs;
+                # this controller's job directory is not shipped.
                 job = workflow_entries.entry_job(candidate, inputs, plan['job_dir'], hooks={})
                 hook_job = json.dumps({'entry': candidate['id'], 'job_dir': plan['job_dir'],
                                        'inputs': job['inputs'], 'files': job['files']}, sort_keys=True)
