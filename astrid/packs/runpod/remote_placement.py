@@ -48,8 +48,8 @@ DATACENTER = "EUR-NO-1"
 STORAGE_NAME = "storage"
 # One pod storage root on the container disk. Attempts, outputs, engines, bootstrap and runs all derive
 # from it, so the task-storage free-space guard measures the device the models and outputs live on.
-# The network volume (mounted at /workspace, FUSE: it ignores mkdir's mode) holds only the verified
-# model cache, passed to the engine install as --model-cache-root; models are copied to the local root.
+# The network volume (mounted at /workspace, FUSE: it ignores mkdir's mode) is pinned by the storage probe.
+# The engine install is model-free: align fetches only the job manifest's missing rows.
 POD_ROOT = "/root/astrid"
 # Engine custody (astrid.core.generation.engine_custody) needs owner-only directories, which the
 # container disk honours; this is the scripts/pod_session.py route.
@@ -167,13 +167,12 @@ class RunPodInstallation:
             raise RemotePlacementError("installation differs from the accepted recipe/model/source tuple")
         return plan
 
-    def model_bytes(self) -> int:
-        """Bytes the volume model cache must have free: the locked models' total."""
-        from astrid.core.generation import engine_recipe
+    def model_bytes(self, manifest_rows: Sequence[Mapping[str, Any]] = ()) -> int:
+        """Bytes the volume must have free: the job manifest's rows only, never the whole model lock.
 
-        recipe = engine_recipe.load_recipe(self.engine, self.platform)
-        lock = engine_recipe.load_model_lock(recipe.models_lock)
-        return max(1, sum(int(model.bytes or 0) for model in lock.models))
+        Plan 32 T5h: an install is model-free and align fetches the manifest's missing rows.
+        """
+        return max(1, sum(int(row.get("size") or row.get("bytes") or 0) for row in manifest_rows))
 
     def validate_sources(self, source_root: Path | None) -> str:
         self.plan()
@@ -362,7 +361,6 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
-    model_cache_root: str | None = None
 
     @property
     def remote_in(self) -> str:
@@ -427,14 +425,12 @@ class RemotePlacement:
     def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
                         installation: RunPodInstallation | None = None,
                         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
-                        reuse_snapshot: Mapping[str, Any] | None = None,
-                        model_cache_root: str | None = None) -> RemoteRun:
+                        reuse_snapshot: Mapping[str, Any] | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
         owners. This method never claims a pod or invokes the H3 transform.
-        ``model_cache_root`` is the mounted volume cache for verified model bytes;
-        models are still installed under the local engine root.
+        The install is model-free; models arrive through align on the pod, row by row.
         """
         if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
             raise RemotePlacementError("prepared claim has no remaining paid lifetime")
@@ -446,8 +442,7 @@ class RemotePlacement:
         if (installation is None) != (checkpoint is None):
             raise RemotePlacementError("retained installation requires its lease checkpoint")
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
-                          installation=installation, checkpoint=checkpoint,
-                          model_cache_root=model_cache_root)
+                          installation=installation, checkpoint=checkpoint)
         try:
             if reuse_snapshot is not None:
                 marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
@@ -623,14 +618,13 @@ class RemotePlacement:
             state.note("install", "skipped")
             return
         installation = state.installation
-        cache = "" if state.model_cache_root is None else f" --model-cache-root {shlex.quote(state.model_cache_root)}"
         command = (
             f"{POD_VENV}/bin/astrid engines install {installation.engine} "
             f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)} "
-            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}{cache}"
+            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}"
         ) if installation is not None else (
             f"{POD_VENV}/bin/astrid engines install {ENGINE_ID} --placement local "
-            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}{cache}"
+            f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}"
         )
         self._run_job(state, command, "engine install")
         if not self._engine_installed_healthy(state):

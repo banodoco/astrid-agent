@@ -86,13 +86,12 @@ def test_run_aligns_then_submits_to_localhost(tmp_path, attached):
     assert local.started == (0 if attached else 1) and ("fetch", ["need.safetensors"]) in commands.calls
 
 
-# Files that may still download a model. model_downloader and the engine_runner model steps
-# stay until T5; align downloads only through VibeComfy fetch (asset_alignment is not listed).
+# Files that may still download a model. Engine install is model-free (T5h): engine_runner,
+# engine_execution and engine_contracts hold no download. align downloads only through VibeComfy
+# fetch (asset_alignment is not listed). model_downloader stays only as the H3 release pod's
+# verified downloader, which h3_release_remote imports.
 ALLOWED = {
     "astrid/core/generation/model_downloader.py",
-    "astrid/core/generation/engine_runner.py",
-    "astrid/core/generation/engine_execution.py",
-    "astrid/core/generation/engine_contracts.py",
     "astrid/packs/runpod/h3_release_remote.py",
     "astrid/packs/vibecomfy/production_engine.py",  # only a refused-key name, not a download
 }
