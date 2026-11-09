@@ -1405,15 +1405,23 @@ def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path)
         ("direct-linux-r11-update", "direct", "ubuntu-24.04", "release11-then-update"),
         ("direct-macos-r11-update", "direct", "macos-15", "release11-then-update"),
     }
-    assert len(unrestricted) == 9
-    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in unrestricted} == expected_direct
+    # An automatic push or schedule (no row input) runs only the five previous rows, scoped as five.
+    automatic_five = {row for row in expected_direct
+                      if row[0] not in ("direct-linux-r9-install", "direct-macos-r9-install",
+                                        "direct-linux-r11-update", "direct-macos-r11-update")}
+    values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert len(unrestricted) == 5
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in unrestricted} == automatic_five
+    assert values["release1_scope"] == "five"
     gate = workflow.split("      - name: Aggregate the exact Release-1 receipt matrix\n", 1)[1].split("      - name:", 1)[0]
     assert "if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'" in gate
     assert "--aggregate-release1" in gate
+    assert '--release1-scope "$RELEASE1_SCOPE"' in gate
+    assert "RELEASE1_SCOPE: ${{ needs.config.outputs.release1_scope }}" in gate
 
     rows = matrix("true")
-    assert len(rows) == 9
-    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
+    assert len(rows) == 5
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == automatic_five
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
 
@@ -1428,6 +1436,7 @@ def test_journey_workflow_selects_nine_direct_rows_and_keeps_full_gate(tmp_path)
     assert {row["job_id"] for row in all_direct} == {job_id for job_id, *_ in expected_direct}
     values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert values["wait_timeout"] == "900"
+    assert values["release1_scope"] == "nine"
 
     backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
     assert {row["job_id"] for row in backend_rows} == {

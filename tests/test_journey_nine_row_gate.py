@@ -6,6 +6,7 @@ one of them. The release9-then-install rows are strict: their own receipt fields
 """
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,54 @@ def test_the_r0_handoff_rows_keep_their_own_strict_checks(tmp_path):
     candidate = rows.release1_receipts(tmp_path)
     mutate(tmp_path, "direct-linux", lambda row: row.pop("handoff"))
     assert any(error.startswith("direct-linux: ") for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+AUTOMATIC_FIVE = ("direct-linux", "direct-macos", "direct-windows", "direct-linux-fresh", "direct-macos-fresh")
+
+
+def test_an_automatic_run_is_the_five_rows_and_a_direct_run_is_the_nine(tmp_path):
+    candidate = rows.release1_receipts(tmp_path)
+    automatic = tmp_path / "automatic"
+    for job_id in AUTOMATIC_FIVE:
+        shutil.copytree(tmp_path / job_id, automatic / job_id)
+    assert gate.evaluate_release1_matrix(candidate, automatic, scope="five") == []
+    # The nine-row scope needs the release9 and release11 rows too.
+    errors = gate.evaluate_release1_matrix(candidate, automatic)
+    assert sorted(errors) == sorted(f"{job}: missing receipt" for job in NINE if job not in AUTOMATIC_FIVE)
+    # The five-row scope rejects the release9 and release11 rows as outside its scope.
+    scoped = gate.evaluate_release1_matrix(candidate, tmp_path, scope="five")
+    assert len(scoped) == 4 and all("unknown or absent Release-1 job id" in error for error in scoped)
+
+
+UPGRADE_ROWS = ("direct-linux", "direct-macos", "direct-linux-r9-install", "direct-macos-r9-install",
+                "direct-linux-r11-update", "direct-macos-r11-update")
+
+
+def set_installed(row, installed):
+    """Record the installed release the way each upgrade leg does: the transition, and the live identity where present."""
+    row["release_transition"]["to"] = installed
+    if "candidate_live_release" in (row.get("health_transition") or {}):
+        row["health_transition"]["candidate_live_release"] = installed
+
+
+@pytest.mark.parametrize("job_id", UPGRADE_ROWS)
+@pytest.mark.parametrize("installed", [11, 13])
+def test_an_upgrade_row_installing_a_release_other_than_the_candidate_is_rejected(tmp_path, job_id, installed):
+    candidate = rows.release1_receipts(tmp_path)
+    mutate(tmp_path, job_id, lambda row: set_installed(row, installed))
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert f"{job_id}: installed release {installed} is not the candidate release 12" in errors
+
+
+@pytest.mark.parametrize("job_id", UPGRADE_ROWS)
+def test_an_upgrade_row_installing_the_candidate_release_is_accepted(tmp_path, job_id):
+    candidate = rows.release1_receipts(tmp_path)
+    mutate(tmp_path, job_id, lambda row: set_installed(row, 12))
+    assert gate.evaluate_release1_matrix(candidate, tmp_path) == []
+
+
+def test_the_candidate_release_is_read_from_the_candidate_manifest(tmp_path):
+    candidate = rows.release1_receipts(tmp_path)
+    del candidate["release"]
+    errors = gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert "direct-linux: candidate release is absent from the candidate manifest" in errors

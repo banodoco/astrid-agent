@@ -24,7 +24,7 @@ BUTTON = {**HOSTED, "driver": "app-button",
 def handoff_upgrade_fields():
     """The r0-handoff-then-update receipt fields the upgrade rows must carry."""
     return {
-        "release_transition": {"from": 9, "to": 10, "start_state": "r0-handoff-complete",
+        "release_transition": {"from": 9, "to": 12, "start_state": "r0-handoff-complete",
                                "source": "candidate-install-update"},
         "release0_fixture": {"fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256,
                              "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
@@ -40,7 +40,7 @@ def handoff_upgrade_fields():
         "handoff": {"phase": "complete", "release": 9, "r0_data_root": "/run/data",
                     "r1_data_root": "/run/data-r1"},
         "update": {"command": "install --update", "exit_code": 0},
-        "health_transition": {"candidate_live_release": 10},
+        "health_transition": {"candidate_live_release": 12},
     }
 
 
@@ -136,7 +136,8 @@ def release1_receipts(tmp_path):
         receipt = tmp_path / contract["job_id"] / "journey-result.json"
         receipt.parent.mkdir(exist_ok=True)
         receipt.write_text(json.dumps(row), encoding="utf-8")
-    return candidate
+    # The candidate manifest's release, which the aggregate reads from the manifest in main().
+    return {**candidate, "release": 12}
 
 
 def evidence(tmp_path):
