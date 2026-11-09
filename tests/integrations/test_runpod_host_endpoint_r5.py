@@ -49,8 +49,18 @@ def tuple_sources(tmp_path_factory, request):
         for name, source in selected.items():
             destination = root / "src" / name
             subprocess.run(["git", "clone", "--quiet", "--shared", str(source), str(destination)], check=True)
-            assert subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"]) == subprocess.check_output(
-                ["git", "-C", str(source), "rev-parse", "HEAD"])
+            expected = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+            if name == "astrid-runtime":
+                # The worker bootstrap is pinned by the Agent's lock, independently
+                # of the Runtime used to serve this controller-side test process.
+                expected = json.loads((selected["astrid-agent"] / "runtime.lock.json").read_text())["source_commit"]
+                present = subprocess.run(["git", "-C", str(destination), "cat-file", "-e", expected],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if present.returncode:
+                    subprocess.run(["git", "-C", str(destination), "fetch", "--quiet", "--depth=1",
+                                    "https://github.com/banodoco/astrid-runtime", expected], check=True)
+                subprocess.run(["git", "-C", str(destination), "checkout", "--quiet", "--detach", expected], check=True)
+            assert subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip() == expected
         request.session.stash[_TUPLE_SOURCES] = root
         yield root
     finally:

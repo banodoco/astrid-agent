@@ -1,9 +1,4 @@
-"""M-02: one RunPod engine choice, derived from the selected entry's models.
-
-Each default slot asked for a target either resolves to that target (and, on
-RunPod, to the engine whose pinned lock covers the entry) or is an explicit,
-coded refusal before any pod or task exists.
-"""
+"""RunPod engine selection and pending target admission."""
 from __future__ import annotations
 
 import hashlib
@@ -191,40 +186,52 @@ def test_local_request_never_reaches_runpod(target, image, monkeypatch):
     assert client.calls == []
 
 
-def test_uncovered_entry_refuses_before_any_task(image, preferences):
-    """ltx-2.3 models are in no RunPod lock: refuse, admit nothing, create no pod."""
+def test_uncovered_entry_reaches_submission(image, preferences):
     client = NoPodClient()
-    with pytest.raises(AstridError) as raised:
-        _call('video', 'i2v', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
-    assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
+    _call('video', 'i2v', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
+    assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
+
+
+@pytest.mark.parametrize('pinned', [False, True])
+def test_selected_h3_does_not_fall_back_when_required_inputs_missing(image, preferences, monkeypatch, pinned):
+    from astrid.core.generation import defaults
+    if pinned:
+        monkeypatch.setattr(defaults, 'pinned_entry', lambda *args: 'h3')
+        monkeypatch.setattr(defaults, 'ordered_ids', lambda *args: ('h3',))
+    client = NoPodClient()
+    with pytest.raises(Exception, match="unsupported entry inputs|needs the 'request' input"):
+        GenerationFacade().video(prompt='a boat', image_ref=str(image), placement='runpod',
+                                 client=client, project='demo', wait=False,
+                                 **({} if pinned else {'entry': 'h3'}), **LIVE)
     assert client.calls == []
 
 
-def test_engine_helper_reads_the_pinned_locks():
-    tts, music = entries.find_entry('audio/qwen3_tts_custom_voice'), entries.find_entry('audio/minimax_music_3')
-    assert not entries._missing_locked_models(tts, 'comfyui')  # the one engine's lock covers it
-    assert entries.runpod_engine(music) == 'comfyui'
-    assert entries.runpod_engine(entries.find_entry('image/qwen_image_2_1_turbo')) == 'comfyui'
+def test_uncovered_entry_selects_recipe():
+    entry = entries.find_entry('video/ltx2_3_i2v')
+    assert entry is not None
+    assert entries.runpod_engine(entry) == 'comfyui'
+
+
+def test_engine_choice_uses_recipe_order_and_requires_a_recipe(monkeypatch):
+    entry = {'id': 'uncovered'}
+    monkeypatch.setattr(entries, 'runpod_engines', lambda: ('comfyui', 'other'))
+    assert entries.runpod_engine(entry) == 'comfyui'
+    monkeypatch.setattr(entries, 'runpod_engines', lambda: ())
     with pytest.raises(AstridError) as raised:
-        entries.runpod_engine(None)
+        entries.runpod_engine(entry)
     assert raised.value.code == 'runpod_engine_unavailable'
 
 
-def test_dry_run_without_client_checks_the_engine_lock():
-    music = entries.find_entry('audio/minimax_music_3')
-    assert entries.target_schema(music, None, None, engine='comfyui') is None
-    uncovered = dict(music, needs=[{'class_type': 'UNETLoader', 'field': 'unet_name',
-                                    'value': 'diffusion_models/no_such_model.safetensors'}])  # no lock row holds it
-    with pytest.raises(AstridError) as raised:
-        entries.target_schema(uncovered, None, None, engine='comfyui')
-    assert raised.value.code == 'missing_model'
+def test_pending_target_does_not_check_controller_lock():
+    entry = {'needs': [{'class_type': 'UNETLoader', 'field': 'unet_name',
+                        'value': 'diffusion_models/no_such_model.safetensors'}]}
+    assert entries.target_schema(entry, None, None, engine='comfyui') is None
 
 
 def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypatch):
     """H3 pins its Ref2V LoRA in its own graph; the comfyui lock supplies the rest."""
     h3 = entries.find_entry('h3')
     assert entries.runpod_engine(h3) == 'comfyui'
-    assert entries._lock_coverage(h3, 'comfyui')[1] > 0
     chosen = []
     real = entries.runpod_engine
     monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
@@ -236,11 +243,3 @@ def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypa
     assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'comfyui'
 
 
-def test_uncovered_entry_refuses_before_prepare(image, preferences):
-    """Live path, explicit entry: no engine lock covers ltx-2.3, so nothing is claimed or prepared."""
-    client = NoPodClient()
-    with pytest.raises(AstridError) as raised:
-        GenerationFacade().video(entry='ltx-2.3', prompt='a boat', image_ref=str(image),
-                                 placement='runpod', client=client, project='demo', wait=False, **LIVE)
-    assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
-    assert client.calls == []
