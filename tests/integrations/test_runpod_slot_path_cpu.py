@@ -519,10 +519,6 @@ _RED = {
     (("audio", "tts"), "local-managed"): ("CapabilityRuntimeError", "workflow-local model verification failed for config.json: sha256 mismatch", "Plan 34"),
     (("audio", "sfx"), "local-managed"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "Plan 34"),
     (("video", "i2v"), "local-managed"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
-    # h3 builds its graph and reaches vibecomfy.run on the stand-in; the packaged node schemas disagree with the
-    # graph's native ports (ComfyMathExpression 3 outputs vs 2), so the canonical UI materialization is refused.
-    (("video", "h3"), "local-managed"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
-    (("video", "h3"), "attached"): ("CapabilityRuntimeError", "node 102(ComfyMathExpression): output slot count 3 != schema output count 2", "T8"),
     (("audio", "tts"), "attached"): ("GenerationReadinessError", "workflow-local model is not present locally: config.json", "T3"),
     (("audio", "sfx"), "attached"): ("GenerationReadinessError", "target is missing checkpoint 'hunyuanvideo_foley_xl.pth'", "T3"),
     (("video", "i2v"), "attached"): ("GenerationReadinessError", "No ready local video model supports mode 'i2v' on the selected target", "T3"),
@@ -564,9 +560,23 @@ def _capability_call(capability):
 
 @pytest.mark.parametrize(
     "capability,target_kind",
-    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}") for t in TARGET_KINDS for c in CAPABILITIES])
+    [pytest.param(c, t, id=f"{'/'.join(c)}-{t}",
+                  # CPU cannot verify the 1.9GB pinned turbo LoRA hash h3's validate step re-hashes (Plan 34; as the TTS local cell).
+                  marks=[pytest.mark.gpu] if (c, t) == (("video", "h3"), "local-managed") else [])
+     for t in TARGET_KINDS for c in CAPABILITIES])
 def test_capability_reaches_generation_on_each_target(capability, target_kind, tmp_path, monkeypatch,
                                                       real_runtime, tuple_sources):
+    composed = set()
+    if capability == ("video", "h3"):
+        # The job directory (and the candidate composed in it) is removed when the run ends; hash it first.
+        import hashlib, shutil
+        real_rmtree = shutil.rmtree
+        def hashing_rmtree(path, *args, **kwargs):
+            if Path(path).name.startswith("astrid-job-"):
+                composed.update(hashlib.sha256(f.read_bytes()).hexdigest()
+                                for f in Path(path).rglob("*.composed.*") if "compose" in f.parts)
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(shutil, "rmtree", hashing_rmtree)
     if capability == ("video", "h3"):
         import subprocess
         source = tmp_path / "source.mp4"
@@ -602,6 +612,16 @@ def test_capability_reaches_generation_on_each_target(capability, target_kind, t
         assert result.ok, json.dumps(result.to_dict(), default=str)[:4000]
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         assert delivered, "nothing was delivered"
+        if capability == ("video", "h3") and target_kind != "runpod":
+            # The composed candidate (vibecomfy.run's after_outputs) is what is delivered, not the raw generation.
+            import hashlib
+            files = [f for f in (tmp_path / "delivered").rglob("*") if f.is_file() and f.suffix == ".mp4"]
+            assert len(files) == 1, files
+            delivered_sha = hashlib.sha256(files[0].read_bytes()).hexdigest()
+            raw = {hashlib.sha256(data).hexdigest() for data, _mime in provider.comfy.outputs.values()}
+            assert composed, "no composed candidate was observed in the job directory"
+            assert delivered_sha in composed, (delivered_sha, composed)
+            assert delivered_sha not in raw, "the raw generated output was delivered"
         if target_kind == "runpod":
             _assert_ran_on_the_machine(provider)
         else:
