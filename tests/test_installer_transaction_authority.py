@@ -1285,7 +1285,7 @@ def test_pinokio_public_update_recovers_idle_missing_catalog_with_real_backend_c
         "--update", "--managed-by", "pinokio", "--root", str(backend.root),
         "--uv", str(tmp_path / "not-needed-uv"),
         "--manifest", str(tmp_path / "not-needed-manifest"),
-    ]) == 0
+    ]) == 3  # recovery-only --update: the journal restores old, so the release is unchanged (exit 3)
 
     assert lifecycle_calls == {"validate": 1, "stop": 1, "start": 1}
     assert boundary.stop_calls == 0  # No published Runtime owner needed a signal.
