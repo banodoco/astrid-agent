@@ -51,7 +51,7 @@ Check the routes in this order. Use the first one that fits, and only that one:
 Show the user the setup choices before you run anything. The recommended
 choices are:
 
-- startup at sign-in: on (`--autostart on|off`)
+- Start at sign-in: on (`--autostart on|off`)
 - the `astrid` terminal command: on (`--command on|off`)
 - Astrid skills: on (`--skills on|off`)
 - skill copies: off (`--skill-copies on|off`)
