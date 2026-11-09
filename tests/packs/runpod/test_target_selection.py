@@ -458,8 +458,9 @@ def test_offer_refusal_records_offer_and_both_digests_without_secrets(case):
     assert not case.owner.path.exists() and case.creates == 0
 
 
-def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch):
-    from astrid.packs.runpod import adapter
+def test_machine_claim_refuses_changed_offer_before_staging_or_acquisition(case, monkeypatch, tmp_path):
+    from astrid.core.execution.machine_run import MachineJob
+    from astrid.packs.runpod import adapter, machine
 
     monkeypatch.setattr(adapter, "prevalidate_task", lambda *args, **kwargs: None)
     owner = SimpleNamespace(selection=case.owner)
@@ -469,16 +470,20 @@ def test_bind_task_refuses_changed_offer_before_staging_or_acquisition(case, mon
     def unreachable(*args, **kwargs):
         raise AssertionError("preparation reached before consent validation")
 
-    facade.prepare = facade.bind_endpoint = unreachable
+    facade.prepare = unreachable
+    monkeypatch.setattr("astrid.packs.runpod.generation.prepare_retained_generation", unreachable)
     monkeypatch.setattr("astrid.packs.vibecomfy.shared.bundle_inputs.staged_workflow_path", unreachable)
     policy = {"kind": "runpod", "engine": "comfyui", "preferences": case.prefs.as_mapping(),
               "offer_digest": "sha256:" + "9" * 64, "consent": ["paid"], "max_usd": 1.0,
               "deadline": case.grant.deadline, "preparation_seconds": 30, "execution_seconds": 30,
               "idle_seconds": 60}
     inputs = {"python": "workflow.py", "companion": "{}", "source": "{}"}
+    job = MachineJob(entry="cpu-image", mode="t2i", policy=policy, inputs=inputs, invocation_id="invocation-1",
+                     task_id="task", attempt_id="attempt", scratch=tmp_path,
+                     progress_path=tmp_path / ".astrid-progress.json")
+    runpod = machine.MACHINE.for_host(facade, begin=unreachable, done=unreachable)
     with pytest.raises(PaidSelectionError, match="offer or rate changed"):
-        facade.bind_task(policy, inputs, invocation_id="invocation-1", scratch=None,
-                         begin_lease=unreachable, retain_bridge=unreachable, retire_bridge=unreachable)
+        runpod.claim(job)
     assert not case.owner.path.exists() and case.creates == case.configs == 0
 
 

@@ -1,0 +1,517 @@
+"""RunPod as a remote machine: the ``runpod`` contribution to ``generation.machine`` (Plan 32 T5).
+
+The controller rents the pod, ships the job, runs the same local command there
+(``astrid generate <entry> --placement local``), copies the job's progress file
+back on each poll, copies the outputs back under a digest manifest and releases
+the pod. Cancel is ``job_cancel``, then release. Nothing about the pod's models or
+nodes travels back to the controller: the pod aligns its own disk.
+
+Money rules (pinned by ``tests/packs/runpod/test_machine.py``):
+
+* one claim per job, under the existing paid-consent and lease owner
+  (``RunPodLeaseOwner``); this module never retries a claim;
+* any failure after the claim releases the pod; only a successful job settles
+  it warm, and only when its machine custody matches the warm lease's;
+* the detached job id is checkpointed in the lease journal before the job
+  starts, so a crashed host's job is cancelled by ``recover()``.
+
+Warm reuse is keyed on one machine-custody digest of the account, the observed
+GPU type, the image, the pinned volume (id, mount path, cache device, mount id)
+and the shipped source digest. Any difference refuses reuse.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import shlex
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from .remote_placement import (
+    MANIFEST_MARK, MANIFEST_NAME, POD_VENV, RESULT_MARK, RUNS_ROOT, Claim, DigestMismatch,
+    RemotePlacement, RemotePlacementError, RemoteRun, manifest_command, sha256_file,
+)
+
+KIND = "runpod"
+POLL_SECONDS = 15.0
+PROGRESS_NAME = "progress.json"
+JOB_NAME = "job.json"
+MAX_PROGRESS_BYTES = 64 * 1024
+PROGRESS_KEYS = frozenset({"phase", "percent", "current", "total"})
+CUSTODY_SCHEMA = "astrid.runpod.machine-custody.v1"
+#: The local private engine footprint the storage probe requires besides the volume.
+LOCAL_FOOTPRINT_BYTES = 20 * 10**9
+
+
+class MachineError(RemotePlacementError):
+    """A remote-machine step failed; the machine has been released unless stated."""
+
+
+class MachineCancelled(MachineError):
+    """The local run was cancelled; the remote job was stopped and the machine released."""
+
+
+class CustodyChanged(MachineError):
+    """The warm machine's custody differs from this job's; warm reuse is refused."""
+
+
+# ----------------------------------------------------------------------------
+# Machine custody (warm-reuse key)
+# ----------------------------------------------------------------------------
+
+
+def machine_custody(*, account: str, gpu_type: str, image: str, volume: Mapping[str, Any],
+                    source_digest: str) -> dict[str, Any]:
+    """The one record a warm machine is reused against. ``gpu_type`` is the observed one."""
+    for name, value in (("account", account), ("gpu_type", gpu_type), ("image", image),
+                        ("source_digest", source_digest)):
+        if not isinstance(value, str) or not value:
+            raise MachineError(f"machine custody needs a {name}")
+    pinned = {key: volume.get(key) for key in ("id", "mount_path", "cache_device", "mount_id")}
+    body = {"schema": CUSTODY_SCHEMA, "account": account, "gpu_type": gpu_type, "image": image,
+            "volume": pinned, "source_digest": source_digest}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False).encode()).hexdigest()
+    return {**body, "digest": "sha256:" + digest}
+
+
+def custody_differences(previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> list[str]:
+    """Fields that refuse warm reuse; empty means the warm machine is this job's machine."""
+    if not isinstance(previous, Mapping) or previous.get("schema") != CUSTODY_SCHEMA:
+        return ["custody"]
+    names = [name for name in ("account", "gpu_type", "image", "source_digest")
+             if previous.get(name) != current.get(name)]
+    before, after = previous.get("volume") or {}, current.get("volume") or {}
+    names += [f"volume.{key}" for key in ("id", "mount_path", "cache_device", "mount_id")
+              if before.get(key) != after.get(key)]
+    if not names and previous.get("digest") != current.get("digest"):
+        names.append("digest")
+    return names
+
+
+# ----------------------------------------------------------------------------
+# Storage pin (the volume mounted as the model cache)
+# ----------------------------------------------------------------------------
+
+
+def storage_probe_command(request: Mapping[str, Any]) -> str:
+    """The pack's standard-library probe, shipped as source (as scripts/pod_session.py does)."""
+    source = (Path(__file__).with_name("storage_probe.py")).read_text(encoding="utf-8")
+    blob = base64.b64encode(json.dumps(dict(request), sort_keys=True).encode()).decode()
+    return "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
+
+
+def pin_storage(placement: RemotePlacement, state: RemoteRun, *, pod_id: str, volume_id: str,
+                mount_path: str, model_cache_root: str, engine_root: str, required_volume_bytes: int,
+                observe_mounts: Callable[[str, str], Mapping[str, Any]]) -> dict[str, Any]:
+    """Prove the saved volume is the writable mount before any install writes to it.
+
+    The provider mapping comes from ``runpod_lifecycle.discovery.observe_pod_mounts``;
+    the pod-side probe then joins it to ``/proc/self/mountinfo``. The receipt's
+    cache device and mount id are pinned in machine custody.
+    """
+    from .storage_probe import strict_json_object, validate_provider_mapping
+
+    nonce = secrets.token_hex(16)
+    try:
+        provider = dict(observe_mounts(pod_id, nonce))
+        validate_provider_mapping(provider, pod_id=pod_id, volume_id=volume_id, nonce=nonce, mount=mount_path)
+    except (ValueError, RuntimeError) as exc:
+        raise MachineError(f"volume mount mapping refused before install: {exc}") from None
+    request = {"pod_id": pod_id, "volume_id": volume_id, "nonce": nonce, "mount": mount_path,
+               "model_cache_root": model_cache_root, "engine_root": engine_root,
+               "required_volume_bytes": max(1, int(required_volume_bytes)),
+               "required_local_bytes": LOCAL_FOOTPRINT_BYTES, "provider_mapping": provider}
+    code, stdout, _stderr = placement._exec(state, storage_probe_command(request), timeout=120)
+    if code != 0:
+        raise MachineError("mounted storage verification failed before install")
+    receipt = strict_json_object(stdout.strip().splitlines()[-1] if stdout.strip() else "")
+    expected = {key: value for key, value in request.items() if key != "provider_mapping"}
+    if (any(receipt.get(key) != value for key, value in expected.items())
+            or type(receipt.get("cache_device")) is not int or receipt["cache_device"] < 0
+            or type(receipt.get("cache_mount_id")) is not int or receipt["cache_mount_id"] <= 0):
+        raise MachineError("storage evidence differs from the requested mount")
+    state.note("storage", "pinned")
+    return {"mode": "volume", "id": volume_id, "mount_path": mount_path,
+            "cache_device": receipt["cache_device"], "mount_id": receipt["cache_mount_id"]}
+
+
+# ----------------------------------------------------------------------------
+# Pod-side commands
+# ----------------------------------------------------------------------------
+
+
+def runtime_check_command() -> str:
+    """Start the pod's Runtime headless (it picks its own port) and list entries."""
+    return (f"{POD_VENV}/bin/python -c "
+            + shlex.quote("from astrid.sdk.autobootstrap import ensure_runtime; ensure_runtime()")
+            + f" >/dev/null && {POD_VENV}/bin/astrid generate list --json")
+
+
+def runtime_check(placement: RemotePlacement, state: RemoteRun, entry: str) -> dict[str, Any]:
+    """After install: the entry must be listed and ready on the pod's own local Runtime."""
+    code, stdout, stderr = placement._exec(state, runtime_check_command(), timeout=300)
+    if code != 0:
+        raise MachineError(f"pod runtime check failed (exit {code}): {(stderr or stdout)[-400:]}")
+    try:
+        rows = json.loads(stdout)
+    except ValueError:
+        raise MachineError("pod runtime check did not list entries as JSON") from None
+    rows = [row for row in rows if isinstance(row, Mapping) and row.get("id") == entry] if isinstance(rows, list) else []
+    if not rows:
+        raise MachineError(f"entry {entry!r} is not listed by the pod's runtime")
+    if any(row.get("ready") is False for row in rows):
+        raise MachineError(f"entry {entry!r} is not ready on the pod's runtime")
+    state.note("runtime_check", "done", entry=entry)
+    return {"entry": entry, "ready": True,
+            "listing_sha256": "sha256:" + hashlib.sha256(stdout.encode()).hexdigest()}
+
+
+def generation_argv(entry: str, remote_root: str, *, mode: str | None) -> list[str]:
+    """The ONE pod-side invocation: the same local run the controller would do.
+
+    T4 STUB: ``astrid generate <entry> --placement local`` is T4's local run path
+    (plan32/t4-one-run). Until it lands, this argv is the contract the CPU fake
+    answers; T4's merge replaces the stub flags (``--job``/``--out``/``--json``).
+    """
+    argv = [f"{POD_VENV}/bin/astrid", "generate", entry, "--placement", "local",
+            "--job", f"{remote_root}/{JOB_NAME}", "--out", f"{remote_root}/out", "--json"]
+    if mode:
+        argv += ["--mode", mode]
+    return argv
+
+
+def generation_command(entry: str, remote_root: str, *, mode: str | None) -> str:
+    line = " ".join(shlex.quote(part) for part in generation_argv(entry, remote_root, mode=mode))
+    result = shlex.quote(f"{remote_root}/result.json")
+    return (
+        "set -u\n"
+        f"export ASTRID_PROGRESS_PATH={shlex.quote(f'{remote_root}/{PROGRESS_NAME}')}\n"
+        f"{line} > {result}\n"
+        "rc=$?\n"
+        "if [ $rc -ne 0 ]; then exit $rc; fi\n"
+        f"printf '%s' {shlex.quote(RESULT_MARK)}; tr -d '\\n' < {result}; echo\n"
+        f"{manifest_command(f'{remote_root}/out')}\n"
+    )
+
+
+# ----------------------------------------------------------------------------
+# The machine
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class MachineLease:
+    """One job's custody of a claimed (or warm) pod."""
+
+    lease: Any  # RunPodLease
+    claim: Claim
+    state: RemoteRun
+    custody: Mapping[str, Any]
+    warm: bool
+    released: bool = False
+
+
+@dataclass
+class MachineRun:
+    lease: MachineLease
+    job_id: str
+    directory: str
+    remote_root: str
+    progress_path: Path
+    scratch: Path
+    progress: list[dict[str, Any]] = field(default_factory=list)
+    state: str = "running"
+
+
+class RunPodMachine:
+    """``claim``/``start``/``poll``/``cancel``/``fetch``/``release`` for one host-owned adapter.
+
+    The registered contribution (``MACHINE``) has no adapter; the host builds one
+    per retained provider owner with ``for_host``.
+    """
+
+    def __init__(self, adapter: Any = None, *, begin: Callable[[Any], None] | None = None,
+                 done: Callable[[Any], None] | None = None,
+                 observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None) -> None:
+        self.adapter = adapter
+        self._begin, self._done = begin, done
+        self._observe_mounts = observe_mounts
+
+    def for_host(self, adapter: Any, *, begin: Callable[[Any], None], done: Callable[[Any], None],
+                 observe_mounts: Callable[[str, str], Mapping[str, Any]] | None = None) -> "RunPodMachine":
+        return type(self)(adapter, begin=begin, done=done,
+                          observe_mounts=observe_mounts or getattr(adapter, "observe_mounts", None))
+
+    def _require(self) -> Any:
+        if self.adapter is None:
+            raise MachineError("the runpod machine has no host-owned lease owner")
+        return self.adapter
+
+    # -- claim ---------------------------------------------------------------
+
+    def claim(self, job: Any) -> MachineLease:
+        """Rent or reuse one pod for ``job``; release it on any failure after the claim."""
+        from astrid.core.generation.interfaces import RunPodPreparationRequest
+        from astrid.packs.vibecomfy.shared.bundle_inputs import staged_workflow_path
+        from .generation import prepare_retained_generation
+        from .target_selection import PaidRunConsent, PaidSelectionError
+
+        from .adapter import prevalidate_task
+
+        adapter = self._require()
+        policy, inputs = job.policy, job.inputs
+        prevalidate_task(dict(policy), dict(inputs), scratch=job.scratch)
+        owner = adapter.lease_owner
+        if (policy.get("kind") != KIND or policy.get("engine") != adapter.installation.engine
+                or policy.get("preferences") != owner.selection.preferences.as_mapping()):
+            raise PaidSelectionError("target policy differs from the retained owner")
+        consent = PaidRunConsent(
+            invocation_id=job.invocation_id, offer_digest=policy["offer_digest"], max_usd=policy["max_usd"],
+            deadline=policy["deadline"], consent=tuple(policy["consent"]),
+            preparation_seconds=policy["preparation_seconds"], execution_seconds=policy["execution_seconds"],
+            idle_seconds=policy["idle_seconds"],
+        )
+        # Refuse a changed offer first: before staging, the account lock or any create.
+        owner.selection.consented_offer(consent, owner.selection.clock())
+        values = json.loads(inputs.get("workflow_inputs") or "{}")
+        acquired: list[Any] = []
+
+        def on_acquired(lease: Any) -> None:
+            acquired.append(lease)
+            if self._begin is not None:
+                self._begin(lease)
+
+        with staged_workflow_path(workflow=None, python=inputs["python"], companion=inputs["companion"],
+                                  source=inputs["source"], scratch=job.scratch) as (workflow, _):
+            request = RunPodPreparationRequest({"engine": adapter.installation.engine},
+                                               workflow.with_name("source.json"), workflow, values,
+                                               consent.consent, consent.max_usd, consent.deadline)
+            try:
+                prepared = prepare_retained_generation(
+                    request, consent=consent, lease_owner=owner, placement=adapter.placement,
+                    installation=adapter.installation, validate=adapter.validate,
+                    requested_idle_seconds=policy["idle_seconds"], on_acquired=on_acquired,
+                    entry=job.entry, observe_mounts=self._observe_mounts,
+                )
+            except BaseException:
+                if acquired:
+                    # A failed preparation never settles warm: release the exact pod.
+                    self._finish(acquired[0])
+                    owner.release(reason="preparation_failed", _expected_operation=acquired[0].operation_id)
+                raise
+        return MachineLease(prepared.lease, prepared.claim, prepared.state, prepared.custody, prepared.reused)
+
+    # -- start ---------------------------------------------------------------
+
+    def start(self, lease: MachineLease, job: Any) -> MachineRun:
+        """Ship the job directory, checkpoint the job id, then start the pod-side command."""
+        adapter = self._require()
+        placement, state, ops = adapter.placement, lease.state, lease.claim.ops
+        run_id = uuid.uuid4().hex
+        remote_root = f"{RUNS_ROOT}/{run_id}"
+        placement._exec_ok(state, f"mkdir -p {shlex.quote(remote_root + '/in')} {shlex.quote(remote_root + '/out')}",
+                           "job directory")
+        staging = Path(job.scratch) / "machine"
+        staging.mkdir(parents=True, exist_ok=True)
+        shipped: dict[str, Any] = {}
+        for name, value in sorted(job.inputs.items()):
+            if name in job.files:
+                local = Path(str(value))
+                if local.is_symlink() or not local.is_file():
+                    raise MachineError(f"job input {name!r} is not a regular file")
+                remote = f"{remote_root}/in/{name}{''.join(local.suffixes)[-16:]}"
+                placement._put_checked(state, local, remote)
+                shipped[name] = remote
+            else:
+                shipped[name] = value
+        body = {"schema": "astrid.machine-job.v1", "entry": job.entry, "mode": job.mode, "align": job.align,
+                "task_identity": job.task_id, "attempt_identity": job.attempt_id, "inputs": shipped}
+        local_job = staging / JOB_NAME
+        local_job.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        placement._put_checked(state, local_job, f"{remote_root}/{JOB_NAME}")
+        command = generation_command(job.entry, remote_root, mode=job.mode)
+        job_id = uuid.uuid4().hex
+        # The exact detached identity is durable before launch; a lost ACK never
+        # invents or retries another job, and recover() can cancel this one.
+        self._checkpoint(lease, {"id": job_id, "state": "starting"})
+        started = ops.job_start(command, job_id=job_id)
+        if started.get("id") != job_id:
+            raise MachineError("detached job differs from the checkpointed job custody")
+        self._checkpoint(lease, {"id": job_id, "state": "running"})
+        state.note("job", "started", job_id=job_id)
+        return MachineRun(lease, job_id, str(started.get("dir") or ""), remote_root,
+                          Path(job.progress_path), staging)
+
+    # -- poll ----------------------------------------------------------------
+
+    def poll(self, run: MachineRun) -> dict[str, Any]:
+        """One status read, then copy the job's progress file into the local attempt's."""
+        adapter = self._require()
+        adapter.placement._check_deadline("job poll")
+        record = run.lease.claim.ops.job_poll(run.job_id)
+        progress = self._copy_progress(run)
+        state = record.get("state")
+        if state == "exited":
+            run.state = "exited"
+        elif state in {"missing", "cancelled"}:
+            run.state = str(state)
+        return {"state": run.state, "exit_code": record.get("exit_code"), "progress": progress}
+
+    def _copy_progress(self, run: MachineRun) -> dict[str, Any] | None:
+        landing = run.scratch / ("progress-" + run.job_id + ".json")
+        try:
+            run.lease.claim.ops.get(f"{run.remote_root}/{PROGRESS_NAME}", landing)
+        except Exception:
+            return None  # the run has not written a phase yet
+        try:
+            if landing.is_symlink() or landing.stat().st_size > MAX_PROGRESS_BYTES:
+                return None
+            payload = json.loads(landing.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        finally:
+            landing.unlink(missing_ok=True)
+        if not isinstance(payload, Mapping):
+            return None
+        progress = {str(key): value for key, value in payload.items() if str(key) in PROGRESS_KEYS}
+        if not progress:
+            return None
+        # Same file the local child writes; the host already sends it in its heartbeat.
+        partial = run.progress_path.with_name(run.progress_path.name + ".machine")
+        partial.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+        os.replace(partial, run.progress_path)
+        if not run.progress or run.progress[-1] != progress:
+            run.progress.append(progress)
+        return progress
+
+    # -- cancel --------------------------------------------------------------
+
+    def cancel(self, run: MachineRun) -> dict[str, Any]:
+        """Stop the remote job, checkpoint its stop, then release the machine."""
+        stopped = run.lease.claim.ops.job_cancel(run.job_id)
+        if stopped.get("state") in {"exited", "cancelled"}:
+            self._checkpoint(run.lease, {"id": run.job_id, "state": stopped["state"]})
+        run.state = "cancelled"
+        self.release(run.lease, False, reason="cancelled")
+        return dict(stopped)
+
+    # -- fetch ---------------------------------------------------------------
+
+    def fetch(self, run: MachineRun, destination: Path) -> dict[str, Any]:
+        """Copy the job's ``out`` directory back, every file against the pod's digest manifest."""
+        adapter = self._require()
+        placement, state, ops = adapter.placement, run.lease.state, run.lease.claim.ops
+        record = ops.job_poll(run.job_id)
+        self._checkpoint(run.lease, {"id": run.job_id, "state": "exited"})
+        stdout = stderr = ""
+        if run.directory:
+            _c, stdout, _e = ops.exec(f"cat {shlex.quote(run.directory)}/stdout", 120)
+            _c, stderr, _e = ops.exec(f"tail -c 4000 {shlex.quote(run.directory)}/stderr", 120)
+        if str(record.get("exit_code")) not in {"0"}:
+            raise MachineError(f"remote generation exited {record.get('exit_code')}: {stderr[-800:]}")
+        lines = stdout.splitlines()
+        result_line = next((line for line in lines if line.startswith(RESULT_MARK)), None)
+        manifest_line = next((line for line in lines if line.startswith(MANIFEST_MARK)), None)
+        if result_line is None or manifest_line is None:
+            raise MachineError("remote job did not report a result and manifest digest")
+        try:
+            result = json.loads(result_line[len(RESULT_MARK):])
+        except ValueError:
+            raise MachineError("remote result is not JSON") from None
+        placement._check_deadline("fetch")
+        manifest_local = run.scratch / MANIFEST_NAME
+        ops.get(f"{run.remote_root}/out/{MANIFEST_NAME}", manifest_local)
+        if sha256_file(manifest_local) != manifest_line[len(MANIFEST_MARK):].strip():
+            manifest_local.unlink(missing_ok=True)
+            raise DigestMismatch("downloaded manifest does not match the digest the job reported")
+        recorded = json.loads(manifest_local.read_text(encoding="utf-8")).get("files", {})
+        if not isinstance(recorded, Mapping) or not recorded:
+            raise MachineError("remote job reported no output files")
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        files: dict[str, str] = {}
+        for relative, entry in sorted(recorded.items()):
+            parts = Path(relative).parts
+            if (not isinstance(entry, Mapping) or Path(relative).is_absolute() or not parts
+                    or ".." in parts or relative != Path(relative).as_posix()):
+                raise DigestMismatch(f"pod manifest names an unsafe path: {relative!r}")
+            local = destination / relative
+            local.parent.mkdir(parents=True, exist_ok=True)
+            ops.get(f"{run.remote_root}/out/{relative}", local)
+            if sha256_file(local) != entry.get("sha256") or local.stat().st_size != entry.get("size"):
+                local.unlink(missing_ok=True)
+                raise DigestMismatch(f"downloaded {relative} does not match the pod manifest")
+            files[relative] = str(local)
+        state.note("fetch", "done", files=len(files))
+        pid = str(record.get("pid") or "").strip()
+        return {"files": files, "result": result if isinstance(result, Mapping) else {},
+                "manifest_sha256": manifest_line[len(MANIFEST_MARK):].strip(),
+                "progress": list(run.progress),
+                # The remote detached job's own process evidence (its pid on the pod).
+                "process_id": int(pid) if pid.isdigit() else None, "returncode": 0}
+
+    # -- release -------------------------------------------------------------
+
+    def release(self, lease: MachineLease, warm: bool, *, reason: str = "task_failed") -> None:
+        """Settle warm after a successful job; otherwise release the exact pod (idempotent)."""
+        from .worker_preparation import AcquisitionUnresolvedError
+
+        adapter = self._require()
+        if lease.released:
+            return
+        owner = adapter.lease_owner
+        self._finish(lease.lease)
+        if warm:
+            owner.settle(lease.lease)
+            lease.released = True
+            return
+        try:
+            owner.release(reason=reason, _expected_operation=lease.lease.operation_id)
+        except AcquisitionUnresolvedError:
+            # A deadline or explicit release may already own the one terminal
+            # transition while it waits for this exact drain.
+            with owner.lock:
+                record = owner._read()
+                if not (owner._release_inflight and record is not None
+                        and record.get("operation_id") == lease.lease.operation_id
+                        and record.get("lease", {}).get("state") == "releasing"):
+                    raise
+        lease.released = True
+
+    # -- helpers -------------------------------------------------------------
+
+    def _finish(self, lease: Any) -> None:
+        if self._done is not None:
+            self._done(lease)
+
+    def _checkpoint(self, lease: MachineLease, job: Mapping[str, Any]) -> None:
+        owner = self._require().lease_owner
+        with owner.lock:
+            record = owner.preparation_claim(lease.lease)
+            owner._save(record, {**record["lease"], "job": dict(job)})
+
+
+def observe_mounts_with(api_key: str) -> Callable[[str, str], Mapping[str, Any]]:
+    """The typed provider mapping, from runpod-lifecycle's exact-pod observation."""
+    def observe(pod_id: str, nonce: str) -> Mapping[str, Any]:
+        from runpod_lifecycle.discovery import observe_pod_mounts
+        from .worker_owner import _run_sync
+
+        return _run_sync(observe_pod_mounts(pod_id, api_key, nonce))
+    return observe
+
+
+#: The registered ``generation.machine`` contribution (no host owner until ``for_host``).
+MACHINE = RunPodMachine()
+
+__all__ = ["MACHINE", "CustodyChanged", "MachineCancelled", "MachineError", "MachineLease", "MachineRun",
+           "RunPodMachine", "custody_differences", "generation_argv", "machine_custody", "pin_storage",
+           "runtime_check"]

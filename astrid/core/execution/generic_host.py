@@ -1569,11 +1569,9 @@ def _bind_host_owned_command_values(
         else:
             values["readiness_profile_json"] = "{}"
     if "readiness_profile_path" in declared:
-        values["readiness_profile_path"] = ("-" if (admission or {}).get("host_target_bound") else
-            os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-")
+        values["readiness_profile_path"] = os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-"
     if "readiness_profile_hash" in declared:
-        values["readiness_profile_hash"] = ("-" if (admission or {}).get("host_target_bound") else
-            os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-")
+        values["readiness_profile_hash"] = os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-"
     return values
 
 
@@ -6425,19 +6423,6 @@ def _align_trust(task: Mapping[str, Any]) -> bool:
     return isinstance(metadata, Mapping) and metadata.get("align") == "trust"
 
 
-def _target_inventory_document(invocation: Any, evidence: Mapping[str, Any], *, trust: bool = False) -> str:
-    """The one host-owned inventory document, built only after the bound install is checked."""
-    from astrid.core.generation.target_inventory import build_document
-
-    installed = invocation.get("installed") if isinstance(invocation, Mapping) else None
-    if (not isinstance(installed, Mapping) or not installed.get("receipt_sha256")
-            or installed["receipt_sha256"] != evidence.get("installed_receipt_sha256")):
-        raise HostError("bound endpoint receipt differs from the prepared installation")
-    if trust:
-        return build_document("trust", evidence["loopback_url"])
-    return build_document("inventory", evidence["loopback_url"], invocation.get("models", ()))
-
-
 class GenericPackHost:
     """Discover, register, preflight, and execute pack capabilities."""
 
@@ -7134,6 +7119,43 @@ class GenericPackHost:
         if errors:
             self._latch_cleanup_uncertainty("; ".join(str(error) for error in errors))
             raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
+
+    def _run_machine_job(self, record, task_data, policy, target_context, inputs, *, root, output_root,
+                         cancelled, cancel_signal, task_id, attempt_id, fence, terminal):
+        """Run the admitted generation on a ``generation.machine`` and land its outputs here.
+
+        claim -> start -> poll (the remote progress file is copied into this
+        attempt's, which the heartbeat already sends) -> fetch into
+        ``outputs`` -> release, warm only on success. Harvest is unchanged.
+        """
+        from types import SimpleNamespace
+
+        from astrid.core.execution.machine_run import MachineJob, resolve_machine, run_on_machine
+
+        if record.id != "vibecomfy.run":
+            raise HostError("only generation runs on a rented machine")
+        metadata = (_task_generation_intent(task_data) or {}).get("metadata") or {}
+        entry = metadata.get("model")
+        if not isinstance(entry, str) or not entry:
+            raise HostError("a rented machine runs a generation entry; this task names none")
+        provider = target_context.get(kind=policy.get("kind"), engine=policy.get("engine"),
+                                      preferences=policy.get("preferences"))
+        machine = resolve_machine(policy["kind"]).for_host(
+            provider, begin=lambda lease: target_context.begin(lease, cancel_signal),
+            done=target_context.done)
+        job = MachineJob(
+            entry=entry, mode=metadata.get("mode"), policy=policy,
+            inputs={name: value for name, value in inputs.items() if value is not None},
+            invocation_id=f"{task_id}:{attempt_id}:{fence}", task_id=str(task_id), attempt_id=str(attempt_id),
+            scratch=root, progress_path=root / ".astrid-progress.json",
+            align="trust" if _align_trust(task_data) else "align",
+        )
+        fetched = run_on_machine(machine, job, destination=output_root, cancelled=cancelled,
+                                 poll_seconds=float(os.environ.get("ASTRID_MACHINE_POLL_SECONDS") or 15.0))
+        terminal["machine"] = {"kind": policy["kind"], "manifest_sha256": fetched.get("manifest_sha256"),
+                               "files": sorted(fetched.get("files", {})), "process_id": fetched.get("process_id")}
+        return SimpleNamespace(payload={}, output_root=output_root, process_id=fetched.get("process_id"),
+                               returncode=fetched.get("returncode"))
 
     def _host_target_bindings(self, kind):
         """Lazily share selected target custody across this host's claim slots."""
@@ -9314,7 +9336,7 @@ class GenericPackHost:
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
         comfy_invocation: Mapping[str, Any] | None = None,
-        target_model_assets: str | None = None,
+        align: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -9351,7 +9373,7 @@ class GenericPackHost:
             # host-side preflight headless too; the actual Comfy daemon keeps
             # its normal route-registration environment in its own process.
             explicit["VIBECOMFY_HEADLESS"] = "1"
-            profile = None if (admission or {}).get("host_target_bound") else _read_readiness_profile_document()
+            profile = _read_readiness_profile_document()
             session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
             if isinstance(session, Mapping):
                 explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
@@ -9374,7 +9396,7 @@ class GenericPackHost:
                 receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
                 if receipt_dir:
                     explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
-            elif os.environ.get(LOCAL_ENGINE_HOST_ENV) and not (admission or {}).get("host_target_bound"):
+            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
                 # Local placement without a readiness profile: the binding is attested by
                 # the installed engine's own receipt, never by a profile or the ambient env.
                 explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
@@ -9432,9 +9454,11 @@ class GenericPackHost:
         from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
         env.pop(EXECUTION_REQUEST_ENV, None)
         env.pop("ASTRID_COMFY_INVOCATION", None)
-        env.pop("ASTRID_TARGET_MODEL_ASSETS", None)  # only the host's own document reaches a child
-        if record.id == "vibecomfy.run" and target_model_assets is not None:
-            env["ASTRID_TARGET_MODEL_ASSETS"] = target_model_assets
+        from astrid.core.generation.target_inventory import TRUST_ENV
+
+        env.pop(TRUST_ENV, None)  # only the host's own admission reaches a child
+        if record.id == "vibecomfy.run" and align == "trust":
+            env[TRUST_ENV] = "trust"
         if record.id == "vibecomfy.run" and comfy_invocation is not None:
             env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
         if record.id == "vibecomfy.run" and workflow_execution_request is not None:
@@ -9812,12 +9836,12 @@ class GenericPackHost:
         command_admission = dict(admission or {})
         workflow_request = command_admission.pop("workflow_execution_request", None)
         comfy_invocation = command_admission.pop("comfy_invocation", None)
-        target_model_assets = command_admission.pop("target_model_assets", None)
+        align = command_admission.pop("align", None)
         admission = command_admission if admission is not None else None
         workflow_policy = None
         if record.id == "vibecomfy.run":
             from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
-            profile = None if command_admission.get("host_target_bound") else _read_readiness_profile_document()
+            profile = _read_readiness_profile_document()
             runpod = isinstance(workflow_request, Mapping) and workflow_request.get("target", {}).get("kind") == "runpod"
             if runpod:
                 if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
@@ -9955,7 +9979,7 @@ class GenericPackHost:
             network_broker=network_broker,
             workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
             comfy_invocation=comfy_invocation,
-            target_model_assets=target_model_assets,
+            align=align,
             network_policy=workflow_policy or (
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -10096,9 +10120,7 @@ class GenericPackHost:
                         raise HostError("private network commands require the admitted Python interpreter")
                     argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                             "--python-command", json.dumps(argv[1:])]
-                admitted_module = (record.definition.metadata.get("runtime_module")
-                                   if command_admission.get("host_target_bound")
-                                   and record.definition.metadata.get("action_invocation") else None)
+                admitted_module = None
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None,
                                              admitted_module=admitted_module)
             if source_channel is not None or selected_command:
@@ -10901,8 +10923,8 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
-        if terminal.get("target_binding") is not None:
-            receipt["target_binding"] = dict(terminal["target_binding"])
+        if terminal.get("machine") is not None:
+            receipt["machine"] = dict(terminal["machine"])
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -12128,8 +12150,8 @@ class GenericPackHost:
                 raise
         child_bridge = None
         session_hold = None
-        target_context = target_provider = target_invocation = None
-        target_model_assets = None
+        target_context = machine_policy = None
+        align_trust = False
         target_operation_result = None
         try:
             session_hold = self._hold_session_slot()
@@ -12219,13 +12241,9 @@ class GenericPackHost:
                     target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
                     inputs.pop("include_quote", None)
                 else:
-                    target_provider, target_invocation, evidence = target_context.bind(
-                        policy, inputs, invocation_id=f"{task_id}:{attempt_id}:{fence}",
-                        scratch=root, cancel=cancel_signal)
-                    _terminal["target_binding"] = evidence
-                    inputs["comfy_url"] = evidence["loopback_url"]
-                    target_model_assets = _target_inventory_document(
-                        target_invocation, evidence, trust=_align_trust(task_data))
+                    # A rented placement is a generation.machine: the whole local
+                    # run happens there and only its outputs come back.
+                    machine_policy = policy
                     readiness_profile = None
                     vibe_session = None
                 inputs.pop("placement_policy", None)
@@ -12243,9 +12261,7 @@ class GenericPackHost:
                 if readiness_profile is not None or inputs.get("source_video"):
                     raise HostError("local_server cannot use a readiness profile or source_video")
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
-                if target_model_assets is None and _align_trust(task_data):
-                    from astrid.core.generation.target_inventory import build_document
-                    target_model_assets = build_document("trust", inputs["comfy_url"])
+                align_trust = _align_trust(task_data)
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
                 local_network_policy = _network_policy(record, inputs)
@@ -12603,6 +12619,11 @@ class GenericPackHost:
                     effective_output_root = getattr(result, "output_root", None)
                     if isinstance(effective_output_root, (str, Path)):
                         output_root = Path(effective_output_root).expanduser().resolve()
+                elif machine_policy is not None:
+                    result = self._run_machine_job(
+                        record, task_data, machine_policy, target_context, inputs, root=root,
+                        output_root=output_root, cancelled=cancelled, cancel_signal=cancel_signal,
+                        task_id=task_id, attempt_id=attempt_id, fence=fence, terminal=_terminal)
                 elif record.definition.command is not None:
                     result = self._run_command_definition(
                         record,
@@ -12626,8 +12647,7 @@ class GenericPackHost:
                             {"workflow_execution_request": execution_contract}
                             if capability_id == "vibecomfy.run" and execution_contract is not None else {}
                         ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
-                            **({"target_model_assets": target_model_assets} if target_model_assets is not None else {}),
-                            **({"host_target_bound": True} if target_invocation is not None else {})},
+                            **({"align": "trust"} if align_trust else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -12890,8 +12910,8 @@ class GenericPackHost:
             provenance = self.boot_manifest_provenance()
             if provenance is not None:
                 payload["provenance"] = provenance
-            if _terminal.get("target_binding") is not None:
-                payload["target_binding"] = dict(_terminal["target_binding"])
+            if _terminal.get("machine") is not None:
+                payload["machine"] = dict(_terminal["machine"])
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -13146,15 +13166,6 @@ class GenericPackHost:
                 not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
             ):
                 endpoint_transport.close()
-            if target_invocation is not None:
-                if cleanup_errors or retain_for_unresolved_scope or self._active_processes:
-                    cleanup_errors.append("target invocation drain remains unresolved")
-                else:
-                    try:
-                        target_context.finish(target_provider, target_invocation,
-                                              success=bool(settled and managed_settled))
-                    except Exception as exc:
-                        cleanup_errors.append(f"target release or retention: {exc}")
             if capability_id == "vibecomfy.run" and not settled:
                 self._vibecomfy_warmth_hint = None
                 self._vibecomfy_current_warmth_hint = None

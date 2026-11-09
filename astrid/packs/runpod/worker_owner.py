@@ -438,6 +438,18 @@ class RunPodLeaseOwner:
                                    "job": {"id": job["id"], "state": stopped["state"]}}
                     lease = {**lease, "preparation": preparation}
                     record = self._save(record, lease)
+            machine_job = lease.get("job")
+            if machine_job is not None and machine_job["state"] not in {"exited", "cancelled"}:
+                from .remote_placement import connect_claimed_for_preparation
+                # A generation job the host started (or crashed after starting)
+                # is stopped on the same exact custody before the pod is deleted.
+                claim = connect_claimed_for_preparation({**record, "state": "claimed"})
+                stopped = claim.ops.job_cancel(machine_job["id"])
+                if stopped.get("id") != machine_job["id"] or stopped.get("state") not in {"exited", "cancelled"}:
+                    raise AcquisitionUnresolvedError("exact machine job stop remains unresolved")
+                lease = {**lease, "job": {"id": machine_job["id"], "state": stopped["state"]}}
+                record = self._save(record, lease)
+            if preparation is not None or machine_job is not None:
                 validate_lease_preparation(record, releasing=True)
         # Keep the account lock, but let a completing host invocation call
         # settle while quiescence waits for it. Durable releasing state and

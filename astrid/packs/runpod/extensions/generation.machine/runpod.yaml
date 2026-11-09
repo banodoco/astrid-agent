@@ -1,0 +1,5 @@
+api: 1
+summary: Rent a RunPod pod, run the local generation command there, copy outputs back, release.
+example: astrid generate image --placement runpod
+effects: edit
+entry: astrid.packs.runpod.machine:MACHINE

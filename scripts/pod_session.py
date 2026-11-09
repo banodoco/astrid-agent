@@ -1078,7 +1078,7 @@ class Session:
                    "required_volume_bytes": self.args.volume_gb * 10**9,
                    "required_local_bytes": (footprint + 20 if local_free_gb is None else local_free_gb) * 10**9,
                    "provider_mapping": provider}
-        source = (REPO / "scripts/pod_storage_probe.py").read_text()
+        source = (REPO / "astrid/packs/runpod/storage_probe.py").read_text()
         blob = base64.b64encode(json.dumps(request).encode()).decode()
         command = "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
         code, out, err = self.execute("storage mount verification", command)

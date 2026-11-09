@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Linux mount/capacity evidence, executed through the claimed transport."""
+"""Read-only Linux mount/capacity evidence, executed through the claimed transport.
+
+Standard library only: callers ship this file's source to a pod and run it with
+``python3 -c <source> <base64 request>`` (``RunPodMachine`` and ``scripts/pod_session.py``).
+"""
 from __future__ import annotations
 
 import base64
@@ -38,7 +42,8 @@ def validate_provider_mapping(provider, *, pod_id, volume_id, nonce, mount):
     if (not isinstance(provider, dict)
             or set(provider) != {"schema", "pod_id", "nonce", "volume_mounts", "legacy_evidence"}
             or provider["schema"] != "runpod.provider-mounts.v1"
-            or not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id)
+            # Same identity grammar as runpod_lifecycle.discovery._mount_text.
+            or not isinstance(pod_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", pod_id)
             or not isinstance(volume_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", volume_id)
             or not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce)
             or provider["pod_id"] != pod_id or provider["nonce"] != nonce):

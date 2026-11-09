@@ -279,18 +279,13 @@ def _staged_digest(destination: Path, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _inventory_from_environment(bundle: Any, url: str) -> tuple[dict[str, Any], ...] | None:
-    """The host's one inventory document, consumed once; none means this machine's disk is the inventory."""
+def _trust_from_environment(bundle: Any) -> tuple[dict[str, Any], ...] | None:
+    """``--align trust`` on an attached ComfyUI: the workflow's declared rows; otherwise none."""
     from astrid.core.generation import target_inventory
 
-    raw = os.environ.pop(target_inventory.ENV, None)
-    if raw is None:
+    if os.environ.pop(target_inventory.TRUST_ENV, None) != "trust":
         return None
-    try:
-        mode, rows = target_inventory.parse_document(raw, url)
-    except target_inventory.InventoryError as exc:
-        raise ProductionEngineError(str(exc)) from exc
-    return target_inventory.declared_rows(bundle.workflow) if mode == "trust" else rows
+    return target_inventory.declared_rows(bundle.workflow)
 
 
 def run_local_server(
@@ -335,7 +330,7 @@ def run_local_server(
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    custody = _inventory_from_environment(bundle, url)
+    custody = _trust_from_environment(bundle)
     provider = _live_preflight(bundle, run_inputs, url, destination, target_custody=custody)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.

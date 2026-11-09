@@ -56,9 +56,17 @@ LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
 def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
     """``--placement runpod``: claim a pod, run the local command there, pull back, release."""
 
+    from astrid.packs.h3_av.actions.verify.verify import _probe_strict, verify_candidate
     from astrid.packs.runpod.remote_placement import run_remote_placement
 
-    return run_remote_placement(args)
+    def verify(_out: Path, result: Mapping[str, Any]) -> None:
+        verify_candidate(
+            preparation=json.loads(Path(str(result["preparation"])).read_text(encoding="utf-8")),
+            composition=json.loads(Path(str(result["composition"])).read_text(encoding="utf-8")),
+            candidate=Path(str(result["candidate"])),
+        )
+
+    return run_remote_placement(args, verify_fn=verify, ffprobe_fn=_probe_strict)
 
 
 def _resolve_local_engine() -> Any:

@@ -172,6 +172,14 @@ class RunPodInstallation:
             raise RemotePlacementError("installation differs from the accepted recipe/model/source tuple")
         return plan
 
+    def model_bytes(self) -> int:
+        """Bytes the volume model cache must have free: the locked models' total."""
+        from astrid.core.generation import engine_recipe
+
+        recipe = engine_recipe.load_recipe(self.engine, self.platform)
+        lock = engine_recipe.load_model_lock(recipe.models_lock)
+        return max(1, sum(int(model.bytes or 0) for model in lock.models))
+
     def validate_sources(self, source_root: Path | None) -> str:
         self.plan()
         if source_root is None:
@@ -359,8 +367,6 @@ class RemoteRun:
     installation: RunPodInstallation | None = None
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None
     installed: Mapping[str, Any] | None = None
-    # Parsed receipt model rows ({name, subdir, size, sha256}); in memory only, never in the snapshot.
-    models: tuple[Mapping[str, Any], ...] = ()
     model_cache_root: str | None = None
 
     @property
@@ -400,8 +406,9 @@ class RemotePlacement:
         self.source_root = source_root
         self.leave_running = leave_running
         self.pod_id = pod_id
-        self._verify_fn = verify_fn or _default_verify
-        self._ffprobe_fn = ffprobe_fn or _default_ffprobe
+        # The h3 caller passes its own verify/ffprobe; this module imports no h3 code.
+        self._verify_fn = verify_fn
+        self._ffprobe_fn = ffprobe_fn
         self._command_argv = command_argv
         self._clock = clock
         self._sleep = sleep
@@ -410,6 +417,17 @@ class RemotePlacement:
         self._preparation_seconds: float | None = None
 
     # -- public ------------------------------------------------------------
+
+    def begin_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+        """Bookkeeping for commands on an exact existing claim, under one preparation bound."""
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        self._preparation_seconds = deadline_seconds
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        run_id = uuid.uuid4().hex
+        return RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
 
     def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
                         installation: RunPodInstallation | None = None,
@@ -764,9 +782,6 @@ class RemotePlacement:
             "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
             "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
         }
-        from astrid.core.generation.target_inventory import rows_from_receipt
-        # The receipt parse above verified every row's sha256, bytes and path.
-        state.models = rows_from_receipt(saved.models, installation.root)
         return True
 
     # -- step 4 ------------------------------------------------------------
@@ -911,6 +926,8 @@ class RemotePlacement:
             raise DigestMismatch("downloaded candidate does not match the composition receipt digest")
 
     def _verify(self, state: RemoteRun, result: Mapping[str, Any]) -> None:
+        if self._verify_fn is None or self._ffprobe_fn is None:
+            raise RemotePlacementError("the remote h3 run requires its caller's verify and ffprobe checks")
         candidate = result.get("candidate")
         if candidate:
             self._ffprobe_fn(Path(str(candidate)))
@@ -961,29 +978,6 @@ class RemotePlacement:
             },
             "remote_steps": list(state.steps),
         }
-
-
-# ----------------------------------------------------------------------------
-# Default verification on the downloaded copies
-# ----------------------------------------------------------------------------
-
-
-def _default_ffprobe(path: Path) -> None:
-    from astrid.packs.h3_av.actions.verify.verify import _probe_strict
-
-    _probe_strict(path)
-
-
-def _default_verify(out: Path, result: Mapping[str, Any]) -> None:
-    from astrid.packs.h3_av.actions.verify.verify import verify_candidate
-
-    preparation = json.loads(Path(str(result["preparation"])).read_text(encoding="utf-8"))
-    composition = json.loads(Path(str(result["composition"])).read_text(encoding="utf-8"))
-    verify_candidate(
-        preparation=preparation,
-        composition=composition,
-        candidate=Path(str(result["candidate"])),
-    )
 
 
 # ----------------------------------------------------------------------------
