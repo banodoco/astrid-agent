@@ -52,3 +52,23 @@ def test_archive_refuses_existing_destination_symlinks_before_writing(tmp_path):
     with pytest.raises(ValueError, match='symlink'):
         read_archive(archive, root)
     assert not list(outside.iterdir())
+
+
+def test_archive_checks_the_file_map_document_before_reading(tmp_path):
+    source = tmp_path / 'mapping.json'
+    source.write_text('{}')
+    linked = tmp_path / 'linked.json'
+    linked.symlink_to(source)
+    with pytest.raises(ValueError, match='not a regular file'):
+        write_archive(tmp_path / 'inputs.zip', {'assets': str(linked)}, [{'name': 'assets', 'type': 'file_map'}])
+
+
+def test_archive_maps_only_declared_file_identities(tmp_path):
+    source = tmp_path / 'source.txt'
+    source.write_text('content')
+    archive = write_archive(tmp_path / 'inputs.zip', {'file': str(source), 'scalar': str(source)},
+                            [{'name': 'file', 'type': 'file'}])
+    seen = []
+    values = read_archive(archive, tmp_path / 'pod', map_file=lambda path: seen.append(path) or 'remote/source.txt')
+    assert values == {'file': 'remote/source.txt', 'scalar': str(source)}
+    assert len(seen) == 1

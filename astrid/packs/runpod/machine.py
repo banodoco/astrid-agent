@@ -552,6 +552,8 @@ class RunPodMachine:
         staging.mkdir(parents=True, exist_ok=True)
         shipped: dict[str, Any] = {}
         for name, value in sorted(job.inputs.items()):
+            if name == "entry_inputs":
+                continue  # this controller-side envelope becomes the job's public inputs below
             if name in job.files:
                 local = Path(str(value))
                 if local.is_symlink() or not local.is_file():
@@ -562,19 +564,13 @@ class RunPodMachine:
             else:
                 shipped[name] = value
         public_inputs = {}
-        if job.entry and shipped.get("entry_inputs"):
+        if job.entry and job.inputs.get("entry_inputs"):
             from astrid.core.generation.job_inputs import read_archive
-            values = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs")
-            def ship(value):
-                if isinstance(value, dict):
-                    return {name: ship(item) for name, item in value.items()}
-                if isinstance(value, str) and value.startswith(str(staging / "entry-inputs") + "/"):
-                    local = Path(value)
-                    remote = f"{remote_root}/in/entry-{local.name}"
-                    placement._put_checked(state, local, remote)
-                    return remote
-                return value
-            public_inputs = {name: ship(value) for name, value in values.items()}
+            def ship(local):
+                remote = f"{remote_root}/in/entry-{local.name}"
+                placement._put_checked(state, local, remote)
+                return remote
+            public_inputs = read_archive(Path(str(job.inputs["entry_inputs"])), staging / "entry-inputs", map_file=ship)
         body = {"schema": "astrid.machine-job.v1", "entry": job.entry, "mode": job.mode, "align": job.align,
                 "task_identity": job.task_id, "attempt_identity": job.attempt_id,
                 "idempotency_key": f"remote:{job.task_id}:{job.attempt_id}",

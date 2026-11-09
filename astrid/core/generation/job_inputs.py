@@ -6,7 +6,7 @@ import shutil
 import stat
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 SCHEMA = 'astrid.entry-inputs.v1'
 MAX_BYTES = 16 * 1024**3
@@ -18,10 +18,14 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
     files, file_inputs, file_maps = {}, {}, {}
     inputs = dict(values)
 
-    def member(value):
+    def regular_file(value):
         source = Path(str(value)).expanduser().absolute()
         if any(parent.is_symlink() for parent in (source, *source.parents)) or not source.is_file():
             raise ValueError(f'entry input is not a regular file: {source}')
+        return source
+
+    def member(value):
+        source = regular_file(value)
         name = f'files/{len(files)}{source.suffix}'
         files[name] = source
         return name
@@ -36,7 +40,7 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
         elif kind == 'file_map':
             value = inputs.pop(name)
             if isinstance(value, (str, Path)):
-                value = json.loads(Path(value).read_text())
+                value = json.loads(regular_file(value).read_text())
             if not isinstance(value, Mapping):
                 raise ValueError(f'entry input {name!r} must be a file map')
             file_maps[name] = {key: member(item) for key, item in value.items()}
@@ -50,12 +54,13 @@ def write_archive(path: Path, values: Mapping[str, Any], ports: list[dict[str, A
     return path
 
 
-def read_archive(path: Path, destination: Path) -> dict[str, Any]:
+def read_archive(path: Path, destination: Path, *,
+                 map_file: Callable[[Path], str] = str) -> dict[str, Any]:
     """Validate all members before writing, then materialize only declared regular files."""
     with zipfile.ZipFile(path) as archive:
         infos = archive.infolist()
         names = [item.filename for item in infos]
-        if len(names) != len(set(names)) or 'inputs.json' not in names:
+        if len(names) > 1024 or len(names) != len(set(names)) or 'inputs.json' not in names:
             raise ValueError('entry inputs archive contains duplicate or missing members')
         if sum(item.file_size for item in infos) > MAX_BYTES or archive.getinfo('inputs.json').file_size > 1024**2:
             raise ValueError('entry inputs archive is too large')
@@ -78,7 +83,7 @@ def read_archive(path: Path, destination: Path) -> dict[str, Any]:
         expected = {'inputs.json', *members}
         if set(names) != expected:
             raise ValueError('entry inputs archive contains undeclared members')
-        if any(item.is_dir() or stat.S_ISLNK(item.external_attr >> 16) for item in infos):
+        if any(item.is_dir() or stat.S_IFMT(item.external_attr >> 16) not in (0, stat.S_IFREG) for item in infos):
             raise ValueError('entry inputs archive members must be regular files')
         root = destination.absolute()
         if any(parent.is_symlink() for parent in (root, *root.parents)):
@@ -91,6 +96,7 @@ def read_archive(path: Path, destination: Path) -> dict[str, Any]:
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(name) as source, target.open('wb') as output:
                 shutil.copyfileobj(source, output)
-        return {**inputs, **{name: str(root / member) for name, member in file_inputs.items()},
-                **{name: {key: str(root / member) for key, member in mapping.items()}
+        mapped = {member: map_file(root / member) for member in set(members)}
+        return {**inputs, **{name: mapped[member] for name, member in file_inputs.items()},
+                **{name: {key: mapped[member] for key, member in mapping.items()}
                    for name, mapping in file_maps.items()}}
