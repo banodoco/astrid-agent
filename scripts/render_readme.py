@@ -10,8 +10,10 @@ BANNER = """
 ### Give this to your agent (recommended)
 
 ```text
-Help me set up Astrid on this computer. Follow:
+Help me set up Astrid on this computer. Follow the onboarding skill at
 https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md
+without installing it. Show me the setup choices and let me change them
+before you run anything.
 
 Preserve my existing work and credentials, confirm that the
 Runtime is connected, and help me begin at https://astrid.haus.
