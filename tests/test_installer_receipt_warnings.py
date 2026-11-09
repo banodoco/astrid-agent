@@ -182,3 +182,14 @@ def test_plain_recovery_restoring_an_older_release_is_repaired_and_keeps_its_rea
     assert out.reason == "recovered-previous-version"
     assert out.start is None
     assert "An earlier update was interrupted" in " ".join(out.headline())
+
+
+# --- The Windows upgrade refusal stops before any change: it is a refusal (exit 3), not a failure.
+
+def test_windows_upgrade_refusal_settles_as_not_updated_with_exit_3():
+    from astrid.installer.boundary_handoff import WINDOWS_UPGRADE_REFUSAL
+
+    r0 = _state("runtime", 0)
+    out = settle(Request("install"), r0, lambda: r0, failure=ValueError(WINDOWS_UPGRADE_REFUSAL))
+    assert out.kind == "not-updated" and out.exit_code == 3
+    assert out.reason == "windows-upgrade-unsupported"
