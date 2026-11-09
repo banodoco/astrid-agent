@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shlex
@@ -82,6 +83,16 @@ def _systemd_path(value: Path) -> str:
     return str(value).replace("%", "%%")
 
 
+def _home_field(job: dict) -> dict:
+    """The home a new descriptor pins. A legacy record without one gets no field; liveness never reads it."""
+    if job.get("home") is None:
+        return {}
+    home = job["home"]
+    if not isinstance(home, str) or not Path(home).is_absolute():
+        raise ValueError("The accepted update records no installation home.")
+    return {"home": home}
+
+
 def describe(job: dict, command: list[str], system: str | None = None) -> dict:
     """Return a durable ownership descriptor without registering an OS object."""
     system, command = _system(system), _argv(command)
@@ -93,7 +104,7 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
         return {"format": "astrid-update-platform/v1", "system": system,
                 "kind": "systemd-user-transient", "name": unit, "unit": unit,
                 "user": str(uid), "operation_id": operation, "program_root": str(root),
-                "log_path": str(log_path), "command": command}
+                "log_path": str(log_path), "command": command, **_home_field(job)}
     if system == "darwin":
         uid = os.getuid()
         label = f"astrid-update-{operation}"
@@ -101,14 +112,16 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
                 "kind": "launchd-gui-one-shot", "name": label, "label": label,
                 "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
                 "log_path": str(log_path), "program_root": str(root),
-                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command}
+                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command,
+                # launchd gives a job the real home; the install record is found through HOME, so pin a recorded one.
+                **_home_field(job)}
     user_sid = _windows_sid()
     task_name = f"astrid-update-{operation}"
     return {"format": "astrid-update-platform/v1", "system": system,
             "kind": "scheduled-task-on-demand", "name": task_name, "task_name": task_name,
             "user": user_sid, "operation_id": operation,
             "log_path": str(log_path), "program_root": str(root),
-            "command": command}
+            "command": command, **_home_field(job)}
 
 
 def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
@@ -170,10 +183,17 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
     values = [("Label", descriptor["label"]), ("ProgramArguments", command),
               ("RunAtLoad", True),
               ("StandardOutPath", str(log_path)), ("StandardErrorPath", str(log_path))]
+    if descriptor.get("home"):
+        values.insert(2, ("EnvironmentVariables", {"HOME": descriptor["home"]}))
     for key, value in values:
         ET.SubElement(dictionary, "key").text = key
         if isinstance(value, bool):
             ET.SubElement(dictionary, "true" if value else "false")
+        elif isinstance(value, dict):
+            nested = ET.SubElement(dictionary, "dict")
+            for name, item in value.items():
+                ET.SubElement(nested, "key").text = name
+                ET.SubElement(nested, "string").text = item
         elif isinstance(value, list):
             array = ET.SubElement(dictionary, "array")
             for item in value:
@@ -183,13 +203,53 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _worker_script(command: list[str], log: object) -> str:
+    """The Scheduled Task's worker wrapper. Its own statements stop on error; the worker's output is kept whole.
+
+    One writer per file. The wrapper owns only its own wrapper log, next to the job log. The worker owns the job
+    log on every platform. Under a stopping preference, the worker's first stderr line ends the wrapper, so only the
+    call runs with errors continuing; its whole output (including a startup traceback, before the worker takes over
+    the job log) goes to the wrapper log, and the worker's own exit code is the wrapper's. A missing exit code is a
+    failure.
+    """
+    wrapper_log = wrapper_log_path(log)
+    return ("$ErrorActionPreference = 'Stop'\n"
+            f"$exe = {_ps_quote(command[0])}\n"
+            f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
+            f"$wrapperLog = {_ps_quote(str(wrapper_log))}\n"
+            "try {\n"
+            "  $ErrorActionPreference = 'Continue'\n"
+            "  & $exe @workerArgs *>> $wrapperLog\n"
+            "  $code = $LASTEXITCODE\n"
+            "  $ErrorActionPreference = 'Stop'\n"
+            "  if ($null -eq $code) { $code = 1 }\n"
+            "  exit $code\n"
+            "} catch { $_ | Out-String | Add-Content -LiteralPath $wrapperLog; exit 1 }\n")
+
+
+def wrapper_log_path(log: object) -> Path:
+    """The wrapper's own log, beside the job log: astrid-update-<op>.wrapper.log."""
+    job_log = Path(str(log))
+    return job_log.with_name(job_log.stem + ".wrapper.log")
+
+
 def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def windows_powershell_path() -> str:
+    """Absolute Windows PowerShell 5.1 path.
+
+    The Runtime service PATH ends at System32, and powershell.exe lives in
+    System32\\WindowsPowerShell\\v1.0, so the bare name cannot be started.
+    """
+    root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return str(root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
 def _encoded_ps(script: str) -> list[str]:
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    return [windows_powershell_path(), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
 
 
 def _write_private(path: Path, content: bytes) -> None:
@@ -211,6 +271,9 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
            system: str | None = None) -> None:
     """Register and start one transient job as the current user."""
     actual, name = _validate(descriptor, system)
+    if not isinstance(descriptor.get("home"), str):
+        # Only a launch pins the home a job runs under; a legacy record is never launched under the ambient one.
+        raise ValueError("A legacy-update-record has no installation home, so it is never launched under the ambient home.")
     command, log = _argv(command), Path(log_path)
     if not log.is_absolute():
         raise ValueError("The update job log path must be absolute.")
@@ -238,12 +301,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         sid = descriptor.get("user", "")
         if not isinstance(sid, str) or not sid.startswith("S-1-"):
             raise ValueError("The Scheduled Task update job has no current-user SID.")
-        worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                         f"$exe = {_ps_quote(command[0])}\n"
-                         f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                         f"$log = {_ps_quote(str(log))}\n"
-                         "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                         "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+        worker_script = _worker_script(command, log)
         worker_encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
         powershell_arguments = subprocess.list2cmdline(
             ["-NoProfile", "-NonInteractive", "-EncodedCommand", worker_encoded])
@@ -307,6 +365,112 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
     if state == "Running":
         return True
     raise RuntimeError(f"Unknown Scheduled Task update job state: {state}")
+
+
+# Task Scheduler informational codes that are not a worker's exit status:
+# ready, running, disabled, has not run, no more runs, not scheduled, queued.
+_WINDOWS_NOT_AN_EXIT = {0x41300, 0x41301, 0x41302, 0x41303, 0x41304, 0x41305, 0x41325}
+
+
+def parse_scheduled_task_result(observed: object) -> dict | None:
+    """Read Get-ScheduledTask/Get-ScheduledTaskInfo fields; None without a finished run.
+
+    ``LastRunTime`` is PowerShell's ``[string]`` form (invariant culture,
+    local time, MM/dd/yyyy HH:mm:ss), as captured on the live runner; it is
+    read in this machine's local time, the clock Task Scheduler used.
+    """
+    if not isinstance(observed, dict):
+        raise RuntimeError("The Scheduled Task result is unreadable.")
+    code, last_run = observed.get("LastTaskResult"), observed.get("LastRunTime")
+    if (observed.get("State") != "Ready" or type(code) is not int
+            or code in _WINDOWS_NOT_AN_EXIT or not isinstance(last_run, str) or not last_run):
+        return None
+    try:
+        from datetime import datetime
+        started = int(datetime.strptime(last_run, "%m/%d/%Y %H:%M:%S").timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
+    # LastTaskResult is a DWORD; report HRESULT-style values unsigned.
+    return {"exit_code": code & 0xFFFFFFFF, "evidence": "Scheduled Task State=Ready LastTaskResult",
+            "started_at": started, "bound": "start-time"}
+
+
+def parse_systemd_result(text: str) -> dict | None:
+    """Read ``systemctl show --timestamp=unix`` unit state; None without a finished run."""
+    fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    state, outcome = fields.get("ActiveState", ""), fields.get("Result", "")
+    status, started = fields.get("ExecMainStatus", ""), fields.get("ExecMainStartTimestamp", "")
+    if not status.isdecimal() or not started.startswith("@") or not started[1:].isdecimal():
+        return None
+    if state == "failed" or (state == "inactive" and outcome == "success"):
+        return {"exit_code": int(status), "evidence": f"systemd ActiveState={state} Result={outcome}",
+                "started_at": int(started[1:]), "bound": "start-time"}
+    return None
+
+
+def parse_launchd_result(text: str) -> dict | None:
+    """Read ``launchctl print`` state and last exit; None without a finished run.
+
+    launchd records no start time. A terminating signal without an exit code
+    is not read as an exit status.
+    """
+    state = re.search(r"(?m)^\s*state = (.+?)\s*$", text)
+    runs = re.search(r"(?m)^\s*runs = ([0-9]+)\s*$", text)
+    code = re.search(r"(?m)^\s*last exit code = (-?[0-9]+)\s*$", text)
+    if (not state or state.group(1) != "not running" or not runs or int(runs.group(1)) < 1
+            or not code or re.search(r"(?m)^\s*pid = [0-9]+\s*$", text)):
+        return None
+    return {"exit_code": int(code.group(1)), "evidence": "launchd state=not running last exit code",
+            "started_at": None, "bound": "command"}
+
+
+def finished_result(descriptor: dict, system: str | None = None) -> dict | None:
+    """Return the recorded object's exit status only when it has positively finished.
+
+    This is the same unit/task state ``is_active`` reads, plus the manager's
+    own record of how the run ended and of which run it was: its start time
+    (Task Scheduler, systemd) or, for launchd, which keeps no start time, the
+    exact loaded command (it carries the attempt's epoch and nonce). None
+    means no positive evidence: still running, never run, already absent
+    (nothing left to read), or a different loaded command. Query errors
+    raise; callers treat them as no evidence. The result is {"exit_code":
+    int, "evidence": str, "started_at": unix seconds or None, "bound":
+    "start-time" or "command"}.
+    """
+    actual, name = _validate(descriptor, system)
+    if actual == "linux":
+        result = _run(["systemctl", "--user", "show", name, "--timestamp=unix",
+                       "--property=ActiveState,Result,ExecMainStatus,ExecMainStartTimestamp"])
+        if result.returncode:
+            if result.returncode == 4:
+                return None
+            raise _failure("query", result)
+        return parse_systemd_result(result.stdout)
+    if actual == "darwin":
+        # Absent or foreign loaded command: no evidence (is_registered raises on a mismatch).
+        if is_registered(descriptor, descriptor.get("command"), system=actual) is not True:
+            return None
+        result = _run(["launchctl", "print", f"{descriptor['domain']}/{name}"])
+        if result.returncode:
+            raise _failure("query", result)
+        return parse_launchd_result(result.stdout)
+    script = ("$ErrorActionPreference = 'Stop'\n$all = @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -eq "
+              + _ps_quote(name) + " }); if ($all.Count -eq 0) { Write-Output 'ASTRID_NOT_FOUND'; exit 0 }; "
+              + "if ($all.Count -ne 1) { throw 'Ambiguous task identity' }; "
+              + "$i = Get-ScheduledTaskInfo -TaskName " + _ps_quote(name) + " -TaskPath '\\' -ErrorAction Stop; "
+              + "[ordered]@{ State=[string]$all[0].State; LastTaskResult=[int64]$i.LastTaskResult; "
+              + "LastRunTime=[string]$i.LastRunTime } | ConvertTo-Json -Compress\n")
+    result = _run(_encoded_ps(script))
+    if result.returncode:
+        raise _failure("query", result)
+    output = result.stdout.strip()
+    if output == "ASTRID_NOT_FOUND":
+        return None
+    try:
+        observed = json.loads(output.splitlines()[-1])
+    except (IndexError, ValueError) as failure:
+        raise RuntimeError("The Scheduled Task result is unreadable.") from failure
+    return parse_scheduled_task_result(observed)
 
 
 def is_registered(descriptor: dict, command: list[str], system: str | None = None) -> bool:
@@ -421,12 +585,7 @@ def is_registered(descriptor: dict, command: list[str], system: str | None = Non
         observed = __import__("json").loads(output)
     except (TypeError, ValueError) as failure:
         raise RuntimeError("The Scheduled Task update action is ambiguous.") from failure
-    worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                     f"$exe = {_ps_quote(command[0])}\n"
-                     f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                     f"$log = {_ps_quote(descriptor['log_path'])}\n"
-                     "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                     "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+    worker_script = _worker_script(command, descriptor["log_path"])
     encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
     args = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
     actions = observed.get("Actions") if isinstance(observed, dict) else None

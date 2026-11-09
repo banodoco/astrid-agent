@@ -30,6 +30,42 @@ try {
 '''
 
 
+_TREE_SCRIPT = r'''$ErrorActionPreference = 'Stop'
+try {
+  $rows = @(Get-CimInstance Win32_Process | Select-Object -First 1025 | ForEach-Object {
+    [pscustomobject]@{pid=[uint32]$_.ProcessId; ppid=[uint32]$_.ParentProcessId; name=[string]$_.Name; cmd=[string]$_.CommandLine}
+  })
+  ConvertTo-Json -InputObject @{processes=$rows} -Depth 4 -Compress
+} catch { exit 1 }
+'''
+TREE_LIMIT = 1024
+COMMAND_LIMIT = 240
+
+
+def tree_snapshot():
+    """The process tree, with each process's name and a bounded command line; diagnostics only, never a guard."""
+    result = {"status": "unavailable", "observed_at_utc": datetime.now(timezone.utc).isoformat(), "processes": []}
+    try:
+        completed = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _TREE_SCRIPT],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode:
+            return result
+        rows = json.loads(completed.stdout).get("processes")
+        if not isinstance(rows, list):
+            return result
+        result["status"] = "observed"
+        result["process_limit_reached"] = len(rows) > TREE_LIMIT
+        for row in rows[:TREE_LIMIT]:
+            if not isinstance(row, dict) or not _pid(row.get("pid")) or type(row.get("ppid")) is not int:
+                continue
+            result["processes"].append({"pid": row["pid"], "ppid": row["ppid"],
+                                        "name": str(row.get("name", ""))[:64],
+                                        "command": str(row.get("cmd") or "")[:COMMAND_LIMIT]})
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, RecursionError):
+        pass
+    return result
+
+
 def _pid(value):
     return type(value) is int and 0 < value <= 0xffffffff
 

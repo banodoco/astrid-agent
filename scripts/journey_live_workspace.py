@@ -75,7 +75,7 @@ def snapshot_lookup_diagnostic(timeline, keys):
     return {"timeline_type": _json_type(timeline),
             "timeline_head_revision_id": _lookup_field(timeline, "head_revision_id"),
             "keys_type": _json_type(keys),
-            "keys_revision": _lookup_field(keys, "revision")}
+            "keys_head": _lookup_field(keys, "head")}
 
 
 def _valid_snapshot_lookup(value):
@@ -86,13 +86,13 @@ def _valid_snapshot_lookup(value):
                      {"null", "boolean", "number", "string", "object", "array", "other"})
                 and (field["present"] or field["type"] is None)
                 and (not field["present"] or field["type"] is not None))
-    return (isinstance(value, dict) and set(value) == {"timeline_type", "timeline_head_revision_id", "keys_type", "keys_revision"}
+    return (isinstance(value, dict) and set(value) == {"timeline_type", "timeline_head_revision_id", "keys_type", "keys_head"}
             and type(value["timeline_type"]) is str
             and value["timeline_type"] in {"null", "boolean", "number", "string", "object", "array", "other"}
             and type(value["keys_type"]) is str
             and value["keys_type"] in {"null", "boolean", "number", "string", "object", "array", "other"}
             and valid_field(value["timeline_head_revision_id"])
-            and valid_field(value["keys_revision"]))
+            and valid_field(value["keys_head"]))
 
 
 def valid_failure_diagnostic(value):
@@ -165,15 +165,19 @@ def seed(client, project, generation, task_id=None, create_project=False):
         "metadata": {"seed": "release0-to-release1"}}, key="project-" + generation)["data"]["project_id"]
     timeline = "tst-c1-" + generation
     base = path("projects", project_id, "timelines", timeline)
+    # The smallest authentic route: create the timeline the way a Release 9 user does, then
+    # record what the public HTTP timeline resource serves. The public create and GET omit
+    # the revision fields, so only the public identity fields are recorded and checked.
     client.request("POST", path("projects", project_id, "timelines"), {
         "timeline_id": timeline, "name": "User edit " + generation}, key=timeline)
-    revision = "tst-c1-parent-" + generation
-    client.request("POST", base + "/composition-revisions", {
-        "project_id": project_id, "timeline_id": timeline, "expected_head": None,
-        "parent_revision_id": revision, "internal_timeline_revisions": [], "shot_revisions": [],
-        "parent_composition": {"config": {"tracks": [], "clips": [], "metadata": {"user_note": generation}},
-                               "registry": {"assets": {}}, "clips": [], "occurrences": []},
-    }, key="composition-" + generation)
+    public = client.request("GET", base)
+    if not isinstance(public, dict) or public.get("name") != "User edit " + generation:
+        raise ValueError("Created timeline is not served with its requested name")
+    if "head_revision_id" not in public:
+        raise ValueError("Created timeline serves no head field")
+    head = public["head_revision_id"]
+    if head is not None and (not isinstance(head, str) or not head):
+        raise ValueError("Created timeline serves an invalid head field")
     preference_path = path("preferences", "project") + "?project_id=" + quote(project_id, safe="")
     preferences = client.request("GET", preference_path)
     if preferences["version"] != 0 or preferences["content"]:
@@ -183,7 +187,7 @@ def seed(client, project, generation, task_id=None, create_project=False):
         key="preferences-" + generation)
     payload = ("C1 object " + generation + "\n").encode()
     client.request("POST", path("objects"), payload, key="object-" + generation, binary=True)
-    return {"project": project_id, "timeline": timeline, "revision": revision,
+    return {"project": project_id, "timeline": timeline, "head": head,
             "object_digest": hashlib.sha256(payload).hexdigest(), "generation": generation}
 
 
@@ -192,19 +196,17 @@ def snapshot(client, keys):
     base = path("projects", keys["project"], "timelines", keys["timeline"])
     timeline = client.request("GET", base)
     lookup_diagnostic = snapshot_lookup_diagnostic(timeline, keys)
+    generation = keys["generation"]
+    # The public timeline resource is the only timeline identity a user's HTTP client sees.
+    # Its name and head must be the ones the seed recorded from that same resource.
     try:
-        if timeline["head_revision_id"] != keys["revision"]:
-            raise ValueError("Seeded canonical composition is no longer the head")
+        if timeline["name"] != "User edit " + generation:
+            raise ValueError("Seeded timeline identity differs from the requested data")
+        if timeline["head_revision_id"] != keys["head"]:
+            raise ValueError("Seeded timeline head differs from the seeded head")
     except (KeyError, TypeError) as exc:
         exc.safe_snapshot_lookup = lookup_diagnostic
         raise
-    revision = client.request("GET", base + "/composition-revisions/" + quote(keys["revision"], safe=""))
-    content = revision["payload"]
-    generation = keys["generation"]
-    if (timeline["name"] != "User edit " + generation
-            or content["config"] != {"tracks": [], "clips": [], "metadata": {"user_note": generation}}
-            or content["registry"] != {"assets": {}}):
-        raise ValueError("Seeded canonical timeline content differs from the requested data")
     preference_path = path("preferences", "project") + "?project_id=" + quote(keys["project"], safe="")
     preferences = client.request("GET", preference_path)
     if preferences["content"] != "Keep user changes " + generation:
@@ -224,8 +226,7 @@ def snapshot(client, keys):
             or health.get("schema_digest") != expected_schema_digest):
         raise ValueError("Runtime health does not match the selected schema")
     return {"project": {k: project[k] for k in ("project_id", "slug", "name", "metadata")},
-            "timeline": {"name": timeline["name"], "head": timeline["head_revision_id"],
-                         "revision": {k: revision[k] for k in ("revision_id", "content_digest", "payload")}},
+            "timeline": {"name": timeline["name"], "head": timeline["head_revision_id"]},
             "preferences": {k: preferences[k] for k in ("content", "version")},
             "task": {k: task[k] for k in ("task_id", "state", "spec", "result")},
             "cas_sha256": hashlib.sha256(payload).hexdigest(),

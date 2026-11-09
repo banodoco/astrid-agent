@@ -452,12 +452,15 @@ def _atomic_write_text(path: Path, value: str) -> None:
 
 
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
-           env_file: Path | None = None, expected_lock: Path | None = None) -> str:
+           env_file: Path | None = None, expected_lock: Path | None = None, home: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
     argv = command(version, data, windows=system == "win32", log=log, env_file=env_file,
                    expected_lock=expected_lock)
     service_env = dict(version.env)
     if system == "darwin":
+        # launchd would hand the agent the account's real HOME, but the install record and
+        # the Runtime's own logs are found through HOME. Pin the install-time home so they agree.
+        service_env["HOME"] = str(home if home is not None else Path.home())
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
             # KeepAlive's SuccessfulExit condition is false: launchd respawns
@@ -1194,6 +1197,22 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
+    def _launch_home(self) -> Path:
+        """The HOME the Runtime service must run with.
+
+        An update runs in a launchd job whose HOME is the account's real home, so this
+        process's home can differ from the install-time home. Keep the home an existing
+        darwin plist pins; a plist from before the pin has none, so use this process's home.
+        """
+        if self.system == "darwin" and self.path.is_file():
+            try:
+                pinned = plistlib.loads(self.path.read_bytes()).get("EnvironmentVariables", {}).get("HOME")
+            except Exception:  # an unreadable plist is rewritten, never trusted for its home
+                pinned = None
+            if isinstance(pinned, str) and pinned:
+                return Path(pinned)
+        return self.home
+
     def register(self, version: Version, data: Path) -> None:
         if not self.env_file.exists():
             write_json(self.env_file, {})
@@ -1208,7 +1227,7 @@ class Service:
             user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
             _atomic_write_text(self.path, render(
                 self.system, version, data, self.log, user=user, env_file=self.env_file,
-                expected_lock=self.activation_lock_path,
+                expected_lock=self.activation_lock_path, home=self._launch_home(),
             ))
             if self.system == "darwin":
                 self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
