@@ -72,6 +72,7 @@ class Outcome:
     target: int | None = None
     reason: str | None = None
     mode: str = "install"
+    log: str | None = None  # absolute path of install.log, named in the Details line
 
     @property
     def exit_code(self) -> int:
@@ -80,6 +81,12 @@ class Outcome:
         return EXIT_CODES[self.kind]
 
     def headline(self) -> list[str]:
+        lines = self._outcome_lines()
+        if self.exit_code != 0:
+            lines += next_steps(self.log)
+        return lines
+
+    def _outcome_lines(self) -> list[str]:
         def release(value):
             return "an unknown release" if value is None else f"Release {value}"
         why = REASONS.get(self.reason or "installer-bug", REASONS["installer-bug"])
@@ -105,7 +112,7 @@ class Outcome:
         if self.kind == "rolled-back":
             return ["Astrid did NOT update: the new version didn't start.",
                     f"Astrid went back to {release(self.still)}. Your projects are unchanged.",
-                    "Next: run the same command again. If it fails twice, send the diagnostics to support."]
+                    "Run the same command again. If it fails twice, do the next step."]
         still = "Nothing was installed." if self.still is None else f"Astrid is still {release(self.still)}."
         return [f"Astrid did NOT update: {why}", still]
 
@@ -113,6 +120,22 @@ class Outcome:
         return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,
                 "reason_line": REASONS.get(self.reason) if self.reason else None,
                 "headline": self.headline()[0], "finished_at": int(time.time())}
+
+
+NEXT_STEP = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send the file to support."
+
+
+CONSOLE_DETAILS = "Details: shown above in this window (the installer log was not used)."
+
+
+def next_steps(log: str | Path | None = None) -> list[str]:
+    """The two closing lines of every non-zero outcome; the one place they are written.
+
+    ``log`` is the absolute install.log this run wrote. When the run could not
+    use it safely (before selection, or a log inside a selected root), the
+    diagnostics went to this window instead, and the line says so.
+    """
+    return [NEXT_STEP, f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
 def reason_of(failure: BaseException | None) -> str:

@@ -338,7 +338,8 @@ class _Run:
         self.operation_id: str | None = None
         self.started_at: int | None = None
         self.protected: list[Path] = []
-        self.log: Path | None = None  # the installer log, once it is known to be outside every root
+        self.log: Path | None = None
+        self.log_path: Path | None = None  # the configured install.log, even when it was not usable  # the installer log, once it is known to be outside every root
 
     def observe(self, home: Path, system: str, root: Path | None) -> None:
         import secrets
@@ -376,6 +377,10 @@ class _Run:
                          lambda: (None if self.home is None else
                                   Installation.resolve(self.home, system=self.system, root=self.root)),
                          failure=failure, rolled_back=rolled_back)
+        from dataclasses import replace
+
+        # Every non-zero outcome ends with Next and Details (outcome.next_steps).
+        outcome = replace(outcome, log=str(self.log) if self.log is not None else None)
         if self.log is not None:
             # Beside install.log, which diagnostics already read; never in a selected root.
             write_record(self.log.with_name(RECORD), outcome, *self.protected,
@@ -474,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         log_path = platform.log_dir() / "install.log"
+        run.log_path = log_path
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log_path, uv, process_control=process_control)
@@ -873,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
                     traceback.print_exc(file=stream)
         except OSError:
             log = None
+            run.log = None  # the log became unusable: Details points at this window instead
             traceback.print_exc()
         print(FAILURE_MESSAGE)
         if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
@@ -881,8 +888,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(failure.details, ensure_ascii=False))
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
-        if log is not None:
-            print(f"Details: {log}")
+        if log is not None and not settled:
+            print(f"Details: {log}")  # settled runs name it in the receipt's closing lines
         if settled:
             return run.finish(failure=failure)
         return 1
