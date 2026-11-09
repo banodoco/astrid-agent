@@ -835,8 +835,8 @@ def test_cli_handled_handoff_refuses_policy_change_and_reports_saved_policy(case
     assert cli.main([*args, '--autostart', 'off']) == 0
     out = capsys.readouterr().out
     assert 'Astrid updated: Release 0 → Release 1.' in out and 'handoff handled' not in out
-    assert 'Astrid setup summary:' in out
-    assert 'Astrid will not start at sign-in' in out  # saved policy, not defaults
+    assert 'Astrid setup summary:' not in out  # the summary is in install.log (card 2)
+    assert 'Your choice: start at sign-in is off.' in out  # saved policy, not defaults
     assert read_json(handoff.archive_path(c.service))['phase'] == 'complete'
     assert read_json(c.service.selection)['choices'] == saved
 

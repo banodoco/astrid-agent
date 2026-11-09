@@ -113,7 +113,10 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
     lines = capsys.readouterr().out.splitlines()
     assert "Recovered your previous version — run Update again" in lines
-    assert lines[-1].startswith("  Way back: ")
+    # The receipt ends the output; the Way back line is in install.log (Plan 29 R11 card 2).
+    assert lines[-1] == f"Details: {(tmp_path / 'logs' / 'install.log').absolute()}"
+    assert not any(line.startswith("  Way back: ") for line in lines)
+    assert "  Way back: " in (tmp_path / "logs" / "install.log").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("update_flag", [False, True], ids=["install", "update"])

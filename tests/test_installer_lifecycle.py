@@ -1118,7 +1118,11 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     output = capsys.readouterr()
     lines = output.out.splitlines()
     assert lines[:2] == [FAILURE_MESSAGE, message]
-    assert "Astrid setup summary:" in lines  # the consent summary now follows a failed run
+    # No install.log was used, so the summary is shown above the receipt in this window,
+    # and the receipt's Details line, last, says so.
+    assert "Astrid setup summary:" in lines
+    assert lines.index("Astrid setup summary:") < lines.index("Nothing was installed.")
+    assert lines[-1] == "Details: shown above in this window (the installer log was not used)."
     assert message in output.err
     assert not (tmp_path / "logs").exists()  # selection was never resolved
 
@@ -1170,7 +1174,8 @@ def test_cli_summary_hides_generic_subprocess_and_service_log_diagnostics(
     assert str(tmp_path / "service.log") not in output
     # Backend construction fails before any installer log is selected; pre-main
     # then keeps diagnostics on the console and prints no Details path.
-    assert "Details:" not in output
+    assert not any(line.startswith("Details: /") for line in output.splitlines())
+    assert "Details: shown above in this window (the installer log was not used)." in output
 
 
 @pytest.mark.parametrize(("sandbox_flag", "expected_control"), [(None, "strict"), ("--sandbox", "sandbox")])

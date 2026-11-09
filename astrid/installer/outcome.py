@@ -72,6 +72,7 @@ class Outcome:
     target: int | None = None
     reason: str | None = None
     mode: str = "install"
+    log: str | None = None  # absolute path of install.log, named in the Details line
 
     @property
     def exit_code(self) -> int:
@@ -80,6 +81,12 @@ class Outcome:
         return EXIT_CODES[self.kind]
 
     def headline(self) -> list[str]:
+        lines = self._outcome_lines()
+        if self.exit_code != 0:
+            lines += next_steps(self.log, self.reason)
+        return lines
+
+    def _outcome_lines(self) -> list[str]:
         def release(value):
             return "an unknown release" if value is None else f"Release {value}"
         why = REASONS.get(self.reason or "installer-bug", REASONS["installer-bug"])
@@ -101,11 +108,18 @@ class Outcome:
             else:
                 first = f"Astrid did NOT update. It is still {release(self.still)}"
                 first += f"; {release(self.target)} is available." if self.target is not None else "."
-            return [first, f"Why: {why}", "Your projects are safe — nothing was changed."]
+            # Only a run that installed nothing may say nothing was changed: a release that was
+            # installed but is not running is a change.
+            safe = ("Your projects are safe." if self.reason == "runtime-not-running"
+                    else "Your projects are safe — nothing was changed.")
+            return [first, f"Why: {why}", safe]
         if self.kind == "rolled-back":
             return ["Astrid did NOT update: the new version didn't start.",
                     f"Astrid went back to {release(self.still)}. Your projects are unchanged.",
-                    "Next: run the same command again. If it fails twice, send the diagnostics to support."]
+                    "Run the same command again. If it fails twice, do the next step."]
+        if self.still is None and self.start is None:
+            # A fresh install that failed has nothing to update; it was not installed.
+            return [f"Astrid was NOT installed: {why}", "Nothing was installed."]
         still = "Nothing was installed." if self.still is None else f"Astrid is still {release(self.still)}."
         return [f"Astrid did NOT update: {why}", still]
 
@@ -113,6 +127,56 @@ class Outcome:
         return {"format": FORMAT, **asdict(self), "exit_code": self.exit_code,
                 "reason_line": REASONS.get(self.reason) if self.reason else None,
                 "headline": self.headline()[0], "finished_at": int(time.time())}
+
+
+# The support line: only for a bug in Astrid or an unexplained error.
+NEXT_STEP = "Next: open astrid.haus > Settings > Updates > Download diagnostics, and send it to support."
+
+# One next action for each reason; every reason has its own, and only
+# installer-bug and error send the person to support.
+NEXT_STEPS = {
+    "self-update-too-old": "Next: run the install command once; after that Update now works.",
+    "disk-space": "Next: free up at least the amount named above, then run the same command again.",
+    "busy": "Next: quit the other Astrid window (or let the other installer finish), "
+            "then run the same command again.",
+    "needs-repair": "Next: run the install command without --update to repair this installation, "
+                    "then update again.",
+    "other-runtime-running": "Next: stop the other Astrid, then run the same command again.",
+    "windows-upgrade-unsupported": "Next: this Windows version can't be upgraded this way. "
+                                   "Open astrid.haus > Settings > Updates > Download diagnostics "
+                                   "to see what is installed.",
+    "pinokio-managed": "Next: use the Update button in Pinokio.",
+    "source-checkout": "Next: update the source checkout, then run the same command again.",
+    "consent-required": "Next: run the install command again and accept the setup choices, "
+                        "or answer the prompts.",
+    "declined": "Next: nothing to do. To install later, run the install command again "
+                "and accept the setup choices.",
+    "recovered-previous-version": "Next: run the same command again to update.",
+    "runtime-not-running": "Next: run the same command again so Astrid restarts on the new release.",
+    "refused": "Next: fix what the message above names, then run the same command again.",
+    "error": NEXT_STEP,
+    "installer-bug": NEXT_STEP,
+}
+
+
+def next_step(reason: str | None) -> str:
+    """The next action for ``reason``; an unknown or missing reason is an installer bug."""
+    return NEXT_STEPS.get(reason or "installer-bug", NEXT_STEPS["installer-bug"])
+
+
+CONSOLE_DETAILS = "Details: shown above in this window (the installer log was not used)."
+
+
+def next_steps(log: str | Path | None = None, reason: str | None = None) -> list[str]:
+    """The two closing lines of every non-zero outcome; the one place they are written.
+
+    The Next line is ``reason``'s own action (``next_step``).
+
+    ``log`` is the absolute install.log this run wrote. When the run could not
+    use it safely (before selection, or a log inside a selected root), the
+    diagnostics went to this window instead, and the line says so.
+    """
+    return [next_step(reason), f"Details: {Path(log).absolute()}" if log else CONSOLE_DETAILS]
 
 
 def reason_of(failure: BaseException | None) -> str:
