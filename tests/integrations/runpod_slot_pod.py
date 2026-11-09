@@ -62,6 +62,14 @@ def _combo(spec):
     return None
 
 
+def _set_menu(spec, names):
+    """Replace a combo spec's menu, keeping its format (a list head, or COMBO with options)."""
+    if isinstance(spec[0], list):
+        spec[0] = list(names)
+    else:
+        spec[1]["options"] = list(names)
+
+
 def real_class(name: str, extra: dict | None = None) -> dict:
     """One class as ComfyUI's /object_info serves it, from a packaged real schema."""
     if extra and name in extra:
@@ -111,9 +119,7 @@ def fill_loader_menus(info: dict, files: list[str]) -> dict:
                     parts = path.split("/models/", 1)[-1]
                     if folder is None or parts.startswith(folder + "/") or "/" + folder + "/" in "/" + parts:
                         names.append(parts.split("/", 1)[-1] if folder and parts.startswith(folder + "/") else parts)
-                spec[0] = sorted(set(names))
-                if isinstance(spec[0], str):
-                    pass
+                _set_menu(spec, sorted(set(names)))
     return info
 
 
@@ -195,7 +201,7 @@ class PodComfy:
             # These list the pod's input directory, which is whatever was uploaded.
             for field, spec in (info.get(name, {}).get("input", {}).get("required") or {}).items():
                 if _combo(spec) is not None and field in ("image", "video", "audio"):
-                    spec[0] = sorted(self.input_files)
+                    _set_menu(spec, sorted(self.input_files))
         return info
 
     def object_info(self):
