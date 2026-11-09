@@ -17,9 +17,9 @@ from .masks import (
     interval_difference,
     merge_intervals,
 )
-from ...shared.errors import PreparationError
-from ...shared.request import H3Request, H3RequestError, _asset_ids
-from ...shared.request_v2 import branch_for
+from .errors import PreparationError
+from .request import H3Request, H3RequestError, _asset_ids
+from .request_v2 import branch_for
 
 
 class _SourceAVError(H3RequestError, PreparationError):
@@ -95,7 +95,7 @@ def _resolve_assets(request: H3Request, asset_map: Mapping[str, str] | None) -> 
 def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> None:
     """Fail before scheduling when a resolved video mask breaks the contract."""
 
-    from ...shared.compose import CompositionError, iter_mask_frames, probe_mask
+    from .compose import CompositionError, iter_mask_frames, probe_mask
 
     resolved = {
         str(record["asset"]): Path(str(record["path"]))

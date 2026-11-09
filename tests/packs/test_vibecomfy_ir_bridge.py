@@ -1168,7 +1168,7 @@ def _t9_child_case(tmp_path: Path):
 
     source_paths = (
         "tests/fixtures/h3_cpu/approved_character_swap_cpu_boundary.py",
-        "astrid/packs/h3_av/shared/generation.py", "astrid/packs/h3_av/actions/compile/compile.py",
+        "astrid/packs/h3_av/shared/generation.py", "astrid/packs/h3_av/shared/compile.py",
         "astrid/packs/vibecomfy/actions/run/run.py",
         "astrid/packs/vibecomfy/pack.yaml",
     )

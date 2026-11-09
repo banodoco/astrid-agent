@@ -464,7 +464,7 @@ def _spatial_video_masks(
         if not mask_id and ("rectangle" in selector or selector.get("full_frame") is True):
             if source is None:
                 raise CompositionError("regional video generation requires an authoritative source")
-            from ..actions.prepare.static_regions import resolve_static_region
+            from .static_regions import resolve_static_region
             from .request import H3RequestError
             from .spec import Region
 

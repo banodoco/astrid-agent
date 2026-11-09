@@ -12,7 +12,7 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
-from ...shared.request import H3Request
+from .request import H3Request
 
 
 class MaskScheduleError(ValueError):

@@ -12,9 +12,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..actions.compile.compile import CompilationError, compile_preparation
-from ..actions.prepare.prepare import prepare_request, write_preparation
-from ..actions.prepare.static_regions import resolve_static_region
+from .compile import CompilationError, compile_preparation
+from .prepare import prepare_request, write_preparation
+from .static_regions import resolve_static_region
 
 from .engine_facts import facts
 from .generation import generation_timing

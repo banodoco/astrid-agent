@@ -15,9 +15,9 @@ from typing import Mapping, NoReturn
 
 from PIL import Image
 
-from ...shared.compose import CompositionError, probe_mask
-from ...shared.request import H3RequestError
-from ...shared.spec import Region
+from .compose import CompositionError, probe_mask
+from .request import H3RequestError
+from .spec import Region
 
 
 class StaticRegionError(H3RequestError):

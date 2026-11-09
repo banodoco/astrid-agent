@@ -16,7 +16,7 @@ from astrid.packs.vibecomfy.actions.run.run import _stage_managed_assets
 
 
 def _write_archive(path: Path, source: Path) -> dict:
-    from astrid.packs.h3_av.actions.compile.compile import _write_asset_bundle
+    from astrid.packs.h3_av.shared.compile import _write_asset_bundle
 
     return _write_asset_bundle(
         path,

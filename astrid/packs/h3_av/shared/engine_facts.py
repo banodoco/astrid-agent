@@ -1,7 +1,7 @@
 """The engine-side facts this pack needs, installed by its host instead of imported.
 
-Nothing under ``h3_av`` outside ``actions/*/run.py`` imports Astrid. The host (the
-comfyui engine for the ``vibecomfy.workflows`` hooks, or a stage's ``run.py``) calls
+Nothing under ``h3_av`` except ``cli.py`` imports Astrid. The host (the
+comfyui engine for the ``vibecomfy.workflows`` hooks, or the CLI) calls
 ``install`` with an object carrying: ``comfy_commit()``, ``locked_models()``,
 ``bind_model_root(model_root)``, ``build_asset_manifest(...)``, ``read_archive(path)``,
 ``write_json_atomic(path, value)``, ``assert_no_unresolved_placeholders(bindings)`` and

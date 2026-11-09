@@ -111,8 +111,8 @@ def materialize_file_map(request: H3Request, files: Mapping[str, Any], destinati
 
 def compile_stages(request: H3Request, files: Mapping[str, Any], destination: Path):
     """Prepare and compile one request from its file map: CPU only. Returns (paths, preparation, compilation)."""
-    from ..actions.compile.compile import compile_preparation
-    from ..actions.prepare.prepare import prepare_request
+    from .compile import compile_preparation
+    from .prepare import prepare_request
 
     paths, identities = materialize_file_map(request, files, destination / "assets")
     preparation = prepare_request(request, asset_map=paths)

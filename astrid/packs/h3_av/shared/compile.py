@@ -9,12 +9,12 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from ...shared.engine_facts import facts
-from ...shared.request import H3Request, H3RequestError, normalize_request
-from ...shared.request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
-from ...shared.timing import ContinuationTimingError, plan_continuation
-from ...shared.errors import CompilationError
-from ...shared.input_bundle import _canonical_bytes, _write_asset_bundle
+from .engine_facts import facts
+from .request import H3Request, H3RequestError, normalize_request
+from .request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
+from .timing import ContinuationTimingError, plan_continuation
+from .errors import CompilationError
+from .managed_assets import _canonical_bytes, _write_asset_bundle
 
 
 
@@ -41,7 +41,7 @@ def _sha256(path: Path) -> str:
 
 
 def _pack_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def _resolved_request(preparation: Mapping[str, Any]) -> H3Request:
@@ -468,14 +468,14 @@ def _compile_native_masked_edit(
     between the target latent and the sampler. Bounded mask frames encode the
     edit interval; composition still owns preservation and exact tail trimming.
     """
-    from ...shared.generation import build_generation_workflow, generation_timing
+    from .generation import build_generation_workflow, generation_timing
     from vibecomfy.model_assets import resolve_referenced_assets
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    from ..prepare.static_regions import resolve_static_region
-    from ...shared.compose import CompositionError, probe_mask
-    from ...shared.spec import Region, canonical_spec
+    from .static_regions import resolve_static_region
+    from .compose import CompositionError, probe_mask
+    from .spec import Region, canonical_spec
 
     try:
         spec = canonical_spec(request)
@@ -635,7 +635,7 @@ def _compile_character_swap_v2(
     graph receives only the typed Character Swap references, so composition
     continues to own the exact source audio and delivery-mask permissions.
     """
-    from ...shared.generation import (
+    from .generation import (
         CHARACTER_SWAP_FILENAME,
         CHARACTER_SWAP_REPOSITORY,
         CHARACTER_SWAP_REVISION,
@@ -1063,7 +1063,7 @@ def _compile_generation(
     from PIL import Image
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
-    from ...shared.generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
+    from .generation import IMAGE_REFERENCE_CAPACITY, build_generation_workflow, generation_timing
 
     references = request.value["references"]
     # Keep slots ordered even for repeated assets; the archive deduplicates bytes.

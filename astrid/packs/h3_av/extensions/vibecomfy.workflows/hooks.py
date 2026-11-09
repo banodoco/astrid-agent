@@ -107,7 +107,7 @@ def after_outputs(job_dir, inputs, files, outputs, *, engine=None):
     stages = _shared("stages")
     pack = _pack()
     compose_candidate = importlib.import_module(f"{_PACK}.shared.compose").compose_candidate
-    verify_candidate = importlib.import_module(f"{_PACK}.actions.verify.verify").verify_candidate
+    verify_candidate = importlib.import_module(f"{_PACK}.shared.verify").verify_candidate
 
     outputs = list(outputs or [])
     if not outputs:

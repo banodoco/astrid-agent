@@ -609,7 +609,7 @@ def canonical_spec(
                 )
         duration = value["output"].get("duration")
         if duration is None:
-            from ..actions.prepare.masks import _bounded_duration
+            from .masks import _bounded_duration
 
             duration = _bounded_duration(request)
         if value["operation"] == "generate":

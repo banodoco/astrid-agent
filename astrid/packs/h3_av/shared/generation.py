@@ -112,7 +112,7 @@ def character_swap_asset_sha256() -> str:
 
     for relative in (
         "astrid/packs/h3_av/shared/generation.py",
-        "astrid/packs/h3_av/actions/compile/compile.py",
+        "astrid/packs/h3_av/shared/compile.py",
     ):
         path = astrid_root / relative
         if path.is_symlink() or not path.is_file():
