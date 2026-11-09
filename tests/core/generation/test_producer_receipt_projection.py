@@ -16,8 +16,7 @@ from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 # The engine's local run submits as local_server to the installed engine's endpoint (tests/local_engine_stub.py).
 _ENGINE_ROUTE = {'profile_id': 'local_server', 'comfy_url': LOCAL_ENGINE_URL}
 
-@pytest.mark.parametrize('route', ['embedded', 'attached'])
-def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path, route):
+def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, tmp_path):
     from astrid.packs.vibecomfy import production_engine
     from vibecomfy.testing.canonical import canonical_bytes
     root = tmp_path / 'out'
@@ -33,7 +32,7 @@ def test_native_success_projects_exact_settings_and_preserves_refs(monkeypatch, 
     original = json.loads(path.read_bytes())
     result = SimpleNamespace(managed_generation_result_path=path, managed_generation_result=None)
     monkeypatch.setattr(production_engine, 'run_workflow_result_path', lambda *args, **kwargs: result)
-    kwargs = _ENGINE_ROUTE  # 'embedded' is now the engine's local run (the stub endpoint); 'attached' names the same URL
+    kwargs = _ENGINE_ROUTE  # the 'embedded' route was retired: the engine's local run is the only no-comfy_url path
     returned = VibeComfyWorkflowBackend().workflow(tmp_path / 'absent.py', root,
         task_identity='task-1', attempt_identity='attempt-1', **kwargs)
     after = json.loads(path.read_bytes())
