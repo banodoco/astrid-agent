@@ -15,13 +15,12 @@ from astrid.core.execution.orchestrator.registry import (
 )
 from astrid.core.pack import discover_packs
 from astrid.core.pack.canonical import BundledCatalog, validate_canonical_pack
-from astrid.core.pack.validate_first_party import _FIRST_PARTY_PACK_IDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKS = ROOT / "astrid/packs"
-# One source of truth for the shipped pack ids: the first-party validator inventory.
-PACK_IDS = tuple(sorted(_FIRST_PARTY_PACK_IDS))
+# Shipped pack ids are derived from the manifests present in the packs root.
+PACK_IDS = tuple(sorted(path.parent.name for path in PACKS.glob("*/pack.yaml")))
 RETIRED = {"builtin", "references", "astrid", "runaway", "shots", "timeline"}
 
 
