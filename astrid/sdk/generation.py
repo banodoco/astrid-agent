@@ -1549,6 +1549,9 @@ class GenerationFacade:
         modality: str,
         *,
         model: str | None = None,
+        request: str | Mapping[str, Any] | None = None,
+        asset_map: str | Mapping[str, Any] | None = None,
+        resume: bool = False,
         entry: str | None = None,
         placement: str | None = None,
         mode: str | None = None,
@@ -1587,6 +1590,15 @@ class GenerationFacade:
             execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
         )
         _reject_retired_generation_inputs(inputs)
+        inputs.update({name: value for name, value in
+                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
+        if modality == "video" and _prompt_only_video(model=model, entry=entry, inputs=inputs):
+            raise GenerationInputError(
+                "Prompt-only video requires a reference or an H3 request. "
+                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
+                "with a JSON object containing request and asset_map file paths. "
+                "See generate video --entry h3 --help."
+            )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
@@ -1600,13 +1612,19 @@ class GenerationFacade:
             model, mode = entry, description["mode"]
             if description["source"] == "workflow" and placement is None:
                 placement = "auto"
-        resolved_mode = sdk_module._infer_image_mode(mode, inputs)
-        explicit_openai = execution == "openai" or (
-            isinstance(model, str) and model.startswith("gpt-image")
-        )
-        if explicit_openai and mode is None and inputs.get("image_ref"):
-            resolved_mode = "edit"
-        if model is not None and mode is None and inputs.get("image_ref"):
+        if modality == "video":
+            if resume or recovery_path is not None and placement != 'runpod':
+                raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
+            resolved_mode = sdk_module._infer_video_mode(mode, inputs)
+            explicit_openai = False
+        else:
+            resolved_mode = sdk_module._infer_image_mode(mode, inputs)
+            explicit_openai = execution == "openai" or (
+                isinstance(model, str) and model.startswith("gpt-image")
+            )
+            if explicit_openai and mode is None and inputs.get("image_ref"):
+                resolved_mode = "edit"
+        if modality == "image" and model is not None and mode is None and inputs.get("image_ref"):
             from astrid.core.generation.entries import find_entry
             manifest = find_entry(model)
             if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
@@ -1637,7 +1655,7 @@ class GenerationFacade:
         except KeyError as exc:
             raise CapabilityValidationError(str(exc)) from exc
 
-        if (mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES
+        if (modality == "image" and mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES
                 and not explicit_openai):
             raise CapabilityValidationError(
                 f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
@@ -1651,7 +1669,7 @@ class GenerationFacade:
         )
         from astrid.core.generation.preflight import validate_generation_request
 
-        recipe = inputs.get("shot_generation_recipe")
+        recipe = inputs.get("shot_generation_recipe") if modality == "image" else None
         if recipe is not None:
             from astrid.packs.generation.actions.generate_image.task_adapter import (
                 GenerateImageAdapterError,
@@ -1669,6 +1687,15 @@ class GenerationFacade:
             except GenerateImageAdapterError as exc:
                 raise CapabilityValidationError(str(exc)) from exc
 
+        # FLF's defining frame pair is rejected before dry-run/live invocation.
+        # Image keeps its historic deferred prompt validation (executor-owned
+        # prompt semantics, including prompt-less upscale), so it requires no features.
+        flf_required = None
+        if modality == "video" and resolved_mode == "flf" and (
+            inputs.get("image_ref") is not None
+            or inputs.get("image_end_ref") is not None
+        ):
+            flf_required = ("image_ref", "image_end_ref")
         validate_generation_request(
             registry,
             model=model,
@@ -1676,10 +1703,7 @@ class GenerationFacade:
             execution=resolved_execution,
             inputs={"model": model, "mode": resolved_mode, **inputs},
             modality=modality,
-            # Keep the image facade's historic deferred prompt validation:
-            # executor-owned prompt semantics (including prompt-less upscale)
-            # remain compatible while matrix/readiness checks happen here.
-            required_features=(),
+            required_features=flf_required or (),
         )
         if resolved_execution == "local":
             from astrid.core.generation.preflight import (
@@ -1769,138 +1793,8 @@ class GenerationFacade:
         align: str | None = None,
         **inputs: Any,
     ) -> Any:
-        inputs = _public_input_values(inputs)
-        controls = _modality_controls(
-            engine=engine, consent=consent, max_usd=max_usd, deadline=deadline,
-            offer_digest=offer_digest, preparation_seconds=preparation_seconds,
-            execution_seconds=execution_seconds, idle_seconds=idle_seconds, align=align,
-        )
-        _reject_retired_generation_inputs(inputs)
-        inputs.update({name: value for name, value in
-                       (("request", request), ("asset_map", _asset_map(asset_map))) if value is not None})
-        if _prompt_only_video(model=model, entry=entry, inputs=inputs):
-            raise GenerationInputError(
-                "Prompt-only video requires a reference or an H3 request. "
-                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
-                "with a JSON object containing request and asset_map file paths. "
-                "See generate video --entry h3 --help."
-            )
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = None
-        if entry is not None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-            )
-            description, inputs = self._resolve_public_entry(
-                entry=entry, model=model, mode=mode, modality="video",
-                inputs=inputs, registry=registry,
-            )
-            model, mode = entry, description["mode"]
-            if description["source"] == "workflow" and placement is None:
-                placement = "auto"
-        if resume or recovery_path is not None and placement != 'runpod':
-            raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
-        resolved_mode = sdk_module._infer_video_mode(mode, inputs)
-        if registry is None:
-            registry = sdk_module._load_model_registry(
-                project_root=project_root,
-                extra_pack_roots=extra_pack_roots,
-            )
-        if engine is not None and placement is None:
-            placement = 'auto'
-        if placement is not None:
-            return self._generate_on_target(
-                registry=registry, model=model, mode=resolved_mode, modality="video",
-                placement=placement, execution=execution, inputs=inputs, dry_run=dry_run,
-                client=client, out=out, project=project, project_root=project_root,
-                extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
-                active_theme=active_theme, include_missing_roots=include_missing_roots,
-                brief=brief, check_binaries=check_binaries, python_exec=python_exec,
-                verbose=verbose, argv=argv,
-                **controls, **({'wait': False} if not wait else {}),
-                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
-            )
-        if model is None:
-            raise CapabilityValidationError("model is required when target is omitted")
-        try:
-            model_entry = registry.get(model)
-        except KeyError as exc:
-            raise CapabilityValidationError(str(exc)) from exc
-
-        resolved_execution = sdk_module._resolve_execution(
-            model_entry,
-            resolved_mode,
-            execution,
-            model=model,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
-
-        # FLF's defining frame pair must be rejected before dry-run/live
-        # invocation.  The prompt remains executor-owned for compatibility
-        # with existing facade callers that only exercise routing.
-        flf_required = None
-        if resolved_mode == "flf" and (
-            inputs.get("image_ref") is not None
-            or inputs.get("image_end_ref") is not None
-        ):
-            flf_required = ("image_ref", "image_end_ref")
-        validate_generation_request(
-            registry,
-            model=model,
-            mode=resolved_mode,
-            execution=resolved_execution,
-            inputs={"model": model, "mode": resolved_mode, **inputs},
-            modality="video",
-            # The typed facade historically defers prompt validation to the
-            # executor; when FLF refs are supplied, however, enforce the
-            # defining frame pair before dry-run/live admission.
-            required_features=flf_required or (),
-        )
-        if resolved_execution == "local":
-            # Keep local video on the same actionable, read-only prerequisite
-            # gate as image generation. No cloud fallback is attempted.
-            require_local_generation_readiness(
-                model_entry,
-                resolved_mode,
-                python_executable=python_exec,
-            )
-        invoke_out, invoke_project = _resolve_invoke_destination(
-            client=client,
-            out=out,
-            project=project,
-            project_root=project_root,
-        )
-        result = self._invoke(
-            "generation.generate_video",
-            kind="executor",
-            client=client,
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-            banodoco_config=banodoco_config,
-            active_theme=active_theme,
-            include_missing_roots=include_missing_roots,
-            out=invoke_out,
-            project=invoke_project,
-            inputs={
-                "model": model,
-                "mode": resolved_mode,
-                "execution": resolved_execution,
-                **inputs,
-            },
-            brief=brief,
-            dry_run=dry_run,
-            check_binaries=check_binaries,
-            python_exec=python_exec,
-            verbose=verbose,
-            argv=argv,
-            **({'wait': False} if not wait else {}),
-        )
-        if dry_run or not wait:
-            return result
-        return _reconstruct_generation_result(result)
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "inputs"}}
+        return self._media_request("video", **arguments, **inputs)
 
     @_generation_boundary
     def audio(
