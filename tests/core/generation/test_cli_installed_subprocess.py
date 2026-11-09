@@ -16,7 +16,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
     target = tmp_path / "installed"
     install = subprocess.run(
         [sys.executable, "-m", "pip", "install", "--no-deps", "--no-build-isolation",
-         "--target", str(target), str(repo)],
+         "--placement", str(target), str(repo)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -62,7 +62,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
     try:
         dry = subprocess.run(
             [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
-             "--mode", "t2i", "--target", "managed", "--dry-run", "--json", "a studio test image"],
+             "--mode", "t2i", "--placement", "managed", "--dry-run", "--json", "a studio test image"],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
         )
         assert dry.returncode == 0, dry.stdout + dry.stderr
@@ -71,7 +71,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
         url = f"http://127.0.0.1:{server.server_port}"
         live = subprocess.run(
             [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
-             "--mode", "t2i", "--target", url, "--json", "a studio test image"],
+             "--mode", "t2i", "--placement", url, "--json", "a studio test image"],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
         )
         assert live.returncode == 0, live.stdout + live.stderr

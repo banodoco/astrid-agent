@@ -340,11 +340,11 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
         with contextlib.ExitStack() as stack:
             if target_kind == "runpod":
                 setup = client.invoke_result("runpod.setup", kind="action", project=None,
-                    inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
+                    inputs={"placement_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": preferences})},
                     wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
                 assert setup.ok
-                quote = GenerationFacade().describe(target="runpod", client=client)
-                controls = dict(target="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
+                quote = GenerationFacade().describe(placement="runpod", client=client)
+                controls = dict(placement="runpod", client=client, project=project_id, consent=("paid",), max_usd=1.5,
                     deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
                     offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
                     idle_seconds=1800, wait=True)
@@ -358,7 +358,7 @@ def _drive(slot, tmp_path, monkeypatch, real_runtime, tuple_sources, extra_class
                 url = stack.enter_context(_attached_comfy(provider.comfy))
                 controls = dict(target=url, client=client, project=project_id, wait=True)
             else:
-                controls = dict(target="managed", client=client, project=project_id, wait=True)
+                controls = dict(placement="managed", client=client, project=project_id, wait=True)
             result = call(GenerationFacade(), controls, tmp_path)
             yield client, project_id, provider, result
     finally:

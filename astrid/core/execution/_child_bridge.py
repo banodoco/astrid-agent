@@ -624,12 +624,12 @@ class HostChildBridge:
         record = self.host.capabilities.get(child["capability_id"])
         if record is None or record.capability_digest != child["capability_digest"]:
             raise ChildBridgeError("child capability digest disagrees with admitted source")
-        if record.definition.metadata.get("host_target_policy"):
+        if record.definition.metadata.get("host_placement_policy"):
             parent_inputs = _admitted_task_spec(self.task).get("inputs", {})
             plan = parent_inputs.get("plan", {}) if isinstance(parent_inputs, Mapping) else {}
             controls = plan.get("controls", {}) if isinstance(plan, Mapping) else {}
-            expected = controls.get("target_policy") if isinstance(controls, Mapping) else None
-            supplied = inputs.get("target_policy")
+            expected = controls.get("placement_policy") if isinstance(controls, Mapping) else None
+            supplied = inputs.get("placement_policy")
             if expected is not None or supplied:
                 try:
                     observed = json.loads(supplied) if isinstance(supplied, str) else None

@@ -34,13 +34,13 @@ def test_h3_freezes_policy_into_default_local_stages(monkeypatch, tmp_path, endp
         return run.project_parent(kwargs['inputs'], project=kwargs['project'], client=client, registry=registry)
 
     client.invoke_result = invoke
-    projected, policy = GenerationFacade().video(entry='h3', target='runpod', client=client,
+    projected, policy = GenerationFacade().video(entry='h3', placement='runpod', client=client,
         project='project-a', wait=False, **h3_inputs, **PAID,
         offer_digest='sha256:' + 'b' * 64, preparation_seconds=60,
         execution_seconds=60, idle_seconds=1800)
-    target = projected['plan']['controls']['target_policy']
+    target = projected['plan']['controls']['placement_policy']
     assert target['engine'] == 'vibecomfy-h3' and target['kind'] == 'runpod'
-    assert target == calls[0][1]['inputs']['target_policy']
+    assert target == calls[0][1]['inputs']['placement_policy']
     assert policy['targets'] == [{'kind': 'default'}]
     assert all(stage['target'] == {'kind': 'default'} for stage in policy['stages'])
     assert owner.events == []
@@ -51,12 +51,12 @@ def test_h3_substitute_refuses_before_import_or_provider(monkeypatch, tmp_path, 
     monkeypatch.setenv('ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE', 'test-only')
     monkeypatch.setattr(client.media, 'import_bytes', lambda **kwargs: pytest.fail('import before refusal'))
     with pytest.raises(Exception, match='cannot use the T9 substitute'):
-        run.project_parent({**h3_inputs, 'target_policy': {'kind': 'runpod'}},
+        run.project_parent({**h3_inputs, 'placement_policy': {'kind': 'runpod'}},
                            project='project-a', client=client, registry=None)
     assert owner.events == []
 
 
-def test_staged_child_cannot_replace_parent_target_policy():
+def test_staged_child_cannot_replace_parent_placement_policy():
     from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge
 
     class Admitted(Exception):
@@ -65,19 +65,19 @@ def test_staged_child_cannot_replace_parent_target_policy():
     expected = {'kind': 'runpod', 'offer_digest': 'sha256:' + 'a' * 64}
     bridge = object.__new__(HostChildBridge)
     bridge.policy = {'targets': [], 'capabilities': []}
-    bridge.task = {'spec': {'inputs': {'plan': {'controls': {'target_policy': expected}}}}}
+    bridge.task = {'spec': {'inputs': {'plan': {'controls': {'placement_policy': expected}}}}}
     bridge._child_execution_request = lambda value: None
     record = SimpleNamespace(id='vibecomfy.run', capability_digest='digest',
-                             definition=SimpleNamespace(metadata={'host_target_policy': True, 'action_invocation': True}))
+                             definition=SimpleNamespace(metadata={'host_placement_policy': True, 'action_invocation': True}))
     def admit(*args):
         raise Admitted()
     bridge.host = SimpleNamespace(capabilities={record.id: record}, admit=admit)
     request = {'child': {'capability_id': record.id, 'capability_digest': 'digest'},
-               'inputs': {'target_policy': json.dumps({**expected, 'offer_digest': 'sha256:' + 'b' * 64})},
+               'inputs': {'placement_policy': json.dumps({**expected, 'offer_digest': 'sha256:' + 'b' * 64})},
                'input_descriptors': [], 'stage': 'run'}
     with pytest.raises(ChildBridgeError, match='differs from the admitted parent'):
         bridge._submit(request)
-    request['inputs']['target_policy'] = json.dumps(expected)
+    request['inputs']['placement_policy'] = json.dumps(expected)
     with pytest.raises(Admitted):
         bridge._submit(request)
 

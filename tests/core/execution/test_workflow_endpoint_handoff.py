@@ -331,7 +331,7 @@ def installed_agent(tmp_path_factory):
     wheel = next((build / "wheels").glob("astrid-*.whl"))
     target = build / "installed"
     result = subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps",
-                             "--no-compile", "--target", str(target), str(wheel)],
+                             "--no-compile", "--placement", str(target), str(wheel)],
                             cwd=build, env=environment, capture_output=True, text=True, timeout=45)
     (build / "install.log").write_text(result.stdout + result.stderr)
     assert result.returncode == 0, "candidate wheel installation failed; see private install.log"

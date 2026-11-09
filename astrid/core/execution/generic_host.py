@@ -12194,17 +12194,17 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
-            target_policy = inputs.get("target_policy")
-            if record.definition.metadata.get("host_target_operation") and not target_policy:
+            placement_policy = inputs.get("placement_policy")
+            if record.definition.metadata.get("host_target_operation") and not placement_policy:
                 raise HostError("host target operation requires a target policy")
-            if target_policy:
+            if placement_policy:
                 target_operation = record.definition.metadata.get("host_target_operation")
-                if not target_operation and not record.definition.metadata.get("host_target_policy"):
+                if not target_operation and not record.definition.metadata.get("host_placement_policy"):
                     raise HostError("capability does not admit a host target policy")
-                if not isinstance(target_policy, str) or len(target_policy.encode("utf-8")) > 16384:
+                if not isinstance(placement_policy, str) or len(placement_policy.encode("utf-8")) > 16384:
                     raise HostError("host target policy must be bounded JSON")
                 try:
-                    policy = json.loads(target_policy)
+                    policy = json.loads(placement_policy)
                 except ValueError as exc:
                     raise HostError("host target policy is not valid JSON") from exc
                 if not isinstance(policy, dict):
@@ -12228,7 +12228,7 @@ class GenericPackHost:
                         target_invocation, evidence, trust=_align_trust(task_data))
                     readiness_profile = None
                     vibe_session = None
-                inputs.pop("target_policy", None)
+                inputs.pop("placement_policy", None)
             if capability_id == "h3_av.transform":
                 if "host_output_root" in inputs or child_bridge is None:
                     raise HostError("H3 parent requires host-owned output custody and delegated admission")

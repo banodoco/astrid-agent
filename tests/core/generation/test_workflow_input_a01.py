@@ -15,20 +15,20 @@ def test_target_discovery_and_transient_override_do_not_write(monkeypatch, tmp_p
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.delenv('VIBECOMFY_COMFYUI_URL', raising=False)
     monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('discovery opened Runtime'))
-    assert cli.main(['targets', '--target', 'http://localhost:8191', '--json']) == 0
+    assert cli.main(['targets', '--placement', 'http://localhost:8191', '--json']) == 0
     observed = json.loads(capsys.readouterr().out)
-    assert observed == GenerationFacade().targets(target='http://localhost:8191')
+    assert observed == GenerationFacade().targets(placement='http://localhost:8191')
     assert observed['target']['endpoint'] == 'http://127.0.0.1:8191'
     assert not targets.config_path().parent.exists()
     with pytest.raises(GenerationInputError, match='explicit target'):
         GenerationFacade().targets(save=True)
     assert not targets.config_path().parent.exists()
-    saved = GenerationFacade().targets(target='http://localhost:8192', save=True)
+    saved = GenerationFacade().targets(placement='http://localhost:8192', save=True)
     config = targets.config_path()
     before = config.read_bytes(), config.stat().st_mtime_ns
     targets.config_lock_path().unlink()
     assert GenerationFacade().targets() == saved
-    override = GenerationFacade().targets(target='http://localhost:8193')
+    override = GenerationFacade().targets(placement='http://localhost:8193')
     assert override['target']['endpoint'].endswith(':8193')
     assert (config.read_bytes(), config.stat().st_mtime_ns) == before
     assert not targets.config_lock_path().exists()
@@ -36,7 +36,7 @@ def test_target_discovery_and_transient_override_do_not_write(monkeypatch, tmp_p
 
 def test_conflicting_target_flags_never_save(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
-    assert cli.main(['targets', '--target', 'http://localhost:8191', '--target',
+    assert cli.main(['targets', '--placement', 'http://localhost:8191', '--placement',
                      'http://localhost:8192', '--save', '--json']) == 2
     error = json.loads(capsys.readouterr().out)
     assert error['issues'][0]['code'] == 'input_rejected'
@@ -49,7 +49,7 @@ def test_workflow_cli_calls_public_sdk_once_without_private_probe(monkeypatch, c
     facade = SimpleNamespace(workflow=lambda **kwargs: calls.append(kwargs) or {'ok': True})
     monkeypatch.setattr(cli, '_generate_facade', lambda: facade)
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime'))
-    assert cli.main(['workflow', 'submitted.json', '--target', 'http://localhost:8192',
+    assert cli.main(['workflow', 'submitted.json', '--placement', 'http://localhost:8192',
         '--input', 'texture=0.7', '--input', 'node:12.strength=0.8', '--no-wait', '--json']) == 0
     assert calls == [{'workflow': Path('submitted.json'), 'target': 'http://localhost:8192',
                      'mode': None, 'inputs': {'texture': 0.7, 'node:12.strength': 0.8},
@@ -111,7 +111,7 @@ def test_workflow_inputs_cross_real_runtime_and_preserve_exact_source(
             try:
                 code = console.main(['generate', 'workflow', str(source),
                     '--input', 'prompt=A01 input prompt', '--input', 'seed=19',
-                    '--target', loopback_comfy.url, '--project', project.data['project_id'],
+                    '--placement', loopback_comfy.url, '--project', project.data['project_id'],
                     *(['--as-entry', 'a01-saved'] if save_entry else []), '--json'])
             finally:
                 host.shutdown()

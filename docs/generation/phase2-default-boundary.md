@@ -36,7 +36,7 @@ Keep that ownership chain intact before default promotion.
 
 Completion requires the existing shared target path and output publication
 path for both local and RunPod execution. Audio must default to target `auto`;
-a missing local GPU must report `needs a local GPU or --target runpod`, with
+a missing local GPU must report `needs a local GPU or --placement runpod`, with
 Edge TTS named only as an explicitly selected hosted voice option. No hosted
 provider may become an automatic fallback. The current explicit RunPod Foley
 refusal must be reconciled with the owner's preparation contract before it is

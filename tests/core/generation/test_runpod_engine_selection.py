@@ -128,9 +128,9 @@ def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, imag
     modality, mode = slot
     if target != 'runpod':
         monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: pytest.fail('RunPod engine chosen'))
-        monkeypatch.setattr(generation, '_runpod_target_policy', lambda *a, **k: pytest.fail('RunPod policy'))
+        monkeypatch.setattr(generation, '_runpod_placement_policy', lambda *a, **k: pytest.fail('RunPod policy'))
     try:
-        plan = _call(modality, mode, image, target=_target_value(target, request), dry_run=True,
+        plan = _call(modality, mode, image, placement=_target_value(target, request), dry_run=True,
                      **(PAID if target == 'runpod' else {}))
     except AstridError as exc:
         assert exc.code in REFUSALS, (slot, target, exc.code, str(exc))
@@ -147,12 +147,12 @@ def test_default_slot_resolves_to_requested_target_or_refuses(slot, target, imag
                          ids=lambda slot: '/'.join(slot))
 def test_dry_run_target_and_engine_equal_live_policy(slot, image, preferences):
     modality, mode = slot
-    plan = dict(_call(modality, mode, image, target='runpod', dry_run=True, **PAID))
+    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True, **PAID))
     client = NoPodClient()
-    _call(modality, mode, image, target='runpod', client=client, project='demo', wait=False, **LIVE)
+    _call(modality, mode, image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
     assert [capability for capability, _ in client.calls] == ['vibecomfy.run']
     inputs = client.calls[0][1]['inputs']
-    policy = json.loads(inputs['target_policy'])
+    policy = json.loads(inputs['placement_policy'])
     assert 'comfy_url' not in inputs  # never a local execution path
     assert (policy['kind'], policy['engine']) == (plan['target']['placement'], plan['target']['engine'])
     assert inputs['generation_intent']['metadata']['model'] == plan['entry']['id']
@@ -163,28 +163,28 @@ def test_dry_run_target_and_engine_equal_live_policy(slot, image, preferences):
                          ids=lambda value: '/'.join(value) if isinstance(value, tuple) else value)
 def test_audio_runpod_uses_h3_engine_and_image_keeps_comfyui(slot, engine, image, preferences):
     modality, mode = slot
-    plan = dict(_call(modality, mode, image, target='runpod', dry_run=True, **PAID))
+    plan = dict(_call(modality, mode, image, placement='runpod', dry_run=True, **PAID))
     assert plan['target']['engine'] == engine
     client = NoPodClient()
-    _call(modality, mode, image, target='runpod', client=client, project='demo', wait=False, **LIVE)
-    assert json.loads(client.calls[0][1]['inputs']['target_policy'])['engine'] == engine
+    _call(modality, mode, image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
+    assert json.loads(client.calls[0][1]['inputs']['placement_policy'])['engine'] == engine
 
 
 def test_runpod_request_never_selects_a_local_target(image, preferences, monkeypatch):
     from astrid.core.generation import preflight
     monkeypatch.setattr(preflight, 'select_generation_target', lambda *a, **k: pytest.fail('local target selected'))
     client = NoPodClient()
-    _call('audio', 'music', image, target='runpod', client=client, project='demo', wait=False, **LIVE)
+    _call('audio', 'music', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
     assert len(client.calls) == 1
 
 
 @pytest.mark.parametrize('target', ['auto', 'managed'])
 def test_local_request_never_reaches_runpod(target, image, monkeypatch):
     monkeypatch.setattr(entries, 'runpod_engine', lambda *a, **k: pytest.fail('RunPod engine chosen'))
-    monkeypatch.setattr(generation, '_runpod_target_policy', lambda *a, **k: pytest.fail('RunPod policy'))
+    monkeypatch.setattr(generation, '_runpod_placement_policy', lambda *a, **k: pytest.fail('RunPod policy'))
     client = NoPodClient()
     with pytest.raises(AstridError) as raised:  # no local engine in the test environment
-        _call('audio', 'music', image, target=target, client=client, project='demo', wait=False)
+        _call('audio', 'music', image, placement=target, client=client, project='demo', wait=False)
     assert raised.value.code in REFUSALS
     assert client.calls == []
 
@@ -193,7 +193,7 @@ def test_uncovered_entry_refuses_before_any_task(image, preferences):
     """ltx-2.3 models are in no RunPod lock: refuse, admit nothing, create no pod."""
     client = NoPodClient()
     with pytest.raises(AstridError) as raised:
-        _call('video', 'i2v', image, target='runpod', client=client, project='demo', wait=False, **LIVE)
+        _call('video', 'i2v', image, placement='runpod', client=client, project='demo', wait=False, **LIVE)
     assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
     assert client.calls == []
 
@@ -225,11 +225,11 @@ def test_h3_resolves_to_its_engine_through_the_same_helper(preferences, monkeypa
     real = entries.runpod_engine
     monkeypatch.setattr(entries, 'runpod_engine', lambda entry: chosen.append(entry['id']) or real(entry))
     client = NoPodClient()
-    GenerationFacade().video(entry='h3', target='runpod', client=client,
+    GenerationFacade().video(entry='h3', placement='runpod', client=client,
                              inputs={'request': 'r.json', 'asset_map': 'a.json'}, **LIVE)
     assert chosen == ['h3']
     assert [capability for capability, _ in client.calls] == ['h3_av.transform']
-    assert client.calls[0][1]['inputs']['target_policy']['engine'] == 'vibecomfy-h3'
+    assert client.calls[0][1]['inputs']['placement_policy']['engine'] == 'vibecomfy-h3'
 
 
 def test_uncovered_entry_refuses_before_prepare(image, preferences):
@@ -237,6 +237,6 @@ def test_uncovered_entry_refuses_before_prepare(image, preferences):
     client = NoPodClient()
     with pytest.raises(AstridError) as raised:
         GenerationFacade().video(entry='ltx-2.3', prompt='a boat', image_ref=str(image),
-                                 target='runpod', client=client, project='demo', wait=False, **LIVE)
+                                 placement='runpod', client=client, project='demo', wait=False, **LIVE)
     assert raised.value.code in REFUSALS and 'No RunPod engine lock covers' in str(raised.value)
     assert client.calls == []

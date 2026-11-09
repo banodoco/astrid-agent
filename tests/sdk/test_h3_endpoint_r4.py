@@ -29,7 +29,7 @@ from tests.integrations.test_runpod_host_endpoint_r5 import (
 
 
 def _admit_host_h3(r, inputs, **kwargs):
-    return GenerationFacade().video(entry='h3', target='runpod', client=r.client,
+    return GenerationFacade().video(entry='h3', placement='runpod', client=r.client,
         project=r.project, wait=False, **inputs, **{**r.paid, **kwargs})
 
 
@@ -233,7 +233,7 @@ def test_sdk_preflight_and_parent_freeze_one_endpoint_with_all_local_stages(reta
     spec = r.show(result.kernel_task_id)['spec']
     spec = spec.get('spec', spec)
     plan = spec['inputs']['plan']
-    target = plan['controls']['target_policy']
+    target = plan['controls']['placement_policy']
     assert target == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
     assert 'prepared_worker' not in spec['inputs'] and 'h3_endpoint' not in plan['controls']
     assert all(stage['target'] == {'kind': 'default'} for stage in plan['stages'])
@@ -312,7 +312,7 @@ def test_prepared_endpoint_cannot_replace_readiness_target(retained_host, h3_inp
         admitted = _admit_host_h3(r, h3_inputs, recovery_path=receipt)
         task = r.show(admitted.kernel_task_id)
         spec = task['spec'].get('spec', task['spec'])
-        assert spec['inputs']['plan']['controls']['target_policy']['idle_seconds'] == 1800
+        assert spec['inputs']['plan']['controls']['placement_policy']['idle_seconds'] == 1800
         refused = _host_h3_refusal(r, h3_inputs, recovery_path=receipt, resume=True, idle_seconds=600)
         assert 'request/project identity mismatch' in json.dumps(refused)
         assert r.c.creates == 0
@@ -413,7 +413,7 @@ def test_staged_parent_hands_exact_graph_to_local_run(retained_host, compilation
         assert plan['workflow_inputs_sha256'] == run._stable_digest(compiled['workflow_inputs'])
         stage = next(stage for stage in plan['stages'] if stage['name'] == 'run')
         assert stage['target'] == {'kind': 'default'} and 'execution_request' not in stage
-        assert plan['controls']['target_policy']['kind'] == 'runpod'
+        assert plan['controls']['placement_policy']['kind'] == 'runpod'
     assert r.c.creates == 0 and not r.state.prompts
 
 

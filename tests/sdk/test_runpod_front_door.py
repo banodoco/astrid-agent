@@ -24,11 +24,11 @@ from tests.integrations.test_runpod_host_endpoint_r5 import (
 
 def _host_policy(task):
     spec = task['spec'].get('spec', task['spec'])
-    return json.loads(spec['inputs']['target_policy'])
+    return json.loads(spec['inputs']['placement_policy'])
 
 
 def _host_cli_args(r):
-    return [r.kind, '--entry', 'retained-' + r.kind, '--target', 'runpod', '--project', r.project,
+    return [r.kind, '--entry', 'retained-' + r.kind, '--placement', 'runpod', '--project', r.project,
         '--consent', 'paid', '--max-usd', str(r.paid['max_usd']), '--deadline', r.paid['deadline'],
         '--offer-digest', r.paid['offer_digest'], '--preparation-seconds', '60',
         '--execution-seconds', '60', '--idle-seconds', '1800', '--no-wait']
@@ -174,9 +174,9 @@ def route(request, tmp_path, monkeypatch):
 
 def generate_route(route, *, raw=False, wait=False, **kwargs):
     if raw:
-        return GenerationFacade().workflow(workflow=route.source, target='runpod', inputs={},
+        return GenerationFacade().workflow(workflow=route.source, placement='runpod', inputs={},
             client=route.client, project='demo', wait=wait, **kwargs)
-    return getattr(GenerationFacade(), route.kind)(entry=route.entry['id'], target='runpod',
+    return getattr(GenerationFacade(), route.kind)(entry=route.entry['id'], placement='runpod',
         client=route.client, project='demo', wait=wait, **kwargs)
 
 
@@ -202,7 +202,7 @@ def test_host_endpoint_route_admits_local_task_with_only_policy(route, raw, monk
     assert capability == 'vibecomfy.run' and kwargs.get('execution_request') is None
     inputs = kwargs['inputs']
     assert 'comfy_url' not in inputs
-    policy = json.loads(inputs['target_policy'])
+    policy = json.loads(inputs['placement_policy'])
     assert policy['kind'] == 'runpod' and policy['offer_digest'] == paid['offer_digest']
     assert policy['preferences'] == target_selection.RunPodPreferences.from_mapping(preferences).as_mapping()
     assert route.owner.events == []
@@ -231,7 +231,7 @@ def test_foley_runpod_sound_effects_resolves_before_owner_or_allocation(monkeypa
 
     monkeypatch.setattr(sdk, '_load_model_registry', registry)
     with pytest.raises(RegistryReached):
-        GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', target='runpod',
+        GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', placement='runpod',
                                  video_ref='clip.mp4', client=NoOwnerClient())
     assert calls == []
 
@@ -254,8 +254,8 @@ def test_status_and_release_are_runtime_tasks(route, monkeypatch):
             kernel_task_id='task-' + capability, raw_result={'result': {'payload': {'target_operation': {'state': 'absent'}}}})
 
     route.client.invoke_result = invoke
-    assert GenerationFacade().describe(target='runpod', client=route.client) == {'state': 'absent'}
-    release = GenerationFacade().release(target='runpod', engine='comfyui', client=route.client, wait=False)
+    assert GenerationFacade().describe(placement='runpod', client=route.client) == {'state': 'absent'}
+    release = GenerationFacade().release(placement='runpod', engine='comfyui', client=route.client, wait=False)
     assert release.kernel_task_id == 'task-runpod.release'
     assert [capability for capability, _ in calls] == ['runpod.status', 'runpod.release']
     assert calls[0][1]['inputs']['include_quote'] is True and calls[1][1]['wait'] is False
@@ -332,7 +332,7 @@ def test_missing_fresh_paid_authority_denies_before_claim(route, changes):
 
 
 def test_invalid_entry_values_and_raw_source_block_before_claim(route):
-    GenerationFacade().targets(target='runpod', save=True, inputs={
+    GenerationFacade().targets(placement='runpod', save=True, inputs={
         'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
         'image': 'worker@sha256:' + 'a' * 64})
     disclosed = {**PAID, 'offer_digest': 'sha256:' + 'b' * 64,
@@ -376,10 +376,10 @@ def test_target_describe_and_release_use_typed_owner_without_claim(host_route, m
     assert r.generate(r.kind, wait=True).task_id
     owner = r.bindings.provider.lease_owner
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(r.client))
-    assert cli.main(['describe', '--target', 'runpod', '--json']) == 0
+    assert cli.main(['describe', '--placement', 'runpod', '--json']) == 0
     status = json.loads(capsys.readouterr().out)
     assert status['pod_id'] == 'pod-1' and status['lease']['state'] == 'idle'
-    assert cli.main(['release', '--engine', 'comfyui', '--target', 'runpod', '--no-wait', '--json']) == 0
+    assert cli.main(['release', '--engine', 'comfyui', '--placement', 'runpod', '--no-wait', '--json']) == 0
     result = json.loads(capsys.readouterr().out)
     task_id = result['kernel_task_id']
     assert r.follow(task_id).ok
@@ -395,7 +395,7 @@ def test_release_denial_keeps_the_runtime_task_and_blocked_envelope(host_route, 
     assert r.generate(r.kind, wait=True).task_id
     r.c.absent_get = False  # Provider DELETE succeeds, independent GET absence is unproven.
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(r.client))
-    assert cli.main(['release', '--engine', 'comfyui', '--target', 'runpod', '--json']) == 2
+    assert cli.main(['release', '--engine', 'comfyui', '--placement', 'runpod', '--json']) == 2
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'blocked' and result['task_id']
     task = r.show(result['task_id'])
@@ -526,13 +526,13 @@ def test_h3_no_wait_uses_prepared_child_and_preserves_parent_default(retained_ho
     r = retained_host
     from tests.sdk.test_h3_endpoint_r4 import h3_inputs as input_fixture
     h3_inputs = input_fixture.__wrapped__(r.tmp)
-    result = GenerationFacade().video(entry='h3', target='runpod', client=r.client,
+    result = GenerationFacade().video(entry='h3', placement='runpod', client=r.client,
         project=r.project, wait=False, **h3_inputs, **r.paid)
     assert result.ok and result.kernel_task_id
     task = r.show(result.kernel_task_id)
     spec = task['spec'].get('spec', task['spec'])
     plan = spec['inputs']['plan']
-    assert plan['controls']['target_policy'] == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
+    assert plan['controls']['placement_policy'] == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
     assert all(stage.get('target', {'kind': 'default'}) == {'kind': 'default'} for stage in plan['stages'])
     assert 'prepared_worker' not in spec['inputs'] and not getattr(r.client, '_generation_prepared_owners', {})
     assert r.c.creates == 0
@@ -582,14 +582,14 @@ def test_cli_paid_flags_admit_local_host_policy(route, monkeypatch, capsys):
         return InvocationResult(capability, 'executor', 'command', True,
                                 kernel_task_id='local-task', raw_result={'state': 'queued'})
     route.client.invoke_result = invoke
-    assert cli.main([route.kind, '--entry', route.entry['id'], '--target', 'runpod', '--project', 'demo',
+    assert cli.main([route.kind, '--entry', route.entry['id'], '--placement', 'runpod', '--project', 'demo',
         '--consent', 'paid', '--max-usd', '2', '--deadline', PAID['deadline'],
         '--offer-digest', 'sha256:' + 'b' * 64, '--preparation-seconds', '60',
         '--execution-seconds', '60', '--idle-seconds', '1800', '--no-wait', '--json']) == 0
     assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'local-task'
     capability, kwargs = calls[0]
     assert capability == 'vibecomfy.run' and kwargs.get('execution_request') is None
-    policy = json.loads(kwargs['inputs']['target_policy'])
+    policy = json.loads(kwargs['inputs']['placement_policy'])
     assert policy['offer_digest'] == 'sha256:' + 'b' * 64 and policy['consent'] == ['paid']
     assert policy['preparation_seconds'] == 60 and policy['execution_seconds'] == 60
     assert policy['idle_seconds'] == 1800 and route.owner.events == []

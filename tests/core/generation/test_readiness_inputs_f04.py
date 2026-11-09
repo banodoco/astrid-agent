@@ -92,7 +92,7 @@ def test_arbitrary_bindings_use_native_set_input_and_override_defaults(authored,
 def test_unwritable_invalid_and_duplicate_bindings_block_before_target(authored, monkeypatch, values):
     monkeypatch.setattr(GenerationFacade, '_generate_on_target', lambda *a, **k: pytest.fail('admission'))
     with pytest.raises(GenerationInputError) as raised:
-        GenerationFacade().image(entry='f04', target='auto', **values)
+        GenerationFacade().image(entry='f04', placement='auto', **values)
     payload = raised.value.to_envelope()
     assert payload['status'] == 'blocked' and payload['task_id'] is None
     assert payload['issues'][0]['code'] == 'input_rejected'
@@ -121,7 +121,7 @@ def test_cli_sdk_and_mcp_accept_the_same_non_common_bindings(authored, monkeypat
     assert captured[-1]['inputs'] == {'prompt': 'paint', 'texture': 0.7, 'node:12.strength': 0.8}
     assert captured[-1]['wait'] is False
     capsys.readouterr()
-    GenerationFacade().image(entry='f04', target='auto', inputs={'texture': 0.7, 'node:12.strength': 0.8})
+    GenerationFacade().image(entry='f04', placement='auto', inputs={'texture': 0.7, 'node:12.strength': 0.8})
     assert captured[-1]['inputs'] == {'texture': 0.7, 'node:12.strength': 0.8}
     def run(argv, cwd):
         start = argv.index('generate')
@@ -143,7 +143,7 @@ def test_cli_sdk_mcp_share_rejection_envelope(authored, monkeypatch, capsys):
     assert cli.main(['image', '--entry', 'f04', '--input', 'node:12.strength="bad"', '--json']) == 2
     cli_error = json.loads(capsys.readouterr().out)
     with pytest.raises(GenerationInputError) as raised:
-        GenerationFacade().image(entry='f04', target='auto', inputs={'node:12.strength': 'bad'})
+        GenerationFacade().image(entry='f04', placement='auto', inputs={'node:12.strength': 'bad'})
     sdk_error = raised.value.to_envelope()
     assert cli_error == sdk_error
     assert cli_error['issues'][0]['code'] == 'input_rejected'
@@ -247,7 +247,7 @@ def test_replacement_without_the_atomic_vibe_api_blocks_before_write(monkeypatch
 def test_raw_target_workflow_never_discards_a_prepared_execution_binding(monkeypatch):
     monkeypatch.setattr(entries, 'resolve_workflow_inputs', lambda *a, **k: pytest.fail('source loading'))
     with pytest.raises(GenerationInputError, match='prepared binding'):
-        GenerationFacade().workflow(workflow='unused.py', target='auto',
+        GenerationFacade().workflow(workflow='unused.py', placement='auto',
             execution_request={'target': {'kind': 'runpod', 'pod_id': 'exact-pod'}})
 
 
@@ -279,10 +279,10 @@ def test_workflow_admission_failure_keeps_the_shared_error_and_task_id():
 def test_release_routes_to_actual_owner_and_fails_closed_without_one():
     calls = []
     owner = SimpleNamespace(release_generation=lambda **kwargs: calls.append(kwargs) or 'admission')
-    assert GenerationFacade().release(engine='local', target='auto', client=owner) == 'admission'
+    assert GenerationFacade().release(engine='local', placement='auto', client=owner) == 'admission'
     assert calls == [{'engine': 'comfyui', 'target': 'auto', 'wait': False}]
     with pytest.raises(preflight.GenerationReadinessError) as raised:
-        GenerationFacade().release(engine='comfyui', target='auto')
+        GenerationFacade().release(engine='comfyui', placement='auto')
     assert raised.value.to_envelope()['issues'][0]['code'] == 'missing_dependency'
 
 
@@ -367,7 +367,7 @@ def test_dry_run_is_the_readiness_envelope_without_source_or_config_writes(monke
     monkeypatch.setattr(targets, 'update_config', lambda *a, **k: pytest.fail('config write'))
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     result = GenerationFacade()._generate_on_target(registry=ModelRegistry([]), model=None,
-        mode='t2i', modality='image', target=url, execution=None, inputs={'color': 12},
+        mode='t2i', modality='image', placement=url, execution=None, inputs={'color': 12},
         dry_run=True, workflow_entry=entry)
     assert set(result) == {'entry', 'target', 'status', 'issues', 'fixes'}
     assert result['status'] == 'ready' and result['target']['owner'] == 'human'
